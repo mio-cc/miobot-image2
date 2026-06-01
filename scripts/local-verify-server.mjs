@@ -15,14 +15,18 @@ const adminRoot = path.join(projectRoot, 'apps', 'panel', 'static', 'admin');
 const canvasRoot = path.join(projectRoot, 'apps', 'panel', 'static', 'canvas');
 const runtimeDir = process.env.MIOBOT_RUNTIME_DIR ? path.resolve(process.env.MIOBOT_RUNTIME_DIR) : path.join(projectRoot, '.runtime');
 const configPath = process.env.MIOBOT_CONFIG_PATH ? path.resolve(process.env.MIOBOT_CONFIG_PATH) : path.join(runtimeDir, 'config.json');
+const canvasStatePath = process.env.MIOBOT_CANVAS_STATE_PATH ? path.resolve(process.env.MIOBOT_CANVAS_STATE_PATH) : path.join(runtimeDir, 'canvas-state.json');
+const canvasAssetDir = process.env.MIOBOT_CANVAS_ASSET_DIR ? path.resolve(process.env.MIOBOT_CANVAS_ASSET_DIR) : path.join(runtimeDir, 'canvas-assets');
 const api = createWebApi({ initialConfig: await loadPersistedConfig() });
 const port = Number(process.env.MIOBOT_PORT || process.env.MIOBOT_VERIFY_PORT || process.env.PORT || 3018);
 const host = process.env.MIOBOT_HOST || process.env.HOST || 'localhost';
+const persistedCanvasState = await loadPersistedCanvasState();
 
-let gallery = [];
-let interrogations = [];
-let project = { id: 'local-project', name: 'Miobot v2 Local Canvas', snapshot: null, history: [], interrogations, updatedAt: new Date().toISOString() };
-const assets = new Map();
+let gallery = Array.isArray(persistedCanvasState.gallery) ? persistedCanvasState.gallery : [];
+let interrogations = Array.isArray(persistedCanvasState.interrogations) ? persistedCanvasState.interrogations : [];
+let project = normalizePersistedProject(persistedCanvasState.project, interrogations);
+const assets = restorePersistedAssets(persistedCanvasState, gallery, interrogations, project);
+let canvasStateSaveTimer = null;
 const imageJobs = new Map();
 const interrogationJobs = new Map();
 const systemLogs = [];
@@ -56,7 +60,7 @@ const stylePresets = [
 async function loadPersistedConfig() {
   try {
     const raw = await fs.readFile(configPath, 'utf8');
-    return JSON.parse(raw);
+    return JSON.parse(raw.replace(/^\uFEFF/, ''));
   } catch (error) {
     if (error?.code !== 'ENOENT') {
       console.warn(`[miobot] Failed to read persisted config from ${configPath}: ${error?.message || error}`);
@@ -73,6 +77,125 @@ async function persistConfig(config) {
 async function persistSavedConfig(saved) {
   await persistConfig(saved.config);
   return saved;
+}
+
+function defaultCanvasProject(interrogationItems = []) {
+  return {
+    id: 'local-project',
+    name: 'Miobot v2 Local Canvas',
+    snapshot: null,
+    history: [],
+    interrogations: interrogationItems,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function normalizePersistedProject(input, interrogationItems = []) {
+  const base = defaultCanvasProject(interrogationItems);
+  const project = input && typeof input === 'object' ? { ...base, ...input } : base;
+  project.history = Array.isArray(project.history) ? project.history : [];
+  project.interrogations = interrogationItems;
+  project.updatedAt = project.updatedAt || new Date().toISOString();
+  return project;
+}
+
+function collectAsset(asset, map) {
+  if (!asset?.id) return;
+  map.set(String(asset.id), asset);
+}
+
+function restorePersistedAssets(state, galleryItems = [], interrogationItems = [], projectState = {}) {
+  const map = new Map();
+  for (const asset of Array.isArray(state.assets) ? state.assets : []) collectAsset(asset, map);
+  for (const item of galleryItems) collectAsset(item.asset, map);
+  for (const item of interrogationItems) collectAsset(item.asset, map);
+  for (const record of Array.isArray(projectState.history) ? projectState.history : []) {
+    for (const output of Array.isArray(record.outputs) ? record.outputs : []) collectAsset(output.asset, map);
+  }
+  return map;
+}
+
+async function loadPersistedCanvasState() {
+  try {
+    const raw = await fs.readFile(canvasStatePath, 'utf8');
+    const parsed = JSON.parse(raw.replace(/^\uFEFF/, ''));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      console.warn(`[miobot] Failed to read canvas state from ${canvasStatePath}: ${error?.message || error}`);
+    }
+    return {};
+  }
+}
+
+function canvasStatePayload() {
+  project.interrogations = interrogations;
+  return {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    project,
+    gallery,
+    interrogations,
+    assets: Array.from(assets.values()),
+  };
+}
+
+async function persistCanvasState() {
+  if (canvasStateSaveTimer) {
+    clearTimeout(canvasStateSaveTimer);
+    canvasStateSaveTimer = null;
+  }
+  await fs.mkdir(path.dirname(canvasStatePath), { recursive: true });
+  const tmpPath = `${canvasStatePath}.tmp`;
+  await fs.writeFile(tmpPath, JSON.stringify(canvasStatePayload(), null, 2), 'utf8');
+  await fs.rename(tmpPath, canvasStatePath);
+}
+
+function queuePersistCanvasState() {
+  if (canvasStateSaveTimer) clearTimeout(canvasStateSaveTimer);
+  canvasStateSaveTimer = setTimeout(() => {
+    canvasStateSaveTimer = null;
+    persistCanvasState().catch((error) => {
+      console.warn(`[miobot] Failed to persist canvas state to ${canvasStatePath}: ${error?.message || error}`);
+    });
+  }, 120);
+  canvasStateSaveTimer.unref?.();
+}
+
+function publicAsset(asset) {
+  if (!asset || typeof asset !== 'object') return asset;
+  const out = { ...asset };
+  if (out.id && (out.storagePath || String(out.url || '').startsWith('data:image/'))) {
+    out.url = `/canvas-api/assets/${encodeURIComponent(out.id)}/download`;
+  }
+  delete out.storagePath;
+  return out;
+}
+
+function publicGalleryItem(item) {
+  return item ? { ...item, asset: publicAsset(item.asset) } : item;
+}
+
+function publicInterrogationItem(item) {
+  return item ? { ...item, asset: publicAsset(item.asset) } : item;
+}
+
+function publicGenerationRecord(record) {
+  if (!record || typeof record !== 'object') return record;
+  return {
+    ...record,
+    outputs: Array.isArray(record.outputs)
+      ? record.outputs.map((output) => ({ ...output, asset: publicAsset(output.asset) }))
+      : [],
+  };
+}
+
+function publicProjectState() {
+  return {
+    ...project,
+    history: Array.isArray(project.history) ? project.history.map(publicGenerationRecord) : [],
+    interrogations: interrogations.map(publicInterrogationItem),
+  };
 }
 
 function currentConfig() { return api.repository.getConfig(); }
@@ -233,7 +356,7 @@ function landing() {
 }
 function mime(file) {
   const ext = path.extname(file).toLowerCase();
-  return ext === '.html' ? 'text/html; charset=utf-8' : ext === '.js' ? 'text/javascript; charset=utf-8' : ext === '.css' ? 'text/css; charset=utf-8' : ext === '.svg' ? 'image/svg+xml' : ext === '.png' ? 'image/png' : ext === '.json' ? 'application/json; charset=utf-8' : 'application/octet-stream';
+  return ext === '.html' ? 'text/html; charset=utf-8' : ext === '.js' ? 'text/javascript; charset=utf-8' : ext === '.css' ? 'text/css; charset=utf-8' : ext === '.svg' ? 'image/svg+xml' : ext === '.ico' ? 'image/x-icon' : ext === '.png' ? 'image/png' : ext === '.json' ? 'application/json; charset=utf-8' : 'application/octet-stream';
 }
 async function serveFile(res, root, requestPath, prefix, rewriteHtml = false) {
   let rel = decodeURIComponent(requestPath.slice(prefix.length)).replace(/^\/+/, '');
@@ -245,6 +368,7 @@ async function serveFile(res, root, requestPath, prefix, rewriteHtml = false) {
     if (rewriteHtml && path.basename(file) === 'index.html') {
       let html = data.toString('utf8')
         .replaceAll('href="/favicon.svg"', 'href="/canvas/favicon.svg"')
+        .replaceAll('href="/favicon.ico"', 'href="/canvas/favicon.ico"')
         .replaceAll('src="/assets/', 'src="/canvas/assets/')
         .replaceAll('href="/assets/', 'href="/canvas/assets/');
       return send(res, 200, html, { 'content-type': 'text/html; charset=utf-8' });
@@ -258,12 +382,106 @@ async function serveFile(res, root, requestPath, prefix, rewriteHtml = false) {
     return sendJson(res, 404, { error: 'Not Found' });
   }
 }
+
+async function sendAssetResponse(res, asset) {
+  if (asset?.storagePath) {
+    const file = path.resolve(asset.storagePath);
+    try {
+      const data = await fs.readFile(file);
+      return send(res, 200, data, {
+        'content-type': asset.mimeType || mime(file),
+        'cache-control': 'public, max-age=31536000, immutable',
+        'content-disposition': `inline; filename="${String(asset.fileName || path.basename(file)).replace(/"/g, '').replace(/[^\x20-\x7E]/g, '_')}"`,
+      });
+    } catch {
+      return sendJson(res, 404, { error: { code: 'not_found', message: 'Asset file not found' } });
+    }
+  }
+
+  const parsed = parseDataUrl(asset?.url);
+  if (parsed) {
+    return send(res, 200, parsed.buffer, {
+      'content-type': parsed.mimeType,
+      'cache-control': 'public, max-age=31536000, immutable',
+    });
+  }
+
+  if (asset?.url) return send(res, 302, '', { location: asset.url });
+  return sendJson(res, 404, { error: { code: 'not_found', message: 'Asset not found' } });
+}
 function svgData(prompt, width = 1024, height = 1024) {
   const safe = String(prompt || 'Miobot v2').slice(0, 120).replace(/[<>&]/g, '');
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#6366f1"/><stop offset="1" stop-color="#06b6d4"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><circle cx="${width*0.75}" cy="${height*0.25}" r="${Math.min(width,height)*0.18}" fill="rgba(255,255,255,.22)"/><text x="50%" y="48%" text-anchor="middle" font-family="Arial, sans-serif" font-size="42" font-weight="700" fill="white">Miobot v2</text><text x="50%" y="56%" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" fill="white">${safe}</text></svg>`;
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
 }
 function presetSize(id) { const p = sizePresets.find(x => x.id === id) || sizePresets[0]; return { width: p.width, height: p.height, api: `${p.width}x${p.height}` }; }
+
+function readImageDimensions(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 24) return undefined;
+
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
+    const width = buffer.readUInt32BE(16);
+    const height = buffer.readUInt32BE(20);
+    return width > 0 && height > 0 ? { width, height } : undefined;
+  }
+
+  if (buffer[0] === 0xFF && buffer[1] === 0xD8) {
+    let offset = 2;
+    while (offset + 9 < buffer.length) {
+      if (buffer[offset] !== 0xFF) {
+        offset += 1;
+        continue;
+      }
+      const marker = buffer[offset + 1];
+      if (marker === 0xD8 || marker === 0xD9) {
+        offset += 2;
+        continue;
+      }
+      const length = buffer.readUInt16BE(offset + 2);
+      if (length < 2 || offset + 2 + length > buffer.length) break;
+      const isStartOfFrame =
+        (marker >= 0xC0 && marker <= 0xC3) ||
+        (marker >= 0xC5 && marker <= 0xC7) ||
+        (marker >= 0xC9 && marker <= 0xCB) ||
+        (marker >= 0xCD && marker <= 0xCF);
+      if (isStartOfFrame) {
+        const height = buffer.readUInt16BE(offset + 5);
+        const width = buffer.readUInt16BE(offset + 7);
+        return width > 0 && height > 0 ? { width, height } : undefined;
+      }
+      offset += 2 + length;
+    }
+  }
+
+  if (buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') {
+    const chunk = buffer.toString('ascii', 12, 16);
+    if (chunk === 'VP8X' && buffer.length >= 30) {
+      const width = 1 + buffer.readUIntLE(24, 3);
+      const height = 1 + buffer.readUIntLE(27, 3);
+      return width > 0 && height > 0 ? { width, height } : undefined;
+    }
+    if (chunk === 'VP8 ' && buffer.length >= 30) {
+      const width = buffer.readUInt16LE(26) & 0x3fff;
+      const height = buffer.readUInt16LE(28) & 0x3fff;
+      return width > 0 && height > 0 ? { width, height } : undefined;
+    }
+    if (chunk === 'VP8L' && buffer.length >= 25) {
+      const b0 = buffer[21];
+      const b1 = buffer[22];
+      const b2 = buffer[23];
+      const b3 = buffer[24];
+      const width = 1 + (((b1 & 0x3f) << 8) | b0);
+      const height = 1 + ((b3 << 6) | (b2 >> 2) | ((b1 & 0xc0) << 2));
+      return width > 0 && height > 0 ? { width, height } : undefined;
+    }
+  }
+
+  return undefined;
+}
+
+function imageDimensionsOrFallback(buffer, fallback) {
+  return readImageDimensions(buffer) || { width: fallback.width, height: fallback.height };
+}
 
 function collectionQuery(url) {
   return {
@@ -296,6 +514,7 @@ function updateGalleryFavorite(outputId, favorite) {
     updated = true;
     return { ...item, favorite };
   });
+  if (updated) queuePersistCanvasState();
   return updated;
 }
 function updateInterrogationFavorite(id, favorite) {
@@ -306,6 +525,7 @@ function updateInterrogationFavorite(id, favorite) {
     return { ...item, favorite };
   });
   project.interrogations = interrogations;
+  if (updated) queuePersistCanvasState();
   return updated;
 }
 
@@ -320,6 +540,7 @@ function deleteGalleryItem(outputId) {
   if (item.asset?.id) assets.delete(item.asset.id);
   project.history = project.history.filter(record => Array.isArray(record.outputs) && record.outputs.length > 0);
   project.updatedAt = new Date().toISOString();
+  queuePersistCanvasState();
   return item;
 }
 
@@ -330,6 +551,7 @@ function deleteInterrogationItem(id) {
   if (item.asset?.id) assets.delete(item.asset.id);
   project.interrogations = interrogations;
   project.updatedAt = new Date().toISOString();
+  queuePersistCanvasState();
   return item;
 }
 
@@ -343,7 +565,7 @@ function managedCards() {
       createdAt: item.createdAt,
       favorite: Boolean(item.favorite),
       status: item.status || 'succeeded',
-      asset: item.asset,
+      asset: publicAsset(item.asset),
     })),
     ...interrogations.map(item => ({
       kind: 'interrogation',
@@ -353,7 +575,7 @@ function managedCards() {
       createdAt: item.createdAt,
       favorite: Boolean(item.favorite),
       status: 'succeeded',
-      asset: item.asset,
+      asset: publicAsset(item.asset),
     })),
   ].sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')));
 }
@@ -361,6 +583,8 @@ function managedCards() {
 function publicJob(job) {
   if (!job) return undefined;
   const { timer, ...safe } = job;
+  if (safe.record) safe.record = publicGenerationRecord(safe.record);
+  if (safe.item) safe.item = publicInterrogationItem(safe.item);
   return safe;
 }
 
@@ -463,10 +687,16 @@ function normalizeQuality(value) {
 }
 
 function resolveRequestSize(body = {}) {
+  const presetId = String(body.sizePresetId || '').trim();
   const raw = body.size;
   const width = Number(raw?.width);
   const height = Number(raw?.height);
-  if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+  const hasExplicitSize = Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0;
+  if (presetId === 'auto') {
+    const fallback = hasExplicitSize ? { width: Math.trunc(width), height: Math.trunc(height) } : presetSize('square-1k');
+    return { ...fallback, api: 'auto', auto: true };
+  }
+  if (hasExplicitSize) {
     return { width: Math.trunc(width), height: Math.trunc(height), api: `${Math.trunc(width)}x${Math.trunc(height)}` };
   }
   return presetSize(body.sizePresetId || body.presetId);
@@ -582,14 +812,7 @@ async function runCanvasInterrogation(image) {
 
   const now = new Date().toISOString();
   const id = `int_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
-  const asset = {
-    id,
-    url: image.dataUrl,
-    fileName: image.fileName || `${id}.png`,
-    mimeType: imageMimeFromDataUrl(image.dataUrl),
-    width: 1024,
-    height: 1024,
-  };
+  const asset = await assetFromDataUrl(image.dataUrl, id, image.fileName || `${id}.png`, { width: 1024, height: 1024 }, 'png');
   assets.set(id, asset);
   const item = {
     id,
@@ -604,16 +827,76 @@ async function runCanvasInterrogation(image) {
   project.interrogations = interrogations;
   project.updatedAt = now;
   logCanvas('info', 'canvas.interrogate', '图片反推完成', { id, durationMs: Date.now() - startedAt, fileName: image.fileName });
+  await persistCanvasState();
   return item;
 }
 
-function assetFromArtifact(artifact, assetId, size, outputFormat) {
-  const mimeType = artifact.mimeType || mimeFromOutputFormat(outputFormat);
+function parseDataUrl(value) {
+  const match = String(value || '').match(/^data:([^;,]+)(;base64)?,(.*)$/is);
+  if (!match) return undefined;
+  const mimeType = match[1] || 'image/png';
+  const isBase64 = Boolean(match[2]);
+  const raw = match[3] || '';
+  return {
+    mimeType,
+    buffer: isBase64 ? Buffer.from(raw, 'base64') : Buffer.from(decodeURIComponent(raw), 'utf8'),
+  };
+}
+
+async function writeAssetFile(assetId, mimeType, outputFormat, buffer) {
   const extension = extensionFromMime(mimeType, outputFormat);
-  const url = artifact.kind === 'base64' ? `data:${mimeType};base64,${artifact.data}` : artifact.data;
+  const fileName = `${assetId}.${extension}`;
+  const storagePath = path.join(canvasAssetDir, fileName);
+  await fs.mkdir(canvasAssetDir, { recursive: true });
+  await fs.writeFile(storagePath, buffer);
+  return { fileName, storagePath };
+}
+
+async function assetFromDataUrl(dataUrl, assetId, fileName, size, outputFormat = 'png') {
+  const parsed = parseDataUrl(dataUrl);
+  if (!parsed) {
+    return {
+      id: assetId,
+      url: dataUrl,
+      fileName: fileName || `${assetId}.${extensionFromMime(undefined, outputFormat)}`,
+      mimeType: imageMimeFromDataUrl(dataUrl),
+      width: size.width,
+      height: size.height,
+    };
+  }
+  const dimensions = imageDimensionsOrFallback(parsed.buffer, size);
+  const stored = await writeAssetFile(assetId, parsed.mimeType, outputFormat, parsed.buffer);
   return {
     id: assetId,
-    url,
+    url: `/canvas-api/assets/${encodeURIComponent(assetId)}/download`,
+    fileName: fileName || stored.fileName,
+    mimeType: parsed.mimeType,
+    width: dimensions.width,
+    height: dimensions.height,
+    storagePath: stored.storagePath,
+  };
+}
+
+async function assetFromArtifact(artifact, assetId, size, outputFormat) {
+  const mimeType = artifact.mimeType || mimeFromOutputFormat(outputFormat);
+  const extension = extensionFromMime(mimeType, outputFormat);
+  if (artifact.kind === 'base64') {
+    const bytes = Buffer.from(artifact.data, 'base64');
+    const dimensions = imageDimensionsOrFallback(bytes, size);
+    const stored = await writeAssetFile(assetId, mimeType, outputFormat, bytes);
+    return {
+      id: assetId,
+      url: `/canvas-api/assets/${encodeURIComponent(assetId)}/download`,
+      fileName: stored.fileName,
+      mimeType,
+      width: dimensions.width,
+      height: dimensions.height,
+      storagePath: stored.storagePath,
+    };
+  }
+  return {
+    id: assetId,
+    url: artifact.data,
     fileName: `${assetId}.${extension}`,
     mimeType,
     width: size.width,
@@ -710,12 +993,16 @@ async function runCanvasGeneration(mode, body = {}) {
 
   const now = new Date().toISOString();
   const id = `gen_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
-  const outputs = result.images.map((artifact, index) => {
+  const outputs = await Promise.all(result.images.map(async (artifact, index) => {
     const assetId = `${id}_${index + 1}`;
-    const asset = assetFromArtifact(artifact, assetId, size, outputFormat);
+    const asset = await assetFromArtifact(artifact, assetId, size, outputFormat);
     assets.set(assetId, asset);
     return { id: `out_${assetId}`, status: 'succeeded', favorite: false, asset };
-  });
+  }));
+  const firstAsset = outputs.find((output) => output.asset)?.asset;
+  const recordSize = size.auto && firstAsset
+    ? { width: firstAsset.width, height: firstAsset.height }
+    : { width: size.width, height: size.height };
 
   const record = {
     id,
@@ -723,7 +1010,7 @@ async function runCanvasGeneration(mode, body = {}) {
     prompt: rawPrompt,
     effectivePrompt: result.images.find((item) => item.revisedPrompt)?.revisedPrompt || prompt,
     presetId: body.presetId || 'none',
-    size: { width: size.width, height: size.height },
+    size: recordSize,
     quality: body.quality || canvas.defaultQuality || 'auto',
     outputFormat,
     count: outputs.length,
@@ -741,6 +1028,7 @@ async function runCanvasGeneration(mode, body = {}) {
     outputCount: outputs.length,
     durationMs: Date.now() - startedAt,
   });
+  await persistCanvasState();
   return record;
 }
 
@@ -769,6 +1057,7 @@ async function handleCompatApi(req, res, url) {
     const id = decodeURIComponent(adminCardMatch[2]);
     const deleted = kind === 'gallery' ? deleteGalleryItem(id) : deleteInterrogationItem(id);
     if (!deleted) return sendJson(res, 404, { success: false, error: 'Card not found' });
+    await persistCanvasState();
     logSystem('info', 'admin.canvas.cards', '卡片已删除', { kind, id });
     return sendJson(res, 200, { success: true, deleted: { kind, id }, items: managedCards(), total: managedCards().length });
   }
@@ -812,7 +1101,7 @@ async function handleCompatApi(req, res, url) {
         outputFormat: cfg.canvas?.defaultOutputFormat || 'png',
         count: 1,
       });
-      const asset = record.outputs.find((output) => output.asset)?.asset;
+      const asset = publicAsset(record.outputs.find((output) => output.asset)?.asset);
       return sendJson(res, 200, {
         success: true,
         message: '生图接口真实调用成功。',
@@ -841,14 +1130,40 @@ async function handleCanvasApi(req, res, url) {
   if (req.method === 'GET' && p === '/storage/config') return sendJson(res, 200, { enabled: false });
   if (req.method === 'PUT' && p === '/storage/config') return sendJson(res, 200, { enabled: false });
   if (req.method === 'POST' && p === '/storage/config/test') return sendJson(res, 200, { ok: true, message: 'Local verify storage ok.' });
-  if (req.method === 'GET' && p === '/project') return sendJson(res, 200, { ...project, interrogations });
-  if (req.method === 'PUT' && p === '/project') { project = { ...project, name: body?.name || project.name, snapshot: Object.hasOwn(body || {}, 'snapshot') ? body.snapshot : project.snapshot, updatedAt: new Date().toISOString() }; return sendJson(res, 200, project); }
-  if (req.method === 'GET' && p === '/gallery') return sendJson(res, 200, { items: filterGalleryItems(gallery, url), total: gallery.length });
-  if (req.method === 'PATCH' && p.startsWith('/gallery/') && p.endsWith('/favorite')) { const outputId = decodeURIComponent(p.slice('/gallery/'.length, -'/favorite'.length)); const favorite = Boolean(body?.favorite); const updated = updateGalleryFavorite(outputId, favorite); return updated ? sendJson(res, 200, { ok: true, favorite }) : sendJson(res, 404, { error: { code: 'not_found', message: 'Gallery image record not found' } }); }
-  if (req.method === 'DELETE' && p.startsWith('/gallery/')) { const outputId = decodeURIComponent(p.slice('/gallery/'.length)); const deleted = deleteGalleryItem(outputId); return deleted ? sendJson(res, 200, { ok: true, deleted }) : sendJson(res, 404, { error: { code: 'not_found', message: 'Gallery image record not found' } }); }
-  if (req.method === 'GET' && p === '/interrogations') return sendJson(res, 200, { items: filterInterrogationItems(interrogations, url), total: interrogations.length });
-  if (req.method === 'PATCH' && p.startsWith('/interrogations/') && p.endsWith('/favorite')) { const id = decodeURIComponent(p.slice('/interrogations/'.length, -'/favorite'.length)); const favorite = Boolean(body?.favorite); const updated = updateInterrogationFavorite(id, favorite); return updated ? sendJson(res, 200, { ok: true, favorite }) : sendJson(res, 404, { error: { code: 'not_found', message: 'Interrogation record not found' } }); }
-  if (req.method === 'DELETE' && p.startsWith('/interrogations/')) { const id = decodeURIComponent(p.slice('/interrogations/'.length)); const deleted = deleteInterrogationItem(id); return deleted ? sendJson(res, 200, { ok: true, deleted }) : sendJson(res, 404, { error: { code: 'not_found', message: 'Interrogation record not found' } }); }
+  if (req.method === 'GET' && p === '/project') return sendJson(res, 200, publicProjectState());
+  if (req.method === 'PUT' && p === '/project') {
+    project = { ...project, name: body?.name || project.name, snapshot: Object.hasOwn(body || {}, 'snapshot') ? body.snapshot : project.snapshot, interrogations, updatedAt: new Date().toISOString() };
+    await persistCanvasState();
+    return sendJson(res, 200, publicProjectState());
+  }
+  if (req.method === 'GET' && p === '/gallery') return sendJson(res, 200, { items: filterGalleryItems(gallery, url).map(publicGalleryItem), total: gallery.length });
+  if (req.method === 'PATCH' && p.startsWith('/gallery/') && p.endsWith('/favorite')) {
+    const outputId = decodeURIComponent(p.slice('/gallery/'.length, -'/favorite'.length));
+    const favorite = Boolean(body?.favorite);
+    const updated = updateGalleryFavorite(outputId, favorite);
+    if (updated) await persistCanvasState();
+    return updated ? sendJson(res, 200, { ok: true, favorite }) : sendJson(res, 404, { error: { code: 'not_found', message: 'Gallery image record not found' } });
+  }
+  if (req.method === 'DELETE' && p.startsWith('/gallery/')) {
+    const outputId = decodeURIComponent(p.slice('/gallery/'.length));
+    const deleted = deleteGalleryItem(outputId);
+    if (deleted) await persistCanvasState();
+    return deleted ? sendJson(res, 200, { ok: true, deleted }) : sendJson(res, 404, { error: { code: 'not_found', message: 'Gallery image record not found' } });
+  }
+  if (req.method === 'GET' && p === '/interrogations') return sendJson(res, 200, { items: filterInterrogationItems(interrogations, url).map(publicInterrogationItem), total: interrogations.length });
+  if (req.method === 'PATCH' && p.startsWith('/interrogations/') && p.endsWith('/favorite')) {
+    const id = decodeURIComponent(p.slice('/interrogations/'.length, -'/favorite'.length));
+    const favorite = Boolean(body?.favorite);
+    const updated = updateInterrogationFavorite(id, favorite);
+    if (updated) await persistCanvasState();
+    return updated ? sendJson(res, 200, { ok: true, favorite }) : sendJson(res, 404, { error: { code: 'not_found', message: 'Interrogation record not found' } });
+  }
+  if (req.method === 'DELETE' && p.startsWith('/interrogations/')) {
+    const id = decodeURIComponent(p.slice('/interrogations/'.length));
+    const deleted = deleteInterrogationItem(id);
+    if (deleted) await persistCanvasState();
+    return deleted ? sendJson(res, 200, { ok: true, deleted }) : sendJson(res, 404, { error: { code: 'not_found', message: 'Interrogation record not found' } });
+  }
   const imageJobMatch = p.match(/^\/images\/jobs\/([^/]+)$/);
   if (req.method === 'GET' && imageJobMatch) {
     const job = publicJob(imageJobs.get(decodeURIComponent(imageJobMatch[1])));
@@ -866,7 +1181,7 @@ async function handleCanvasApi(req, res, url) {
         return sendJson(res, 202, { job });
       }
       const record = await runCanvasGeneration(p.endsWith('/edit') ? 'edit' : 'generate', body || {});
-      return sendJson(res, 200, { record });
+      return sendJson(res, 200, { record: publicGenerationRecord(record) });
     } catch (error) {
       return sendJson(res, 502, {
         error: {
@@ -883,7 +1198,7 @@ async function handleCanvasApi(req, res, url) {
         return sendJson(res, 202, { job });
       }
       const item = await runCanvasInterrogation(body?.image);
-      return sendJson(res, 200, { item });
+      return sendJson(res, 200, { item: publicInterrogationItem(item) });
     } catch (error) {
       return sendJson(res, 502, {
         error: {
@@ -894,7 +1209,12 @@ async function handleCanvasApi(req, res, url) {
     }
   }
   const assetMatch = p.match(/^\/assets\/([^/]+)\/(download|preview)$/);
-  if (assetMatch) { const asset = assets.get(assetMatch[1]); if (!asset) return sendJson(res, 404, { error: { code: 'not_found', message: 'Asset not found' } }); return send(res, 302, '', { location: asset.url }); }
+  if (assetMatch) {
+    const assetId = decodeURIComponent(assetMatch[1]);
+    const asset = assets.get(assetId);
+    if (!asset) return sendJson(res, 404, { error: { code: 'not_found', message: 'Asset not found' } });
+    return sendAssetResponse(res, asset);
+  }
   return sendJson(res, 404, { error: { code: 'not_found', message: 'Canvas API route not found' } });
 }
 
@@ -902,6 +1222,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'OPTIONS') return sendJson(res, 200, { ok: true });
     const url = new URL(req.url || '/', `http://${req.headers.host || `${host}:${port}`}`);
+    if (url.pathname === '/favicon.ico') return serveFile(res, canvasRoot, '/canvas/favicon.ico', '/canvas/', false);
     if (url.pathname === '/') return send(res, 302, '', { location: '/canvas/' });
     if (url.pathname === '/admin') return send(res, 302, '', { location: '/admin/' });
     if (url.pathname.startsWith('/admin/')) return serveFile(res, adminRoot, url.pathname, '/admin/', false);
@@ -917,8 +1238,8 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(port, host, () => {
   console.log(`Miobot v2 admin/canvas server listening on http://${host}:${port}/`);
-  logSystem('info', 'server', 'Web 服务已启动', { host, port, configPath });
-  logCanvas('info', 'canvas.server', '画布接口已启动', { host, port });
+  logSystem('info', 'server', 'Web 服务已启动', { host, port, configPath, canvasStatePath, canvasAssetDir });
+  logCanvas('info', 'canvas.server', '画布接口已启动', { host, port, canvasStatePath, canvasAssetDir, galleryItems: gallery.length, templateItems: interrogations.length });
 });
 process.on('SIGTERM', () => server.close(() => process.exit(0)));
 process.on('SIGINT', () => server.close(() => process.exit(0)));

@@ -31,7 +31,6 @@ import {
   IMAGE_QUALITIES,
   OUTPUT_FORMATS,
   SIZE_PRESETS,
-  STYLE_PRESETS,
   type GalleryImageItem,
   type GalleryResponse,
   type GenerationCount,
@@ -44,14 +43,12 @@ import {
   type InterrogationResponse,
   type OutputFormat,
   type ReferenceImageInput,
-  type SizePreset,
-  type StylePresetId
+  type SizePreset
 } from "@gpt-image-canvas/shared";
 import { apiPath } from "./api";
 
 type AppTab = "gallery" | "interrogate";
 type GenerationMode = "text" | "image" | "edit" | "mask";
-type StylePreset = (typeof STYLE_PRESETS)[number];
 type NoticeTone = "info" | "success" | "warning" | "error";
 type UploadTarget = "reference";
 type LightboxState = { kind: AppTab; index: number };
@@ -84,7 +81,6 @@ interface CanvasRuntimeConfig {
   model: string;
   models: string[];
   sizePresets: SizePreset[];
-  stylePresets: readonly StylePreset[];
   qualities: ImageQuality[];
   outputFormats: OutputFormat[];
   counts: GenerationCount[];
@@ -93,7 +89,6 @@ interface CanvasRuntimeConfig {
     outputFormat: OutputFormat;
     count: GenerationCount;
     sizePresetId: string;
-    stylePresetId: StylePresetId;
   };
 }
 
@@ -102,7 +97,7 @@ interface GenerationRequestSnapshot {
   mode: GenerationMode;
   body: {
     prompt: string;
-    presetId: StylePresetId;
+    presetId: string;
     sizePresetId?: string;
     size: ImageSize;
     quality: ImageQuality;
@@ -176,7 +171,6 @@ const fallbackRuntimeConfig: CanvasRuntimeConfig = {
   model: "gpt-image-2",
   models: ["gpt-image-2"],
   sizePresets: SIZE_PRESETS,
-  stylePresets: STYLE_PRESETS,
   qualities: IMAGE_QUALITIES,
   outputFormats: OUTPUT_FORMATS,
   counts: [...GENERATION_COUNTS],
@@ -184,8 +178,7 @@ const fallbackRuntimeConfig: CanvasRuntimeConfig = {
     quality: "auto",
     outputFormat: "png",
     count: 1,
-    sizePresetId: "square-1k",
-    stylePresetId: "none"
+    sizePresetId: "square-1k"
   }
 };
 
@@ -294,7 +287,6 @@ export function App() {
   const [interrogateStatus, setInterrogateStatus] = useState("");
   const [mode, setMode] = useState<GenerationMode>("text");
   const [prompt, setPrompt] = useState("");
-  const [stylePresetId, setStylePresetId] = useState<StylePresetId>(fallbackRuntimeConfig.defaults.stylePresetId);
   const [sizePresetId, setSizePresetId] = useState(fallbackRuntimeConfig.defaults.sizePresetId);
   const [size, setSize] = useState<ImageSize>(() => sizeForPreset(fallbackRuntimeConfig.sizePresets, fallbackRuntimeConfig.defaults.sizePresetId));
   const [quality, setQuality] = useState<ImageQuality>(fallbackRuntimeConfig.defaults.quality);
@@ -315,6 +307,8 @@ export function App() {
   const [interrogateDragActive, setInterrogateDragActive] = useState(false);
   const [showBackToTop, setShowBackToTop] = useState(false);
   const lightboxPanStartRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const lightboxPointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const lightboxPinchRef = useRef<{ distance: number; centerX: number; centerY: number; startZoom: number; originX: number; originY: number } | null>(null);
   const lightboxUserZoomedRef = useRef(false);
   const scrollMomentumRef = useRef<{ velocity: number; frame: number | null }>({ velocity: 0, frame: null });
   const galleryPaneRef = useRef<HTMLElement | null>(null);
@@ -404,16 +398,6 @@ export function App() {
     () => runtimeConfig.outputFormats.map((item) => ({ value: item, label: item.toUpperCase() })),
     [runtimeConfig.outputFormats]
   );
-  const stylePresetOptions = useMemo<PrettySelectOption[]>(
-    () => [
-      { value: "none", label: "自动" },
-      ...runtimeConfig.stylePresets.filter((preset) => preset.id !== "none").map((preset) => ({
-        value: preset.id,
-        label: stylePresetLabel(preset.id, preset.label)
-      }))
-    ],
-    [runtimeConfig.stylePresets]
-  );
   const countOptions = useMemo<PrettySelectOption[]>(
     () => runtimeConfig.counts.map((item) => ({ value: String(item), label: String(item) })),
     [runtimeConfig.counts]
@@ -478,7 +462,6 @@ export function App() {
         setQuality(nextConfig.defaults.quality);
         setOutputFormat(nextConfig.defaults.outputFormat);
         setCount(nextConfig.defaults.count);
-        setStylePresetId(nextConfig.defaults.stylePresetId);
         setSizePresetId(nextConfig.defaults.sizePresetId);
         setSize(sizeForPreset(nextConfig.sizePresets, nextConfig.defaults.sizePresetId));
       } catch (error) {
@@ -514,6 +497,9 @@ export function App() {
 
   useLayoutEffect(() => {
     lightboxUserZoomedRef.current = false;
+    lightboxPointersRef.current.clear();
+    lightboxPinchRef.current = null;
+    lightboxPanStartRef.current = null;
     setLightboxZoom(lightboxAsset ? defaultLightboxCoverZoom(lightboxAsset) : 1);
     setLightboxPan({ x: 0, y: 0 });
     setHighResLoaded(false);
@@ -800,7 +786,7 @@ export function App() {
     const trimmedPrompt = prompt.trim();
     const body: GenerationRequestSnapshot["body"] = {
       prompt: trimmedPrompt,
-      presetId: stylePresetId,
+      presetId: "none",
       sizePresetId,
       size,
       quality,
@@ -891,6 +877,40 @@ export function App() {
     }, 1000);
   }
 
+  function mergeRecoveredGalleryItems(recoveredItems: GalleryImageItem[], pendingId: string) {
+    if (!recoveredItems.length) return;
+    setGalleryItems((current) => [
+      ...recoveredItems,
+      ...current.filter((item) => item.outputId !== pendingId && !recoveredItems.some((recovered) => recovered.outputId === item.outputId))
+    ]);
+  }
+
+  async function recoverCompletedGeneration(snapshot: GenerationRequestSnapshot, pendingItem: GalleryCardItem): Promise<boolean> {
+    const startedAt = Date.now();
+    const timeoutMs = 180_000;
+
+    while (Date.now() - startedAt < timeoutMs) {
+      try {
+        const response = await fetch(apiPath(`/gallery?limit=${COLLECTION_FETCH_LIMIT}&recover=${Date.now()}`), { cache: "no-store" });
+        if (response.ok) {
+          const body = (await response.json()) as GalleryResponse;
+          const recoveredItems = findRecoveredGenerationItems(Array.isArray(body.items) ? body.items : [], snapshot, pendingItem);
+          if (recoveredItems.length) {
+            mergeRecoveredGalleryItems(recoveredItems, pendingItem.outputId);
+            setLastRequest(snapshot);
+            setToast({ tone: "success", message: "生成已完成，已自动同步到图库。" });
+            return true;
+          }
+        }
+      } catch {
+        // Keep the pending card alive while the backend may still be finishing the real image job.
+      }
+      await sleep(3000);
+    }
+
+    return false;
+  }
+
   async function submitGeneration(snapshot = buildRequestSnapshot()) {
     const currentValidation = validateForm({
       mode: snapshot.mode,
@@ -959,12 +979,21 @@ export function App() {
       }
     } catch (error) {
       updatePendingGalleryItem(pendingItem.outputId, {
-        clientStatus: "failed",
-        progress: 100,
-        error: error instanceof Error ? error.message : "生成失败",
-        status: "failed"
+        clientStatus: "running",
+        progress: 96,
+        error: undefined,
+        status: undefined
       });
-      scheduleRemovePendingGalleryItem(pendingItem.outputId);
+      const recovered = await recoverCompletedGeneration(snapshot, pendingItem);
+      if (!recovered) {
+        updatePendingGalleryItem(pendingItem.outputId, {
+          clientStatus: "failed",
+          progress: 100,
+          error: error instanceof Error ? error.message : "生成失败",
+          status: "failed"
+        });
+        scheduleRemovePendingGalleryItem(pendingItem.outputId);
+      }
     } finally {
       setIsGenerating(false);
     }
@@ -974,7 +1003,6 @@ export function App() {
     setPrompt(item.prompt);
     setQuality(item.quality);
     setOutputFormat(item.outputFormat);
-    setStylePresetId(coerceStylePresetId(item.presetId));
     setSize(item.size);
     setSizePresetId(sizePresetIdForSize(runtimeConfig.sizePresets, item.size));
     setCount(1);
@@ -1131,6 +1159,25 @@ export function App() {
   function handleLightboxPointerDown(event: PointerEvent<HTMLDivElement>) {
     const target = event.target as HTMLElement | null;
     if (target?.closest("button, a, .lightbox__floating-prompt, .lightbox__floating-prompt-group, .lightbox__zoom-control")) return;
+    lightboxPointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+
+    if (lightboxPointersRef.current.size >= 2) {
+      const pinch = getPinchGesture(lightboxPointersRef.current);
+      if (pinch) {
+        lightboxPinchRef.current = {
+          ...pinch,
+          startZoom: lightboxZoom,
+          originX: lightboxPan.x,
+          originY: lightboxPan.y
+        };
+        lightboxPanStartRef.current = null;
+        lightboxUserZoomedRef.current = true;
+        event.preventDefault();
+      }
+      return;
+    }
+
     if (lightboxZoom <= 1) return;
     lightboxPanStartRef.current = {
       pointerId: event.pointerId,
@@ -1139,12 +1186,30 @@ export function App() {
       originX: lightboxPan.x,
       originY: lightboxPan.y
     };
-    event.currentTarget.setPointerCapture?.(event.pointerId);
   }
 
   function handleLightboxPointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (lightboxPointersRef.current.has(event.pointerId)) {
+      lightboxPointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    }
+
+    const pinchStart = lightboxPinchRef.current;
+    if (pinchStart && lightboxPointersRef.current.size >= 2) {
+      const pinch = getPinchGesture(lightboxPointersRef.current);
+      if (!pinch) return;
+      event.preventDefault();
+      const nextZoom = clamp(Number((pinchStart.startZoom * (pinch.distance / Math.max(1, pinchStart.distance))).toFixed(3)), LIGHTBOX_MIN_ZOOM, LIGHTBOX_MAX_ZOOM);
+      setLightboxZoom(nextZoom);
+      setLightboxPan({
+        x: pinchStart.originX + pinch.centerX - pinchStart.centerX,
+        y: pinchStart.originY + pinch.centerY - pinchStart.centerY
+      });
+      return;
+    }
+
     const start = lightboxPanStartRef.current;
     if (!start || start.pointerId !== event.pointerId) return;
+    event.preventDefault();
     setLightboxPan({
       x: start.originX + event.clientX - start.startX,
       y: start.originY + event.clientY - start.startY
@@ -1152,9 +1217,14 @@ export function App() {
   }
 
   function handleLightboxPointerUp(event: PointerEvent<HTMLDivElement>) {
+    lightboxPointersRef.current.delete(event.pointerId);
+    if (lightboxPointersRef.current.size < 2) {
+      lightboxPinchRef.current = null;
+    }
     const start = lightboxPanStartRef.current;
-    if (!start || start.pointerId !== event.pointerId) return;
-    lightboxPanStartRef.current = null;
+    if (start?.pointerId === event.pointerId) {
+      lightboxPanStartRef.current = null;
+    }
     event.currentTarget.releasePointerCapture?.(event.pointerId);
   }
 
@@ -1685,15 +1755,6 @@ export function App() {
                   />
                 </label>
                 
-                <label className="playground-param-field">
-                  <span>风格</span>
-                  <PrettySelect
-                    ariaLabel="选择风格预设"
-                    value={stylePresetId}
-                    options={stylePresetOptions}
-                    onChange={(nextValue) => setStylePresetId(nextValue as StylePresetId)}
-                  />
-                </label>
                 <label className="playground-param-field playground-param-field--count">
                   <span>数量</span>
                   <PrettySelect
@@ -1846,6 +1907,8 @@ export function App() {
               onPointerUp={handleLightboxPointerUp}
               onPointerCancel={() => {
                 lightboxPanStartRef.current = null;
+                lightboxPinchRef.current = null;
+                lightboxPointersRef.current.clear();
               }}
             >
               <button 
@@ -2176,7 +2239,6 @@ function normalizeRuntimeConfig(value: unknown): CanvasRuntimeConfig {
   const record = isRecord(value) ? value : {};
   const defaults = isRecord(record.defaults) ? record.defaults : {};
   const sizePresets = normalizeSizePresets(record.sizePresets);
-  const stylePresets = normalizeStylePresets(record.stylePresets);
   const qualities = normalizeArray(record.qualities, IMAGE_QUALITIES, isImageQuality);
   const outputFormats = normalizeArray(record.outputFormats, OUTPUT_FORMATS, isOutputFormat);
   const counts = normalizeArray(record.counts, GENERATION_COUNTS, isGenerationCount);
@@ -2185,9 +2247,6 @@ function normalizeRuntimeConfig(value: unknown): CanvasRuntimeConfig {
   )
     ? defaults.sizePresetId
     : fallbackRuntimeConfig.defaults.sizePresetId;
-  const defaultStylePresetId = isStylePresetId(defaults.stylePresetId, stylePresets)
-    ? defaults.stylePresetId
-    : fallbackRuntimeConfig.defaults.stylePresetId;
   const defaultQuality = isImageQuality(defaults.quality) ? defaults.quality : fallbackRuntimeConfig.defaults.quality;
   const defaultOutputFormat = isOutputFormat(defaults.outputFormat) ? defaults.outputFormat : fallbackRuntimeConfig.defaults.outputFormat;
   const defaultCount = isGenerationCount(defaults.count) ? defaults.count : fallbackRuntimeConfig.defaults.count;
@@ -2196,7 +2255,6 @@ function normalizeRuntimeConfig(value: unknown): CanvasRuntimeConfig {
     model: typeof record.model === "string" ? record.model : fallbackRuntimeConfig.model,
     models: Array.isArray(record.models) ? record.models.map(String).filter(Boolean) : fallbackRuntimeConfig.models,
     sizePresets,
-    stylePresets,
     qualities,
     outputFormats,
     counts,
@@ -2204,8 +2262,7 @@ function normalizeRuntimeConfig(value: unknown): CanvasRuntimeConfig {
       quality: qualities.includes(defaultQuality) ? defaultQuality : qualities[0] ?? "auto",
       outputFormat: outputFormats.includes(defaultOutputFormat) ? defaultOutputFormat : outputFormats[0] ?? "png",
       count: counts.includes(defaultCount) ? defaultCount : counts[0] ?? 1,
-      sizePresetId: defaultSizePresetId,
-      stylePresetId: defaultStylePresetId
+      sizePresetId: defaultSizePresetId
     }
   };
 }
@@ -2228,17 +2285,6 @@ function normalizeSizePresets(value: unknown): SizePreset[] {
   return presets.length ? presets : SIZE_PRESETS;
 }
 
-function normalizeStylePresets(value: unknown): readonly StylePreset[] {
-  if (!Array.isArray(value)) return STYLE_PRESETS;
-  const presets = value.filter((item): item is StylePreset => (
-    isRecord(item) &&
-    typeof item.id === "string" &&
-    typeof item.label === "string" &&
-    typeof item.prompt === "string"
-  ));
-  return presets.length ? presets : STYLE_PRESETS;
-}
-
 function normalizeArray<T>(value: unknown, fallback: readonly T[], guard: (item: unknown) => item is T): T[] {
   const items = Array.isArray(value) ? value.filter(guard) : [];
   return items.length ? items : [...fallback];
@@ -2254,10 +2300,6 @@ function isOutputFormat(value: unknown): value is OutputFormat {
 
 function isGenerationCount(value: unknown): value is GenerationCount {
   return GENERATION_COUNTS.includes(Number(value) as GenerationCount);
-}
-
-function isStylePresetId(value: unknown, presets: readonly StylePreset[]): value is StylePresetId {
-  return typeof value === "string" && presets.some((preset) => preset.id === value);
 }
 
 function sizeForPreset(presets: SizePreset[], presetId: string): ImageSize {
@@ -2315,11 +2357,31 @@ function isInterrogationJobResponse(value: InterrogateImageResult | Interrogatio
 }
 
 async function waitForGenerationJob(jobId: string, onPoll?: (job: GenerationJob) => void): Promise<GenerationRecord> {
+  let transientFailures = 0;
   for (let attempt = 0; attempt < GENERATION_JOB_MAX_POLLS; attempt += 1) {
     await sleep(GENERATION_JOB_POLL_INTERVAL_MS);
-    const response = await fetch(apiPath(`/images/jobs/${encodeURIComponent(jobId)}`), { cache: "no-store" });
-    if (!response.ok) throw new Error(await readApiError(response, "读取生成任务失败"));
-    const data = (await response.json()) as GenerationJobResponse;
+    let data: GenerationJobResponse;
+    try {
+      const response = await fetch(apiPath(`/images/jobs/${encodeURIComponent(jobId)}?t=${Date.now()}`), { cache: "no-store" });
+      if (!response.ok) throw new Error(await readApiError(response, "读取生成任务失败"));
+      data = (await response.json()) as GenerationJobResponse;
+      transientFailures = 0;
+    } catch (error) {
+      transientFailures += 1;
+      if (transientFailures <= 6) {
+        onPoll?.({
+          id: jobId,
+          mode: "generate",
+          status: "running",
+          progress: 96,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          error: error instanceof Error ? error.message : undefined
+        });
+        continue;
+      }
+      throw error;
+    }
     const job = data.job;
     onPoll?.(job);
     if (job.status === "succeeded" && job.record) return job.record;
@@ -2364,6 +2426,34 @@ function galleryItemsForRecord(record: GenerationRecord): GalleryImageItem[] {
       favorite: false,
       asset: output.asset!
     }));
+}
+
+function findRecoveredGenerationItems(items: GalleryImageItem[], snapshot: GenerationRequestSnapshot, pendingItem: GalleryCardItem): GalleryImageItem[] {
+  const pendingCreatedAt = Date.parse(pendingItem.createdAt) || 0;
+  const expectedPrompt = normalizeSearch(snapshot.body.prompt);
+  const expectedFormat = String(snapshot.body.outputFormat || "").toLowerCase();
+  const expectedWidth = Number(snapshot.body.size.width);
+  const expectedHeight = Number(snapshot.body.size.height);
+  const expectedCount = Math.max(1, Number(snapshot.body.count) || 1);
+
+  const strictMatches = items.filter((item) => {
+    const createdAt = Date.parse(item.createdAt) || 0;
+    const promptMatches = normalizeSearch(item.prompt) === expectedPrompt || normalizeSearch(item.effectivePrompt || "") === expectedPrompt;
+    const sizeMatches = Number(item.size?.width) === expectedWidth && Number(item.size?.height) === expectedHeight;
+    const formatMatches = String(item.outputFormat || "").toLowerCase() === expectedFormat;
+    const timeMatches = !pendingCreatedAt || createdAt >= pendingCreatedAt - 10_000;
+    return promptMatches && sizeMatches && formatMatches && timeMatches;
+  });
+
+  if (strictMatches.length) return strictMatches.slice(0, expectedCount);
+
+  return items
+    .filter((item) => {
+      const createdAt = Date.parse(item.createdAt) || 0;
+      const timeMatches = !pendingCreatedAt || createdAt >= pendingCreatedAt - 10_000;
+      return timeMatches && normalizeSearch(`${item.prompt} ${item.effectivePrompt || ""}`).includes(expectedPrompt);
+    })
+    .slice(0, expectedCount);
 }
 
 function generationFailureText(record: GenerationRecord): string {
@@ -2521,10 +2611,6 @@ function matchesStatusFilter(status: GalleryImageItem["status"], filter: Referen
   return !clientStatus && (status === undefined || status === "succeeded");
 }
 
-function coerceStylePresetId(value: string): StylePresetId {
-  return STYLE_PRESETS.some((preset) => preset.id === value) ? (value as StylePresetId) : "none";
-}
-
 function sizePresetIdForSize(presets: SizePreset[], size: ImageSize): string {
   return presets.find((preset) => preset.width === size.width && preset.height === size.height)?.id ?? "custom";
 }
@@ -2537,18 +2623,6 @@ function qualityLabel(value: ImageQuality): string {
     high: "高质量"
   };
   return labels[value];
-}
-
-function stylePresetLabel(id: string, fallback: string): string {
-  const labels: Record<string, string> = {
-    none: "自动",
-    photoreal: "写实",
-    product: "产品",
-    illustration: "插画",
-    poster: "海报",
-    avatar: "头像"
-  };
-  return labels[id] ?? fallback;
 }
 
 function gcd(a: number, b: number): number {
@@ -2595,6 +2669,18 @@ function stopScrollMomentum(momentum: { velocity: number; frame: number | null }
     window.cancelAnimationFrame(momentum.frame);
     momentum.frame = null;
   }
+}
+
+function getPinchGesture(points: Map<number, { x: number; y: number }>): { distance: number; centerX: number; centerY: number } | null {
+  const [first, second] = Array.from(points.values());
+  if (!first || !second) return null;
+  const deltaX = second.x - first.x;
+  const deltaY = second.y - first.y;
+  return {
+    distance: Math.hypot(deltaX, deltaY),
+    centerX: (first.x + second.x) / 2,
+    centerY: (first.y + second.y) / 2
+  };
 }
 
 function clamp(value: number, min: number, max: number): number {

@@ -3242,6 +3242,11 @@ body {
   touch-action: none !important;
 }
 
+/* 2026-06-01: 风格预设入口已移除，参数栏只保留尺寸 / 质量 / 格式 / 数量。 */
+.playground-input-card[data-mode="gallery"] .playground-param-row {
+  grid-template-columns: minmax(128px, 1.65fr) repeat(3, minmax(64px, 0.82fr)) !important;
+}
+
 .lightbox__stage[data-zoomed="true"] .lightbox__media {
   cursor: grab !important;
 }

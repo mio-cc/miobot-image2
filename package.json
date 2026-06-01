@@ -15,6 +15,7 @@
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "start:verify": "node scripts/local-verify-server.mjs",
     "start:bot": "node scripts/bot-runtime.mjs",
+    "trace:canvas": "node scripts/trace-canvas-generation.mjs",
     "deploy:linux": "bash deploy-linux.sh"
   },
   "devDependencies": {
