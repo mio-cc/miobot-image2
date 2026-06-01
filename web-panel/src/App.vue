@@ -14,6 +14,23 @@ type LogEntry = {
   details?: unknown;
 };
 
+type CanvasManagedCard = {
+  kind: 'gallery' | 'interrogation';
+  id: string;
+  title: string;
+  subtitle: string;
+  createdAt: string;
+  favorite?: boolean;
+  status?: string;
+  asset?: {
+    id: string;
+    url?: string;
+    fileName?: string;
+    width?: number;
+    height?: number;
+  };
+};
+
 // ─── Toasts 通知系统 ───
 type Toast = {
   id: number;
@@ -64,6 +81,9 @@ const canvasLogSearch = ref('');
 const canvasLogLimit = ref(300);
 const canvasLogStats = ref<any>(null);
 const canvasLogCopyStatus = ref('');
+const canvasCards = ref<CanvasManagedCard[]>([]);
+const canvasCardsLoading = ref(false);
+const canvasCardsError = ref('');
 const configImportInput = ref<HTMLInputElement | null>(null);
 const templateConvertSource = ref('');
 const templateConvertLoading = ref(false);
@@ -106,6 +126,7 @@ watch([currentPage, logAutoRefresh], async ([page]) => {
   } else if (page === 'canvas') {
     stopLogTimer();
     ensureCanvasConfig();
+    await fetchCanvasCards();
     await fetchCanvasLogs();
   } else {
     stopLogTimer();
@@ -534,6 +555,50 @@ async function clearCanvasLogs() {
   } finally {
     canvasLogLoading.value = false;
   }
+}
+
+async function fetchCanvasCards(showLoading = true) {
+  if (!isAuthenticated.value) return;
+  if (showLoading) canvasCardsLoading.value = true;
+  canvasCardsError.value = '';
+  try {
+    const res = await axios.get(`${API_BASE}/canvas/cards`, { headers: authHeaders() });
+    canvasCards.value = res.data.items || [];
+  } catch (e: any) {
+    canvasCardsError.value = e.response?.data?.error || e.message || '卡片列表加载失败';
+  } finally {
+    if (showLoading) canvasCardsLoading.value = false;
+  }
+}
+
+async function deleteCanvasCard(card: CanvasManagedCard) {
+  const label = card.kind === 'gallery' ? '画廊作品' : '模板卡片';
+  if (!window.confirm(`确定删除这个${label}吗？`)) return;
+  canvasCardsError.value = '';
+  try {
+    await axios.delete(`${API_BASE}/canvas/cards/${card.kind}/${encodeURIComponent(card.id)}`, { headers: authHeaders() });
+    canvasCards.value = canvasCards.value.filter((item) => !(item.kind === card.kind && item.id === card.id));
+    showToast(`${label}已删除`, 'success');
+    await fetchCanvasLogs(false);
+  } catch (e: any) {
+    canvasCardsError.value = e.response?.data?.error || e.message || '删除失败';
+    showToast(`删除失败: ${canvasCardsError.value}`, 'error');
+  }
+}
+
+function canvasCardPreviewUrl(card: CanvasManagedCard) {
+  const asset = card.asset;
+  if (!asset) return '';
+  if (asset.url?.startsWith('data:image/')) return asset.url;
+  return `${window.location.origin}/canvas-api/assets/${encodeURIComponent(asset.id)}/preview?width=256`;
+}
+
+function canvasCardDownloadUrl(card: CanvasManagedCard) {
+  return card.asset?.id ? `${window.location.origin}/canvas-api/assets/${encodeURIComponent(card.asset.id)}/download` : '#';
+}
+
+function canvasCardKindText(kind: CanvasManagedCard['kind']) {
+  return kind === 'gallery' ? '画廊' : '模板库';
 }
 
 function copyCanvasVisibleLogs() {
@@ -2025,6 +2090,50 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                   <label class="label-sm">第二阶段变量提取系统提示词</label>
                   <textarea v-model="config.canvas.interrogateTemplatePromptTemplate" rows="8" class="input-field font-mono text-xs leading-relaxed" />
                   <span class="text-zinc-500 text-[10px] mt-1.5 block font-mono">占位符：<code class="text-indigo-400" v-pre>{{rawPrompt}}</code> 代表上一步原图分析得出的描述。</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="card p-5">
+              <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
+                <div>
+                  <h3 class="text-base font-bold text-white">🗂 画布卡片管理</h3>
+                  <p class="text-zinc-500 text-xs mt-0.5">管理画廊与模板库卡片，左侧使用压缩缩略图方便快速预览。</p>
+                </div>
+                <button @click="fetchCanvasCards()" :disabled="canvasCardsLoading" class="btn-outline text-xs py-1.5 px-3">
+                  {{ canvasCardsLoading ? '刷新中...' : '刷新卡片' }}
+                </button>
+              </div>
+
+              <div v-if="canvasCardsError" class="mb-3 rounded-xl border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+                {{ canvasCardsError }}
+              </div>
+
+              <div v-if="canvasCardsLoading && !canvasCards.length" class="rounded-2xl border border-white/5 bg-zinc-950/30 p-6 text-center text-xs text-zinc-500">
+                正在读取卡片列表...
+              </div>
+              <div v-else-if="!canvasCards.length" class="rounded-2xl border border-white/5 bg-zinc-950/30 p-6 text-center text-xs text-zinc-500">
+                暂无可管理卡片。生成图片或完成模板反推后会显示在这里。
+              </div>
+              <div v-else class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                <div v-for="card in canvasCards" :key="card.kind + ':' + card.id" class="flex gap-3 rounded-2xl border border-white/5 bg-zinc-950/30 p-3">
+                  <div class="w-24 h-24 shrink-0 overflow-hidden rounded-xl border border-white/5 bg-zinc-900">
+                    <img v-if="canvasCardPreviewUrl(card)" :src="canvasCardPreviewUrl(card)" :alt="card.title" class="w-full h-full object-cover" loading="lazy" />
+                    <div v-else class="w-full h-full grid place-items-center text-[10px] text-zinc-600">无预览</div>
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-2 mb-1">
+                      <span class="rounded-md border border-cyan-500/20 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-bold text-cyan-300">{{ canvasCardKindText(card.kind) }}</span>
+                      <span v-if="card.favorite" class="rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold text-amber-300">已收藏</span>
+                    </div>
+                    <div class="line-clamp-2 text-sm font-semibold text-zinc-100">{{ card.title || '未命名卡片' }}</div>
+                    <div class="mt-1 text-[11px] text-zinc-500">{{ card.subtitle }}</div>
+                    <div class="mt-1 text-[10px] text-zinc-600 font-mono">{{ card.createdAt }}</div>
+                    <div class="mt-3 flex flex-wrap gap-2">
+                      <a v-if="card.asset?.id" class="btn-outline text-[11px] py-1 px-2" :href="canvasCardDownloadUrl(card)" target="_blank" rel="noreferrer">预览原图</a>
+                      <button @click="deleteCanvasCard(card)" class="btn-danger text-[11px] py-1 px-2">删除卡片</button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

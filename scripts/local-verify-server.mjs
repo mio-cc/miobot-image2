@@ -23,6 +23,14 @@ let gallery = [];
 let interrogations = [];
 let project = { id: 'local-project', name: 'Miobot v2 Local Canvas', snapshot: null, history: [], interrogations, updatedAt: new Date().toISOString() };
 const assets = new Map();
+const imageJobs = new Map();
+const interrogationJobs = new Map();
+const systemLogs = [];
+const canvasLogs = [];
+let logSequence = 0;
+
+const LOG_LEVEL_ORDER = { debug: 10, info: 20, warn: 30, error: 40 };
+const DEFAULT_LOG_LIMIT = 300;
 
 const sizePresets = [
   { id: 'square-1k', label: '1:1', width: 1024, height: 1024, description: 'Square composition' },
@@ -84,6 +92,94 @@ function send(res, status, body, headers = {}) {
 }
 function sendJson(res, status, body) { send(res, status, JSON.stringify(body, null, 2), { 'content-type': 'application/json; charset=utf-8' }); }
 function sendHtml(res, html) { send(res, 200, html, { 'content-type': 'text/html; charset=utf-8' }); }
+
+function redactForLog(value, depth = 0) {
+  if (value === undefined || value === null) return value;
+  if (depth > 5) return '[depth-limit]';
+  if (typeof value === 'string') {
+    if (value.startsWith('data:image/')) {
+      const mime = value.match(/^data:([^;,]+)/i)?.[1] || 'image/*';
+      return `[${mime} data-url, ${value.length} chars]`;
+    }
+    return value.length > 800 ? `${value.slice(0, 800)}…(${value.length} chars)` : value;
+  }
+  if (Array.isArray(value)) return value.map((item) => redactForLog(item, depth + 1));
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (/token|secret|password|apikey|api_key|authorization|key$/i.test(key)) {
+        out[key] = item ? '[redacted]' : item;
+      } else {
+        out[key] = redactForLog(item, depth + 1);
+      }
+    }
+    return out;
+  }
+  return value;
+}
+
+function canvasLogOptions() {
+  const cfg = currentConfig();
+  const logs = cfg.canvas?.logs || {};
+  return {
+    enabled: logs.enabled !== false,
+    level: String(logs.level || 'info').toLowerCase(),
+    maxMemoryEntries: Math.max(100, Math.min(5000, Number(logs.maxMemoryEntries) || 1000)),
+  };
+}
+
+function appendLog(target, level, scope, message, details) {
+  const entry = {
+    id: ++logSequence,
+    timestamp: new Date().toISOString(),
+    level,
+    scope,
+    message,
+    details: redactForLog(details),
+  };
+  target.push(entry);
+  const max = target === canvasLogs ? canvasLogOptions().maxMemoryEntries : 1000;
+  if (target.length > max) target.splice(0, target.length - max);
+  return entry;
+}
+
+function logSystem(level, scope, message, details) {
+  return appendLog(systemLogs, level, scope, message, details);
+}
+
+function logCanvas(level, scope, message, details) {
+  const options = canvasLogOptions();
+  if (!options.enabled) return undefined;
+  const min = LOG_LEVEL_ORDER[options.level] ?? LOG_LEVEL_ORDER.info;
+  const current = LOG_LEVEL_ORDER[level] ?? LOG_LEVEL_ORDER.info;
+  if (current < min) return undefined;
+  return appendLog(canvasLogs, level, scope, message, details);
+}
+
+function readLogs(target, url, kind = 'system') {
+  const level = String(url.searchParams.get('level') || 'all').toLowerCase();
+  const search = String(url.searchParams.get('search') || '').trim().toLowerCase();
+  const limit = Math.max(1, Math.min(1000, Number.parseInt(url.searchParams.get('limit') || String(DEFAULT_LOG_LIMIT), 10) || DEFAULT_LOG_LIMIT));
+  const entries = target
+    .filter((entry) => level === 'all' || entry.level === level)
+    .filter((entry) => {
+      if (!search) return true;
+      return `${entry.timestamp} ${entry.level} ${entry.scope} ${entry.message} ${JSON.stringify(entry.details ?? '')}`.toLowerCase().includes(search);
+    })
+    .slice(-limit)
+    .reverse();
+  const options = kind === 'canvas' ? canvasLogOptions() : { maxMemoryEntries: 1000 };
+  return {
+    success: true,
+    entries,
+    stats: {
+      total: target.length,
+      filtered: entries.length,
+      maxMemoryEntries: options.maxMemoryEntries,
+      logFile: kind === 'canvas' ? 'memory://canvas' : 'memory://system',
+    },
+  };
+}
 
 function waitForNapcatOpen(adapter, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
@@ -213,6 +309,125 @@ function updateInterrogationFavorite(id, favorite) {
   return updated;
 }
 
+function deleteGalleryItem(outputId) {
+  const item = gallery.find(entry => entry.outputId === outputId);
+  if (!item) return null;
+  gallery = gallery.filter(entry => entry.outputId !== outputId);
+  for (const record of project.history) {
+    if (!Array.isArray(record.outputs)) continue;
+    record.outputs = record.outputs.filter(output => output.id !== outputId);
+  }
+  if (item.asset?.id) assets.delete(item.asset.id);
+  project.history = project.history.filter(record => Array.isArray(record.outputs) && record.outputs.length > 0);
+  project.updatedAt = new Date().toISOString();
+  return item;
+}
+
+function deleteInterrogationItem(id) {
+  const item = interrogations.find(entry => entry.id === id);
+  if (!item) return null;
+  interrogations = interrogations.filter(entry => entry.id !== id);
+  if (item.asset?.id) assets.delete(item.asset.id);
+  project.interrogations = interrogations;
+  project.updatedAt = new Date().toISOString();
+  return item;
+}
+
+function managedCards() {
+  return [
+    ...gallery.map(item => ({
+      kind: 'gallery',
+      id: item.outputId,
+      title: item.prompt,
+      subtitle: `${item.size?.width || 0}x${item.size?.height || 0} · ${String(item.outputFormat || '').toUpperCase()}`,
+      createdAt: item.createdAt,
+      favorite: Boolean(item.favorite),
+      status: item.status || 'succeeded',
+      asset: item.asset,
+    })),
+    ...interrogations.map(item => ({
+      kind: 'interrogation',
+      id: item.id,
+      title: item.templatePrompt || item.prompt,
+      subtitle: item.fileName ? `模板库 · ${item.fileName}` : '模板库',
+      createdAt: item.createdAt,
+      favorite: Boolean(item.favorite),
+      status: 'succeeded',
+      asset: item.asset,
+    })),
+  ].sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')));
+}
+
+function publicJob(job) {
+  if (!job) return undefined;
+  const { timer, ...safe } = job;
+  return safe;
+}
+
+function startBackgroundJob(map, job, runner, logScope) {
+  map.set(job.id, job);
+  job.timer = setInterval(() => {
+    if (job.status !== 'running') return;
+    job.progress = Math.min(92, Math.max(job.progress || 12, Math.round((job.progress || 12) + 3 + Math.random() * 6)));
+    job.updatedAt = new Date().toISOString();
+  }, 1400);
+  job.timer.unref?.();
+
+  queueMicrotask(async () => {
+    const startedAt = Date.now();
+    try {
+      job.status = 'running';
+      job.progress = Math.max(job.progress || 0, 12);
+      job.updatedAt = new Date().toISOString();
+      logCanvas('info', logScope, '后台任务开始', { jobId: job.id, mode: job.mode });
+      const result = await runner();
+      if (job.kind === 'interrogation') job.item = result;
+      else job.record = result;
+      job.status = 'succeeded';
+      job.progress = 100;
+      job.updatedAt = new Date().toISOString();
+      logCanvas('info', logScope, '后台任务完成', { jobId: job.id, durationMs: Date.now() - startedAt });
+    } catch (error) {
+      job.status = 'failed';
+      job.progress = 100;
+      job.error = asErrorMessage(error);
+      job.updatedAt = new Date().toISOString();
+      logCanvas('error', logScope, '后台任务失败', { jobId: job.id, durationMs: Date.now() - startedAt, error: job.error });
+    } finally {
+      if (job.timer) clearInterval(job.timer);
+      setTimeout(() => map.delete(job.id), 30 * 60 * 1000).unref?.();
+    }
+  });
+  return publicJob(job);
+}
+
+function createImageJob(mode, body) {
+  const now = new Date().toISOString();
+  const job = {
+    kind: 'image',
+    id: `img_job_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+    mode,
+    status: 'queued',
+    progress: 5,
+    createdAt: now,
+    updatedAt: now,
+  };
+  return startBackgroundJob(imageJobs, job, () => runCanvasGeneration(mode, body), 'canvas.image');
+}
+
+function createInterrogationJob(image) {
+  const now = new Date().toISOString();
+  const job = {
+    kind: 'interrogation',
+    id: `int_job_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+    status: 'queued',
+    progress: 5,
+    createdAt: now,
+    updatedAt: now,
+  };
+  return startBackgroundJob(interrogationJobs, job, () => runCanvasInterrogation(image), 'canvas.interrogate');
+}
+
 function asErrorMessage(error) {
   return error?.normalized?.message || error?.message || String(error);
 }
@@ -312,6 +527,8 @@ function createNodeAdapter(node, timeoutMs) {
 
 async function runCanvasInterrogation(image) {
   if (!image?.dataUrl) throw new Error('缺少上传图片数据。');
+  const startedAt = Date.now();
+  logCanvas('info', 'canvas.interrogate', '开始图片反推', { fileName: image.fileName, hasImage: Boolean(image.dataUrl) });
   const cfg = currentConfig();
   const canvas = cfg.canvas || {};
   const firstNode = assertCanvasVisionNode(canvas.interrogateNodeIndex);
@@ -386,6 +603,7 @@ async function runCanvasInterrogation(image) {
   interrogations = [item, ...interrogations].slice(0, 50);
   project.interrogations = interrogations;
   project.updatedAt = now;
+  logCanvas('info', 'canvas.interrogate', '图片反推完成', { id, durationMs: Date.now() - startedAt, fileName: image.fileName });
   return item;
 }
 
@@ -424,6 +642,7 @@ function galleryItemsForRecord(record) {
 }
 
 async function runCanvasGeneration(mode, body = {}) {
+  const startedAt = Date.now();
   const cfg = currentConfig();
   const canvas = cfg.canvas || {};
   const isEdit = mode === 'edit';
@@ -441,6 +660,16 @@ async function runCanvasGeneration(mode, body = {}) {
     ? (canvas.editModel || cfg.llm?.editModel || canvas.imageModel || cfg.llm?.imageModel)
     : (canvas.imageModel || cfg.llm?.imageModel);
   if (!model) throw new Error(`画布${isEdit ? '改图' : '生图'}没有配置模型。请在后台「画布配置」选择模型。`);
+  logCanvas('info', 'canvas.image', '开始图像任务', {
+    mode: isEdit ? 'edit' : 'generate',
+    model,
+    node: node.name,
+    promptChars: rawPrompt.length,
+    size: size.api,
+    count,
+    quality: quality || 'auto',
+    outputFormat,
+  });
 
   const adapter = createNodeAdapter(node, timeoutMs);
   let result;
@@ -506,6 +735,12 @@ async function runCanvasGeneration(mode, body = {}) {
   project.history = [record, ...project.history].slice(0, 50);
   project.updatedAt = now;
   gallery = galleryItemsForRecord(record).concat(gallery).slice(0, 500);
+  logCanvas('info', 'canvas.image', '图像任务完成', {
+    recordId: record.id,
+    mode: record.mode,
+    outputCount: outputs.length,
+    durationMs: Date.now() - startedAt,
+  });
   return record;
 }
 
@@ -519,17 +754,28 @@ async function handleCompatApi(req, res, url) {
   }
   if (!isAuthorized(req.headers)) return sendJson(res, 401, { error: 'Unauthorized' });
   if (req.method === 'GET' && p === '/api/config') return sendJson(res, 200, currentConfig());
-  if (req.method === 'POST' && p === '/api/config') { const saved = await persistSavedConfig(api.repository.saveConfig(body)); return sendJson(res, 200, { success: true, message: saved.message, config: saved.config, hotReload: saved.hotReload, auth: authBody(saved.hotReload.passwordSeedChanged), token: saved.config.panel.passwordSeed }); }
-  if (req.method === 'POST' && p === '/api/config/import') { const saved = await persistSavedConfig(api.repository.importAndSave(body)); return sendJson(res, 200, { success: true, message: saved.message, config: saved.config, importResult: saved.importResult, hotReload: saved.hotReload, auth: authBody(saved.hotReload.passwordSeedChanged), token: saved.config.panel.passwordSeed }); }
+  if (req.method === 'POST' && p === '/api/config') { const saved = await persistSavedConfig(api.repository.saveConfig(body)); logSystem('info', 'admin.config', '配置已保存', { changedPaths: saved.hotReload?.changedPaths, napcatReconnectRequired: saved.hotReload?.napcatReconnectRequired }); return sendJson(res, 200, { success: true, message: saved.message, config: saved.config, hotReload: saved.hotReload, auth: authBody(saved.hotReload.passwordSeedChanged), token: saved.config.panel.passwordSeed }); }
+  if (req.method === 'POST' && p === '/api/config/import') { const saved = await persistSavedConfig(api.repository.importAndSave(body)); logSystem('info', 'admin.config', '配置已导入', { migrations: saved.importResult?.migrations, warnings: saved.importResult?.warnings }); return sendJson(res, 200, { success: true, message: saved.message, config: saved.config, importResult: saved.importResult, hotReload: saved.hotReload, auth: authBody(saved.hotReload.passwordSeedChanged), token: saved.config.panel.passwordSeed }); }
   if (req.method === 'GET' && p === '/api/config/export') return sendJson(res, 200, api.repository.exportConfig());
   if (req.method === 'GET' && p === '/api/default-prompts') return sendJson(res, 200, getDefaultPrompts());
-  if (req.method === 'GET' && p === '/api/logs') return sendJson(res, 200, { success: true, entries: [], stats: { total: 0 } });
-  if (req.method === 'POST' && p === '/api/logs/clear') return sendJson(res, 200, { success: true, entries: [], stats: { total: 0 } });
-  if (req.method === 'GET' && p === '/api/canvas/logs') return sendJson(res, 200, { success: true, entries: [], stats: { total: 0 } });
-  if (req.method === 'POST' && p === '/api/canvas/logs/clear') return sendJson(res, 200, { success: true, entries: [], stats: { total: 0 } });
+  if (req.method === 'GET' && p === '/api/logs') return sendJson(res, 200, readLogs(systemLogs, url, 'system'));
+  if (req.method === 'POST' && p === '/api/logs/clear') { systemLogs.length = 0; return sendJson(res, 200, readLogs(systemLogs, url, 'system')); }
+  if (req.method === 'GET' && p === '/api/canvas/logs') return sendJson(res, 200, readLogs(canvasLogs, url, 'canvas'));
+  if (req.method === 'POST' && p === '/api/canvas/logs/clear') { canvasLogs.length = 0; return sendJson(res, 200, readLogs(canvasLogs, url, 'canvas')); }
+  if (req.method === 'GET' && p === '/api/canvas/cards') return sendJson(res, 200, { success: true, items: managedCards(), total: managedCards().length });
+  const adminCardMatch = p.match(/^\/api\/canvas\/cards\/(gallery|interrogation)\/(.+)$/);
+  if (req.method === 'DELETE' && adminCardMatch) {
+    const kind = adminCardMatch[1];
+    const id = decodeURIComponent(adminCardMatch[2]);
+    const deleted = kind === 'gallery' ? deleteGalleryItem(id) : deleteInterrogationItem(id);
+    if (!deleted) return sendJson(res, 404, { success: false, error: 'Card not found' });
+    logSystem('info', 'admin.canvas.cards', '卡片已删除', { kind, id });
+    return sendJson(res, 200, { success: true, deleted: { kind, id }, items: managedCards(), total: managedCards().length });
+  }
   if (req.method === 'POST' && p === '/api/test-napcat') {
     try {
       const result = await testNapcatConnection();
+      logSystem('info', 'napcat.test', 'Napcat 长连接测试成功', { readyStateText: result.snapshot?.readyStateText, loginInfo: result.loginInfo });
       const login = result.loginInfo || {};
       const userId = login.user_id ?? login.userId ?? login.self_id ?? '';
       const nickname = login.nickname ?? login.nick ?? '';
@@ -546,6 +792,7 @@ async function handleCompatApi(req, res, url) {
         },
       });
     } catch (error) {
+      logSystem('error', 'napcat.test', 'Napcat 长连接测试失败', { error: error?.message || String(error) });
       return sendJson(res, 502, {
         success: false,
         message: error?.message || String(error),
@@ -598,10 +845,26 @@ async function handleCanvasApi(req, res, url) {
   if (req.method === 'PUT' && p === '/project') { project = { ...project, name: body?.name || project.name, snapshot: Object.hasOwn(body || {}, 'snapshot') ? body.snapshot : project.snapshot, updatedAt: new Date().toISOString() }; return sendJson(res, 200, project); }
   if (req.method === 'GET' && p === '/gallery') return sendJson(res, 200, { items: filterGalleryItems(gallery, url), total: gallery.length });
   if (req.method === 'PATCH' && p.startsWith('/gallery/') && p.endsWith('/favorite')) { const outputId = decodeURIComponent(p.slice('/gallery/'.length, -'/favorite'.length)); const favorite = Boolean(body?.favorite); const updated = updateGalleryFavorite(outputId, favorite); return updated ? sendJson(res, 200, { ok: true, favorite }) : sendJson(res, 404, { error: { code: 'not_found', message: 'Gallery image record not found' } }); }
+  if (req.method === 'DELETE' && p.startsWith('/gallery/')) { const outputId = decodeURIComponent(p.slice('/gallery/'.length)); const deleted = deleteGalleryItem(outputId); return deleted ? sendJson(res, 200, { ok: true, deleted }) : sendJson(res, 404, { error: { code: 'not_found', message: 'Gallery image record not found' } }); }
   if (req.method === 'GET' && p === '/interrogations') return sendJson(res, 200, { items: filterInterrogationItems(interrogations, url), total: interrogations.length });
   if (req.method === 'PATCH' && p.startsWith('/interrogations/') && p.endsWith('/favorite')) { const id = decodeURIComponent(p.slice('/interrogations/'.length, -'/favorite'.length)); const favorite = Boolean(body?.favorite); const updated = updateInterrogationFavorite(id, favorite); return updated ? sendJson(res, 200, { ok: true, favorite }) : sendJson(res, 404, { error: { code: 'not_found', message: 'Interrogation record not found' } }); }
+  if (req.method === 'DELETE' && p.startsWith('/interrogations/')) { const id = decodeURIComponent(p.slice('/interrogations/'.length)); const deleted = deleteInterrogationItem(id); return deleted ? sendJson(res, 200, { ok: true, deleted }) : sendJson(res, 404, { error: { code: 'not_found', message: 'Interrogation record not found' } }); }
+  const imageJobMatch = p.match(/^\/images\/jobs\/([^/]+)$/);
+  if (req.method === 'GET' && imageJobMatch) {
+    const job = publicJob(imageJobs.get(decodeURIComponent(imageJobMatch[1])));
+    return job ? sendJson(res, 200, { job }) : sendJson(res, 404, { error: { code: 'not_found', message: 'Image job not found' } });
+  }
+  const interrogationJobMatch = p.match(/^\/interrogate\/jobs\/([^/]+)$/);
+  if (req.method === 'GET' && interrogationJobMatch) {
+    const job = publicJob(interrogationJobs.get(decodeURIComponent(interrogationJobMatch[1])));
+    return job ? sendJson(res, 200, { job }) : sendJson(res, 404, { error: { code: 'not_found', message: 'Interrogation job not found' } });
+  }
   if (req.method === 'POST' && (p === '/images/generate' || p === '/images/edit')) {
     try {
+      if (url.searchParams.get('async') === '1' || url.searchParams.get('async') === 'true') {
+        const job = createImageJob(p.endsWith('/edit') ? 'edit' : 'generate', body || {});
+        return sendJson(res, 202, { job });
+      }
       const record = await runCanvasGeneration(p.endsWith('/edit') ? 'edit' : 'generate', body || {});
       return sendJson(res, 200, { record });
     } catch (error) {
@@ -615,6 +878,10 @@ async function handleCanvasApi(req, res, url) {
   }
   if (req.method === 'POST' && p === '/interrogate') {
     try {
+      if (url.searchParams.get('async') === '1' || url.searchParams.get('async') === 'true') {
+        const job = createInterrogationJob(body?.image);
+        return sendJson(res, 202, { job });
+      }
       const item = await runCanvasInterrogation(body?.image);
       return sendJson(res, 200, { item });
     } catch (error) {
@@ -648,6 +915,10 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(port, host, () => console.log(`Miobot v2 admin/canvas server listening on http://${host}:${port}/`));
+server.listen(port, host, () => {
+  console.log(`Miobot v2 admin/canvas server listening on http://${host}:${port}/`);
+  logSystem('info', 'server', 'Web 服务已启动', { host, port, configPath });
+  logCanvas('info', 'canvas.server', '画布接口已启动', { host, port });
+});
 process.on('SIGTERM', () => server.close(() => process.exit(0)));
 process.on('SIGINT', () => server.close(() => process.exit(0)));

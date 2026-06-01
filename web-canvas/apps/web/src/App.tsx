@@ -55,6 +55,17 @@ type StylePreset = (typeof STYLE_PRESETS)[number];
 type NoticeTone = "info" | "success" | "warning" | "error";
 type UploadTarget = "reference";
 type LightboxState = { kind: AppTab; index: number };
+type ClientCardStatus = "queued" | "running" | "failed";
+type GalleryCardItem = GalleryImageItem & {
+  clientStatus?: ClientCardStatus;
+  progress?: number;
+  error?: string;
+};
+type InterrogationCardItem = InterrogationItem & {
+  clientStatus?: ClientCardStatus;
+  progress?: number;
+  error?: string;
+};
 
 interface Notice {
   tone: NoticeTone;
@@ -108,6 +119,7 @@ interface GenerationJob {
   id: string;
   mode: "generate" | "edit";
   status: GenerationJobStatus;
+  progress?: number;
   createdAt: string;
   updatedAt: string;
   record?: GenerationRecord;
@@ -135,6 +147,7 @@ interface PrettySelectProps {
 interface InterrogationJob {
   id: string;
   status: GenerationJobStatus;
+  progress?: number;
   createdAt: string;
   updatedAt: string;
   item?: InterrogationItem;
@@ -261,15 +274,14 @@ export function App() {
   const [lightboxPreviewReady, setLightboxPreviewReady] = useState(false);
   const [lightboxNaturalSize, setLightboxNaturalSize] = useState<ImageSize | null>(null);
   const [activeTab, setActiveTab] = useState<AppTab>(() => window.location.hash.toLowerCase().includes("interrogate") ? "interrogate" : "gallery");
-  const [galleryItems, setGalleryItems] = useState<GalleryImageItem[]>([]);
+  const [galleryItems, setGalleryItems] = useState<GalleryCardItem[]>([]);
   const [galleryQuery, setGalleryQuery] = useState("");
-  const [interrogateItems, setInterrogateItems] = useState<InterrogationItem[]>([]);
+  const [interrogateItems, setInterrogateItems] = useState<InterrogationCardItem[]>([]);
   const [interrogateQuery, setInterrogateQuery] = useState("");
   const deferredGalleryQuery = useDeferredValue(galleryQuery);
   const deferredInterrogateQuery = useDeferredValue(interrogateQuery);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [statusFilter, setStatusFilter] = useState<ReferenceStatusFilter>("all");
-  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isGenerationOpen, setIsGenerationOpen] = useState(true);
   const [mobileInputCollapsed, setMobileInputCollapsed] = useState(true);
   const [inputHoverExpanded, setInputHoverExpanded] = useState(false);
@@ -301,6 +313,7 @@ export function App() {
   const [lightboxPan, setLightboxPan] = useState({ x: 0, y: 0 });
   const [dragTarget, setDragTarget] = useState<UploadTarget | "panel" | null>(null);
   const [interrogateDragActive, setInterrogateDragActive] = useState(false);
+  const [showBackToTop, setShowBackToTop] = useState(false);
   const lightboxPanStartRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
   const lightboxUserZoomedRef = useRef(false);
   const scrollMomentumRef = useRef<{ velocity: number; frame: number | null }>({ velocity: 0, frame: null });
@@ -313,7 +326,7 @@ export function App() {
     const query = normalizeSearch(deferredGalleryQuery);
     return galleryItems.filter((item) => {
       if (favoritesOnly && !item.favorite) return false;
-      if (!matchesStatusFilter(item.status, statusFilter)) return false;
+      if (!matchesStatusFilter(item.status, statusFilter, item.clientStatus)) return false;
       if (!query) return true;
       return normalizeSearch(`${item.prompt} ${item.effectivePrompt} ${item.presetId} ${item.outputFormat}`).includes(query);
     });
@@ -323,7 +336,7 @@ export function App() {
     const query = normalizeSearch(deferredInterrogateQuery);
     return interrogateItems.filter((item) => {
       if (favoritesOnly && !item.favorite) return false;
-      if (statusFilter === "failed") return false;
+      if (statusFilter === "failed") return item.clientStatus === "failed";
       if (!query) return true;
       return normalizeSearch(`${item.prompt} ${item.templatePrompt} ${item.fileName ?? ""}`).includes(query);
     });
@@ -350,8 +363,6 @@ export function App() {
   const canRevealHighResLightbox = highResLoaded && lightboxRevealReady && lightboxPreviewReady;
   const inputHoverAutoExpanded = mobileInputCollapsed && inputHoverExpanded && !inputHoverSuppressed;
   const isInputBarCollapsed = mobileInputCollapsed && !inputHoverAutoExpanded;
-  const latestSuccessfulOutputs = latestRecord?.outputs.filter((output) => output.status === "succeeded" && output.asset) ?? [];
-  const latestFailedOutputs = latestRecord?.outputs.filter((output) => output.status === "failed") ?? [];
   const validationMessage = validateForm({ mode, prompt, size, sizePresetId, referenceImages, maskImage });
   const canGenerate = !isGenerating && !validationMessage;
   const galleryStatusText = isGalleryLoading
@@ -362,13 +373,12 @@ export function App() {
       ? `${galleryItems.length} 张作品`
       : `${filteredGalleryItems.length}/${galleryItems.length} 张作品`;
   const interrogateStatusText = isInterrogateLoading
-    ? "反推库同步中"
+    ? "模板库同步中"
     : interrogateError
-      ? "反推库暂不可用"
+      ? "模板库暂不可用"
       : filteredInterrogateItems.length === interrogateItems.length
         ? `${interrogateItems.length} 张反推`
         : `${filteredInterrogateItems.length}/${interrogateItems.length} 张反推`;
-  const activeStatusText = activeTab === "interrogate" ? interrogateStatusText : galleryStatusText;
   const activeSearchValue = galleryQuery || interrogateQuery;
   const statusFilterOptions = useMemo<PrettySelectOption[]>(
     () => [
@@ -442,12 +452,12 @@ export function App() {
         favoritesOnly,
         statusFilter
       })}`), { signal });
-      if (!response.ok) throw new Error(await readApiError(response, "反推库加载失败"));
+      if (!response.ok) throw new Error(await readApiError(response, "模板库加载失败"));
       const body = (await response.json()) as InterrogationResponse;
       setInterrogateItems(Array.isArray(body.items) ? body.items : []);
     } catch (error) {
       if (isAbortError(error)) return;
-      const message = error instanceof Error ? error.message : "反推库加载失败";
+      const message = error instanceof Error ? error.message : "模板库加载失败";
       setInterrogateError(message);
       setInterrogateStatus(message);
     } finally {
@@ -633,6 +643,15 @@ export function App() {
     };
   }, [activeTab]);
 
+  useEffect(() => {
+    const pane = galleryPaneRef.current;
+    if (!pane) return;
+    const update = () => setShowBackToTop(pane.scrollTop > 520);
+    update();
+    pane.addEventListener("scroll", update, { passive: true });
+    return () => pane.removeEventListener("scroll", update);
+  }, [activeTab]);
+
   function selectMode(nextMode: GenerationMode) {
     setMode(nextMode);
     if (nextMode === "text") {
@@ -737,9 +756,13 @@ export function App() {
       return;
     }
 
+    const pendingItem = createPendingInterrogationItem(interrogateImage);
     setIsInterrogating(true);
     setInterrogateError("");
-    setInterrogateStatus("正在反推提示词...");
+    setInterrogateStatus("");
+    setActiveTab("interrogate");
+    setMobileView("gallery");
+    setInterrogateItems((current) => [pendingItem, ...current]);
     try {
       const response = await fetch(apiPath("/interrogate?async=1"), {
         method: "POST",
@@ -749,15 +772,23 @@ export function App() {
       if (!response.ok) throw new Error(await readApiError(response, "反推失败"));
       const data = (await response.json()) as InterrogateImageResult | InterrogationJobResponse;
       const item = isInterrogationJobResponse(data)
-        ? await waitForInterrogationJob(data.job.id, () => {
-          setInterrogateStatus("任务已提交，正在等待反推完成...");
+        ? await waitForInterrogationJob(data.job.id, (job) => {
+          updatePendingInterrogationItem(pendingItem.id, {
+            clientStatus: job.status === "queued" ? "queued" : "running",
+            progress: clamp(Math.round(job.progress ?? 10), 6, 98)
+          });
         })
         : data.item;
-      setInterrogateItems((current) => [item, ...current.filter((entry) => entry.id !== item.id)]);
+      setInterrogateItems((current) => [item, ...current.filter((entry) => entry.id !== item.id && entry.id !== pendingItem.id)]);
       setInterrogateImage(null);
-      setInterrogateStatus("已反推并保存到瀑布流。");
+      setInterrogateStatus("已反推并保存到模板库。");
     } catch (error) {
-      setInterrogateError(error instanceof Error ? error.message : "反推失败");
+      updatePendingInterrogationItem(pendingItem.id, {
+        clientStatus: "failed",
+        progress: 100,
+        error: error instanceof Error ? error.message : "反推失败"
+      });
+      setInterrogateError("");
       setInterrogateStatus("");
     } finally {
       setIsInterrogating(false);
@@ -790,6 +821,63 @@ export function App() {
     };
   }
 
+  function createPendingGalleryItem(snapshot: GenerationRequestSnapshot): GalleryCardItem {
+    const id = `pending-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    return {
+      outputId: id,
+      generationId: id,
+      mode: snapshot.mode === "text" ? "generate" : "edit",
+      prompt: snapshot.body.prompt,
+      effectivePrompt: snapshot.body.prompt,
+      presetId: snapshot.body.presetId,
+      size: snapshot.body.size,
+      quality: snapshot.body.quality,
+      outputFormat: snapshot.body.outputFormat,
+      createdAt: new Date().toISOString(),
+      favorite: false,
+      clientStatus: "queued",
+      progress: 6,
+      asset: {
+        id,
+        url: "",
+        fileName: `${id}.${snapshot.body.outputFormat === "jpeg" ? "jpg" : snapshot.body.outputFormat}`,
+        mimeType: `image/${snapshot.body.outputFormat === "jpeg" ? "jpeg" : snapshot.body.outputFormat}`,
+        width: snapshot.body.size.width,
+        height: snapshot.body.size.height
+      }
+    };
+  }
+
+  function createPendingInterrogationItem(image: UploadedImage): InterrogationCardItem {
+    const id = `pending-int-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    return {
+      id,
+      prompt: "正在分析图片内容…",
+      templatePrompt: "正在生成可复用模板…",
+      fileName: image.fileName,
+      createdAt: new Date().toISOString(),
+      favorite: false,
+      clientStatus: "queued",
+      progress: 6,
+      asset: {
+        id,
+        url: image.previewUrl,
+        fileName: image.fileName,
+        mimeType: imageMimeFromDataUrl(image.dataUrl),
+        width: image.width,
+        height: image.height
+      }
+    };
+  }
+
+  function updatePendingGalleryItem(id: string, patch: Partial<GalleryCardItem>) {
+    setGalleryItems((current) => current.map((item) => (item.outputId === id ? { ...item, ...patch } : item)));
+  }
+
+  function updatePendingInterrogationItem(id: string, patch: Partial<InterrogationCardItem>) {
+    setInterrogateItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  }
+
   async function submitGeneration(snapshot = buildRequestSnapshot()) {
     const currentValidation = validateForm({
       mode: snapshot.mode,
@@ -804,9 +892,13 @@ export function App() {
       return;
     }
 
+    const pendingItem = createPendingGalleryItem(snapshot);
     setIsGenerating(true);
-    setNotice({ tone: "info", message: snapshot.mode === "text" ? "正在文生图..." : "正在改图..." });
+    setNotice(null);
     setLatestRecord(null);
+    setActiveTab("gallery");
+    setMobileView("gallery");
+    setGalleryItems((current) => [pendingItem, ...current]);
 
     try {
       const response = await fetch(apiPath(`${snapshot.endpoint}?async=1`), {
@@ -817,8 +909,11 @@ export function App() {
       if (!response.ok) throw new Error(await readApiError(response, "生成失败"));
       const data = (await response.json()) as GenerationResponse | GenerationJobResponse;
       const record = isGenerationJobResponse(data)
-        ? await waitForGenerationJob(data.job.id, () => {
-          setNotice({ tone: "info", message: "任务已提交，正在等待生成完成..." });
+        ? await waitForGenerationJob(data.job.id, (job) => {
+          updatePendingGalleryItem(pendingItem.outputId, {
+            clientStatus: job.status === "queued" ? "queued" : "running",
+            progress: clamp(Math.round(job.progress ?? 10), 6, 98)
+          });
         })
         : data.record;
       setLatestRecord(record);
@@ -828,7 +923,7 @@ export function App() {
       if (nextGalleryItems.length) {
         setGalleryItems((current) => [
           ...nextGalleryItems,
-          ...current.filter((item) => !nextGalleryItems.some((nextItem) => nextItem.outputId === item.outputId))
+          ...current.filter((item) => item.outputId !== pendingItem.outputId && !nextGalleryItems.some((nextItem) => nextItem.outputId === item.outputId))
         ]);
       }
 
@@ -838,15 +933,23 @@ export function App() {
         setActiveTab("gallery");
         setMobileView("gallery");
       }
-      setNotice({
-        tone: succeededCount > 0 && failedCount === 0 ? "success" : succeededCount > 0 ? "warning" : "error",
-        message:
-          succeededCount > 0
-            ? `已生成 ${succeededCount} 张${failedCount ? `，${failedCount} 张失败` : ""}，已保存到作品库。`
-            : generationFailureText(record)
-      });
+      if (succeededCount <= 0) {
+        updatePendingGalleryItem(pendingItem.outputId, {
+          clientStatus: "failed",
+          progress: 100,
+          error: generationFailureText(record),
+          status: "failed"
+        });
+      } else if (failedCount > 0) {
+        setToast({ tone: "warning", message: `${failedCount} 张生成失败，其余已保存到画廊。` });
+      }
     } catch (error) {
-      setNotice({ tone: "error", message: error instanceof Error ? error.message : "生成失败" });
+      updatePendingGalleryItem(pendingItem.outputId, {
+        clientStatus: "failed",
+        progress: 100,
+        error: error instanceof Error ? error.message : "生成失败",
+        status: "failed"
+      });
     } finally {
       setIsGenerating(false);
     }
@@ -872,10 +975,6 @@ export function App() {
     } catch {
       setToast({ tone: "error", message: "复制失败，请手动复制。" });
     }
-  }
-
-  async function copyPromptAndClose(value: string, label = "提示词") {
-    await copyPrompt(value, label);
   }
 
   async function toggleGalleryFavorite(item: GalleryImageItem) {
@@ -966,15 +1065,6 @@ export function App() {
     lightboxUserZoomedRef.current = false;
     setLightboxZoom(baseSize ? defaultLightboxCoverZoom(baseSize) : 1);
     setLightboxPan({ x: 0, y: 0 });
-  }
-
-  function openGenerationPanel() {
-    setIsGenerationOpen(true);
-    setMobileView("generate");
-  }
-
-  function toggleGenerationPanel() {
-    setIsGenerationOpen((current) => !current);
   }
 
   function handleInputBarMouseEnter() {
@@ -1091,7 +1181,7 @@ export function App() {
               onClick={() => { setActiveTab("interrogate"); showGalleryView(); }}
               className={`px-4 py-1.5 rounded-lg text-sm transition-colors ${activeTab === "interrogate" ? "bg-white text-gray-900 shadow-sm font-medium" : "text-gray-500 hover:text-gray-800"}`}
             >
-              反推库
+              模板库
             </button>
           </div>
         </div>
@@ -1110,7 +1200,7 @@ export function App() {
               onClick={() => { setActiveTab("interrogate"); showGalleryView(); }}
               className={`px-4 py-1.5 rounded-lg text-sm transition-colors ${activeTab === "interrogate" ? "bg-white text-gray-900 shadow-sm font-medium" : "text-gray-500 hover:text-gray-800"}`}
             >
-              反推库
+              模板库
             </button>
           </div>
         </div>
@@ -1121,7 +1211,7 @@ export function App() {
         <div className="canvas-mobile-tab-spacer sm:hidden h-[3rem]" />
       </div>
 
-      <section className="gallery-pane" aria-label={activeTab === "interrogate" ? "反推库" : "画廊"} ref={galleryPaneRef}>
+      <section className="gallery-pane" aria-label={activeTab === "interrogate" ? "模板库" : "画廊"} ref={galleryPaneRef}>
         <div data-no-drag-select className="reference-search-bar">
           <div className="reference-search-leading">
             <button
@@ -1130,7 +1220,7 @@ export function App() {
               data-active={favoritesOnly}
               aria-pressed={favoritesOnly}
               aria-label="只看收藏"
-              title={favoritesOnly ? "显示全部" : "只看收藏"}
+              data-ui-tooltip={favoritesOnly ? "显示全部作品与模板" : "只看收藏"}
               onClick={() => setFavoritesOnly((current) => !current)}
             >
               <Star className="icon" aria-hidden="true" />
@@ -1168,42 +1258,56 @@ export function App() {
           ) : visibleGalleryItems.length ? (
             <div className="masonry-gallery">
               {visibleGalleryItems.map((item) => (
-                <article className="masonry-card" key={item.outputId}>
-                  <button
-                    className="masonry-card__image"
-                    type="button"
-                    aria-label={`查看作品：${promptExcerpt(item.prompt, 40)}`}
-                    style={{ aspectRatio: `${Math.max(item.asset.width, 1)} / ${Math.max(item.asset.height, 1)}` }}
-                    onClick={() => openLightbox(item)}
-                  >
-                    <img
-                      src={assetPreviewUrl(item.asset.id, 256, item.asset.url)}
-                      srcSet={assetPreviewSrcSet(item.asset.id, item.asset.url, MASONRY_PREVIEW_WIDTHS)}
-                      sizes={MASONRY_IMAGE_SIZES}
-                      alt={item.prompt}
-                      width={item.asset.width}
-                      height={item.asset.height}
-                      decoding="async"
-                      loading="lazy"
-                    />
-                    <span className="zoom-pill">
-                      <Maximize2 className="icon" aria-hidden="true" />
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className="masonry-card__favorite"
-                    data-active={Boolean(item.favorite)}
-                    aria-pressed={Boolean(item.favorite)}
-                    aria-label={item.favorite ? "取消收藏" : "收藏作品"}
-                    title={item.favorite ? "取消收藏" : "收藏作品"}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void toggleGalleryFavorite(item);
-                    }}
-                  >
-                    <Star className="icon" aria-hidden="true" />
-                  </button>
+                <article className="masonry-card" data-client-status={item.clientStatus || "ready"} key={item.outputId}>
+                  {item.clientStatus ? (
+                    <div
+                      className="masonry-card__image masonry-card__pending-visual"
+                      style={{ aspectRatio: `${Math.max(item.asset.width, 1)} / ${Math.max(item.asset.height, 1)}` }}
+                    >
+                      <div className="card-progress-orb" data-state={item.clientStatus}>
+                        {item.clientStatus === "failed" ? <AlertTriangle className="icon" aria-hidden="true" /> : <Loader2 className="icon spin" aria-hidden="true" />}
+                        <strong>{item.clientStatus === "failed" ? "失败" : `${Math.round(item.progress ?? 8)}%`}</strong>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      className="masonry-card__image"
+                      type="button"
+                      aria-label={`查看作品：${promptExcerpt(item.prompt, 40)}`}
+                      style={{ aspectRatio: `${Math.max(item.asset.width, 1)} / ${Math.max(item.asset.height, 1)}` }}
+                      onClick={() => openLightbox(item)}
+                    >
+                      <img
+                        src={assetPreviewUrl(item.asset.id, 256, item.asset.url)}
+                        srcSet={assetPreviewSrcSet(item.asset.id, item.asset.url, MASONRY_PREVIEW_WIDTHS)}
+                        sizes={MASONRY_IMAGE_SIZES}
+                        alt={item.prompt}
+                        width={item.asset.width}
+                        height={item.asset.height}
+                        decoding="async"
+                        loading="lazy"
+                      />
+                      <span className="zoom-pill">
+                        <Maximize2 className="icon" aria-hidden="true" />
+                      </span>
+                    </button>
+                  )}
+                  {!item.clientStatus ? (
+                    <button
+                      type="button"
+                      className="masonry-card__favorite"
+                      data-active={Boolean(item.favorite)}
+                      aria-pressed={Boolean(item.favorite)}
+                      aria-label={item.favorite ? "取消收藏" : "收藏作品"}
+                      data-ui-tooltip={item.favorite ? "取消收藏" : "收藏作品"}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void toggleGalleryFavorite(item);
+                      }}
+                    >
+                      <Star className="icon" aria-hidden="true" />
+                    </button>
+                  ) : null}
                   <div className="masonry-card__body">
                     <button
                       type="button"
@@ -1215,8 +1319,8 @@ export function App() {
                       {item.prompt}
                     </button>
                     <div className="masonry-card__meta">
-                      <span>{item.size.width}x{item.size.height}</span>
-                      <span>{item.outputFormat.toUpperCase()}</span>
+                      <span>{item.clientStatus === "failed" ? "生成失败" : item.clientStatus ? "生成中" : `${item.size.width}x${item.size.height}`}</span>
+                      <span>{item.clientStatus === "failed" ? promptExcerpt(item.error || "请稍后重试", 18) : item.outputFormat.toUpperCase()}</span>
                     </div>
                   </div>
                 </article>
@@ -1242,7 +1346,7 @@ export function App() {
             ) : null}
 
             {isInterrogateLoading ? (
-              <div className="gallery-skeleton" role="status" aria-label="正在加载反推库">
+              <div className="gallery-skeleton" role="status" aria-label="正在加载模板库">
                 {Array.from({ length: 6 }, (_, index) => (
                   <div className="gallery-skeleton__card" key={index}>
                     <span />
@@ -1253,42 +1357,57 @@ export function App() {
             ) : visibleInterrogateItems.length ? (
               <div className="masonry-gallery masonry-gallery--interrogate">
                 {visibleInterrogateItems.map((item) => (
-                  <article className="masonry-card" key={item.id}>
-                    <button
-                      className="masonry-card__image"
-                      type="button"
-                      aria-label={`查看反推：${promptExcerpt(item.prompt, 40)}`}
-                      style={{ aspectRatio: `${Math.max(item.asset.width, 1)} / ${Math.max(item.asset.height, 1)}` }}
-                      onClick={() => openInterrogateLightbox(item)}
-                    >
-                      <img
-                        src={assetPreviewUrl(item.asset.id, 256, item.asset.url)}
-                        srcSet={assetPreviewSrcSet(item.asset.id, item.asset.url, MASONRY_PREVIEW_WIDTHS)}
-                        sizes={MASONRY_IMAGE_SIZES}
-                        alt={item.prompt}
-                        width={item.asset.width}
-                        height={item.asset.height}
-                        decoding="async"
-                        loading="lazy"
-                      />
-                      <span className="zoom-pill">
-                        <Maximize2 className="icon" aria-hidden="true" />
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      className="masonry-card__favorite"
-                      data-active={Boolean(item.favorite)}
-                      aria-pressed={Boolean(item.favorite)}
-                      aria-label={item.favorite ? "取消收藏" : "收藏反推"}
-                      title={item.favorite ? "取消收藏" : "收藏反推"}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void toggleInterrogationFavorite(item);
-                      }}
-                    >
-                      <Star className="icon" aria-hidden="true" />
-                    </button>
+                  <article className="masonry-card" data-client-status={item.clientStatus || "ready"} key={item.id}>
+                    {item.clientStatus ? (
+                      <div
+                        className="masonry-card__image masonry-card__pending-visual"
+                        style={{ aspectRatio: `${Math.max(item.asset.width, 1)} / ${Math.max(item.asset.height, 1)}` }}
+                      >
+                        {item.asset.url ? <img src={item.asset.url} alt="" aria-hidden="true" /> : null}
+                        <div className="card-progress-orb" data-state={item.clientStatus}>
+                          {item.clientStatus === "failed" ? <AlertTriangle className="icon" aria-hidden="true" /> : <Loader2 className="icon spin" aria-hidden="true" />}
+                          <strong>{item.clientStatus === "failed" ? "失败" : `${Math.round(item.progress ?? 8)}%`}</strong>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        className="masonry-card__image"
+                        type="button"
+                        aria-label={`查看模板：${promptExcerpt(item.prompt, 40)}`}
+                        style={{ aspectRatio: `${Math.max(item.asset.width, 1)} / ${Math.max(item.asset.height, 1)}` }}
+                        onClick={() => openInterrogateLightbox(item)}
+                      >
+                        <img
+                          src={assetPreviewUrl(item.asset.id, 256, item.asset.url)}
+                          srcSet={assetPreviewSrcSet(item.asset.id, item.asset.url, MASONRY_PREVIEW_WIDTHS)}
+                          sizes={MASONRY_IMAGE_SIZES}
+                          alt={item.prompt}
+                          width={item.asset.width}
+                          height={item.asset.height}
+                          decoding="async"
+                          loading="lazy"
+                        />
+                        <span className="zoom-pill">
+                          <Maximize2 className="icon" aria-hidden="true" />
+                        </span>
+                      </button>
+                    )}
+                    {!item.clientStatus ? (
+                      <button
+                        type="button"
+                        className="masonry-card__favorite"
+                        data-active={Boolean(item.favorite)}
+                        aria-pressed={Boolean(item.favorite)}
+                        aria-label={item.favorite ? "取消收藏" : "收藏模板"}
+                        data-ui-tooltip={item.favorite ? "取消收藏" : "收藏模板"}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void toggleInterrogationFavorite(item);
+                        }}
+                      >
+                        <Star className="icon" aria-hidden="true" />
+                      </button>
+                    ) : null}
                     <div className="masonry-card__body">
                       <button
                         type="button"
@@ -1300,8 +1419,8 @@ export function App() {
                         {item.templatePrompt || item.prompt}
                       </button>
                       <div className="masonry-card__meta">
-                        <span>反推</span>
-                        <span>模板</span>
+                        <span>{item.clientStatus === "failed" ? "反推失败" : item.clientStatus ? "反推中" : "反推"}</span>
+                        <span>{item.clientStatus === "failed" ? promptExcerpt(item.error || "请稍后重试", 18) : "模板"}</span>
                       </div>
                     </div>
                   </article>
@@ -1310,7 +1429,7 @@ export function App() {
             ) : (
               <div className="empty-gallery" data-tone={interrogateError ? "error" : "empty"}>
                 {interrogateError ? <AlertTriangle className="icon" aria-hidden="true" /> : <ImageIcon className="icon" aria-hidden="true" />}
-                  <span>{interrogateError || (interrogateItems.length ? "没有匹配的反推记录" : "反推库为空")}</span>
+                  <span>{interrogateError || (interrogateItems.length ? "没有匹配的反推记录" : "模板库为空")}</span>
               </div>
             )}
           </div>
@@ -1398,17 +1517,26 @@ export function App() {
                   <strong>{interrogateImage ? interrogateImage.fileName : "上传图片反推"}</strong>
                   <small>{interrogateImage ? "点击可更换图片，右侧开始反推" : "拖入或选择 PNG/JPEG/WebP 图片"}</small>
                 </span>
-              </button>
-              <div className="playground-interrogate-actions">
                 {interrogateImage ? (
-                  <button className="playground-interrogate-clear" type="button" onClick={() => setInterrogateImage(null)}>
-                    移除
+                  <button
+                    className="playground-interrogate-clear"
+                    type="button"
+                    aria-label="移除反推图片"
+                    data-ui-tooltip="移除图片"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setInterrogateImage(null);
+                    }}
+                  >
+                    <X className="icon" aria-hidden="true" />
                   </button>
                 ) : null}
+              </button>
+              <div className="playground-interrogate-actions">
                 <button
                   className="playground-mobile-submit playground-interrogate-submit"
                   disabled={isInterrogating || !interrogateImage}
-                  title={interrogateImage ? "开始反推" : "请先上传图片"}
+                  data-ui-tooltip={interrogateImage ? "开始反推" : "请先上传图片"}
                   type="button"
                   onClick={() => void submitInterrogation()}
                 >
@@ -1448,7 +1576,7 @@ export function App() {
                   className="playground-attach-button"
                   type="button"
                   aria-label="上传参考图"
-                  title="上传参考图"
+                  data-ui-tooltip="上传参考图"
                   onClick={() => fileInputRef.current?.click()}
                 >
                   <Paperclip className="icon" aria-hidden="true" />
@@ -1468,7 +1596,7 @@ export function App() {
                   <button
                     className="playground-submit-button"
                     disabled={!canGenerate}
-                    title={validationMessage || "生成图像"}
+                    data-ui-tooltip={validationMessage || "生成图像"}
                     type="button"
                     onClick={() => void submitGeneration()}
                     aria-label="生成图像"
@@ -1585,6 +1713,20 @@ export function App() {
           )}
         </div>
       </aside>
+
+      <button
+        type="button"
+        className="canvas-back-top"
+        data-visible={showBackToTop}
+        aria-label="返回最顶部"
+        data-ui-tooltip="返回顶部"
+        onClick={() => {
+          galleryPaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+          stopScrollMomentum(scrollMomentumRef.current);
+        }}
+      >
+        <ChevronDown className="icon" aria-hidden="true" />
+      </button>
 
       {toast ? (
         <div className="copy-toast" data-tone={toast.tone} role={toast.tone === "error" ? "alert" : "status"}>
@@ -1833,31 +1975,6 @@ export function App() {
     </main>
   );
 
-  function openLightboxForOutput(outputId: string) {
-    const index = visibleGalleryItems.findIndex((item) => item.outputId === outputId);
-    if (index >= 0) {
-      prepareLightboxAsset(visibleGalleryItems[index]?.asset ?? null);
-      setLightboxState({ kind: "gallery", index });
-    }
-  }
-}
-
-function CopyTextBlock({ label, text, onCopy }: { label: string; text: string; onCopy: (value: string, label?: string) => Promise<void> }) {
-  return (
-    <button
-      type="button"
-      className="copy-text-block"
-      aria-label={`复制${label}`}
-      title={`点击复制${label}`}
-      onClick={() => void onCopy(text, label)}
-    >
-      <span className="copy-text-block__hint">
-        <Copy className="icon" aria-hidden="true" />
-        点击内容复制
-      </span>
-      <span className="copy-text-block__text">{text}</span>
-    </button>
-  );
 }
 
 function MaskBrushEditor({ image, onMaskChange }: { image: UploadedImage; onMaskChange: (mask: UploadedImage | null) => void }) {
@@ -2170,6 +2287,10 @@ function toReferenceImageInput(image: UploadedImage | ReferenceImageInput): Refe
   };
 }
 
+function imageMimeFromDataUrl(dataUrl: string): string {
+  return dataUrl.match(/^data:([^;,]+)/i)?.[1] || "image/png";
+}
+
 function isGenerationJobResponse(value: GenerationResponse | GenerationJobResponse): value is GenerationJobResponse {
   return Boolean((value as GenerationJobResponse).job);
 }
@@ -2178,32 +2299,32 @@ function isInterrogationJobResponse(value: InterrogateImageResult | Interrogatio
   return Boolean((value as InterrogationJobResponse).job);
 }
 
-async function waitForGenerationJob(jobId: string, onFirstPoll?: () => void): Promise<GenerationRecord> {
-  onFirstPoll?.();
+async function waitForGenerationJob(jobId: string, onPoll?: (job: GenerationJob) => void): Promise<GenerationRecord> {
   for (let attempt = 0; attempt < GENERATION_JOB_MAX_POLLS; attempt += 1) {
     await sleep(GENERATION_JOB_POLL_INTERVAL_MS);
     const response = await fetch(apiPath(`/images/jobs/${encodeURIComponent(jobId)}`), { cache: "no-store" });
     if (!response.ok) throw new Error(await readApiError(response, "读取生成任务失败"));
     const data = (await response.json()) as GenerationJobResponse;
     const job = data.job;
+    onPoll?.(job);
     if (job.status === "succeeded" && job.record) return job.record;
     if (job.status === "failed") throw new Error(job.error || "生成失败");
   }
   throw new Error("生成任务等待超时，请稍后刷新作品库查看结果。");
 }
 
-async function waitForInterrogationJob(jobId: string, onFirstPoll?: () => void): Promise<InterrogationItem> {
-  onFirstPoll?.();
+async function waitForInterrogationJob(jobId: string, onPoll?: (job: InterrogationJob) => void): Promise<InterrogationItem> {
   for (let attempt = 0; attempt < GENERATION_JOB_MAX_POLLS; attempt += 1) {
     await sleep(GENERATION_JOB_POLL_INTERVAL_MS);
     const response = await fetch(apiPath(`/interrogate/jobs/${encodeURIComponent(jobId)}`), { cache: "no-store" });
     if (!response.ok) throw new Error(await readApiError(response, "读取反推任务失败"));
     const data = (await response.json()) as InterrogationJobResponse;
     const job = data.job;
+    onPoll?.(job);
     if (job.status === "succeeded" && job.item) return job.item;
     if (job.status === "failed") throw new Error(job.error || "反推失败");
   }
-  throw new Error("反推任务等待超时，请稍后刷新反推库查看结果。");
+  throw new Error("反推任务等待超时，请稍后刷新模板库查看结果。");
 }
 
 function sleep(durationMs: number): Promise<void> {
@@ -2379,10 +2500,10 @@ function collectionQueryString(input: {
   return serialized ? `?${serialized}` : "";
 }
 
-function matchesStatusFilter(status: GalleryImageItem["status"], filter: ReferenceStatusFilter): boolean {
+function matchesStatusFilter(status: GalleryImageItem["status"], filter: ReferenceStatusFilter, clientStatus?: ClientCardStatus): boolean {
   if (filter === "all") return true;
-  if (filter === "failed") return status === "failed";
-  return status === undefined || status === "succeeded";
+  if (filter === "failed") return status === "failed" || clientStatus === "failed";
+  return !clientStatus && (status === undefined || status === "succeeded");
 }
 
 function coerceStylePresetId(value: string): StylePresetId {
