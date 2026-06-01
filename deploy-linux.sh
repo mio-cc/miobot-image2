@@ -7,6 +7,7 @@ set -Eeuo pipefail
 # Command mode:
 #   bash deploy-linux.sh install
 #   bash deploy-linux.sh rebuild
+#   bash deploy-linux.sh git-update
 #   bash deploy-linux.sh start|stop|restart|status|logs|health|doctor
 # Common overrides:
 #   APP_DIR=/opt/miobot-v2 PORT=3018 HOST=0.0.0.0 bash deploy-linux.sh install
@@ -28,6 +29,9 @@ CONFIG_PATH="${MIOBOT_CONFIG_PATH:-${DATA_DIR}/config.json}"
 LOG_DIR="${LOG_DIR:-/var/log/${APP_NAME}}"
 ENV_FILE="${ENV_FILE:-/etc/${APP_NAME}.env}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-30}"
+GIT_REMOTE="${GIT_REMOTE:-origin}"
+GIT_BRANCH="${GIT_BRANCH:-}"
+GIT_ALLOW_DIRTY="${GIT_ALLOW_DIRTY:-0}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_SOURCE="${PROJECT_SOURCE:-$(cd -- "${SCRIPT_DIR}" && pwd)}"
@@ -214,6 +218,64 @@ sync_source() {
     --exclude 'web-panel/dist/' \
     --exclude 'web-canvas/apps/web/dist/' \
     "$source_real/" "$APP_DIR/"
+}
+
+find_git_repo_dir() {
+  local candidate
+  for candidate in "$PROJECT_SOURCE" "$SCRIPT_DIR" "$APP_DIR"; do
+    if [ -d "$candidate/.git" ]; then
+      (cd -- "$candidate" && pwd -P)
+      return 0
+    fi
+  done
+  return 1
+}
+
+git_worktree_dirty() {
+  local repo_dir="$1"
+  [ -n "$(cd -- "$repo_dir" && git status --porcelain)" ]
+}
+
+git_pull_source() {
+  have_cmd git || ensure_os_packages
+
+  local repo_dir branch before after upstream
+  repo_dir="$(find_git_repo_dir)" || fail "没有找到 Git 仓库，无法一键拉取。请在源码目录执行：git clone https://github.com/mio-cc/miobot-image2.git"
+
+  log "准备拉取 Git 更新：$repo_dir"
+  (cd -- "$repo_dir" && git rev-parse --is-inside-work-tree >/dev/null) || fail "不是有效 Git 仓库：$repo_dir"
+
+  if git_worktree_dirty "$repo_dir"; then
+    if [ "$GIT_ALLOW_DIRTY" = "stash" ] || [ "$GIT_ALLOW_DIRTY" = "1" ] || [ "$GIT_ALLOW_DIRTY" = "true" ]; then
+      log "检测到本地未提交修改，自动 stash 后继续拉取"
+      (cd -- "$repo_dir" && git stash push -u -m "miobot auto stash before update $(date +%Y%m%d-%H%M%S)")
+    else
+      (cd -- "$repo_dir" && git status --short)
+      fail "源码目录存在未提交修改，为避免覆盖已停止。确认要自动暂存可执行：GIT_ALLOW_DIRTY=stash bash deploy-linux.sh git-update"
+    fi
+  fi
+
+  branch="${GIT_BRANCH:-$(cd -- "$repo_dir" && git branch --show-current)}"
+  [ -n "$branch" ] || fail "当前 Git 不在分支上，请设置 GIT_BRANCH=main 后重试。"
+
+  before="$(cd -- "$repo_dir" && git rev-parse --short HEAD)"
+  log "拉取远端：${GIT_REMOTE}/${branch}（当前 ${before}）"
+  (cd -- "$repo_dir" && git fetch --prune "$GIT_REMOTE")
+  upstream="$(cd -- "$repo_dir" && git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+  if [ -n "$upstream" ]; then
+    (cd -- "$repo_dir" && git pull --ff-only)
+  else
+    (cd -- "$repo_dir" && git pull --ff-only "$GIT_REMOTE" "$branch")
+  fi
+  after="$(cd -- "$repo_dir" && git rev-parse --short HEAD)"
+
+  if [ "$before" = "$after" ]; then
+    log "Git 已经是最新版本：$after"
+  else
+    log "Git 已更新：$before -> $after"
+  fi
+
+  PROJECT_SOURCE="$repo_dir"
 }
 
 npm_install_dir() {
@@ -443,6 +505,12 @@ rebuild_all() {
   print_summary
 }
 
+git_update_all() {
+  require_root
+  git_pull_source
+  rebuild_all
+}
+
 env_only() {
   require_root
   ensure_os_packages
@@ -519,7 +587,9 @@ Miobot v2 Linux 运维脚本（root-only）
 命令：
   install         首次部署：检测环境 -> 安装依赖 -> 构建 -> 写 systemd -> 启动
   deploy          同 install
-  rebuild         一键重构：备份配置 -> 同步源码 -> 依赖 -> 构建 -> 重启
+  git-update      一键拉取 Git 更新：git pull -> 备份配置 -> 构建 -> 重启
+  pull            同 git-update
+  rebuild         一键重构：备份配置 -> 同步源码 -> 依赖 -> 构建 -> 重启（不拉 Git）
   env             只检测/安装系统环境并写 systemd/env
   doctor          打印环境诊断，不改动系统
   start           启动服务
@@ -540,9 +610,13 @@ Miobot v2 Linux 运维脚本（root-only）
   MIOBOT_CONFIG_PATH=${CONFIG_PATH}
   RUN_TESTS=1
   STRICT_LOCKFILE=1
+  GIT_REMOTE=${GIT_REMOTE}
+  GIT_BRANCH=main
+  GIT_ALLOW_DIRTY=stash
 
 示例：
   bash deploy-linux.sh install
+  bash deploy-linux.sh git-update
   bash deploy-linux.sh rebuild
   PORT=3018 HOST=0.0.0.0 bash deploy-linux.sh install
 EOF
@@ -553,7 +627,8 @@ run_action() {
   shift || true
   case "$ACTION" in
     install|deploy) install_all "$@" ;;
-    rebuild|build|update) rebuild_all "$@" ;;
+    git-update|pull|git-pull|upgrade|update) git_update_all "$@" ;;
+    rebuild|build) rebuild_all "$@" ;;
     env|doctor-fix) env_only "$@" ;;
     doctor|check) doctor "$@" ;;
     start) require_root; service_start "$@" ;;
@@ -594,12 +669,13 @@ interactive_menu() {
   4) 重启服务
   5) 查看服务状态
   6) 查看实时日志
-  7) 一键重构 / 更新代码 / 重新构建 / 重启
-  8) 环境检测
-  9) 健康检查
- 10) 备份配置
- 11) 只修复环境和 systemd 配置
- 12) 卸载 systemd 服务（默认保留数据）
+  7) 一键拉取 Git 更新 / 重新构建 / 重启
+  8) 一键重构 / 重新构建 / 重启（不拉 Git）
+  9) 环境检测
+ 10) 健康检查
+ 11) 备份配置
+ 12) 只修复环境和 systemd 配置
+ 13) 卸载 systemd 服务（默认保留数据）
   0) 退出
 
 EOF
@@ -612,12 +688,13 @@ EOF
       4) run_action restart; pause_menu ;;
       5) run_action status; pause_menu ;;
       6) run_action logs ;;
-      7) run_action rebuild; pause_menu ;;
-      8) run_action doctor; pause_menu ;;
-      9) run_action health; pause_menu ;;
-      10) run_action backup-config; pause_menu ;;
-      11) run_action env; pause_menu ;;
-      12) run_action uninstall; pause_menu ;;
+      7) run_action git-update; pause_menu ;;
+      8) run_action rebuild; pause_menu ;;
+      9) run_action doctor; pause_menu ;;
+      10) run_action health; pause_menu ;;
+      11) run_action backup-config; pause_menu ;;
+      12) run_action env; pause_menu ;;
+      13) run_action uninstall; pause_menu ;;
       0|q|Q|exit) exit 0 ;;
       *) warn "无效序号：$choice"; pause_menu ;;
     esac
