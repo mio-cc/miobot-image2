@@ -7015,6 +7015,33 @@ body {
   transform: translate3d(-50%, 0, 0) rotate(45deg) scale(1);
 }
 
+[data-ui-tooltip][data-tooltip-placement="bottom"]::before {
+  top: calc(100% + 10px);
+  bottom: auto;
+  transform: translate3d(-50%, -6px, 0) scale(.98);
+  transform-origin: top center;
+}
+
+[data-ui-tooltip][data-tooltip-placement="bottom"]::after {
+  top: calc(100% + 5px);
+  bottom: auto;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 1px solid rgba(147, 197, 253, .26);
+  border-top: 1px solid rgba(147, 197, 253, .26);
+  transform: translate3d(-50%, -6px, 0) rotate(45deg) scale(.98);
+}
+
+[data-ui-tooltip][data-tooltip-placement="bottom"]:hover::before,
+[data-ui-tooltip][data-tooltip-placement="bottom"]:focus-visible::before {
+  transform: translate3d(-50%, 0, 0) scale(1);
+}
+
+[data-ui-tooltip][data-tooltip-placement="bottom"]:hover::after,
+[data-ui-tooltip][data-tooltip-placement="bottom"]:focus-visible::after {
+  transform: translate3d(-50%, 0, 0) rotate(45deg) scale(1);
+}
+
 .masonry-card .masonry-card__favorite[data-ui-tooltip] {
   position: absolute;
   top: 0.55rem;

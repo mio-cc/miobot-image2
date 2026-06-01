@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 
 import {
+  buildBotGalleryPayload,
   collectMessageContext,
   extractForwardIds,
   extractMessageText,
@@ -155,5 +156,31 @@ test('bot runtime: remote prompt input parser supports v1 detail, paging and fil
     category: 'anime',
     tag: 'portrait',
   });
+});
+
+test('bot runtime: image results are normalized for canvas gallery sync', () => {
+  const payload = buildBotGalleryPayload({
+    prompt: 'effective prompt',
+    params: { rawInput: 'raw prompt', size: '1024x1536', quality: 'high' },
+    artifacts: [
+      { kind: 'base64', data: 'AAAA', mimeType: 'image/png', index: 0 },
+      { kind: 'url', data: 'https://example.test/image.png', index: 1 },
+    ],
+  }, {
+    mode: 'edit',
+    command: 'img2Img',
+    context: { chatType: 'group', groupId: '100', userId: '200' },
+  });
+
+  assert.equal(payload.mode, 'edit');
+  assert.equal(payload.command, 'img2Img');
+  assert.equal(payload.prompt, 'raw prompt');
+  assert.equal(payload.effectivePrompt, 'effective prompt');
+  assert.equal(payload.sizeApiValue, '1024x1536');
+  assert.equal(payload.quality, 'high');
+  assert.deepEqual(payload.context, { chatType: 'group', groupId: '100', userId: '200' });
+  assert.equal(payload.artifacts.length, 2);
+  assert.equal(payload.artifacts[0].kind, 'base64');
+  assert.equal(payload.artifacts[1].kind, 'url');
 });
 

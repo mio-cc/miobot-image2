@@ -312,7 +312,6 @@ export function App() {
   const lightboxUserZoomedRef = useRef(false);
   const scrollMomentumRef = useRef<{ velocity: number; frame: number | null }>({ velocity: 0, frame: null });
   const galleryPaneRef = useRef<HTMLElement | null>(null);
-  const promptInputRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const interrogateInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -658,26 +657,8 @@ export function App() {
     if (nextPreset) setSize({ width: nextPreset.width, height: nextPreset.height });
   }
 
-  function revealPromptTail() {
-    window.requestAnimationFrame(() => {
-      const element = promptInputRef.current;
-      if (!element) return;
-      const end = element.value.length;
-      try {
-        element.setSelectionRange(end, end);
-      } catch {
-        // Ignore selection errors from transient composition states.
-      }
-      element.scrollLeft = element.scrollWidth;
-      element.scrollTop = element.scrollHeight;
-    });
-  }
-
   function handlePromptChange(event: ChangeEvent<HTMLTextAreaElement>) {
-    const nextPrompt = event.target.value;
-    const shouldRevealTail = nextPrompt.length >= prompt.length;
-    setPrompt(nextPrompt);
-    if (shouldRevealTail) revealPromptTail();
+    setPrompt(event.target.value);
   }
 
   function updateCustomSize(nextSize: Partial<ImageSize>) {
@@ -1306,6 +1287,7 @@ export function App() {
               aria-pressed={favoritesOnly}
               aria-label="只看收藏"
               data-ui-tooltip={favoritesOnly ? "显示全部作品与模板" : "只看收藏"}
+              data-tooltip-placement="bottom"
               onClick={() => setFavoritesOnly((current) => !current)}
             >
               <Star className="icon" aria-hidden="true" />
@@ -1669,13 +1651,10 @@ export function App() {
                 <textarea
                   className="playground-prompt-input"
                   id="prompt"
-                  ref={promptInputRef}
                   rows={1}
                   placeholder="填入提示词"
                   value={prompt}
                   onChange={handlePromptChange}
-                  onFocus={revealPromptTail}
-                  onPaste={revealPromptTail}
                 />
                 <div className="playground-input-main-actions">
                   <button

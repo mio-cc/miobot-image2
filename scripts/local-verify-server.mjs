@@ -904,6 +904,118 @@ async function assetFromArtifact(artifact, assetId, size, outputFormat) {
   };
 }
 
+function normalizeBotGalleryArtifacts(input) {
+  const source = Array.isArray(input?.artifacts)
+    ? input.artifacts
+    : Array.isArray(input?.images)
+      ? input.images
+      : [];
+  return source
+    .map((item, index) => {
+      if (typeof item === 'string') {
+        const text = item.trim();
+        if (!text) return undefined;
+        if (text.startsWith('base64://')) return { kind: 'base64', data: text.slice('base64://'.length), mimeType: 'image/png', index };
+        if (/^data:image\//i.test(text)) return { kind: 'dataUrl', data: text, index };
+        return { kind: 'url', data: text, index };
+      }
+      if (!item || typeof item !== 'object') return undefined;
+      const data = String(item.data || item.url || '').trim();
+      if (!data) return undefined;
+      if (/^data:image\//i.test(data)) return { ...item, kind: 'dataUrl', data, index: Number.isFinite(Number(item.index)) ? Number(item.index) : index };
+      const kind = item.kind === 'url' ? 'url' : item.kind === 'dataUrl' ? 'dataUrl' : 'base64';
+      return {
+        kind,
+        data: kind === 'base64' && data.startsWith('base64://') ? data.slice('base64://'.length) : data,
+        mimeType: item.mimeType,
+        revisedPrompt: item.revisedPrompt,
+        index: Number.isFinite(Number(item.index)) ? Number(item.index) : index,
+      };
+    })
+    .filter(Boolean);
+}
+
+async function assetFromBotGalleryArtifact(artifact, assetId, size, outputFormat) {
+  if (artifact.kind === 'dataUrl') {
+    return assetFromDataUrl(artifact.data, assetId, undefined, size, outputFormat);
+  }
+  return assetFromArtifact(artifact, assetId, size, outputFormat);
+}
+
+function normalizeBotRecordQuality(value) {
+  const quality = String(value || 'auto').toLowerCase();
+  return ['auto', 'low', 'medium', 'high'].includes(quality) ? quality : 'auto';
+}
+
+function safeBotRecordId(value) {
+  const cleaned = String(value || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_.-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 96);
+  return cleaned || `bot_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+}
+
+async function addBotGalleryRecord(input = {}) {
+  const artifacts = normalizeBotGalleryArtifacts(input);
+  if (!artifacts.length) throw new Error('Bot image result is empty');
+
+  const outputFormat = normalizeOutputFormat(input.outputFormat, 'png');
+  const size = sizeFromResolution(input.sizeApiValue || input.size, presetSize('square-1k'));
+  const mode = input.mode === 'edit' ? 'edit' : 'generate';
+  const now = new Date().toISOString();
+  const id = safeBotRecordId(input.taskId);
+  const prompt = String(input.prompt || input.rawPrompt || '').trim() || '[Bot image]';
+  const effectivePrompt = String(input.effectivePrompt || input.prompt || input.rawPrompt || '').trim() || prompt;
+
+  const outputs = await Promise.all(artifacts.map(async (artifact, index) => {
+    const assetId = `${id}_${index + 1}`;
+    const asset = await assetFromBotGalleryArtifact(artifact, assetId, size, outputFormat);
+    assets.set(assetId, asset);
+    return { id: `out_${assetId}`, status: 'succeeded', favorite: false, asset };
+  }));
+  const firstAsset = outputs.find((output) => output.asset)?.asset;
+  const recordSize = firstAsset
+    ? { width: firstAsset.width || size.width, height: firstAsset.height || size.height }
+    : { width: size.width, height: size.height };
+
+  const record = {
+    id,
+    mode,
+    prompt,
+    effectivePrompt,
+    presetId: 'bot',
+    size: recordSize,
+    quality: normalizeBotRecordQuality(input.quality),
+    outputFormat,
+    count: outputs.length,
+    status: 'succeeded',
+    referenceAssetIds: [],
+    createdAt: now,
+    outputs,
+    source: 'bot',
+    botContext: input.context && typeof input.context === 'object'
+      ? {
+          chatType: String(input.context.chatType || ''),
+          groupId: String(input.context.groupId || ''),
+          userId: String(input.context.userId || ''),
+        }
+      : undefined,
+  };
+
+  project.history = [record, ...project.history].slice(0, 50);
+  project.updatedAt = now;
+  gallery = galleryItemsForRecord(record).concat(gallery).slice(0, 500);
+  logCanvas('info', 'canvas.bot', 'Bot image imported into gallery', {
+    recordId: record.id,
+    mode: record.mode,
+    outputCount: outputs.length,
+    command: String(input.command || ''),
+  });
+  await persistCanvasState();
+  return record;
+}
+
 function galleryItemsForRecord(record) {
   return record.outputs
     .filter((output) => output.status === 'succeeded' && output.asset)
@@ -1135,6 +1247,20 @@ async function handleCanvasApi(req, res, url) {
     project = { ...project, name: body?.name || project.name, snapshot: Object.hasOwn(body || {}, 'snapshot') ? body.snapshot : project.snapshot, interrogations, updatedAt: new Date().toISOString() };
     await persistCanvasState();
     return sendJson(res, 200, publicProjectState());
+  }
+  if (req.method === 'POST' && p === '/bot/gallery') {
+    if (!isAuthorized(req.headers)) return sendJson(res, 401, { error: { code: 'unauthorized', message: 'Unauthorized' } });
+    try {
+      const record = await addBotGalleryRecord(body || {});
+      return sendJson(res, 200, { ok: true, record: publicGenerationRecord(record) });
+    } catch (error) {
+      return sendJson(res, 400, {
+        error: {
+          code: 'bot_gallery_import_failed',
+          message: asErrorMessage(error),
+        },
+      });
+    }
   }
   if (req.method === 'GET' && p === '/gallery') return sendJson(res, 200, { items: filterGalleryItems(gallery, url).map(publicGalleryItem), total: gallery.length });
   if (req.method === 'PATCH' && p.startsWith('/gallery/') && p.endsWith('/favorite')) {

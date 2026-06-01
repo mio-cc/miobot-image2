@@ -322,10 +322,11 @@ async function handleCommand(adapter, config, reply, context, decision, message)
         await reply.replyText(context, '图像生成功能未启用，请在后台开启“图像生成”。');
         return;
       }
-      await image.generate({
-        rawPrompt: await maybeEnhancePrompt(config, withReferenceContext(args || message.commandText || '生成一张图片', message), decision.metadata?.enhance),
-        context,
-      });
+      {
+        const rawPrompt = await maybeEnhancePrompt(config, withReferenceContext(args || message.commandText || '生成一张图片', message), decision.metadata?.enhance);
+        const result = await image.generate({ rawPrompt, context });
+        await syncBotImageResultToCanvasGallery(config, result, { mode: 'generate', rawPrompt, context, command: decision.command });
+      }
       break;
     case 'img2Img':
     case 'editImage': {
@@ -334,11 +335,15 @@ async function handleCommand(adapter, config, reply, context, decision, message)
         await reply.replyText(context, '请在消息里附带图片，或回复一条含图片的消息后再使用图生图/改图命令。');
         return;
       }
-      await image.edit({
-        rawPrompt: await maybeEnhancePrompt(config, args || '根据参考图重新生成', decision.metadata?.enhance),
-        images,
-        context,
-      });
+      {
+        const rawPrompt = await maybeEnhancePrompt(config, args || '根据参考图重新生成', decision.metadata?.enhance);
+        const result = await image.edit({
+          rawPrompt,
+          images,
+          context,
+        });
+        await syncBotImageResultToCanvasGallery(config, result, { mode: 'edit', rawPrompt, context, command: decision.command });
+      }
       break;
     }
     case 'interrogate': {
@@ -357,10 +362,11 @@ async function handleCommand(adapter, config, reply, context, decision, message)
         return;
       }
       const source = args || message.referenceText || message.commandText || '根据引用内容生成图片';
-      await image.generate({
-        rawPrompt: await maybeEnhancePrompt(config, withReferenceContext(source, message), decision.metadata?.enhance),
-        context,
-      });
+      {
+        const rawPrompt = await maybeEnhancePrompt(config, withReferenceContext(source, message), decision.metadata?.enhance);
+        const result = await image.generate({ rawPrompt, context });
+        await syncBotImageResultToCanvasGallery(config, result, { mode: 'generate', rawPrompt, context, command: decision.command });
+      }
       break;
     }
     case 'remotePromptSearch': {
@@ -374,7 +380,8 @@ async function handleCommand(adapter, config, reply, context, decision, message)
       }
       const query = String(args || message.referenceText || message.commandText || '').trim();
       const rawPrompt = await resolveRemoteOrLocalSmartPrompt(config, query || message.referenceText || message.commandText || '', message);
-      await image.generate({ rawPrompt, context });
+      const result = await image.generate({ rawPrompt, context });
+      await syncBotImageResultToCanvasGallery(config, result, { mode: 'generate', rawPrompt, context, command: decision.command });
       break;
     }
     case 'originalImage':
@@ -410,11 +417,125 @@ async function handleFreeMode(adapter, config, reply, context, args, message) {
     plannerPromptTemplate: config.freeMode?.plannerPromptTemplate,
     preferEditWhenImagePresent: config.freeMode?.preferEditWhenImagePresent,
   });
-  await engine.handle({
+  const result = await engine.handle({
     userContent: withReferenceContext(args, message),
     images: await imagesFromMessageOrReply(adapter, message),
     context,
   });
+  await syncBotImageResultToCanvasGallery(config, result.imageResults || [], {
+    mode: result.mode || 'generate',
+    rawPrompt: result.planner?.prompt || result.directives?.rawPrompt || args,
+    context,
+    command: 'freeMode',
+  });
+}
+
+function normalizeImageOperationResults(input) {
+  if (!input) return [];
+  if (Array.isArray(input)) return input.filter(Boolean);
+  return [input];
+}
+
+function botResultArtifactToPayload(artifact) {
+  if (!artifact || typeof artifact !== 'object') return undefined;
+  const kind = artifact.kind === 'url' ? 'url' : 'base64';
+  const data = String(artifact.data || '').trim();
+  if (!data) return undefined;
+  return {
+    kind,
+    data,
+    mimeType: artifact.mimeType || (kind === 'base64' ? 'image/png' : undefined),
+    revisedPrompt: artifact.revisedPrompt,
+    index: Number.isFinite(Number(artifact.index)) ? Number(artifact.index) : undefined,
+  };
+}
+
+function sendableImageToPayload(value, index = 0) {
+  const text = String(value || '').trim();
+  if (!text) return undefined;
+  if (text.startsWith('base64://')) {
+    return { kind: 'base64', data: text.slice('base64://'.length), mimeType: 'image/png', index };
+  }
+  if (/^data:image\//i.test(text)) {
+    return { kind: 'dataUrl', data: text, index };
+  }
+  return { kind: 'url', data: text, index };
+}
+
+export function buildBotGalleryPayload(resultsInput, meta = {}) {
+  const results = normalizeImageOperationResults(resultsInput);
+  const artifacts = [];
+  for (const result of results) {
+    if (Array.isArray(result?.artifacts) && result.artifacts.length) {
+      for (const artifact of result.artifacts) {
+        const payload = botResultArtifactToPayload(artifact);
+        if (payload) artifacts.push(payload);
+      }
+    } else if (Array.isArray(result?.images)) {
+      result.images.forEach((image, index) => {
+        const payload = sendableImageToPayload(image, index);
+        if (payload) artifacts.push(payload);
+      });
+    }
+  }
+
+  const first = results[0] || {};
+  const prompt = String(meta.rawPrompt || first.params?.rawInput || first.prompt || '').trim();
+  const effectivePrompt = String(first.prompt || meta.rawPrompt || '').trim();
+  return {
+    source: 'bot',
+    taskId: `bot_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+    command: meta.command || '',
+    mode: meta.mode === 'edit' ? 'edit' : 'generate',
+    prompt,
+    effectivePrompt,
+    sizeApiValue: first.params?.size || meta.sizeApiValue || '',
+    quality: first.params?.quality || meta.quality || 'auto',
+    outputFormat: meta.outputFormat || 'png',
+    context: {
+      chatType: meta.context?.chatType || '',
+      groupId: meta.context?.groupId || '',
+      userId: meta.context?.userId || '',
+    },
+    artifacts,
+  };
+}
+
+function botCanvasSyncEndpoint(config) {
+  const explicit = String(process.env.MIOBOT_CANVAS_SYNC_URL || '').trim();
+  if (explicit) return explicit;
+  const port = Number(process.env.MIOBOT_PORT || process.env.MIOBOT_VERIFY_PORT || process.env.PORT || config.panel?.port || 3018);
+  return `http://127.0.0.1:${port}/canvas-api/bot/gallery`;
+}
+
+async function syncBotImageResultToCanvasGallery(config, resultsInput, meta = {}) {
+  if (process.env.MIOBOT_SYNC_BOT_GALLERY === '0' || config.canvas?.enabled === false) return;
+  const payload = buildBotGalleryPayload(resultsInput, meta);
+  if (!payload.artifacts.length) return;
+
+  const endpoint = botCanvasSyncEndpoint(config);
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${String(config.panel?.passwordSeed || '')}`,
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok) throw new Error(`Canvas gallery sync HTTP ${response.status}`);
+    logger.info('Bot image result synced to canvas gallery', {
+      mode: payload.mode,
+      command: payload.command,
+      imageCount: payload.artifacts.length,
+    });
+  } catch (error) {
+    logger.warn('Bot image gallery sync failed', {
+      error: normalizeError(error),
+      imageCount: payload.artifacts.length,
+    });
+  }
 }
 
 async function handleChat(config, reply, context, text) {
