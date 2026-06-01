@@ -1,0 +1,15 @@
+﻿{
+  "name": "@miobot-v2/napcat",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Napcat WebSocket/action adapter boundary.",
+  "main": "../../dist/packages/napcat/src/index.js",
+  "types": "../../dist/packages/napcat/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "../../dist/packages/napcat/src/index.d.ts",
+      "default": "../../dist/packages/napcat/src/index.js"
+    }
+  }
+}

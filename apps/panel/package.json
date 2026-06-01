@@ -1,0 +1,7 @@
+﻿{
+  "name": "@miobot-v2/app-panel",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "../../dist/apps/panel/src/main.js"
+}

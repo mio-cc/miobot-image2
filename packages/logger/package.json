@@ -1,0 +1,15 @@
+﻿{
+  "name": "@miobot-v2/logger",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Structured logging, redaction and query support.",
+  "main": "../../dist/packages/logger/src/index.js",
+  "types": "../../dist/packages/logger/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "../../dist/packages/logger/src/index.d.ts",
+      "default": "../../dist/packages/logger/src/index.js"
+    }
+  }
+}

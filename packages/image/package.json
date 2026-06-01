@@ -1,0 +1,15 @@
+﻿{
+  "name": "@miobot-v2/image",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Image generation/edit/interrogate domain boundary.",
+  "main": "../../dist/packages/image/src/index.js",
+  "types": "../../dist/packages/image/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "../../dist/packages/image/src/index.d.ts",
+      "default": "../../dist/packages/image/src/index.js"
+    }
+  }
+}

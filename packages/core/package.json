@@ -1,0 +1,15 @@
+﻿{
+  "name": "@miobot-v2/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runtime lifecycle, task queue, session and policy primitives.",
+  "main": "../../dist/packages/core/src/index.js",
+  "types": "../../dist/packages/core/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "../../dist/packages/core/src/index.d.ts",
+      "default": "../../dist/packages/core/src/index.js"
+    }
+  }
+}

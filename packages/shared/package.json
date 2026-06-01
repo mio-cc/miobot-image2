@@ -1,0 +1,15 @@
+﻿{
+  "name": "@miobot-v2/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared types and constants for v2 package boundaries.",
+  "main": "../../dist/packages/shared/src/index.js",
+  "types": "../../dist/packages/shared/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "../../dist/packages/shared/src/index.d.ts",
+      "default": "../../dist/packages/shared/src/index.js"
+    }
+  }
+}

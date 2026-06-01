@@ -1,0 +1,47 @@
+﻿node_modules/
+**/node_modules/
+
+# Build outputs
+/dist/
+web-panel/dist/
+web-canvas/apps/web/dist/
+web-canvas/packages/*/dist/
+apps/panel/static/admin/
+apps/panel/static/canvas/
+
+# Runtime/local data and secrets
+.runtime/
+.codex-run/
+**/.agents/
+.env
+.env.*
+!.env.example
+*.local
+*.log
+logs/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Test/cache
+coverage/
+.nyc_output/
+.cache/
+.tmp/
+tmp/
+
+# Generated frontend leftovers
+web-panel/src/**/*.js
+web-panel/src/components/HelloWorld.vue
+web-panel/src/assets/vite.svg
+web-panel/src/assets/vue.svg
+
+# Local/demo image assets should not be published
+web-canvas/apps/web/public/*.jpg
+web-canvas/apps/web/public/*.jpeg
+web-canvas/apps/web/public/*.png
+web-canvas/apps/web/public/*.webp
+web-canvas/apps/web/public/thumbs/

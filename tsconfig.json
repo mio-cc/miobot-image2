@@ -1,0 +1,35 @@
+﻿{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "declaration": true,
+    "sourceMap": true,
+    "rootDir": ".",
+    "outDir": "dist",
+    "baseUrl": ".",
+    "paths": {
+      "@miobot-v2/shared": ["packages/shared/src/index.ts"],
+      "@miobot-v2/core": ["packages/core/src/index.ts"],
+      "@miobot-v2/config": ["packages/config/src/index.ts"],
+      "@miobot-v2/logger": ["packages/logger/src/index.ts"],
+      "@miobot-v2/napcat": ["packages/napcat/src/index.ts"],
+      "@miobot-v2/llm": ["packages/llm/src/index.ts"],
+      "@miobot-v2/image": ["packages/image/src/index.ts"],
+      "@miobot-v2/reply": ["packages/reply/src/index.ts"],
+      "@miobot-v2/bot-router": ["packages/bot-router/src/index.ts"],
+      "@miobot-v2/free-mode": ["packages/free-mode/src/index.ts"],
+      "@miobot-v2/web-api": ["packages/web-api/src/index.ts"],
+      "@miobot-v2/web-panel": ["packages/web-panel/src/index.ts"]
+    }
+  },
+  "include": [
+    "apps/**/*.ts",
+    "packages/**/*.ts"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules"
+  ]
+}

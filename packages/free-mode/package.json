@@ -1,0 +1,15 @@
+﻿{
+  "name": "@miobot-v2/free-mode",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Free Mode planner boundary.",
+  "main": "../../dist/packages/free-mode/src/index.js",
+  "types": "../../dist/packages/free-mode/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "../../dist/packages/free-mode/src/index.d.ts",
+      "default": "../../dist/packages/free-mode/src/index.js"
+    }
+  }
+}

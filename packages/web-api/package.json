@@ -1,0 +1,15 @@
+﻿{
+  "name": "@miobot-v2/web-api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Admin and canvas API boundary.",
+  "main": "../../dist/packages/web-api/src/index.js",
+  "types": "../../dist/packages/web-api/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "../../dist/packages/web-api/src/index.d.ts",
+      "default": "../../dist/packages/web-api/src/index.js"
+    }
+  }
+}

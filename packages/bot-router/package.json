@@ -1,0 +1,15 @@
+﻿{
+  "name": "@miobot-v2/bot-router",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Bot routing and command decision boundary.",
+  "main": "../../dist/packages/bot-router/src/index.js",
+  "types": "../../dist/packages/bot-router/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "../../dist/packages/bot-router/src/index.d.ts",
+      "default": "../../dist/packages/bot-router/src/index.js"
+    }
+  }
+}

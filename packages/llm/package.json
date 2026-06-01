@@ -1,0 +1,15 @@
+﻿{
+  "name": "@miobot-v2/llm",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "LLM provider adapter boundary.",
+  "main": "../../dist/packages/llm/src/index.js",
+  "types": "../../dist/packages/llm/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "../../dist/packages/llm/src/index.d.ts",
+      "default": "../../dist/packages/llm/src/index.js"
+    }
+  }
+}
