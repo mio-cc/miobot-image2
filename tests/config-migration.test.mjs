@@ -163,6 +163,54 @@ test('migration: bot owner and tts settings are normalized', () => {
   assert.equal(result.config.bot.tts.latency, 'normal');
 });
 
+test('migration: hugging face config and cached models are normalized', () => {
+  const result = importConfig({
+    huggingFace: {
+      enabled: 'true',
+      useForChat: 'true',
+      token: ' hf-test-token ',
+      selectedModelId: 'org/chat-model',
+      selectedProvider: 'cerebras',
+      requestMode: 'bad-mode',
+      timeoutMs: 1,
+      cacheTtlSeconds: 9999999,
+      filters: {
+        pipelineTag: 'image-text-to-text',
+        inference: 'bad',
+        gated: 'bad',
+        sort: 'bad',
+        direction: '1',
+        limit: 999,
+        onlyChatCompatible: 'false',
+      },
+      cachedModels: [{
+        id: 'org/chat-model',
+        downloads: '12',
+        likes: '3',
+        tags: 'chat,vision',
+        pipeline_tag: 'text-generation',
+      }],
+    },
+  });
+
+  assert.equal(result.config.huggingFace.enabled, true);
+  assert.equal(result.config.huggingFace.useForChat, true);
+  assert.equal(result.config.huggingFace.token, 'hf-test-token');
+  assert.equal(result.config.huggingFace.requestMode, 'openai-chat');
+  assert.equal(result.config.huggingFace.timeoutMs, 5000);
+  assert.equal(result.config.huggingFace.cacheTtlSeconds, 604800);
+  assert.equal(result.config.huggingFace.filters.pipelineTag, 'image-text-to-text');
+  assert.equal(result.config.huggingFace.filters.inference, 'warm');
+  assert.equal(result.config.huggingFace.filters.gated, 'false');
+  assert.equal(result.config.huggingFace.filters.sort, 'downloads');
+  assert.equal(result.config.huggingFace.filters.direction, '1');
+  assert.equal(result.config.huggingFace.filters.limit, 200);
+  assert.equal(result.config.huggingFace.filters.onlyChatCompatible, false);
+  assert.equal(result.config.huggingFace.cachedModels[0].code, 'hf.1');
+  assert.equal(result.config.huggingFace.cachedModels[0].downloads, 12);
+  assert.deepEqual(result.config.huggingFace.cachedModels[0].tags, ['chat', 'vision']);
+});
+
 test('migration: model node can split combined base url and key paste', () => {
   const result = importConfig({
     llm: {

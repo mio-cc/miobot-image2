@@ -57,6 +57,9 @@ const currentPage = ref('about');
 const fetchedModels = ref<string[]>([]);
 const modelLoading = ref(false);
 const modelError = ref('');
+const hfModelsLoading = ref(false);
+const hfModelsError = ref('');
+const hfFetchStatus = ref('');
 const napcatTestLoading = ref(false);
 const napcatTestResult = ref<any>(null);
 const imageTestLoading = ref(false);
@@ -94,6 +97,7 @@ const collapsedTemplates = ref<Record<string, boolean>>({});
 const menuItems = [
   { id: 'about', icon: '总', label: '控制台概览' },
   { id: 'llm', icon: '模', label: '模型与节点' },
+  { id: 'huggingFace', icon: 'HF', label: 'Hugging Face 接口' },
   { id: 'bot', icon: '复', label: '回复策略' },
   { id: 'freeMode', icon: '自', label: '自由模式' },
   { id: 'templates', icon: '词', label: '提示词模板' },
@@ -312,6 +316,45 @@ function ensureCanvasConfig() {
   config.value.freeMode.includeQuotedMessage ??= true;
   config.value.freeMode.preferEditWhenImagePresent ??= true;
   config.value.freeMode.plannerPromptTemplate ||= defaultPrompts.value?.freeModePromptTemplate || '你是自由模式规划器。判断应该文本回复，还是创建或编辑图片。只返回结构化结果。用户内容：{{userContent}}';
+  if (!config.value.huggingFace) {
+    config.value.huggingFace = {
+      enabled: false,
+      useForChat: false,
+      token: '',
+      baseUrl: 'https://router.huggingface.co/v1',
+      hubApiUrl: 'https://huggingface.co/api/models',
+      selectedModelId: '',
+      selectedProvider: '',
+      selectedModelCode: '',
+      requestMode: 'openai-chat',
+      timeoutMs: 120000,
+      cacheTtlSeconds: 3600,
+      cachedAt: '',
+      cacheQueryHash: '',
+      cachedModels: [],
+      filters: {},
+    };
+  }
+  config.value.huggingFace.baseUrl ||= 'https://router.huggingface.co/v1';
+  config.value.huggingFace.hubApiUrl ||= 'https://huggingface.co/api/models';
+  config.value.huggingFace.requestMode ||= 'openai-chat';
+  config.value.huggingFace.timeoutMs ??= 120000;
+  config.value.huggingFace.cacheTtlSeconds ??= 3600;
+  if (!Array.isArray(config.value.huggingFace.cachedModels)) config.value.huggingFace.cachedModels = [];
+  if (!config.value.huggingFace.filters) config.value.huggingFace.filters = {};
+  config.value.huggingFace.filters.search ??= '';
+  config.value.huggingFace.filters.author ??= '';
+  config.value.huggingFace.filters.pipelineTag ||= 'text-generation';
+  config.value.huggingFace.filters.tags ??= '';
+  config.value.huggingFace.filters.library ??= '';
+  config.value.huggingFace.filters.inference ??= 'warm';
+  config.value.huggingFace.filters.gated ??= 'false';
+  config.value.huggingFace.filters.sort ||= 'downloads';
+  config.value.huggingFace.filters.direction ||= '-1';
+  config.value.huggingFace.filters.limit ??= 50;
+  config.value.huggingFace.filters.includePrivate ??= true;
+  config.value.huggingFace.filters.onlyChatCompatible ??= true;
+  config.value.huggingFace.filters.provider ??= '';
 }
 
 async function fetchDefaultPrompts() {
@@ -536,6 +579,84 @@ async function fetchModels(idx: number | string) {
   } finally { 
     modelLoading.value = false; 
   }
+}
+
+function hfConfig() {
+  ensureCanvasConfig();
+  return config.value.huggingFace;
+}
+
+function hfModels() {
+  return Array.isArray(config.value?.huggingFace?.cachedModels) ? config.value.huggingFace.cachedModels : [];
+}
+
+function applyHfPreset(kind: string) {
+  const hf = hfConfig();
+  const f = hf.filters;
+  if (kind === 'chat') {
+    Object.assign(f, { pipelineTag: 'text-generation', inference: 'warm', gated: 'false', sort: 'downloads', direction: '-1', onlyChatCompatible: true });
+  } else if (kind === 'vision') {
+    Object.assign(f, { pipelineTag: 'image-text-to-text', inference: '', gated: 'false', sort: 'downloads', direction: '-1', onlyChatCompatible: true });
+  } else if (kind === 'image') {
+    Object.assign(f, { pipelineTag: 'text-to-image', inference: '', gated: 'false', sort: 'downloads', direction: '-1', onlyChatCompatible: false });
+  } else if (kind === 'asr') {
+    Object.assign(f, { pipelineTag: 'automatic-speech-recognition', inference: '', gated: 'false', sort: 'downloads', direction: '-1', onlyChatCompatible: false });
+  } else if (kind === 'private') {
+    Object.assign(f, { includePrivate: true, gated: '', inference: '', sort: 'last_modified', direction: '-1' });
+  } else if (kind === 'hot') {
+    Object.assign(f, { inference: 'warm', sort: 'downloads', direction: '-1', limit: 100 });
+  }
+  showToast('已套用 Hugging Face 筛选预设，点击“查询模型”即可刷新列表', 'info');
+}
+
+function clearHfCache() {
+  const hf = hfConfig();
+  hf.cachedModels = [];
+  hf.cachedAt = '';
+  hf.cacheQueryHash = '';
+  hfFetchStatus.value = '缓存已清空，保存配置后生效';
+  showToast('已清空 Hugging Face 模型缓存', 'info');
+}
+
+function selectHfModel(model: any) {
+  const hf = hfConfig();
+  hf.selectedModelId = model.id;
+  hf.selectedProvider = model.provider || '';
+  hf.selectedModelCode = model.code || '';
+  hf.requestMode = model.requestMode || hf.requestMode || 'openai-chat';
+  hf.useForChat = true;
+  hf.enabled = true;
+  showToast(`已选择 ${model.code}：${model.id}，保存后 bot 可用 /q ${model.code} 切换`, 'success');
+}
+
+async function fetchHuggingFaceModels(force = false) {
+  const hf = hfConfig();
+  hfModelsLoading.value = true;
+  hfModelsError.value = '';
+  hfFetchStatus.value = '正在查询 Hugging Face 模型列表...';
+  try {
+    const res = await axios.post(`${API_BASE}/huggingface/models`, {
+      force,
+      huggingFace: hf,
+      filters: hf.filters,
+    }, { headers: authHeaders() });
+    config.value = res.data.config || config.value;
+    ensureCanvasConfig();
+    hfFetchStatus.value = `${res.data.fromCache ? '已使用缓存' : '已刷新'}：共 ${res.data.models?.length || 0} 个模型，缓存时间 ${res.data.cachedAt || '-'}`;
+    showToast(`Hugging Face 模型查询完成：${res.data.models?.length || 0} 个`, 'success');
+  } catch (e: any) {
+    hfModelsError.value = e.response?.data?.error || e.message || '查询失败';
+    hfFetchStatus.value = '';
+    showToast(`Hugging Face 查询失败: ${hfModelsError.value}`, 'error');
+  } finally {
+    hfModelsLoading.value = false;
+  }
+}
+
+function hfFormatDate(value: string) {
+  if (!value) return '-';
+  const d = new Date(value);
+  return Number.isFinite(d.getTime()) ? d.toLocaleString() : value;
 }
 
 async function fetchLogs(showLoading = true) {
@@ -1384,6 +1505,240 @@ async function generateTemplateTitle(tpl: any, idx: number) {
               <div class="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto">
                 <span v-for="m in fetchedModels" :key="m" class="tag">{{ m }}</span>
               </div>
+            </div>
+          </div>
+
+          <!-- ═══ PAGE: Hugging Face 免费接口 ═══ -->
+          <div v-show="currentPage === 'huggingFace'" class="space-y-4 animate-fadein">
+            <div class="card p-5">
+              <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between mb-5">
+                <div>
+                  <h2 class="section-title">🤗 Hugging Face 免费接口</h2>
+                  <p class="text-slate-500 text-sm mt-1">单独管理 Hugging Face Router / Hub 模型。密钥只保存在本地配置，bot 列表中永远排在普通接口后面。</p>
+                  <p class="text-slate-400 text-xs mt-1">bot 命令示例：<code>@bot /模型</code> 查看编码，<code>@bot /q hf.1</code> 切换到 HF 第 1 个缓存模型。</p>
+                </div>
+                <div class="flex flex-wrap gap-3">
+                  <label class="flex items-center gap-2 rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-sm font-semibold text-slate-700">
+                    <input type="checkbox" v-model="config.huggingFace.enabled" class="h-4 w-4 accent-amber-500" />
+                    启用 HF 接口
+                  </label>
+                  <label class="flex items-center gap-2 rounded-xl border border-indigo-100 bg-indigo-50/60 px-3 py-2 text-sm font-semibold text-indigo-700">
+                    <input type="checkbox" v-model="config.huggingFace.useForChat" class="h-4 w-4 accent-indigo-500" />
+                    当前作为 bot 文本模型
+                  </label>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-4">
+                <div>
+                  <label class="label-sm">Hugging Face Token</label>
+                  <input v-model="config.huggingFace.token" type="password" class="input-field font-mono" placeholder="hf_...（查询私有/可见模型时填写）" />
+                  <span class="text-slate-400 text-xs mt-1 block">用于查询 token 可见模型与 Router 调用；不会显示在日志里。</span>
+                </div>
+                <div>
+                  <label class="label-sm">Router/OpenAI 兼容地址</label>
+                  <input v-model="config.huggingFace.baseUrl" class="input-field font-mono" placeholder="https://router.huggingface.co/v1" />
+                  <span class="text-slate-400 text-xs mt-1 block">对话类默认走 OpenAI-compatible chat/completions。</span>
+                </div>
+                <div>
+                  <label class="label-sm">Hub 模型列表 API</label>
+                  <input v-model="config.huggingFace.hubApiUrl" class="input-field font-mono" placeholder="https://huggingface.co/api/models" />
+                  <span class="text-slate-400 text-xs mt-1 block">查询模型表用，可改为镜像地址。</span>
+                </div>
+                <div>
+                  <label class="label-sm">请求模式备用方案</label>
+                  <select v-model="config.huggingFace.requestMode" class="input-field font-mono">
+                    <option value="openai-chat">OpenAI 聊天兼容（默认）</option>
+                    <option value="router-chat">HF Router Chat</option>
+                    <option value="legacy-inference">旧 Inference API</option>
+                    <option value="provider-task">按任务 Provider API</option>
+                  </select>
+                  <span class="text-slate-400 text-xs mt-1 block">当前 bot 文本优先使用 OpenAI 聊天兼容；其它模式先保存备用。</span>
+                </div>
+                <div>
+                  <label class="label-sm">接口超时（毫秒）</label>
+                  <input v-model.number="config.huggingFace.timeoutMs" type="number" min="5000" step="5000" class="input-field font-mono" />
+                </div>
+                <div>
+                  <label class="label-sm">缓存有效期（秒）</label>
+                  <input v-model.number="config.huggingFace.cacheTtlSeconds" type="number" min="60" step="60" class="input-field font-mono" />
+                </div>
+                <div>
+                  <label class="label-sm">当前选中编码</label>
+                  <input v-model="config.huggingFace.selectedModelCode" class="input-field font-mono" placeholder="hf.1" readonly />
+                </div>
+                <div>
+                  <label class="label-sm">当前选中模型</label>
+                  <input v-model="config.huggingFace.selectedModelId" class="input-field font-mono" placeholder="未选择" readonly />
+                </div>
+              </div>
+            </div>
+
+            <div class="card p-5">
+              <div class="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between mb-4">
+                <div>
+                  <h2 class="section-title">🔎 傻瓜式筛选面板</h2>
+                  <p class="text-slate-400 text-sm mt-1">先选预设，再按需补充关键词/作者/标签。点击查询后会保存结果缓存，避免重复请求 Hugging Face。</p>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <button @click="applyHfPreset('chat')" class="btn-outline text-xs">对话/LLM</button>
+                  <button @click="applyHfPreset('vision')" class="btn-outline text-xs">视觉理解/VLM</button>
+                  <button @click="applyHfPreset('image')" class="btn-outline text-xs">文生图</button>
+                  <button @click="applyHfPreset('asr')" class="btn-outline text-xs">语音识别</button>
+                  <button @click="applyHfPreset('private')" class="btn-outline text-xs">我的可见模型</button>
+                  <button @click="applyHfPreset('hot')" class="btn-outline text-xs">热门可推理</button>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                <div>
+                  <label class="label-sm">关键词搜索</label>
+                  <input v-model="config.huggingFace.filters.search" class="input-field" placeholder="例如 Qwen、Llama、SDXL" />
+                  <span class="text-slate-400 text-xs mt-1 block">按模型名/描述模糊搜索。</span>
+                </div>
+                <div>
+                  <label class="label-sm">作者/组织</label>
+                  <input v-model="config.huggingFace.filters.author" class="input-field" placeholder="例如 Qwen、meta-llama" />
+                  <span class="text-slate-400 text-xs mt-1 block">只看某个组织或作者发布的模型。</span>
+                </div>
+                <div>
+                  <label class="label-sm">任务类型 pipeline_tag</label>
+                  <select v-model="config.huggingFace.filters.pipelineTag" class="input-field font-mono">
+                    <option value="">全部任务</option>
+                    <option value="text-generation">文本生成 / 对话模型</option>
+                    <option value="image-text-to-text">图文转文本 / VLM</option>
+                    <option value="text-to-image">文生图</option>
+                    <option value="image-to-image">图生图</option>
+                    <option value="automatic-speech-recognition">语音识别</option>
+                    <option value="text-to-speech">文本转语音</option>
+                    <option value="translation">翻译</option>
+                    <option value="summarization">摘要</option>
+                    <option value="sentence-similarity">向量/相似度</option>
+                    <option value="fill-mask">填空/掩码</option>
+                  </select>
+                  <span class="text-slate-400 text-xs mt-1 block">这是 HF 最重要的任务筛选字段。</span>
+                </div>
+                <div>
+                  <label class="label-sm">标签 filter</label>
+                  <input v-model="config.huggingFace.filters.tags" class="input-field" placeholder="多个用逗号分隔，如 chat,gguf" />
+                  <span class="text-slate-400 text-xs mt-1 block">对应 HF tags/filter 参数，可叠加多个。</span>
+                </div>
+                <div>
+                  <label class="label-sm">框架/库 library</label>
+                  <input v-model="config.huggingFace.filters.library" class="input-field" placeholder="transformers / diffusers / mlx" />
+                </div>
+                <div>
+                  <label class="label-sm">推理状态 inference</label>
+                  <select v-model="config.huggingFace.filters.inference" class="input-field">
+                    <option value="">不限</option>
+                    <option value="warm">可直接推理 warm</option>
+                    <option value="cold">冷启动 cold</option>
+                    <option value="frozen">不可用 frozen</option>
+                  </select>
+                  <span class="text-slate-400 text-xs mt-1 block">免费接口优先选 warm，成功率更高。</span>
+                </div>
+                <div>
+                  <label class="label-sm">门禁 gated</label>
+                  <select v-model="config.huggingFace.filters.gated" class="input-field">
+                    <option value="">不限</option>
+                    <option value="false">非门禁</option>
+                    <option value="true">门禁模型</option>
+                  </select>
+                  <span class="text-slate-400 text-xs mt-1 block">门禁模型可能需要你在 HF 页面先同意协议。</span>
+                </div>
+                <div>
+                  <label class="label-sm">Provider 名称</label>
+                  <input v-model="config.huggingFace.filters.provider" class="input-field" placeholder="hf-inference / fal-ai 等" />
+                  <span class="text-slate-400 text-xs mt-1 block">留空自动取模型映射里的第一个 provider。</span>
+                </div>
+                <div>
+                  <label class="label-sm">排序字段</label>
+                  <select v-model="config.huggingFace.filters.sort" class="input-field">
+                    <option value="downloads">下载量</option>
+                    <option value="likes">点赞数</option>
+                    <option value="last_modified">最近更新</option>
+                    <option value="created_at">创建时间</option>
+                    <option value="trending_score">趋势热度</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="label-sm">排序方向</label>
+                  <select v-model="config.huggingFace.filters.direction" class="input-field">
+                    <option value="-1">降序：大到小/新到旧</option>
+                    <option value="1">升序：小到大/旧到新</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="label-sm">返回上限</label>
+                  <input v-model.number="config.huggingFace.filters.limit" type="number" min="1" max="200" class="input-field font-mono" />
+                  <span class="text-slate-400 text-xs mt-1 block">最多 200，越大请求越慢。</span>
+                </div>
+                <div class="space-y-2">
+                  <label class="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-sm text-slate-600">
+                    查询 token 可见私有模型
+                    <input type="checkbox" v-model="config.huggingFace.filters.includePrivate" class="h-4 w-4 accent-amber-500" />
+                  </label>
+                  <label class="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-sm text-slate-600">
+                    仅显示聊天可切换模型
+                    <input type="checkbox" v-model="config.huggingFace.filters.onlyChatCompatible" class="h-4 w-4 accent-indigo-500" />
+                  </label>
+                </div>
+              </div>
+
+              <div class="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center">
+                <button @click="fetchHuggingFaceModels(false)" :disabled="hfModelsLoading" class="btn-primary text-sm">
+                  {{ hfModelsLoading ? '查询中...' : '查询模型（优先缓存）' }}
+                </button>
+                <button @click="fetchHuggingFaceModels(true)" :disabled="hfModelsLoading" class="btn-outline text-sm">强制刷新</button>
+                <button @click="clearHfCache" :disabled="hfModelsLoading" class="btn-outline text-sm">清空缓存</button>
+                <span class="text-xs text-slate-400">{{ hfFetchStatus || (config.huggingFace.cachedAt ? ('缓存时间：' + hfFormatDate(config.huggingFace.cachedAt)) : '暂无缓存') }}</span>
+              </div>
+              <p v-if="hfModelsError" class="mt-3 text-sm text-red-500">{{ hfModelsError }}</p>
+            </div>
+
+            <div class="card p-5">
+              <div class="flex items-center justify-between mb-4">
+                <h2 class="section-title">📋 Hugging Face 结果表（{{ hfModels().length }}）</h2>
+                <span class="tag text-amber-700 bg-amber-50 border-amber-200">接口编码固定：hf-1；模型编码：hf.1 / hf.2 ...</span>
+              </div>
+              <div v-if="hfModels().length" class="overflow-x-auto rounded-xl border border-slate-200">
+                <table class="min-w-full text-left text-sm">
+                  <thead class="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th class="px-3 py-2">编码</th>
+                      <th class="px-3 py-2">模型</th>
+                      <th class="px-3 py-2">任务</th>
+                      <th class="px-3 py-2">Provider</th>
+                      <th class="px-3 py-2">状态</th>
+                      <th class="px-3 py-2">热度</th>
+                      <th class="px-3 py-2">更新时间</th>
+                      <th class="px-3 py-2">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-slate-100 bg-white/70">
+                    <tr v-for="model in hfModels()" :key="model.id + model.code" :class="config.huggingFace.selectedModelId === model.id ? 'bg-indigo-50/70' : ''">
+                      <td class="px-3 py-2 font-mono font-bold text-indigo-600">{{ model.code }}</td>
+                      <td class="px-3 py-2">
+                        <div class="font-semibold text-slate-700 break-all">{{ model.id }}</div>
+                        <div class="text-xs text-slate-400 break-all">{{ (model.tags || []).slice(0, 5).join(' · ') }}</div>
+                      </td>
+                      <td class="px-3 py-2 font-mono text-xs">{{ model.pipelineTag || '-' }}</td>
+                      <td class="px-3 py-2 font-mono text-xs">{{ model.provider || '-' }}</td>
+                      <td class="px-3 py-2 text-xs">
+                        <span class="tag">{{ model.inference || 'unknown' }}</span>
+                        <span v-if="model.gated === 'true'" class="tag text-amber-700 bg-amber-50 border-amber-200 ml-1">gated</span>
+                        <span v-if="model.private" class="tag text-rose-700 bg-rose-50 border-rose-200 ml-1">private</span>
+                      </td>
+                      <td class="px-3 py-2 text-xs">⬇ {{ model.downloads || 0 }} / ♥ {{ model.likes || 0 }}</td>
+                      <td class="px-3 py-2 text-xs text-slate-500">{{ hfFormatDate(model.lastModified) }}</td>
+                      <td class="px-3 py-2">
+                        <button @click="selectHfModel(model)" class="btn-outline text-xs">选择</button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p v-else class="text-slate-400 text-sm">还没有模型缓存。填写 Token/筛选条件后点击“查询模型”。</p>
             </div>
           </div>
 

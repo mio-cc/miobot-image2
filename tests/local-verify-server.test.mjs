@@ -47,6 +47,33 @@ test('local verify server restores legacy template library from project.interrog
       res.end(JSON.stringify({ data: [{ id: 'model-b' }, { id: 'model-a' }] }));
       return;
     }
+    if (req.url?.startsWith('/api/models')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify([
+        {
+          id: 'org/chat-a',
+          author: 'org',
+          pipeline_tag: 'text-generation',
+          inference: 'warm',
+          gated: false,
+          private: false,
+          downloads: 10,
+          likes: 2,
+          tags: ['text-generation', 'chat'],
+          lastModified: '2026-06-01T00:00:00.000Z',
+          inferenceProviderMapping: { cerebras: {} },
+        },
+        {
+          id: 'org/image-a',
+          author: 'org',
+          pipeline_tag: 'text-to-image',
+          inference: 'warm',
+          downloads: 5,
+          likes: 1,
+        },
+      ]));
+      return;
+    }
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: { message: 'not found' } }));
   });
@@ -87,6 +114,15 @@ test('local verify server restores legacy template library from project.interrog
         },
       }],
       updatedAt: createdAt,
+    },
+  }, null, 2), 'utf8');
+  await fs.writeFile(path.join(runtime, 'config.json'), JSON.stringify({
+    panel: { passwordSeed: 'change-me-on-first-login' },
+    huggingFace: {
+      enabled: true,
+      token: 'hf-test-token',
+      hubApiUrl: `http://127.0.0.1:${modelPort}/api/models`,
+      filters: { pipelineTag: 'text-generation', limit: 20, onlyChatCompatible: true },
     },
   }, null, 2), 'utf8');
 
@@ -136,6 +172,23 @@ test('local verify server restores legacy template library from project.interrog
   assert.equal(modelBody.normalized.keyDetected, true);
   assert.equal(modelRequests[0].url, '/v1/models');
   assert.equal(modelRequests[0].authorization, 'Bearer sk-test-local');
+
+  const hfResponse = await fetch(`http://127.0.0.1:${port}/api/huggingface/models`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer change-me-on-first-login', 'content-type': 'application/json' },
+    body: JSON.stringify({ force: true }),
+  });
+  assert.equal(hfResponse.status, 200);
+  const hfBody = await hfResponse.json();
+  assert.equal(hfBody.success, true);
+  assert.equal(hfBody.models.length, 1);
+  assert.equal(hfBody.models[0].code, 'hf.1');
+  assert.equal(hfBody.models[0].id, 'org/chat-a');
+  assert.equal(hfBody.models[0].provider, 'cerebras');
+  assert.equal(hfBody.config.huggingFace.cachedModels[0].id, 'org/chat-a');
+  const hfRequest = modelRequests.find((request) => request.url?.startsWith('/api/models'));
+  assert.ok(hfRequest);
+  assert.equal(hfRequest.authorization, 'Bearer hf-test-token');
 
   const listResponse = await fetch(`http://127.0.0.1:${port}/canvas-api/interrogations`);
   assert.equal(listResponse.status, 200);

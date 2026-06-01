@@ -1,4 +1,5 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import fssync from 'node:fs';
 import path from 'node:path';
@@ -931,6 +932,121 @@ async function fetchOpenAIModels(baseUrl, key, timeoutMs = 20000) {
   return [...new Set(models)].sort((a, b) => a.localeCompare(b));
 }
 
+const HF_CHAT_PIPELINES = new Set([
+  'text-generation',
+  'text2text-generation',
+  'conversational',
+  'image-text-to-text',
+]);
+
+function stableHash(value) {
+  return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 24);
+}
+
+function hfRequestModeForModel(item) {
+  const pipeline = String(item?.pipeline_tag || item?.pipelineTag || '').trim();
+  if (pipeline === 'text-to-image' || pipeline === 'image-to-image' || pipeline === 'automatic-speech-recognition') return 'provider-task';
+  if (HF_CHAT_PIPELINES.has(pipeline)) return 'openai-chat';
+  return 'legacy-inference';
+}
+
+function normalizeHfHubModel(item, index, providerFilter = '') {
+  const id = String(item?.id || item?.modelId || item?.name || '').trim();
+  if (!id) return undefined;
+  const mapping = item?.inferenceProviderMapping && typeof item.inferenceProviderMapping === 'object'
+    ? item.inferenceProviderMapping
+    : {};
+  const provider = String(providerFilter || Object.keys(mapping)[0] || '').trim();
+  const pipelineTag = String(item?.pipeline_tag || item?.pipelineTag || item?.task || '').trim();
+  return {
+    id,
+    code: `hf.${index + 1}`,
+    author: String(item?.author || id.split('/')[0] || '').trim(),
+    pipelineTag,
+    task: pipelineTag,
+    provider,
+    inference: String(item?.inference || '').trim(),
+    gated: String(item?.gated ?? '').trim(),
+    private: Boolean(item?.private),
+    downloads: Number.isFinite(Number(item?.downloads)) ? Number(item.downloads) : 0,
+    likes: Number.isFinite(Number(item?.likes)) ? Number(item.likes) : 0,
+    tags: Array.isArray(item?.tags) ? item.tags.map((tag) => String(tag)).filter(Boolean) : [],
+    lastModified: String(item?.lastModified || item?.last_modified || '').trim(),
+    requestMode: hfRequestModeForModel(item),
+  };
+}
+
+function buildHfHubUrl(hf = {}, filters = {}) {
+  const url = new URL(String(hf.hubApiUrl || 'https://huggingface.co/api/models'));
+  const search = String(filters.search || '').trim();
+  const author = String(filters.author || '').trim();
+  const pipelineTag = String(filters.pipelineTag || '').trim();
+  const library = String(filters.library || '').trim();
+  const inference = String(filters.inference || '').trim();
+  const gated = String(filters.gated || '').trim();
+  const sort = String(filters.sort || 'downloads').trim();
+  const direction = String(filters.direction || '-1').trim() === '1' ? '1' : '-1';
+  const limit = Math.max(1, Math.min(200, Number.parseInt(String(filters.limit || '50'), 10) || 50));
+  const tags = String(filters.tags || '').split(/[,，、;\s]+/).map((tag) => tag.trim()).filter(Boolean);
+  if (search) url.searchParams.set('search', search);
+  if (author) url.searchParams.set('author', author);
+  if (pipelineTag) url.searchParams.set('pipeline_tag', pipelineTag);
+  if (library) url.searchParams.set('library', library);
+  if (inference) url.searchParams.set('inference', inference);
+  if (gated) url.searchParams.set('gated', gated);
+  if (sort) url.searchParams.set('sort', sort);
+  url.searchParams.set('direction', direction);
+  url.searchParams.set('limit', String(limit));
+  url.searchParams.set('full', 'false');
+  for (const tag of tags) url.searchParams.append('filter', tag);
+  return url;
+}
+
+async function fetchHuggingFaceHubModels(hf = {}, filters = {}, force = false) {
+  const mergedFilters = { ...(hf.filters || {}), ...(filters || {}) };
+  const hubApiUrl = String(hf.hubApiUrl || 'https://huggingface.co/api/models').trim();
+  const queryHash = stableHash({
+    hubApiUrl,
+    tokenPresent: Boolean(String(hf.token || '').trim()),
+    filters: mergedFilters,
+  });
+  const cachedAt = Date.parse(hf.cachedAt || '');
+  const ttlMs = Math.max(60, Number(hf.cacheTtlSeconds || 3600) || 3600) * 1000;
+  if (!force && hf.cacheQueryHash === queryHash && Array.isArray(hf.cachedModels) && hf.cachedModels.length && Number.isFinite(cachedAt) && Date.now() - cachedAt < ttlMs) {
+    return { models: hf.cachedModels, fromCache: true, cachedAt: hf.cachedAt, queryHash };
+  }
+
+  const url = buildHfHubUrl({ ...hf, hubApiUrl }, mergedFilters);
+  const headers = { Accept: 'application/json' };
+  const token = String(hf.token || '').trim();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers,
+    signal: AbortSignal.timeout(Math.max(5000, Number(hf.timeoutMs) || 120000)),
+  });
+  const contentType = response.headers.get('content-type') || '';
+  const payload = contentType.includes('application/json')
+    ? await response.json().catch(() => ({}))
+    : await response.text().catch(() => '');
+  if (!response.ok) {
+    const details = typeof payload === 'string'
+      ? payload.slice(0, 300)
+      : payload?.error || payload?.message || JSON.stringify(payload).slice(0, 300);
+    throw new Error(`Hugging Face 模型列表请求失败 HTTP ${response.status}${details ? `：${details}` : ''}`);
+  }
+  const source = Array.isArray(payload) ? payload : Array.isArray(payload?.models) ? payload.models : Array.isArray(payload?.data) ? payload.data : [];
+  const providerFilter = String(mergedFilters.provider || '').trim();
+  let models = source
+    .map((item, index) => normalizeHfHubModel(item, index, providerFilter))
+    .filter(Boolean);
+  if (mergedFilters.onlyChatCompatible !== false && String(mergedFilters.onlyChatCompatible) !== 'false') {
+    models = models.filter((model) => HF_CHAT_PIPELINES.has(model.pipelineTag));
+  }
+  models = models.map((model, index) => ({ ...model, code: `hf.${index + 1}` }));
+  return { models, fromCache: false, cachedAt: new Date().toISOString(), queryHash, requestedUrl: url.toString() };
+}
+
 async function runCanvasInterrogation(image) {
   if (!image?.dataUrl) throw new Error('缺少上传图片数据。');
   const startedAt = Date.now();
@@ -1362,6 +1478,52 @@ async function handleCompatApi(req, res, url) {
         error: error?.message || String(error),
       });
       return sendJson(res, 502, { success: false, error: error?.message || String(error), normalized: { baseUrl: normalized.baseUrl, keyDetected: normalized.keyDetected, providerHint: normalized.providerHint } });
+    }
+  }
+  if (req.method === 'POST' && p === '/api/huggingface/models') {
+    const cfg = currentConfig();
+    const hf = {
+      ...(cfg.huggingFace || {}),
+      ...(body?.huggingFace || {}),
+      filters: {
+        ...(cfg.huggingFace?.filters || {}),
+        ...(body?.huggingFace?.filters || {}),
+        ...(body?.filters || {}),
+      },
+    };
+    try {
+      const result = await fetchHuggingFaceHubModels(hf, hf.filters, Boolean(body?.force));
+      const saved = await persistSavedConfig(api.repository.saveConfig({
+        huggingFace: {
+          ...(cfg.huggingFace || {}),
+          ...hf,
+          filters: hf.filters,
+          cachedModels: result.models,
+          cachedAt: result.cachedAt,
+          cacheQueryHash: result.queryHash,
+        },
+      }));
+      logSystem('info', 'admin.huggingface', result.fromCache ? 'Hugging Face 模型列表命中缓存' : 'Hugging Face 模型列表获取成功', {
+        modelCount: result.models.length,
+        fromCache: result.fromCache,
+        tokenPresent: Boolean(String(hf.token || '').trim()),
+        hubApiUrl: hf.hubApiUrl,
+      });
+      return sendJson(res, 200, {
+        success: true,
+        models: result.models,
+        fromCache: result.fromCache,
+        cachedAt: result.cachedAt,
+        queryHash: result.queryHash,
+        config: saved.config,
+      });
+    } catch (error) {
+      logSystem('warn', 'admin.huggingface', 'Hugging Face 模型列表获取失败', {
+        hubApiUrl: hf.hubApiUrl,
+        tokenPresent: Boolean(String(hf.token || '').trim()),
+        error: error?.message || String(error),
+      });
+      return sendJson(res, 502, { success: false, error: error?.message || String(error) });
     }
   }
   if (req.method === 'GET' && p === '/api/logs') return sendJson(res, 200, readLogs(systemLogs, url, 'system'));

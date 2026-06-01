@@ -97,7 +97,48 @@ function normalizeIndex(value) {
   return Number.isInteger(n) && n >= 0 ? n : 0;
 }
 
+function huggingFaceModelForRequest(hf = {}) {
+  const id = String(hf.selectedModelId || '').trim();
+  if (!id) return '';
+  const provider = String(hf.selectedProvider || '').trim();
+  return provider && !id.includes(':') ? `${id}:${provider}` : id;
+}
+
+function shouldUseHuggingFaceChat(config, purpose) {
+  if (!['chat', 'free-mode'].includes(String(purpose || ''))) return false;
+  const hf = config.huggingFace || {};
+  return Boolean(hf.enabled && hf.useForChat && hf.token && huggingFaceModelForRequest(hf));
+}
+
+function activeChatModel(config, fallback = 'gpt-4o-mini') {
+  if (shouldUseHuggingFaceChat(config, 'chat')) return huggingFaceModelForRequest(config.huggingFace);
+  return String(config.llm?.chatModel || fallback).trim() || fallback;
+}
+
+function activeFreeModeModel(config, fallback = 'gpt-4o-mini') {
+  if (shouldUseHuggingFaceChat(config, 'free-mode')) return huggingFaceModelForRequest(config.huggingFace);
+  return String(config.freeMode?.model || config.llm?.chatModel || fallback).trim() || fallback;
+}
+
 function createLlm(config, index, timeoutMs, purpose) {
+  if (shouldUseHuggingFaceChat(config, purpose)) {
+    const hf = config.huggingFace || {};
+    return createOpenAICompatibleAdapter({
+      node: {
+        name: 'Hugging Face',
+        provider: 'huggingface',
+        baseUrl: String(hf.baseUrl || 'https://router.huggingface.co/v1').trim(),
+        key: String(hf.token || '').trim(),
+        apiKey: String(hf.token || '').trim(),
+      },
+      timeoutMs: Math.max(1, Number(hf.timeoutMs || timeoutMs) || 120000),
+      logger: logger.child(`llm:huggingface:${purpose}`),
+      retryPolicy: {
+        retries: Math.max(0, Number(config.llm?.imageRetryCount ?? 0)),
+        delayMs: Math.max(0, Number(config.llm?.imageRetryDelayMs ?? 0)),
+      },
+    });
+  }
   return createOpenAICompatibleAdapter({
     node: nodeAt(config, index, purpose),
     timeoutMs: Math.max(1, Number(timeoutMs) || 60000),
@@ -273,6 +314,14 @@ export function parseOwnerCommand(message, botId = '') {
   if (ttsMatch) {
     return { command: ttsMatch[1].toLowerCase() === 'ttsk' ? 'ttsOn' : 'ttsOff' };
   }
+  const modelListMatch = text.match(/(?:^|\s)\/\s*(模型|models?)(?:\s|$)/i);
+  if (modelListMatch) {
+    return { command: 'modelList' };
+  }
+  const switchMatch = text.match(/(?:^|\s)\/\s*(?:切换|q)\s*([a-z0-9_.-]+)(?:\s|$)/i);
+  if (switchMatch) {
+    return { command: 'switchModel', code: switchMatch[1].toLowerCase().replace(/_/g, '.') };
+  }
   return undefined;
 }
 
@@ -297,7 +346,152 @@ async function sendAdminText(adapter, message, text) {
   return result;
 }
 
+function uniqueModelList(values = []) {
+  const out = [];
+  const seen = new Set();
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+  }
+  return out;
+}
+
+export function buildModelCodeCatalog(config = {}) {
+  const ordinary = [];
+  const nodes = Array.isArray(config.llm?.apiKeys) ? config.llm.apiKeys : [];
+  const referenced = new Map();
+  const addRef = (nodeIndex, model) => {
+    const idx = normalizeIndex(nodeIndex);
+    const value = String(model || '').trim();
+    if (!value) return;
+    if (!referenced.has(idx)) referenced.set(idx, []);
+    referenced.get(idx).push(value);
+  };
+  addRef(config.llm?.chatNodeIndex, config.llm?.chatModel);
+  addRef(config.freeMode?.nodeIndex, config.freeMode?.model);
+  addRef(config.llm?.enhanceNodeIndex, config.llm?.enhanceModel);
+  addRef(config.llm?.translationNodeIndex, config.llm?.translationModel);
+  addRef(config.llm?.templateNodeIndex, config.llm?.templateModel);
+  addRef(config.llm?.referencedTemplateNodeIndex, config.llm?.referencedTemplateModel);
+
+  nodes.forEach((node, nodeIndex) => {
+    const models = uniqueModelList([...(referenced.get(nodeIndex) || []), ...(Array.isArray(node?.models) ? node.models : [])]);
+    ordinary.push({
+      code: String(nodeIndex + 1),
+      index: nodeIndex,
+      name: String(node?.name || `节点 ${nodeIndex + 1}`),
+      enabled: node?.enabled !== false,
+      baseUrl: String(node?.baseUrl || ''),
+      models: models.map((model, modelIndex) => ({
+        code: `${nodeIndex + 1}.${modelIndex + 1}`,
+        nodeCode: String(nodeIndex + 1),
+        nodeIndex,
+        modelIndex,
+        id: model,
+      })),
+    });
+  });
+
+  const hfModels = Array.isArray(config.huggingFace?.cachedModels) ? config.huggingFace.cachedModels : [];
+  const huggingFace = {
+    code: 'hf-1',
+    enabled: Boolean(config.huggingFace?.enabled),
+    useForChat: Boolean(config.huggingFace?.useForChat),
+    selectedModelId: String(config.huggingFace?.selectedModelId || ''),
+    models: hfModels.map((model, index) => ({
+      ...model,
+      code: String(model?.code || `hf.${index + 1}`).toLowerCase(),
+      id: String(model?.id || ''),
+      provider: String(model?.provider || ''),
+      pipelineTag: String(model?.pipelineTag || model?.pipeline_tag || ''),
+      index,
+    })).filter((model) => model.id),
+  };
+  return { ordinary, huggingFace };
+}
+
+export function renderModelCodeList(config = {}) {
+  const catalog = buildModelCodeCatalog(config);
+  const current = shouldUseHuggingFaceChat(config, 'chat')
+    ? `HF ${String(config.huggingFace?.selectedModelCode || '').trim() || '?'} ${huggingFaceModelForRequest(config.huggingFace)}`
+    : `普通 ${(normalizeIndex(config.llm?.chatNodeIndex) + 1)}.? ${config.llm?.chatModel || ''}`;
+  const lines = [
+    '【模型列表】',
+    `当前文本模型：${current}`,
+    '',
+    '普通接口（切换格式：@bot /q 1.1）：',
+  ];
+  for (const node of catalog.ordinary) {
+    lines.push(`接口 ${node.code}：${node.name}${node.enabled ? '' : '（停用）'}`);
+    if (!node.models.length) {
+      lines.push('  - 暂无已保存模型，请先在后台“获取模型”');
+      continue;
+    }
+    for (const model of node.models.slice(0, 80)) lines.push(`  ${model.code}  ${model.id}`);
+    if (node.models.length > 80) lines.push(`  ... 其余 ${node.models.length - 80} 个省略`);
+  }
+  lines.push('', 'Hugging Face（永远最后；接口 hf-1，切换格式：@bot /q hf.1）：');
+  if (!catalog.huggingFace.models.length) {
+    lines.push('  - 暂无 HF 缓存模型，请先在后台 Hugging Face 接口页查询模型');
+  } else {
+    for (const model of catalog.huggingFace.models.slice(0, 100)) {
+      const provider = model.provider ? `:${model.provider}` : '';
+      const tags = [model.pipelineTag, model.inference].filter(Boolean).join('/');
+      lines.push(`  ${model.code}  ${model.id}${provider}${tags ? `（${tags}）` : ''}`);
+    }
+    if (catalog.huggingFace.models.length > 100) lines.push(`  ... 其余 ${catalog.huggingFace.models.length - 100} 个省略`);
+  }
+  return lines.join('\n');
+}
+
+export function applyModelSwitchDraft(draft, rawCode) {
+  const code = String(rawCode || '').trim().toLowerCase().replace(/_/g, '.');
+  if (!code) return { ok: false, message: '请提供模型编码，例如 /q 1.1 或 /q hf.1' };
+  const catalog = buildModelCodeCatalog(draft);
+  if (code.startsWith('hf.')) {
+    const model = catalog.huggingFace.models.find((item) => item.code === code);
+    if (!model) return { ok: false, message: `没有找到 Hugging Face 模型编码 ${code}。请先发送 /模型 查看列表。` };
+    if (!draft.huggingFace) draft.huggingFace = {};
+    draft.huggingFace.enabled = true;
+    draft.huggingFace.useForChat = true;
+    draft.huggingFace.selectedModelId = model.id;
+    draft.huggingFace.selectedProvider = model.provider || '';
+    draft.huggingFace.selectedModelCode = model.code;
+    draft.huggingFace.requestMode = model.requestMode || draft.huggingFace.requestMode || 'openai-chat';
+    return { ok: true, message: `已切换到 Hugging Face ${model.code}：${model.id}${model.provider ? `:${model.provider}` : ''}` };
+  }
+  const match = code.match(/^(\d+)\.(\d+)$/);
+  if (!match) return { ok: false, message: `模型编码格式不对：${rawCode}。普通模型用 1.1，HF 模型用 hf.1。` };
+  const nodeIndex = Number(match[1]) - 1;
+  const modelCode = `${match[1]}.${match[2]}`;
+  const node = catalog.ordinary.find((item) => item.index === nodeIndex);
+  const model = node?.models.find((item) => item.code === modelCode);
+  if (!node || !model) return { ok: false, message: `没有找到模型编码 ${modelCode}。请先发送 /模型 查看列表。` };
+  if (!draft.llm) draft.llm = {};
+  draft.llm.chatNodeIndex = model.nodeIndex;
+  draft.llm.chatModel = model.id;
+  draft.llm.chatEnabled = true;
+  if (draft.huggingFace) draft.huggingFace.useForChat = false;
+  return { ok: true, message: `已切换到接口 ${node.code}「${node.name}」模型 ${model.code}：${model.id}` };
+}
+
 async function handleOwnerCommand(adapter, config, message, command) {
+  if (command.command === 'modelList') {
+    await sendAdminText(adapter, message, renderModelCodeList(config));
+    return;
+  }
+  if (command.command === 'switchModel') {
+    let result = { ok: false, message: '切换失败' };
+    const next = saveRuntimeConfig((draft) => {
+      result = applyModelSwitchDraft(draft, command.code);
+      return draft;
+    });
+    await sendAdminText(adapter, message, result.message);
+    logger.info('主人切换模型', { owner: message.userId, code: command.code, ok: result.ok, hfEnabled: next.huggingFace?.useForChat });
+    return;
+  }
   if (command.command === 'recall') {
     await recallRecentMessages(adapter, message, command.count || 1);
     return;
@@ -778,7 +972,7 @@ async function handleFreeMode(adapter, config, reply, context, args, message) {
     planner,
     image,
     reply,
-    model: config.freeMode?.model || config.llm?.chatModel || 'gpt-4o-mini',
+    model: activeFreeModeModel(config),
     timeoutMs: config.freeMode?.timeoutMs,
     maxOutputImages: config.freeMode?.maxOutputImages,
     plannerPromptTemplate: config.freeMode?.plannerPromptTemplate,
@@ -920,7 +1114,7 @@ async function handleChat(config, reply, context, text) {
     { role: 'user', content: prompt },
   ];
   const result = await adapter.createText({
-    model: config.llm?.chatModel || 'gpt-4o-mini',
+    model: activeChatModel(config),
     messages,
     timeoutMs: config.freeMode?.timeoutMs || 120000,
     reasoningEffort: config.llm?.reasoningEffort,

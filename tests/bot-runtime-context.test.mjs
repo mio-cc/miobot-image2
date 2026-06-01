@@ -2,6 +2,8 @@
 import assert from 'node:assert/strict';
 
 import {
+  applyModelSwitchDraft,
+  buildModelCodeCatalog,
   buildBotGalleryPayload,
   collectMessageContext,
   extractForwardIds,
@@ -9,6 +11,7 @@ import {
   extractMessageText,
   parseOwnerCommand,
   parseRemotePromptInput,
+  renderModelCodeList,
   resolveReferencedMessage,
   splitReplyText,
   withReferenceContext,
@@ -225,6 +228,78 @@ test('bot runtime: owner commands require bot address where appropriate and targ
     }, '10000'),
     { command: 'ttsOn' },
   );
+});
+
+test('bot runtime: owner model list and switch commands parse', () => {
+  assert.deepEqual(
+    parseOwnerCommand({
+      chatType: 'group',
+      rawMessage: '[CQ:at,qq=10000] /模型',
+      mentions: ['10000'],
+    }, '10000'),
+    { command: 'modelList' },
+  );
+  assert.deepEqual(
+    parseOwnerCommand({
+      chatType: 'group',
+      rawMessage: '[CQ:at,qq=10000] /q hf.2',
+      mentions: ['10000'],
+    }, '10000'),
+    { command: 'switchModel', code: 'hf.2' },
+  );
+  assert.deepEqual(
+    parseOwnerCommand({
+      chatType: 'private',
+      rawMessage: '/切换 1.2',
+      mentions: [],
+    }, '10000'),
+    { command: 'switchModel', code: '1.2' },
+  );
+});
+
+test('bot runtime: model code catalog orders ordinary nodes before hugging face and switch updates draft', () => {
+  const cfg = {
+    llm: {
+      apiKeys: [
+        { name: '普通节点一', enabled: true, baseUrl: 'http://node-1/v1', models: ['model-a', 'model-b'] },
+        { name: '普通节点二', enabled: true, baseUrl: 'http://node-2/v1', models: ['model-c'] },
+      ],
+      chatNodeIndex: 0,
+      chatModel: 'model-a',
+      chatEnabled: true,
+    },
+    freeMode: { nodeIndex: 0, model: 'model-a' },
+    huggingFace: {
+      enabled: true,
+      useForChat: false,
+      cachedModels: [
+        { id: 'org/hf-a', code: 'hf.1', provider: 'cerebras', pipelineTag: 'text-generation', inference: 'warm', requestMode: 'openai-chat' },
+        { id: 'org/hf-b', code: 'hf.2', provider: 'hf-inference', pipelineTag: 'image-text-to-text', inference: 'warm', requestMode: 'openai-chat' },
+      ],
+    },
+  };
+
+  const catalog = buildModelCodeCatalog(cfg);
+  assert.equal(catalog.ordinary[0].models[0].code, '1.1');
+  assert.equal(catalog.ordinary[1].models[0].code, '2.1');
+  assert.equal(catalog.huggingFace.models[0].code, 'hf.1');
+  const rendered = renderModelCodeList(cfg);
+  assert.match(rendered, /普通接口/);
+  assert.match(rendered, /Hugging Face/);
+  assert.ok(rendered.indexOf('1.1') < rendered.indexOf('hf.1'));
+
+  let result = applyModelSwitchDraft(cfg, '2.1');
+  assert.equal(result.ok, true);
+  assert.equal(cfg.llm.chatNodeIndex, 1);
+  assert.equal(cfg.llm.chatModel, 'model-c');
+  assert.equal(cfg.huggingFace.useForChat, false);
+
+  result = applyModelSwitchDraft(cfg, 'hf.2');
+  assert.equal(result.ok, true);
+  assert.equal(cfg.huggingFace.useForChat, true);
+  assert.equal(cfg.huggingFace.selectedModelId, 'org/hf-b');
+  assert.equal(cfg.huggingFace.selectedProvider, 'hf-inference');
+  assert.equal(cfg.huggingFace.selectedModelCode, 'hf.2');
 });
 
 test('bot runtime: long text splitter preserves content without truncation', () => {
