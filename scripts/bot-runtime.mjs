@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createBotRouter } from '../dist/packages/bot-router/src/index.js';
 import { normalizeError } from '../dist/packages/core/src/index.js';
 import { createDefaultConfig, importConfig } from '../dist/packages/config/src/index.js';
@@ -48,6 +48,9 @@ const FALLBACK_COMMANDS = {
   img2Img: '图生图, 垫图, 参考图',
   interrogate: '反推, 图片反推, 识图',
 };
+
+const MAX_REFERENCE_TEXT_CHARS = 16000;
+const MAX_FORWARD_DEPTH = 2;
 
 let currentAdapter = null;
 let currentNapcatKey = '';
@@ -215,6 +218,8 @@ async function handleIncoming(adapter, event) {
     command: decision.command,
     commandText: decision.commandText,
     imageCount: message.images.length,
+    referenceChars: String(message.referenceText || '').length,
+    referenceImageCount: message.referenceImages?.length || 0,
   });
 
   if (decision.kind === 'ignored') return;
@@ -239,7 +244,7 @@ async function handleIncoming(adapter, event) {
       return;
     }
     if (decision.kind === 'chat') {
-      await handleChat(config, reply, context, decision.args);
+      await handleChat(config, reply, context, withReferenceContext(decision.args, message));
     }
   } catch (error) {
     logger.error('消息处理失败', { error: normalizeError(error), decision });
@@ -266,7 +271,7 @@ async function handleCommand(adapter, config, reply, context, decision, message)
         await reply.replyText(context, '图像生成功能未启用，请在后台开启“图像生成”。');
         return;
       }
-      await image.generate({ rawPrompt: args || message.commandText || '生成一张图片', context });
+      await image.generate({ rawPrompt: withReferenceContext(args || message.commandText || '生成一张图片', message), context });
       break;
     case 'img2Img':
     case 'editImage': {
@@ -288,13 +293,45 @@ async function handleCommand(adapter, config, reply, context, decision, message)
       await reply.replyText(context, result.text || '未识别到反推结果。');
       break;
     }
-    case 'referencedTemplateImage':
-    case 'remotePromptSearch':
-    case 'remotePromptSmartImage':
-    case 'originalImage':
-    case 'originalImageChoice':
-      await reply.replyText(context, '这个命令入口已识别，但当前运行时暂未实现完整业务链路。请先使用：生图 / 图生图 / 改图 / 反推 / help。');
+    case 'referencedTemplateImage': {
+      if (!config.llm?.imageEnabled) {
+        await reply.replyText(context, '图像生成功能未启用，请在后台开启“图像生成”。');
+        return;
+      }
+      const source = args || message.referenceText || message.commandText || '根据引用内容生成图片';
+      await image.generate({ rawPrompt: withReferenceContext(source, message), context });
       break;
+    }
+    case 'remotePromptSearch': {
+      await reply.replyText(context, renderTemplateSearch(config, args || message.referenceText || ''));
+      break;
+    }
+    case 'remotePromptSmartImage': {
+      if (!config.llm?.imageEnabled) {
+        await reply.replyText(context, '图像生成功能未启用，请在后台开启“图像生成”。');
+        return;
+      }
+      const query = String(args || message.referenceText || message.commandText || '').trim();
+      const template = findBestTemplate(config, query);
+      const rawPrompt = template ? renderLocalTemplate(template, query || message.referenceText || template.title) : withReferenceContext(query || '根据当前上下文生成图片', message);
+      await image.generate({ rawPrompt, context });
+      break;
+    }
+    case 'originalImage':
+    case 'originalImageChoice': {
+      const images = await imagesFromMessageOrReply(adapter, message);
+      if (!images.length) {
+        await reply.replyText(context, '没有在当前消息或引用消息里找到可发送的图片。');
+        return;
+      }
+      if (decision.command === 'originalImageChoice') {
+        const index = Math.max(0, Math.min(images.length - 1, Number.parseInt(args || decision.commandText || '1', 10) - 1));
+        await reply.replyImages(context, [images[index]]);
+      } else {
+        await reply.replyImages(context, images);
+      }
+      break;
+    }
     default:
       await reply.replyText(context, `未知命令：${decision.command}`);
   }
@@ -314,7 +351,7 @@ async function handleFreeMode(adapter, config, reply, context, args, message) {
     preferEditWhenImagePresent: config.freeMode?.preferEditWhenImagePresent,
   });
   await engine.handle({
-    userContent: args,
+    userContent: withReferenceContext(args, message),
     images: await imagesFromMessageOrReply(adapter, message),
     context,
   });
@@ -354,7 +391,10 @@ async function normalizeIncomingMessage(adapter, event) {
   const message = event.message ?? event.raw_message ?? '';
   const rawMessage = String(event.raw_message || segmentsToCq(message) || '').trim();
   const replyToMessageId = extractReplyIdFromSegments(message) || extractReplyIdFromRaw(rawMessage);
-  const replyToBot = replyToMessageId ? await isReplyToBot(adapter, replyToMessageId, event.self_id || adapter.selfQqId) : false;
+  const reference = replyToMessageId
+    ? await resolveReferencedMessage(adapter, replyToMessageId, event.self_id || adapter.selfQqId)
+    : emptyReferenceContext();
+  const currentImages = extractImageUrls(message, rawMessage);
   return {
     chatType,
     rawMessage,
@@ -363,8 +403,11 @@ async function normalizeIncomingMessage(adapter, event) {
     groupId: event.group_id ?? event.groupId,
     userId: event.user_id ?? event.userId ?? event.sender?.user_id ?? event.sender?.userId,
     replyToMessageId,
-    replyToBot,
-    images: extractImageUrls(message, rawMessage),
+    replyToBot: reference.replyToBot,
+    referenceText: reference.text,
+    referenceImages: reference.images,
+    referenceMessageId: replyToMessageId,
+    images: uniqueStrings([...currentImages, ...reference.images]),
   };
 }
 
@@ -406,31 +449,241 @@ function extractImageUrls(message, raw = '') {
   for (const match of String(raw || '').matchAll(/\[CQ:image,[^\]]*(?:url|file)=([^,\]]+)/g)) {
     if (match[1]) urls.push(decodeURIComponentSafe(match[1]));
   }
-  return [...new Set(urls.map((item) => item.trim()).filter(Boolean))];
+  return uniqueStrings(urls);
 }
 
 async function imagesFromMessageOrReply(adapter, message) {
   if (message.images.length) return message.images;
-  if (!message.replyToMessageId) return [];
-  try {
-    const data = await adapter.getMessage(message.replyToMessageId);
-    return extractImageUrls(data?.message ?? data?.raw_message ?? data, data?.raw_message || '');
-  } catch (error) {
-    logger.warn('读取引用消息图片失败', { replyToMessageId: message.replyToMessageId, error: normalizeError(error) });
-    return [];
-  }
+  return message.referenceImages || [];
 }
 
 async function isReplyToBot(adapter, messageId, botId) {
   if (!botId) return false;
   try {
     const data = await adapter.getMessage(messageId);
-    const sender = data?.sender?.user_id ?? data?.sender?.userId ?? data?.user_id ?? data?.userId;
-    return sender !== undefined && String(sender) === String(botId);
+    return isMessageFromBot(data, botId);
   } catch (error) {
     logger.warn('判断引用消息归属失败', { messageId, error: normalizeError(error) });
     return false;
   }
+}
+
+function emptyReferenceContext() {
+  return { text: '', images: [], replyToBot: false };
+}
+
+export async function resolveReferencedMessage(adapter, messageId, botId) {
+  try {
+    const data = await adapter.getMessage(messageId);
+    const context = await collectMessageContext(adapter, data);
+    return {
+      ...context,
+      replyToBot: isMessageFromBot(data, botId),
+    };
+  } catch (error) {
+    logger.warn('读取引用消息失败', { messageId, error: normalizeError(error) });
+    return emptyReferenceContext();
+  }
+}
+
+export async function collectMessageContext(adapter, payload, depth = 0, seenForwardIds = new Set()) {
+  const images = [];
+  const textParts = [];
+  const forwardItems = extractForwardMessageItems(payload);
+
+  if (forwardItems.length) {
+    for (const item of forwardItems.slice(0, 80)) {
+      const child = await collectMessageContext(adapter, item, depth, seenForwardIds);
+      if (child.text) textParts.push(formatForwardTextItem(item, child.text));
+      images.push(...child.images);
+    }
+    return {
+      text: truncateReferenceText(textParts.filter(Boolean).join('\n')),
+      images: uniqueStrings(images),
+    };
+  }
+
+  const baseText = extractMessageText(payload);
+  if (baseText) textParts.push(baseText);
+  images.push(...extractImageUrls(messageBodyOf(payload), rawMessageOf(payload)));
+
+  if (depth < MAX_FORWARD_DEPTH && adapter?.getForwardMessage) {
+    for (const forwardId of extractForwardIds(messageBodyOf(payload), rawMessageOf(payload))) {
+      if (!forwardId || seenForwardIds.has(forwardId)) continue;
+      seenForwardIds.add(forwardId);
+      try {
+        const forwardPayload = await adapter.getForwardMessage(forwardId);
+        const child = await collectMessageContext(adapter, forwardPayload, depth + 1, seenForwardIds);
+        if (child.text) textParts.push(`【合并聊天记录 ${forwardId}】\n${child.text}`);
+        images.push(...child.images);
+      } catch (error) {
+        logger.warn('读取合并聊天记录失败', { forwardId, error: normalizeError(error) });
+        textParts.push(`【合并聊天记录 ${forwardId} 读取失败】`);
+      }
+    }
+  }
+
+  return {
+    text: truncateReferenceText(textParts.filter(Boolean).join('\n')),
+    images: uniqueStrings(images),
+  };
+}
+
+export function withReferenceContext(text, message) {
+  const reference = truncateReferenceText(message?.referenceText || '');
+  if (!reference) return String(text || '').trim();
+  const body = String(text || '').trim() || '请根据引用内容处理。';
+  const label = message?.referenceMessageId ? `【引用内容 #${message.referenceMessageId}】` : '【引用内容】';
+  return truncateReferenceText(`${body}\n\n${label}\n${reference}`, Math.max(MAX_REFERENCE_TEXT_CHARS + body.length + label.length + 8, MAX_REFERENCE_TEXT_CHARS));
+}
+
+export function extractMessageText(payload) {
+  if (payload === undefined || payload === null) return '';
+  if (typeof payload === 'string') return cleanupRawText(payload);
+  if (Array.isArray(payload)) {
+    return payload.map(segmentToText).filter(Boolean).join('\n').trim();
+  }
+  if (typeof payload !== 'object') return '';
+
+  if (Array.isArray(payload.message) || typeof payload.message === 'string') {
+    return extractMessageText(payload.message);
+  }
+  if (Array.isArray(payload.content) || typeof payload.content === 'string') {
+    return extractMessageText(payload.content);
+  }
+  if (Array.isArray(payload.data?.content) || typeof payload.data?.content === 'string') {
+    return extractMessageText(payload.data.content);
+  }
+  if (typeof payload.raw_message === 'string') return cleanupRawText(payload.raw_message);
+  if (typeof payload.message === 'object') return extractMessageText(payload.message);
+  return '';
+}
+
+function segmentToText(segment) {
+  if (!segment || typeof segment !== 'object') return '';
+  const type = String(segment.type || '').toLowerCase();
+  const data = segment.data || {};
+  if (type === 'text') return String(data.text || '').trim();
+  if (type === 'at') return '';
+  if (type === 'reply') return '';
+  if (type === 'image') return '[图片]';
+  if (type === 'record') return '[语音]';
+  if (type === 'video') return '[视频]';
+  if (type === 'file') return `[文件：${data.name || data.file || data.file_name || '未命名'}]`;
+  if (type === 'forward') return `[合并聊天记录：${data.id || data.file || data.resid || 'unknown'}]`;
+  if (type === 'node') return extractMessageText(data.content || data.message || data);
+  if (type === 'json') return extractJsonSegmentText(data.data || data.content || data.text || '');
+  if (type === 'xml') return cleanupRawText(data.data || data.content || data.text || '[XML 消息]');
+  return '';
+}
+
+function extractJsonSegmentText(value) {
+  const raw = decodeURIComponentSafe(String(value || '')).trim();
+  if (!raw) return '';
+  try {
+    const parsed = JSON.parse(raw);
+    return [
+      parsed?.meta?.news?.title,
+      parsed?.meta?.news?.desc,
+      parsed?.meta?.detail_1?.title,
+      parsed?.meta?.detail_1?.desc,
+      parsed?.prompt,
+      parsed?.summary,
+    ].map((item) => String(item || '').trim()).filter(Boolean).join('\n') || raw.slice(0, 1000);
+  } catch {
+    return raw.slice(0, 1000);
+  }
+}
+
+export function extractForwardIds(message, raw = '') {
+  const ids = [];
+  const body = messageBodyOf(message);
+  if (Array.isArray(body)) {
+    for (const segment of body) {
+      if (segment?.type !== 'forward') continue;
+      const data = segment.data || {};
+      const value = data.id ?? data.file ?? data.resid;
+      if (value !== undefined && value !== null) ids.push(String(value));
+    }
+  }
+  const text = typeof raw === 'string' && raw ? raw : typeof message === 'string' ? message : '';
+  for (const match of text.matchAll(/\[CQ:forward,[^\]]*(?:id|file|resid)=([^,\]]+)/g)) {
+    if (match[1]) ids.push(decodeURIComponentSafe(match[1]));
+  }
+  return uniqueStrings(ids);
+}
+
+function extractForwardMessageItems(payload) {
+  const direct =
+    (Array.isArray(payload?.messages) && payload.messages) ||
+    (Array.isArray(payload?.data?.messages) && payload.data.messages) ||
+    (Array.isArray(payload?.forward?.messages) && payload.forward.messages) ||
+    [];
+  const items = [...direct];
+  const body = messageBodyOf(payload);
+  if (Array.isArray(body)) {
+    for (const segment of body) {
+      if (segment?.type !== 'node') continue;
+      const data = segment.data || {};
+      const content = data.content ?? data.message;
+      if (content !== undefined) items.push({ ...data, message: content });
+    }
+  }
+  return items.filter(Boolean);
+}
+
+function formatForwardTextItem(item, text) {
+  const sender = item?.sender?.nickname || item?.sender?.card || item?.nickname || item?.user_name || item?.user_id || item?.userId;
+  const body = String(text || '').trim();
+  return sender ? `${sender}：${body}` : body;
+}
+
+function messageBodyOf(payload) {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    if (payload.message !== undefined) return payload.message;
+    if (payload.content !== undefined) return payload.content;
+    if (payload.data?.message !== undefined) return payload.data.message;
+    if (payload.data?.content !== undefined) return payload.data.content;
+  }
+  return payload;
+}
+
+function rawMessageOf(payload) {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    return String(payload.raw_message || payload.rawMessage || payload.data?.raw_message || payload.data?.rawMessage || '');
+  }
+  return typeof payload === 'string' ? payload : '';
+}
+
+function isMessageFromBot(payload, botId) {
+  if (!botId) return false;
+  const sender = payload?.sender?.user_id ?? payload?.sender?.userId ?? payload?.user_id ?? payload?.userId ?? payload?.data?.sender?.user_id;
+  return sender !== undefined && String(sender) === String(botId);
+}
+
+function cleanupRawText(raw) {
+  return decodeURIComponentSafe(String(raw || ''))
+    .replace(/\[CQ:reply,[^\]]+\]/g, '')
+    .replace(/\[CQ:at,[^\]]+\]/g, '')
+    .replace(/\[CQ:image,[^\]]+\]/g, '[图片]')
+    .replace(/\[CQ:record,[^\]]+\]/g, '[语音]')
+    .replace(/\[CQ:video,[^\]]+\]/g, '[视频]')
+    .replace(/\[CQ:forward,[^\]]*(?:id|file|resid)=([^,\]]+)[^\]]*\]/g, (_all, id) => `[合并聊天记录：${decodeURIComponentSafe(id)}]`)
+    .replace(/\[CQ:json,[^\]]*data=([^,\]]+)[^\]]*\]/g, (_all, data) => extractJsonSegmentText(data))
+    .replace(/\[CQ:[^\]]+\]/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function truncateReferenceText(text, limit = MAX_REFERENCE_TEXT_CHARS) {
+  const value = String(text || '').trim();
+  if (value.length <= limit) return value;
+  return `${value.slice(0, Math.max(0, limit - 32)).trim()}\n……（引用内容过长，已截断）`;
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.map((item) => String(item || '').trim()).filter(Boolean))];
 }
 
 function helpText(config) {
@@ -450,6 +703,42 @@ function renderTemplateLibrary(config) {
   const templates = config.bot?.promptTemplates || [];
   if (!templates.length) return '当前没有本地模板。';
   return templates.slice(0, 20).map((item) => `${item.id} · ${item.title}`).join('\n');
+}
+
+function renderTemplateSearch(config, query) {
+  const templates = config.bot?.promptTemplates || [];
+  if (!templates.length) return '当前没有本地提示词模板。';
+  const keyword = String(query || '').trim().toLowerCase();
+  const matches = keyword
+    ? templates.filter((item) => `${item.id} ${item.title} ${item.prompt}`.toLowerCase().includes(keyword)).slice(0, 8)
+    : templates.slice(0, 8);
+  if (!matches.length) return `没有找到匹配模板：${String(query || '').trim()}`;
+  return [
+    keyword ? `找到 ${matches.length} 个相关模板：` : '可用模板：',
+    ...matches.map((item, index) => `${index + 1}. ${item.id} · ${item.title}\n${String(item.prompt || '').slice(0, 180)}`),
+  ].join('\n\n');
+}
+
+function findBestTemplate(config, query) {
+  const templates = config.bot?.promptTemplates || [];
+  if (!templates.length) return undefined;
+  const keyword = String(query || '').trim().toLowerCase();
+  if (!keyword) return templates[0];
+  return templates.find((item) => String(item.id || '').toLowerCase() === keyword)
+    || templates.find((item) => String(item.title || '').toLowerCase().includes(keyword))
+    || templates.find((item) => String(item.prompt || '').toLowerCase().includes(keyword))
+    || templates[0];
+}
+
+function renderLocalTemplate(template, prompt) {
+  const rawPrompt = String(prompt || '').trim();
+  const templateText = String(template?.prompt || '').trim();
+  if (!templateText) return rawPrompt;
+  const rendered = templateText
+    .replace(/\{\{\s*rawPrompt\s*\}\}/g, rawPrompt)
+    .replace(/\{\{\s*prompt\s*\}\}/g, rawPrompt)
+    .trim();
+  return rendered || rawPrompt;
 }
 
 function firstAlias(value) {
@@ -499,6 +788,12 @@ process.on('SIGINT', () => {
   process.exit(0);
 });
 
-logger.info('Bot 运行时启动', { configPath });
-await ensureNapcat();
-startConfigWatcher();
+function isMainModule() {
+  return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+}
+
+if (isMainModule()) {
+  logger.info('Bot runtime starting', { configPath });
+  await ensureNapcat();
+  startConfigWatcher();
+}
