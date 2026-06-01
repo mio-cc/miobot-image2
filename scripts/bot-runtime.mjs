@@ -65,6 +65,7 @@ let currentAdapter = null;
 let currentNapcatKey = '';
 let ensureTimer = null;
 const sessions = new Map();
+const sentMessages = new Map();
 
 function loadConfig() {
   try {
@@ -212,6 +213,354 @@ function withCommandFallbacks(commands) {
   return merged;
 }
 
+function normalizeQqId(value) {
+  return String(value ?? '').replace(/[^\d]/g, '').trim();
+}
+
+function isBotOwner(config, userId) {
+  const user = normalizeQqId(userId);
+  if (!user) return false;
+  const owners = Array.isArray(config.bot?.ownerQQs) ? config.bot.ownerQQs.map(normalizeQqId).filter(Boolean) : [];
+  return owners.includes(user);
+}
+
+export function extractMentionedUserIds(message, raw = '') {
+  const ids = [];
+  const visit = (value) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (typeof value !== 'object') return;
+    const type = String(value.type || '').toLowerCase();
+    if (type === 'at') {
+      const qq = normalizeQqId(value.data?.qq ?? value.data?.user_id ?? value.data?.userId);
+      if (qq && qq !== 'all') ids.push(qq);
+    }
+    if (value.message !== undefined) visit(value.message);
+    if (value.content !== undefined) visit(value.content);
+    if (value.data?.message !== undefined) visit(value.data.message);
+    if (value.data?.content !== undefined) visit(value.data.content);
+  };
+  visit(message);
+  const rawText = typeof raw === 'string' && raw ? raw : typeof message === 'string' ? message : '';
+  for (const match of rawText.matchAll(/\[CQ:at,[^\]]*qq=([^,\]]+)/gi)) {
+    const qq = normalizeQqId(decodeURIComponentSafe(match[1]));
+    if (qq && qq !== 'all') ids.push(qq);
+  }
+  return uniqueStrings(ids);
+}
+
+export function parseOwnerCommand(message, botId = '') {
+  const text = extractMessageText(message.rawMessage || '').trim();
+  const mentions = message.mentions?.length ? message.mentions : extractMentionedUserIds(message.segments || message.rawMessage, message.rawMessage);
+  const botQq = normalizeQqId(botId);
+  const addressedToBot = message.chatType === 'private' || (botQq && mentions.includes(botQq));
+
+  const listMatch = text.match(/(?:^|\s)\/\s*(拉黑|拉白)(?:\s|$)/i);
+  if (listMatch) {
+    const target = mentions.find((id) => id !== botQq);
+    return { command: listMatch[1] === '拉黑' ? 'blacklist' : 'whitelist', targetUserId: target || '' };
+  }
+
+  if (!addressedToBot) return undefined;
+  const recallMatch = text.match(/(?:^|\s)\/\s*(撤回|c)\s*(\d+)?(?:\s|$)/i);
+  if (recallMatch) {
+    return { command: 'recall', count: Math.max(1, Math.min(20, Number.parseInt(recallMatch[2] || '1', 10) || 1)) };
+  }
+  const ttsMatch = text.match(/(?:^|\s)\/\s*(ttsk|ttsg)(?:\s|$)/i);
+  if (ttsMatch) {
+    return { command: ttsMatch[1].toLowerCase() === 'ttsk' ? 'ttsOn' : 'ttsOff' };
+  }
+  return undefined;
+}
+
+function saveRuntimeConfig(mutator) {
+  const current = loadConfig();
+  const next = mutator(current) || current;
+  const normalized = importConfig(next).config;
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(normalized, null, 2), 'utf8');
+  return normalized;
+}
+
+async function sendAdminText(adapter, message, text) {
+  let result;
+  if (message.chatType === 'group') {
+    result = await adapter.sendGroupText(message.groupId, text, message.messageId);
+    rememberSentFromMethod('sendGroupText', [message.groupId], result);
+  } else {
+    result = await adapter.sendPrivateText(message.userId, text);
+    rememberSentFromMethod('sendPrivateText', [message.userId], result);
+  }
+  return result;
+}
+
+async function handleOwnerCommand(adapter, config, message, command) {
+  if (command.command === 'recall') {
+    await recallRecentMessages(adapter, message, command.count || 1);
+    return;
+  }
+  if (command.command === 'ttsOn' || command.command === 'ttsOff') {
+    const enabled = command.command === 'ttsOn';
+    saveRuntimeConfig((draft) => {
+      if (!draft.bot) draft.bot = {};
+      if (!draft.bot.tts) draft.bot.tts = {};
+      draft.bot.tts.enabled = enabled;
+      return draft;
+    });
+    await sendAdminText(adapter, message, enabled ? '文本转语音已开启。' : '文本转语音已关闭。');
+    logger.info('主人切换文本转语音', { owner: message.userId, enabled });
+    return;
+  }
+
+  const target = normalizeQqId(command.targetUserId);
+  if (!target) {
+    await sendAdminText(adapter, message, '没有识别到要操作的 @用户。');
+    return;
+  }
+  if (isBotOwner(config, target)) {
+    await sendAdminText(adapter, message, '不能拉黑主人账号。');
+    return;
+  }
+  if (!message.groupId) {
+    await sendAdminText(adapter, message, '拉黑/拉白只能在群聊里使用。');
+    return;
+  }
+
+  const groupId = String(message.groupId);
+  const entry = `${groupId}:${target}`;
+  const next = saveRuntimeConfig((draft) => {
+    const list = Array.isArray(draft.bot?.blacklistGroupUsers) ? draft.bot.blacklistGroupUsers.map(String) : [];
+    if (command.command === 'blacklist') {
+      if (!list.includes(entry)) list.push(entry);
+      draft.bot.blacklistGroupUsers = list;
+    } else {
+      draft.bot.blacklistGroupUsers = list.filter((item) => item !== entry && item !== `*:${target}` && item !== target);
+    }
+    return draft;
+  });
+  const count = next.bot.blacklistGroupUsers.length;
+  await sendAdminText(adapter, message, command.command === 'blacklist' ? `已拉黑 ${target}，当前黑名单 ${count} 条。` : `已解除 ${target} 的黑名单，当前黑名单 ${count} 条。`);
+  logger.info('主人更新群用户黑名单', { owner: message.userId, groupId, target, command: command.command });
+}
+
+function createTrackedNapcatClient(adapter, config = {}) {
+  return new Proxy(adapter, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== 'function' || !String(prop).startsWith('send')) return value;
+      return async (...args) => {
+        const result = await value.apply(target, args);
+        rememberSentFromMethod(String(prop), args, result);
+        scheduleAutoRecallIfNeeded(target, config, String(prop), result);
+        return result;
+      };
+    },
+  });
+}
+
+function scheduleAutoRecallIfNeeded(adapter, config, method, result) {
+  if (!config.bot?.autoRecallImages || !method.startsWith('sendGroupImage')) return;
+  const ids = sentMessageIds(result);
+  if (!ids.length) return;
+  const delayMs = Math.max(1, Number(config.bot?.autoRecallDelaySeconds || 60)) * 1000;
+  for (const id of ids) {
+    setTimeout(() => {
+      void adapter.deleteMessage(id).catch((error) => logger.warn('自动撤回图片消息失败', { messageId: id, error: normalizeError(error) }));
+    }, delayMs).unref?.();
+  }
+}
+
+function rememberSentFromMethod(method, args, result) {
+  const ids = sentMessageIds(result);
+  if (!ids.length) return;
+  const isPrivate = method.startsWith('sendPrivate');
+  const isGroup = method.startsWith('sendGroup');
+  if (!isPrivate && !isGroup) return;
+  const chatType = isPrivate ? 'private' : 'group';
+  const chatId = String(args?.[0] ?? '').trim();
+  if (!chatId) return;
+  const key = `${chatType}:${chatId}`;
+  const bucket = sentMessages.get(key) || [];
+  for (const id of ids) {
+    bucket.push({ messageId: id, method, createdAt: Date.now() });
+  }
+  while (bucket.length > 80) bucket.shift();
+  sentMessages.set(key, bucket);
+}
+
+function sentMessageIds(result) {
+  const ids = [];
+  if (result?.messageId !== undefined) ids.push(result.messageId);
+  if (Array.isArray(result?.messageIds)) ids.push(...result.messageIds);
+  const data = result?.response?.data;
+  if (data && typeof data === 'object') {
+    if (data.message_id !== undefined) ids.push(data.message_id);
+    if (data.messageId !== undefined) ids.push(data.messageId);
+  }
+  return uniqueStrings(ids).filter(Boolean);
+}
+
+async function recallRecentMessages(adapter, message, count = 1) {
+  const key = message.chatType === 'group' ? `group:${message.groupId}` : `private:${message.userId}`;
+  const bucket = sentMessages.get(key) || [];
+  let recalled = 0;
+  while (bucket.length && recalled < count) {
+    const item = bucket.pop();
+    if (!item?.messageId) continue;
+    try {
+      const ok = await adapter.deleteMessage(item.messageId);
+      if (ok) recalled += 1;
+    } catch (error) {
+      logger.warn('撤回机器人消息失败', { messageId: item.messageId, error: normalizeError(error) });
+    }
+  }
+  sentMessages.set(key, bucket);
+  if (recalled) logger.info('主人撤回机器人消息', { owner: message.userId, chatKey: key, count: recalled });
+}
+
+function createPolicyReply(baseReply, adapter, config) {
+  return {
+    replyText: (context, text, strategy) => replyTextWithPolicies(baseReply, adapter, config, context, text, strategy),
+    replyImages: (context, images, strategy) => baseReply.replyImages(context, images, strategy),
+  };
+}
+
+async function replyTextWithPolicies(baseReply, adapter, config, context, text, strategy) {
+  const value = String(text || '').trim();
+  if (!value) return baseReply.replyText(context, text, strategy);
+
+  if (shouldUseTts(config, value)) {
+    try {
+      const audio = await synthesizeSpeech(config.bot.tts, value);
+      const result = context.chatType === 'group'
+        ? await adapter.sendGroupRecord(context.groupId, audio.file, strategy === 'quote' ? context.replyToMessageId : undefined)
+        : await adapter.sendPrivateRecord(context.userId, audio.file);
+      logger.info('文本转语音发送完成', {
+        chatType: context.chatType,
+        chars: value.length,
+        provider: config.bot.tts.provider,
+        format: audio.format,
+      });
+      return { kind: 'text', strategy: 'tts', success: result.success, attempts: [{ method: 'sendRecord', success: result.success, result }] };
+    } catch (error) {
+      logger.warn('文本转语音失败，降级发送文本', { error: normalizeError(error), chars: value.length });
+    }
+  }
+
+  const chunks = splitReplyText(value, config.bot?.textReply || {});
+  let last;
+  for (let index = 0; index < chunks.length; index += 1) {
+    const body = chunks.length > 1 && config.bot?.textReply?.showPartPrefix !== false
+      ? `(${index + 1}/${chunks.length})\n${chunks[index]}`
+      : chunks[index];
+    last = await baseReply.replyText(context, body, strategy);
+    const delay = Number(config.bot?.textReply?.splitDelayMs || 0);
+    if (index < chunks.length - 1 && delay > 0) await sleep(delay);
+  }
+  return last;
+}
+
+export function splitReplyText(text, options = {}) {
+  const value = String(text || '').trim();
+  if (!value) return [];
+  const max = Math.trunc(Number(options.maxChars || 0));
+  if (!Number.isFinite(max) || max <= 0 || value.length <= max) return [value];
+  const chunks = [];
+  let remaining = value;
+  while (remaining.length > max) {
+    let cut = Math.max(
+      remaining.lastIndexOf('\n\n', max),
+      remaining.lastIndexOf('\n', max),
+      remaining.lastIndexOf('。', max),
+      remaining.lastIndexOf('！', max),
+      remaining.lastIndexOf('？', max),
+      remaining.lastIndexOf('.', max),
+      remaining.lastIndexOf(' ', max),
+    );
+    if (cut < Math.floor(max * 0.55)) cut = max;
+    const part = remaining.slice(0, cut + (cut < max ? 1 : 0)).trim();
+    if (part) chunks.push(part);
+    remaining = remaining.slice(part.length).trim();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+function shouldUseTts(config, text) {
+  const tts = config.bot?.tts || {};
+  if (!tts.enabled) return false;
+  const value = String(text || '').trim();
+  if (!value) return false;
+  const limit = Math.max(1, Number(tts.autoTextMaxChars || 0));
+  if (value.length > limit) return false;
+  if (!String(tts.apiKey || '').trim()) return false;
+  if (tts.provider === 'fish-audio' && !String(tts.voiceId || '').trim()) return false;
+  return true;
+}
+
+async function synthesizeSpeech(tts, text) {
+  const provider = tts.provider === 'openai-compatible' ? 'openai-compatible' : 'fish-audio';
+  const format = ['mp3', 'wav', 'opus'].includes(String(tts.format || '').toLowerCase()) ? String(tts.format).toLowerCase() : 'mp3';
+  const timeoutMs = Math.max(5000, Number(tts.timeoutMs || 60000));
+  const apiKey = String(tts.apiKey || '').trim();
+  const apiUrl = normalizeTtsApiUrl(tts.apiUrl, provider);
+  const startedAt = Date.now();
+
+  const headers = { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' };
+  let body;
+  if (provider === 'fish-audio') {
+    headers.model = String(tts.model || 's2-pro').trim() || 's2-pro';
+    body = {
+      text,
+      reference_id: String(tts.voiceId || '').trim(),
+      format,
+      normalize: true,
+      latency: tts.latency || 'normal',
+      prosody: {
+        speed: Number(tts.speed || 1),
+        volume: Number(tts.volume || 0),
+        normalize_loudness: true,
+      },
+    };
+  } else {
+    body = {
+      model: String(tts.model || 'tts-1').trim() || 'tts-1',
+      voice: String(tts.voice || tts.voiceId || 'alloy').trim() || 'alloy',
+      input: text,
+      response_format: format,
+      speed: Number(tts.speed || 1),
+    };
+  }
+
+  const response = await fetch(apiUrl, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    throw new Error(`TTS HTTP ${response.status}: ${errorText.slice(0, 500)}`);
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!buffer.length) throw new Error('TTS returned empty audio');
+  logger.info('TTS request completed', { provider, format, chars: text.length, durationMs: Date.now() - startedAt, bytes: buffer.length });
+  return { file: `base64://${buffer.toString('base64')}`, format, bytes: buffer.length };
+}
+
+function normalizeTtsApiUrl(value, provider) {
+  const raw = String(value || '').trim();
+  if (raw) return raw;
+  return provider === 'fish-audio' ? 'https://api.fish.audio/v1/tts' : 'https://api.openai.com/v1/audio/speech';
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
 async function ensureNapcat() {
   const config = loadConfig();
   const wsUrl = String(config.napcat?.wsUrl || '').trim();
@@ -252,8 +601,18 @@ async function handleIncoming(adapter, event) {
   const config = loadConfig();
   const message = await normalizeIncomingMessage(adapter, event);
   if (!message) return;
-  const botId = String(event.self_id || adapter.selfQqId || '');
+  const botId = String(event.self_id || adapter.selfQqId || config.bot?.botQqId || '');
   if (botId && String(message.userId || '') === botId) return;
+
+  const ownerCommand = parseOwnerCommand(message, botId);
+  if (ownerCommand) {
+    if (!isBotOwner(config, message.userId)) {
+      logger.warn('非主人账号尝试调用主人指令，已拒绝', { userId: message.userId, command: ownerCommand.command });
+      return;
+    }
+    await handleOwnerCommand(adapter, config, message, ownerCommand);
+    return;
+  }
 
   const router = createRouter(config, botId);
   const decision = router.route({
@@ -282,7 +641,8 @@ async function handleIncoming(adapter, event) {
 
   if (decision.kind === 'ignored') return;
 
-  const reply = createReply(adapter, config);
+  const trackedAdapter = createTrackedNapcatClient(adapter, config);
+  const reply = createPolicyReply(createReply(trackedAdapter, config), trackedAdapter, config);
   const context = {
     chatType: message.chatType,
     groupId: message.groupId,
@@ -565,7 +925,7 @@ async function handleChat(config, reply, context, text) {
     timeoutMs: config.freeMode?.timeoutMs || 120000,
     reasoningEffort: config.llm?.reasoningEffort,
   });
-  const answer = trimReply(result.text, config.bot?.textReply?.maxChars);
+  const answer = cleanupModelText(result.text);
   await reply.replyText(context, answer || '模型没有返回内容。');
   const next = [...history, { role: 'user', content: prompt }, { role: 'assistant', content: answer }];
   sessions.set(key, pruneHistory(next, config));
@@ -578,6 +938,7 @@ async function normalizeIncomingMessage(adapter, event) {
 
   const message = event.message ?? event.raw_message ?? '';
   const rawMessage = String(event.raw_message || segmentsToCq(message) || '').trim();
+  const mentions = extractMentionedUserIds(message, rawMessage);
   const replyToMessageId = extractReplyIdFromSegments(message) || extractReplyIdFromRaw(rawMessage);
   const reference = replyToMessageId
     ? await resolveReferencedMessage(adapter, replyToMessageId, event.self_id || adapter.selfQqId)
@@ -592,8 +953,10 @@ async function normalizeIncomingMessage(adapter, event) {
   const referenceText = [reference.text, currentForwardText].filter(Boolean).join('\n\n');
   return {
     chatType,
+    segments: message,
     rawMessage,
     commandText: rawMessage,
+    mentions,
     messageId: event.message_id ?? event.messageId,
     groupId: event.group_id ?? event.groupId,
     userId: event.user_id ?? event.userId ?? event.sender?.user_id ?? event.sender?.userId,
@@ -1449,13 +1812,6 @@ function pruneHistory(messages, config) {
   let items = messages.slice(-maxRounds * 2);
   while (JSON.stringify(items).length > maxChars && items.length > 2) items = items.slice(2);
   return items;
-}
-
-function trimReply(text, maxChars) {
-  const value = String(text || '').trim();
-  const n = Number(maxChars);
-  if (!Number.isFinite(n) || n <= 0 || value.length <= n) return value;
-  return `${value.slice(0, Math.max(1, n))}\n\n（内容过长已截断）`;
 }
 
 function cleanupModelText(value) {

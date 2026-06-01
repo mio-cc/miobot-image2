@@ -269,6 +269,20 @@ export class NapcatAdapter {
     }, this.options.textSendTimeoutMs);
   }
 
+  async sendGroupRecord(groupId: number | string, fileUrl: string, replyToMessageId?: number | string): Promise<NapcatSendResult> {
+    const message: NapcatMessageSegment[] = [];
+    if (replyToMessageId !== undefined) message.push({ type: 'reply', data: { id: String(replyToMessageId) } });
+    message.push({ type: 'record', data: { file: fileUrl } });
+    return this.sendAndReportResult('send_group_msg', { group_id: groupId, message }, this.options.imageSendTimeoutMs);
+  }
+
+  async sendPrivateRecord(userId: number | string, fileUrl: string): Promise<NapcatSendResult> {
+    return this.sendAndReportResult('send_private_msg', {
+      user_id: userId,
+      message: [{ type: 'record', data: { file: fileUrl } }],
+    }, this.options.imageSendTimeoutMs);
+  }
+
   async sendGroupTextAt(groupId: number | string, text: string, userId: number | string): Promise<NapcatSendResult> {
     return this.sendAndReportResult('send_group_msg', {
       group_id: groupId,

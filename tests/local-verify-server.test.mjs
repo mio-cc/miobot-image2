@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -37,6 +38,20 @@ async function waitForHealth(port, stderrRef) {
 
 test('local verify server restores legacy template library from project.interrogations', async (t) => {
   const runtime = await fs.mkdtemp(path.join(os.tmpdir(), 'miobot-legacy-interrogations-'));
+  const modelPort = await getFreePort();
+  const modelRequests = [];
+  const modelServer = http.createServer((req, res) => {
+    modelRequests.push({ url: req.url, authorization: req.headers.authorization });
+    if (req.url === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'model-b' }, { id: 'model-a' }] }));
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'not found' } }));
+  });
+  await new Promise((resolve) => modelServer.listen(modelPort, '127.0.0.1', resolve));
+
   const assetDir = path.join(runtime, 'canvas-assets');
   await fs.mkdir(assetDir, { recursive: true });
   const assetPath = path.join(assetDir, 'legacy-template.png');
@@ -91,6 +106,7 @@ test('local verify server restores legacy template library from project.interrog
 
   t.after(async () => {
     child.kill('SIGTERM');
+    modelServer.close();
     await new Promise((resolve) => setTimeout(resolve, 250));
     await fs.rm(runtime, { recursive: true, force: true });
   });
@@ -107,6 +123,19 @@ test('local verify server restores legacy template library from project.interrog
   assert.ok(logs.entries.some((entry) => entry.scope === 'server'));
   const systemLogRaw = await fs.readFile(path.join(runtime, 'logs', 'system.ndjson'), 'utf8');
   assert.match(systemLogRaw, /"scope":"server"/);
+
+  const modelResponse = await fetch(`http://127.0.0.1:${port}/api/fetch-models`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer change-me-on-first-login', 'content-type': 'application/json' },
+    body: JSON.stringify({ baseUrl: `http://127.0.0.1:${modelPort}/v1-密钥sk-test-local`, key: '' }),
+  });
+  assert.equal(modelResponse.status, 200);
+  const modelBody = await modelResponse.json();
+  assert.deepEqual(modelBody.models, ['model-a', 'model-b']);
+  assert.equal(modelBody.normalized.baseUrl, `http://127.0.0.1:${modelPort}/v1`);
+  assert.equal(modelBody.normalized.keyDetected, true);
+  assert.equal(modelRequests[0].url, '/v1/models');
+  assert.equal(modelRequests[0].authorization, 'Bearer sk-test-local');
 
   const listResponse = await fetch(`http://127.0.0.1:${port}/canvas-api/interrogations`);
   assert.equal(listResponse.status, 200);

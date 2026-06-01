@@ -872,6 +872,65 @@ function createNodeAdapter(node, timeoutMs) {
   });
 }
 
+function normalizeNodeConnectionInput(baseUrlInput = '', keyInput = '') {
+  const rawBase = String(baseUrlInput || '').trim();
+  const rawKey = String(keyInput || '').trim();
+  const combined = `${rawBase} ${rawKey}`.trim();
+  const match = combined.match(/(https?:\/\/[^\s，,；;]+?)(?:\s*[-—–]\s*|\s+)?(?:密钥|key|api[_\s-]*key|token)[:：=\s-]*(sk-[A-Za-z0-9._-]+)/i);
+  const parsedBaseUrl = match ? match[1] : rawBase;
+  const parsedKey = rawKey || (match ? match[2] : '');
+  const baseUrl = cleanupApiBaseUrl(parsedBaseUrl);
+  const key = parsedKey.replace(/^[\s:：=,-]+|[\s,，;；]+$/g, '');
+  const host = (() => { try { return new URL(baseUrl).hostname.toLowerCase(); } catch { return ''; } })();
+  return {
+    baseUrl,
+    key,
+    keyDetected: Boolean(match?.[2]),
+    providerHint: host.includes('anyrouter') ? 'anyrouter' : '',
+  };
+}
+
+function cleanupApiBaseUrl(value = '') {
+  let out = String(value || '').trim().replace(/[\s,，;；]+$/g, '');
+  out = out.replace(/\/(?:chat\/completions|images\/generations|images\/edits|models)$/i, '');
+  out = out.replace(/\/+$/, '');
+  return out;
+}
+
+function maskSecret(value = '') {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (text.length <= 10) return `${text.slice(0, 2)}***`;
+  return `${text.slice(0, 5)}***${text.slice(-4)}`;
+}
+
+async function fetchOpenAIModels(baseUrl, key, timeoutMs = 20000) {
+  const url = `${cleanupApiBaseUrl(baseUrl)}/models`;
+  const headers = { Accept: 'application/json' };
+  if (key) headers.Authorization = `Bearer ${key}`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers,
+    signal: AbortSignal.timeout(Math.max(3000, Number(timeoutMs) || 20000)),
+  });
+  const contentType = response.headers.get('content-type') || '';
+  const payload = contentType.includes('application/json')
+    ? await response.json().catch(() => ({}))
+    : await response.text().catch(() => '');
+  if (!response.ok) {
+    const details = typeof payload === 'string'
+      ? payload.slice(0, 300)
+      : payload?.error?.message || payload?.message || JSON.stringify(payload).slice(0, 300);
+    throw new Error(`模型列表请求失败 HTTP ${response.status}${details ? `：${details}` : ''}`);
+  }
+  const source = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : Array.isArray(payload) ? payload : [];
+  const models = source
+    .map((item) => typeof item === 'string' ? item : item?.id || item?.name || item?.model)
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+  return [...new Set(models)].sort((a, b) => a.localeCompare(b));
+}
+
 async function runCanvasInterrogation(image) {
   if (!image?.dataUrl) throw new Error('缺少上传图片数据。');
   const startedAt = Date.now();
@@ -1275,6 +1334,36 @@ async function handleCompatApi(req, res, url) {
   if (req.method === 'POST' && p === '/api/config/import') { const saved = await persistSavedConfig(api.repository.importAndSave(body)); logSystem('info', 'admin.config', '配置已导入', { migrations: saved.importResult?.migrations, warnings: saved.importResult?.warnings }); return sendJson(res, 200, { success: true, message: saved.message, config: saved.config, importResult: saved.importResult, hotReload: saved.hotReload, auth: authBody(saved.hotReload.passwordSeedChanged), token: saved.config.panel.passwordSeed }); }
   if (req.method === 'GET' && p === '/api/config/export') return sendJson(res, 200, api.repository.exportConfig());
   if (req.method === 'GET' && p === '/api/default-prompts') return sendJson(res, 200, getDefaultPrompts());
+  if (req.method === 'POST' && p === '/api/fetch-models') {
+    const normalized = normalizeNodeConnectionInput(body?.baseUrl, body?.key);
+    if (!normalized.baseUrl) return sendJson(res, 400, { success: false, error: '请填写 OpenAI 兼容 Base URL，例如 https://anyrouter.top/v1' });
+    try {
+      const models = await fetchOpenAIModels(normalized.baseUrl, normalized.key, body?.timeoutMs || 20000);
+      logSystem('info', 'admin.models', '模型列表获取成功', {
+        baseUrl: normalized.baseUrl,
+        modelCount: models.length,
+        providerHint: normalized.providerHint,
+        keyMask: maskSecret(normalized.key),
+      });
+      return sendJson(res, 200, {
+        success: true,
+        models,
+        normalized: {
+          baseUrl: normalized.baseUrl,
+          keyDetected: normalized.keyDetected,
+          keyMask: maskSecret(normalized.key),
+          providerHint: normalized.providerHint,
+        },
+      });
+    } catch (error) {
+      logSystem('warn', 'admin.models', '模型列表获取失败', {
+        baseUrl: normalized.baseUrl,
+        providerHint: normalized.providerHint,
+        error: error?.message || String(error),
+      });
+      return sendJson(res, 502, { success: false, error: error?.message || String(error), normalized: { baseUrl: normalized.baseUrl, keyDetected: normalized.keyDetected, providerHint: normalized.providerHint } });
+    }
+  }
   if (req.method === 'GET' && p === '/api/logs') return sendJson(res, 200, readLogs(systemLogs, url, 'system'));
   if (req.method === 'POST' && p === '/api/logs/clear') { systemLogs.length = 0; clearLogFile('system'); logSystem('info', 'logger', 'System logs cleared'); return sendJson(res, 200, readLogs(systemLogs, url, 'system')); }
   if (req.method === 'GET' && p === '/api/canvas/logs') return sendJson(res, 200, readLogs(canvasLogs, url, 'canvas'));

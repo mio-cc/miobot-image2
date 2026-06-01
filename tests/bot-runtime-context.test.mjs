@@ -5,9 +5,12 @@ import {
   buildBotGalleryPayload,
   collectMessageContext,
   extractForwardIds,
+  extractMentionedUserIds,
   extractMessageText,
+  parseOwnerCommand,
   parseRemotePromptInput,
   resolveReferencedMessage,
+  splitReplyText,
   withReferenceContext,
 } from '../scripts/bot-runtime.mjs';
 
@@ -182,5 +185,53 @@ test('bot runtime: image results are normalized for canvas gallery sync', () => 
   assert.equal(payload.artifacts.length, 2);
   assert.equal(payload.artifacts[0].kind, 'base64');
   assert.equal(payload.artifacts[1].kind, 'url');
+});
+
+test('bot runtime: owner commands require bot address where appropriate and target mentioned user', () => {
+  assert.deepEqual(extractMentionedUserIds('[CQ:at,qq=10000][CQ:at,qq=20000] /拉黑'), ['10000', '20000']);
+
+  assert.deepEqual(
+    parseOwnerCommand({
+      chatType: 'group',
+      rawMessage: '[CQ:at,qq=20000] /拉黑',
+      mentions: ['20000'],
+    }, '10000'),
+    { command: 'blacklist', targetUserId: '20000' },
+  );
+
+  assert.equal(
+    parseOwnerCommand({
+      chatType: 'group',
+      rawMessage: '/c3',
+      mentions: [],
+    }, '10000'),
+    undefined,
+  );
+
+  assert.deepEqual(
+    parseOwnerCommand({
+      chatType: 'group',
+      rawMessage: '[CQ:at,qq=10000] /c3',
+      mentions: ['10000'],
+    }, '10000'),
+    { command: 'recall', count: 3 },
+  );
+
+  assert.deepEqual(
+    parseOwnerCommand({
+      chatType: 'private',
+      rawMessage: '/ttsk',
+      mentions: [],
+    }, '10000'),
+    { command: 'ttsOn' },
+  );
+});
+
+test('bot runtime: long text splitter preserves content without truncation', () => {
+  const text = '第一段内容很长。第二段继续补充说明。第三段收尾。';
+  const chunks = splitReplyText(text, { maxChars: 10 });
+  assert.ok(chunks.length > 1);
+  assert.equal(chunks.join(''), text);
+  assert.deepEqual(splitReplyText('短文本', { maxChars: 0 }), ['短文本']);
 });
 

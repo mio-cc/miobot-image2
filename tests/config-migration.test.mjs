@@ -126,6 +126,59 @@ test('migration: type errors are normalized without throwing', () => {
   assert.equal(result.config.freeMode.maxOutputImages, 4);
 });
 
+test('migration: bot owner and tts settings are normalized', () => {
+  const result = importConfig({
+    bot: {
+      botQqId: ' 10000 ',
+      ownerQQs: '10001，10001\n10002;10003',
+      tts: {
+        enabled: 'true',
+        provider: 'bad-provider',
+        apiUrl: ' https://tts.example/v1 ',
+        apiKey: 'secret',
+        model: '',
+        voiceId: ' voice-a ',
+        format: 'ogg',
+        autoTextMaxChars: 99999,
+        timeoutMs: 1,
+        speed: 9,
+        volume: -99,
+        latency: 'turbo',
+      },
+    },
+  });
+
+  assert.equal(result.config.bot.botQqId, '10000');
+  assert.deepEqual(result.config.bot.ownerQQs, ['10001', '10002', '10003']);
+  assert.equal(result.config.bot.tts.enabled, true);
+  assert.equal(result.config.bot.tts.provider, 'fish-audio');
+  assert.equal(result.config.bot.tts.apiUrl, 'https://tts.example/v1');
+  assert.equal(result.config.bot.tts.model, 's2-pro');
+  assert.equal(result.config.bot.tts.voiceId, 'voice-a');
+  assert.equal(result.config.bot.tts.format, 'mp3');
+  assert.equal(result.config.bot.tts.autoTextMaxChars, 4000);
+  assert.equal(result.config.bot.tts.timeoutMs, 5000);
+  assert.equal(result.config.bot.tts.speed, 2);
+  assert.equal(result.config.bot.tts.volume, -20);
+  assert.equal(result.config.bot.tts.latency, 'normal');
+});
+
+test('migration: model node can split combined base url and key paste', () => {
+  const result = importConfig({
+    llm: {
+      apiKeys: [{
+        name: 'Any Router',
+        baseUrl: 'https://anyrouter.top/v1-密钥sk-test123',
+        key: '',
+        enabled: true,
+      }],
+    },
+  });
+
+  assert.equal(result.config.llm.apiKeys[0].baseUrl, 'https://anyrouter.top/v1');
+  assert.equal(result.config.llm.apiKeys[0].key, 'sk-test123');
+});
+
 test('migration: export adds version, exportedAt, and normalized config payload', () => {
   const exported = exportConfig({ panel: { port: '3033' } }, { exportedAt: '2026-05-27T12:00:00.000Z' });
   assert.equal(exported.version, CONFIG_SCHEMA_VERSION);

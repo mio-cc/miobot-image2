@@ -227,6 +227,8 @@ function ensureCanvasConfig() {
   config.value.napcat.forwardSendTimeoutMs ??= 300000;
   config.value.napcat.getMessageTimeoutMs ??= 10000;
   if (!config.value.bot) config.value.bot = {};
+  config.value.bot.botQqId ||= '';
+  if (!Array.isArray(config.value.bot.ownerQQs)) config.value.bot.ownerQQs = [];
   if (!config.value.bot.replyStrategies) {
     config.value.bot.replyStrategies = {
       text: config.value.bot.replyFormat || 'forward',
@@ -244,6 +246,33 @@ function ensureCanvasConfig() {
   config.value.bot.textReply.maxChars ??= 1800;
   config.value.bot.textReply.splitDelayMs ??= 800;
   config.value.bot.textReply.showPartPrefix ??= true;
+  if (!config.value.bot.tts) {
+    config.value.bot.tts = {
+      enabled: false,
+      provider: 'fish-audio',
+      apiUrl: 'https://api.fish.audio/v1/tts',
+      apiKey: '',
+      model: 's2-pro',
+      voiceId: '',
+      voice: 'alloy',
+      format: 'mp3',
+      autoTextMaxChars: 180,
+      timeoutMs: 60000,
+      speed: 1,
+      volume: 0,
+      latency: 'normal',
+    };
+  }
+  config.value.bot.tts.provider ||= 'fish-audio';
+  config.value.bot.tts.apiUrl ||= config.value.bot.tts.provider === 'openai-compatible' ? 'https://api.openai.com/v1/audio/speech' : 'https://api.fish.audio/v1/tts';
+  config.value.bot.tts.model ||= config.value.bot.tts.provider === 'openai-compatible' ? 'tts-1' : 's2-pro';
+  config.value.bot.tts.voice ||= 'alloy';
+  config.value.bot.tts.format ||= 'mp3';
+  config.value.bot.tts.autoTextMaxChars ??= 180;
+  config.value.bot.tts.timeoutMs ??= 60000;
+  config.value.bot.tts.speed ??= 1;
+  config.value.bot.tts.volume ??= 0;
+  config.value.bot.tts.latency ||= 'normal';
   if (!config.value.bot.imageCompression) {
     config.value.bot.imageCompression = { enabled: true, scale: 0.65, quality: 82 };
   }
@@ -450,9 +479,38 @@ function setActiveNode(idx: number | string) {
   showToast(`已激活节点：${config.value.llm.apiKeys[config.value.llm.activeNodeIndex].name || '未命名'}`, 'success');
 }
 
+function parseNodeConnectionInput(baseUrl = '', key = '') {
+  const rawBase = String(baseUrl || '').trim();
+  const rawKey = String(key || '').trim();
+  const combined = `${rawBase} ${rawKey}`.trim();
+  const match = combined.match(/(https?:\/\/[^\s，,；;]+?)(?:\s*[-—–]\s*|\s+)?(?:密钥|key|api[_\s-]*key|token)[:：=\s-]*(sk-[A-Za-z0-9._-]+)/i);
+  let nextBase = match ? match[1] : rawBase;
+  let nextKey = rawKey || (match ? match[2] : '');
+  nextBase = nextBase
+    .replace(/[\s,，;；]+$/g, '')
+    .replace(/\/(?:chat\/completions|images\/generations|images\/edits|models)$/i, '')
+    .replace(/\/+$/, '');
+  nextKey = nextKey.replace(/^[\s:：=,-]+|[\s,，;；]+$/g, '');
+  return { baseUrl: nextBase, key: nextKey, keyDetected: Boolean(match?.[2]) };
+}
+
+function applyAnyRouterPreset(idx: number | string) {
+  const node = config.value.llm.apiKeys[normalizeIndex(idx)];
+  if (!node) return;
+  node.name ||= 'Any Router';
+  node.baseUrl = 'https://anyrouter.top/v1';
+  showToast('已填入 Any Router Base URL，请补充接口密钥后获取模型', 'info');
+}
+
 async function fetchModels(idx: number | string) {
   const index = normalizeIndex(idx);
   const node = config.value.llm.apiKeys[index];
+  const parsed = parseNodeConnectionInput(node?.baseUrl, node?.key);
+  if (node) {
+    if (parsed.baseUrl && parsed.baseUrl !== node.baseUrl) node.baseUrl = parsed.baseUrl;
+    if (parsed.key && parsed.key !== node.key) node.key = parsed.key;
+    if (parsed.keyDetected) showToast('已自动拆分粘贴内容中的 Base URL 和密钥', 'info');
+  }
   if (!node?.baseUrl) {
     showToast('请先填写基础 URL', 'error');
     return;
@@ -468,6 +526,7 @@ async function fetchModels(idx: number | string) {
       nodeIndex: index 
     }, { headers: authHeaders() });
     fetchedModels.value = res.data.models || [];
+    if (res.data.normalized?.baseUrl) node.baseUrl = res.data.normalized.baseUrl;
     node.models = fetchedModels.value;
     node.modelsFetchedAt = new Date().toISOString();
     showToast(`获取成功！共发现 ${fetchedModels.value.length} 个模型`, 'success');
@@ -1033,6 +1092,9 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                       </label>
                     </div>
                     <div class="flex gap-2">
+                      <button @click="applyAnyRouterPreset(idx)" class="btn-outline text-xs py-1 px-3">
+                        Any Router
+                      </button>
                       <button @click="fetchModels(idx)" :disabled="modelLoading" class="btn-outline text-xs py-1 px-3">
                         {{ modelLoading ? '⏳' : '🔄' }} 获取模型
                       </button>
@@ -1047,7 +1109,8 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                     </div>
                     <div>
                       <label class="label-sm">基础地址</label>
-                      <input v-model="node.baseUrl" class="input-field" placeholder="OpenAI 兼容 Base URL（可留空）" />
+                      <input v-model="node.baseUrl" class="input-field" placeholder="OpenAI 兼容 Base URL，例如 https://anyrouter.top/v1" />
+                      <span class="text-slate-400 text-xs mt-1 block">也可直接粘贴 “https://anyrouter.top/v1-密钥sk-...” ，点击获取模型时会自动拆分。</span>
                     </div>
                     <div>
                       <label class="label-sm">接口密钥</label>
@@ -1565,6 +1628,118 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                     <span class="text-slate-400 text-xs mt-1 block">用于降低 Napcat 上传耗时</span>
                   </div>
                 </div>
+              </div>
+            </div>
+
+            <div class="card p-5">
+              <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between mb-4">
+                <div>
+                  <h2 class="section-title mb-1">👑 Bot 主人管理</h2>
+                  <p class="text-slate-400 text-xs">主人指令只允许下方主人 QQ 调用；主人无法被拉黑，撤回只撤回机器人最近发出的整条消息。</p>
+                </div>
+                <span class="px-3 py-1 rounded-full bg-cyan-500/10 text-cyan-200 text-xs border border-cyan-500/20">权限敏感</span>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label class="label-sm">机器人 QQ 号</label>
+                  <input v-model="config.bot.botQqId" class="input-field" placeholder="用于识别 @bot 主人指令，例如 123456789" />
+                  <span class="text-slate-400 text-xs mt-1 block">建议填写，避免 Napcat 未上报 self_id 时 @bot 指令无法识别。</span>
+                </div>
+                <div>
+                  <label class="label-sm">主人 QQ 号</label>
+                  <input :value="config.bot.ownerQQs?.join(', ')"
+                    @input="config.bot.ownerQQs = ($event.target as HTMLInputElement).value.split(/[\n,，；;]+/).map((s:string) => s.trim()).filter(Boolean)"
+                    class="input-field" placeholder="多个 QQ 用逗号或换行分隔" />
+                  <span class="text-slate-400 text-xs mt-1 block">只有这里的 QQ 可以执行 /拉黑、/拉白、/撤回、/ttsk、/ttsg。</span>
+                </div>
+              </div>
+              <div class="mt-4 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+                <div class="font-semibold text-sm text-slate-100 mb-2">可用主人指令</div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-slate-300 leading-6">
+                  <div><code>@某人 /拉黑</code>：禁止该群内该 QQ 使用 Bot</div>
+                  <div><code>@某人 /拉白</code>：解除该群内该 QQ 黑名单</div>
+                  <div><code>@bot /撤回</code> 或 <code>@bot /c3</code>：撤回最近 1/3 条可撤回消息</div>
+                  <div><code>@bot /ttsk</code> / <code>@bot /ttsg</code>：开启/关闭自动语音回复</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card p-5">
+              <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between mb-4">
+                <div>
+                  <h2 class="section-title mb-1">🔊 文本转语音 / TTS</h2>
+                  <p class="text-slate-400 text-xs">当机器人回复文本不超过设定字数时，自动调用语音 API 并用 Napcat 语音消息发送；失败会降级为普通文本。</p>
+                </div>
+                <label class="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-950/60 border border-slate-800 min-w-[180px]">
+                  <span class="font-semibold text-sm text-slate-100">启用 TTS</span>
+                  <input type="checkbox" v-model="config.bot.tts.enabled" class="h-5 w-5 accent-cyan-500" />
+                </label>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div>
+                  <label class="label-sm">语音服务</label>
+                  <select v-model="config.bot.tts.provider" class="input-field">
+                    <option value="fish-audio">Fish Audio</option>
+                    <option value="openai-compatible">OpenAI 兼容语音</option>
+                  </select>
+                  <span class="text-slate-400 text-xs mt-1 block">默认 Fish Audio，兼容模式适配常见 /audio/speech 服务。</span>
+                </div>
+                <div class="lg:col-span-2">
+                  <label class="label-sm">API 地址</label>
+                  <input v-model="config.bot.tts.apiUrl" class="input-field" placeholder="https://api.fish.audio/v1/tts" />
+                </div>
+                <div>
+                  <label class="label-sm">API 密钥</label>
+                  <input v-model="config.bot.tts.apiKey" type="password" autocomplete="off" class="input-field" placeholder="Bearer Token / API Key" />
+                </div>
+                <div>
+                  <label class="label-sm">模型 ID / 后端</label>
+                  <input v-model="config.bot.tts.model" class="input-field" placeholder="Fish: s2-pro；兼容模式: tts-1" />
+                </div>
+                <div v-if="config.bot.tts.provider === 'fish-audio'">
+                  <label class="label-sm">Fish Voice / Reference ID</label>
+                  <input v-model="config.bot.tts.voiceId" class="input-field" placeholder="voice model id / reference_id" />
+                </div>
+                <div v-else>
+                  <label class="label-sm">兼容模式 Voice</label>
+                  <input v-model="config.bot.tts.voice" class="input-field" placeholder="alloy / shimmer / 自定义 voice" />
+                </div>
+                <div>
+                  <label class="label-sm">多少字以内转语音</label>
+                  <input type="number" min="1" max="4000" step="10" v-model.number="config.bot.tts.autoTextMaxChars" class="input-field" placeholder="180" />
+                  <span class="text-slate-400 text-xs mt-1 block">超过该长度仍按长文本分段发送，避免长语音等待过久。</span>
+                </div>
+                <div>
+                  <label class="label-sm">输出格式</label>
+                  <select v-model="config.bot.tts.format" class="input-field">
+                    <option value="mp3">MP3</option>
+                    <option value="wav">WAV</option>
+                    <option value="opus">Opus</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="label-sm">超时（毫秒）</label>
+                  <input type="number" min="5000" max="300000" step="1000" v-model.number="config.bot.tts.timeoutMs" class="input-field" placeholder="60000" />
+                </div>
+                <div>
+                  <label class="label-sm">延迟档位</label>
+                  <select v-model="config.bot.tts.latency" class="input-field">
+                    <option value="normal">normal：质量优先</option>
+                    <option value="balanced">balanced：均衡</option>
+                    <option value="low">low：低延迟</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="label-sm">语速</label>
+                  <input type="number" min="0.5" max="2" step="0.05" v-model.number="config.bot.tts.speed" class="input-field" />
+                </div>
+                <div>
+                  <label class="label-sm">音量</label>
+                  <input type="number" min="-20" max="20" step="1" v-model.number="config.bot.tts.volume" class="input-field" />
+                </div>
+              </div>
+              <div class="mt-4 text-xs text-slate-400 leading-6 rounded-xl border border-cyan-500/10 bg-cyan-500/5 p-3">
+                Fish Audio 需要填写 <code>API 密钥</code>、<code>模型 ID</code>（如 s2-pro）和 <code>Voice / Reference ID</code>；发送给 QQ 时会转换为 <code>record</code> 语音消息段。
               </div>
             </div>
 

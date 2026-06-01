@@ -193,3 +193,30 @@ test('napcat adapter: sendGroupImage uses image timeout and reports timeout resu
   assert.equal(result.timedOut, true);
   assert.match(result.error, /send_group_msg \(6ms\)/);
 });
+
+test('napcat adapter: sends record segments for group and private voice messages', async () => {
+  const { adapter, sockets } = createHarness();
+  adapter.connect();
+  sockets[0].open();
+
+  const groupPending = adapter.sendGroupRecord(1000, 'base64://audio-data', 777);
+  const groupAction = sockets[0].sent[0];
+  assert.equal(groupAction.action, 'send_group_msg');
+  assert.equal(groupAction.params.group_id, 1000);
+  assert.deepEqual(groupAction.params.message, [
+    { type: 'reply', data: { id: '777' } },
+    { type: 'record', data: { file: 'base64://audio-data' } },
+  ]);
+  sockets[0].message({ echo: groupAction.echo, status: 'ok', retcode: 0, data: { message_id: 778 } });
+  assert.equal((await groupPending).messageId, 778);
+
+  const privatePending = adapter.sendPrivateRecord(2000, 'base64://audio-private');
+  const privateAction = sockets[0].sent[1];
+  assert.equal(privateAction.action, 'send_private_msg');
+  assert.equal(privateAction.params.user_id, 2000);
+  assert.deepEqual(privateAction.params.message, [
+    { type: 'record', data: { file: 'base64://audio-private' } },
+  ]);
+  sockets[0].message({ echo: privateAction.echo, status: 'ok', retcode: 0, data: { message_id: 779 } });
+  assert.equal((await privatePending).messageId, 779);
+});
