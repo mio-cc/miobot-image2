@@ -599,6 +599,14 @@ function applyHfPreset(kind: string) {
     Object.assign(f, { pipelineTag: 'image-text-to-text', inference: '', gated: 'false', sort: 'downloads', direction: '-1', onlyChatCompatible: true });
   } else if (kind === 'image') {
     Object.assign(f, { pipelineTag: 'text-to-image', inference: '', gated: 'false', sort: 'downloads', direction: '-1', onlyChatCompatible: false });
+  } else if (kind === 'textVideo') {
+    Object.assign(f, { pipelineTag: 'text-to-video', inference: '', gated: 'false', sort: 'downloads', direction: '-1', onlyChatCompatible: false });
+  } else if (kind === 'imageVideo') {
+    Object.assign(f, { pipelineTag: 'image-to-video', inference: '', gated: 'false', sort: 'downloads', direction: '-1', onlyChatCompatible: false });
+  } else if (kind === 'videoVideo') {
+    Object.assign(f, { pipelineTag: 'video-to-video', inference: '', gated: 'false', sort: 'downloads', direction: '-1', onlyChatCompatible: false });
+  } else if (kind === 'anyAny') {
+    Object.assign(f, { pipelineTag: 'any-to-any', inference: '', gated: 'false', sort: 'downloads', direction: '-1', onlyChatCompatible: false });
   } else if (kind === 'asr') {
     Object.assign(f, { pipelineTag: 'automatic-speech-recognition', inference: '', gated: 'false', sort: 'downloads', direction: '-1', onlyChatCompatible: false });
   } else if (kind === 'private') {
@@ -1584,6 +1592,10 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                   <button @click="applyHfPreset('chat')" class="btn-outline text-xs">对话/LLM</button>
                   <button @click="applyHfPreset('vision')" class="btn-outline text-xs">视觉理解/VLM</button>
                   <button @click="applyHfPreset('image')" class="btn-outline text-xs">文生图</button>
+                  <button @click="applyHfPreset('textVideo')" class="btn-outline text-xs">文生视频</button>
+                  <button @click="applyHfPreset('imageVideo')" class="btn-outline text-xs">图生视频</button>
+                  <button @click="applyHfPreset('videoVideo')" class="btn-outline text-xs">视频改视频</button>
+                  <button @click="applyHfPreset('anyAny')" class="btn-outline text-xs">多模态/任意转任意</button>
                   <button @click="applyHfPreset('asr')" class="btn-outline text-xs">语音识别</button>
                   <button @click="applyHfPreset('private')" class="btn-outline text-xs">我的可见模型</button>
                   <button @click="applyHfPreset('hot')" class="btn-outline text-xs">热门可推理</button>
@@ -1609,14 +1621,32 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                     <option value="image-text-to-text">图文转文本 / VLM</option>
                     <option value="text-to-image">文生图</option>
                     <option value="image-to-image">图生图</option>
+                    <option value="text-to-video">文生视频</option>
+                    <option value="image-to-video">图生视频</option>
+                    <option value="video-to-video">视频改视频</option>
+                    <option value="image-text-to-video">图文生视频 / TI2V</option>
+                    <option value="video-text-to-text">视频理解 / 视频转文本</option>
+                    <option value="any-to-any">多模态任意转任意</option>
                     <option value="automatic-speech-recognition">语音识别</option>
                     <option value="text-to-speech">文本转语音</option>
+                    <option value="text-to-audio">文本转音频</option>
+                    <option value="audio-to-audio">音频转音频</option>
                     <option value="translation">翻译</option>
                     <option value="summarization">摘要</option>
+                    <option value="question-answering">问答</option>
+                    <option value="token-classification">Token 分类 / NER</option>
+                    <option value="text-classification">文本分类</option>
+                    <option value="zero-shot-classification">零样本分类</option>
                     <option value="sentence-similarity">向量/相似度</option>
+                    <option value="feature-extraction">特征提取 / Embedding</option>
                     <option value="fill-mask">填空/掩码</option>
+                    <option value="object-detection">目标检测</option>
+                    <option value="image-classification">图像分类</option>
+                    <option value="image-segmentation">图像分割</option>
+                    <option value="depth-estimation">深度估计</option>
+                    <option value="mask-generation">遮罩生成</option>
                   </select>
-                  <span class="text-slate-400 text-xs mt-1 block">这是 HF 最重要的任务筛选字段。</span>
+                  <span class="text-slate-400 text-xs mt-1 block">这是 HF 最重要的任务筛选字段；视频类通常需要关闭“仅显示聊天可切换模型”。</span>
                 </div>
                 <div>
                   <label class="label-sm">标签 filter</label>
