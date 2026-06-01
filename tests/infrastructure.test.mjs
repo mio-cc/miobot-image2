@@ -1,7 +1,10 @@
 ﻿import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
-import { createLogger, MemoryLogSink } from '../dist/packages/logger/src/index.js';
+import { createLogger, MemoryLogSink, JsonFileLogSink } from '../dist/packages/logger/src/index.js';
 import {
   createModelQueueKey,
   isRetryableError,
@@ -36,6 +39,27 @@ test('logger: supports child scopes, level filtering, memory query, and bounds',
   assert.equal(sink.all().length, 2);
   assert.equal(sink.query({ scope: 'root:child' }).length, 1);
   assert.equal(sink.query({ level: 'error' })[0].message, 'third');
+});
+
+test('logger: persists redacted structured records to ndjson', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'miobot-log-sink-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, 'system.ndjson');
+  const logger = createLogger({
+    scope: 'persist',
+    level: 'debug',
+    sinks: [new JsonFileLogSink(filePath)],
+    clock: () => new Date('2026-05-27T00:00:00.000Z'),
+  });
+
+  logger.info('saved', { apiKey: 'sk-secret-value', visible: 'ok' });
+
+  const lines = (await fs.readFile(filePath, 'utf8')).trim().split(/\r?\n/);
+  assert.equal(lines.length, 1);
+  const record = JSON.parse(lines[0]);
+  assert.equal(record.scope, 'persist');
+  assert.equal(record.message, 'saved');
+  assert.deepEqual(record.data, { apiKey: '[REDACTED]', visible: 'ok' });
 });
 
 test('error-normalizer: serializes timeout errors as retryable', () => {

@@ -464,6 +464,10 @@ MIOBOT_RUNTIME_DIR=${RUNTIME_DIR}
 MIOBOT_CONFIG_PATH=${CONFIG_PATH}
 MIOBOT_CANVAS_STATE_PATH=${CANVAS_STATE_PATH}
 MIOBOT_CANVAS_ASSET_DIR=${CANVAS_ASSET_DIR}
+MIOBOT_LOG_DIR=${LOG_DIR}
+MIOBOT_SYSTEM_LOG_PATH=${LOG_DIR}/system.ndjson
+MIOBOT_CANVAS_LOG_PATH=${LOG_DIR}/canvas.ndjson
+MIOBOT_BOT_LOG_PATH=${LOG_DIR}/system.ndjson
 DATA_DIR=${DATA_DIR}
 LOG_DIR=${LOG_DIR}
 PATH=$(managed_path)
@@ -575,6 +579,8 @@ Config path:      ${CONFIG_PATH}
 Canvas state:     ${CANVAS_STATE_PATH}
 Canvas assets:    ${CANVAS_ASSET_DIR}
 Log dir:          ${LOG_DIR}
+System log:       ${LOG_DIR}/system.ndjson
+Canvas log:       ${LOG_DIR}/canvas.ndjson
 Env file:         ${ENV_FILE}
 Host/Port:        ${HOST}:${PORT}
 Node:             ${NODE_BIN:-not-found} $(node -v 2>/dev/null || true)

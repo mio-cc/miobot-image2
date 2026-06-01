@@ -2144,7 +2144,7 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                 <div>
                   <h3 class="text-base font-bold text-white">📜 独立画布日志管理器</h3>
                   <p class="text-zinc-500 text-xs mt-0.5" v-if="canvasLogStats">
-                    内存日志: <code class="text-cyan-300 font-mono">{{ canvasLogStats.total }}/{{ canvasLogStats.maxMemoryEntries }}</code> 条 · 日志文件: <code class="text-zinc-400 font-mono">{{ canvasLogStats.logFile }}</code>
+                    内存日志: <code class="text-cyan-300 font-mono">{{ canvasLogStats.memoryTotal ?? canvasLogStats.total }}/{{ canvasLogStats.maxMemoryEntries }}</code> 条 · 总数: <code class="text-cyan-300 font-mono">{{ canvasLogStats.total }}</code> 条 · 日志文件: <code class="text-zinc-400 font-mono">{{ canvasLogStats.logFile }}</code>
                   </p>
                   <p class="text-zinc-500 text-xs mt-0.5" v-else>记录并显示画布专属的接口通信、生图渲染、反推调用记录</p>
                 </div>
@@ -2327,7 +2327,7 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                 <div>
                   <h3 class="text-base font-bold text-white">📜 机器人运行系统日志</h3>
                   <p class="text-zinc-500 text-xs mt-0.5" v-if="logStats">
-                    日志缓冲区: <code class="text-indigo-400 font-mono">{{ logStats.total }}/{{ logStats.maxMemoryEntries }}</code> 条 · 持久文件: <code class="text-zinc-400 font-mono">{{ logStats.logFile }}</code>
+                    内存日志: <code class="text-indigo-400 font-mono">{{ logStats.memoryTotal ?? logStats.total }}/{{ logStats.maxMemoryEntries }}</code> 条 · 总数: <code class="text-indigo-400 font-mono">{{ logStats.total }}</code> 条 · 持久文件: <code class="text-zinc-400 font-mono">{{ logStats.logFile }}</code>
                   </p>
                   <p class="text-zinc-500 text-xs mt-0.5" v-else>正在监控实时系统运行日志...</p>
                 </div>

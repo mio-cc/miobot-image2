@@ -7,18 +7,25 @@ import { normalizeError } from '../dist/packages/core/src/index.js';
 import { createDefaultConfig, importConfig } from '../dist/packages/config/src/index.js';
 import { createFreeModeEngine } from '../dist/packages/free-mode/src/index.js';
 import { createImageModule } from '../dist/packages/image/src/index.js';
-import { createLogger, ConsoleLogSink } from '../dist/packages/logger/src/index.js';
+import { createLogger, ConsoleLogSink, JsonFileLogSink } from '../dist/packages/logger/src/index.js';
 import { createOpenAICompatibleAdapter } from '../dist/packages/llm/src/index.js';
 import { NapcatAdapter } from '../dist/packages/napcat/src/index.js';
 import { createReplyStrategyEngine } from '../dist/packages/reply/src/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const configPath = process.env.MIOBOT_CONFIG_PATH || path.join(projectRoot, '.runtime', 'config.json');
+const runtimeDir = process.env.MIOBOT_RUNTIME_DIR ? path.resolve(process.env.MIOBOT_RUNTIME_DIR) : path.join(projectRoot, '.runtime');
+const configPath = process.env.MIOBOT_CONFIG_PATH || path.join(runtimeDir, 'config.json');
+const logDir = process.env.MIOBOT_LOG_DIR ? path.resolve(process.env.MIOBOT_LOG_DIR) : path.join(runtimeDir, 'logs');
+const systemLogPath = process.env.MIOBOT_BOT_LOG_PATH
+  ? path.resolve(process.env.MIOBOT_BOT_LOG_PATH)
+  : process.env.MIOBOT_SYSTEM_LOG_PATH
+    ? path.resolve(process.env.MIOBOT_SYSTEM_LOG_PATH)
+    : path.join(logDir, 'system.ndjson');
 const logger = createLogger({
   scope: 'bot',
   level: process.env.MIOBOT_LOG_LEVEL || 'info',
-  sinks: [new ConsoleLogSink()],
+  sinks: [new ConsoleLogSink(), new JsonFileLogSink(systemLogPath)],
 });
 
 const DIRECT_GROUP_COMMANDS = [

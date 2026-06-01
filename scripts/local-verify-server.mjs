@@ -17,6 +17,10 @@ const runtimeDir = process.env.MIOBOT_RUNTIME_DIR ? path.resolve(process.env.MIO
 const configPath = process.env.MIOBOT_CONFIG_PATH ? path.resolve(process.env.MIOBOT_CONFIG_PATH) : path.join(runtimeDir, 'config.json');
 const canvasStatePath = process.env.MIOBOT_CANVAS_STATE_PATH ? path.resolve(process.env.MIOBOT_CANVAS_STATE_PATH) : path.join(runtimeDir, 'canvas-state.json');
 const canvasAssetDir = process.env.MIOBOT_CANVAS_ASSET_DIR ? path.resolve(process.env.MIOBOT_CANVAS_ASSET_DIR) : path.join(runtimeDir, 'canvas-assets');
+const logDir = process.env.MIOBOT_LOG_DIR ? path.resolve(process.env.MIOBOT_LOG_DIR) : path.join(runtimeDir, 'logs');
+const systemLogPath = process.env.MIOBOT_SYSTEM_LOG_PATH ? path.resolve(process.env.MIOBOT_SYSTEM_LOG_PATH) : path.join(logDir, 'system.ndjson');
+const canvasLogPath = process.env.MIOBOT_CANVAS_LOG_PATH ? path.resolve(process.env.MIOBOT_CANVAS_LOG_PATH) : path.join(logDir, 'canvas.ndjson');
+const LOG_FILE_MAX_BYTES = Math.max(128 * 1024, Number(process.env.MIOBOT_LOG_MAX_BYTES || 5 * 1024 * 1024) || 5 * 1024 * 1024);
 const api = createWebApi({ initialConfig: await loadPersistedConfig() });
 const port = Number(process.env.MIOBOT_PORT || process.env.MIOBOT_VERIFY_PORT || process.env.PORT || 3018);
 const host = process.env.MIOBOT_HOST || process.env.HOST || 'localhost';
@@ -258,6 +262,108 @@ function canvasLogOptions() {
   };
 }
 
+function logFileForKind(kind) {
+  return kind === 'canvas' ? canvasLogPath : systemLogPath;
+}
+
+function rotateLogFileIfNeeded(filePath) {
+  try {
+    if (!fssync.existsSync(filePath)) return;
+    const stat = fssync.statSync(filePath);
+    if (stat.size <= LOG_FILE_MAX_BYTES) return;
+    const rotated = `${filePath}.1`;
+    fssync.rmSync(rotated, { force: true });
+    fssync.renameSync(filePath, rotated);
+  } catch {
+    // Best effort only: logging must not break the service.
+  }
+}
+
+function appendLogFile(kind, entry) {
+  const filePath = logFileForKind(kind);
+  try {
+    fssync.mkdirSync(path.dirname(filePath), { recursive: true });
+    rotateLogFileIfNeeded(filePath);
+    fssync.appendFileSync(filePath, `${JSON.stringify(entry)}\n`, 'utf8');
+  } catch (error) {
+    console.warn(`[miobot] Failed to write ${kind} log file: ${error?.message || error}`);
+  }
+}
+
+function clearLogFile(kind) {
+  const filePath = logFileForKind(kind);
+  try {
+    fssync.mkdirSync(path.dirname(filePath), { recursive: true });
+    fssync.writeFileSync(filePath, '', 'utf8');
+  } catch (error) {
+    console.warn(`[miobot] Failed to clear ${kind} log file: ${error?.message || error}`);
+  }
+}
+
+function normalizePersistedLogRecord(record, index, kind) {
+  if (!record || typeof record !== 'object') return undefined;
+  const level = String(record.level || 'info').toLowerCase();
+  const safeLevel = Object.hasOwn(LOG_LEVEL_ORDER, level) ? level : 'info';
+  const timestamp = String(record.timestamp || record.time || record.date || '').trim() || new Date(0).toISOString();
+  const scope = String(record.scope || record.name || (kind === 'canvas' ? 'canvas' : 'runtime')).trim() || (kind === 'canvas' ? 'canvas' : 'runtime');
+  const message = String(record.message || record.msg || '').trim();
+  const details = Object.hasOwn(record, 'details')
+    ? record.details
+    : Object.hasOwn(record, 'data')
+      ? record.data
+      : Object.hasOwn(record, 'error')
+        ? { error: record.error }
+        : undefined;
+  return {
+    id: record.id ?? `file-${kind}-${index + 1}`,
+    timestamp,
+    level: safeLevel,
+    scope,
+    message,
+    details,
+  };
+}
+
+function readPersistedLogEntries(kind, limit) {
+  const filePath = logFileForKind(kind);
+  try {
+    if (!fssync.existsSync(filePath)) return [];
+    const raw = fssync.readFileSync(filePath, 'utf8');
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    const keep = Math.max(limit * 3, kind === 'canvas' ? canvasLogOptions().maxMemoryEntries : 2000);
+    return lines
+      .slice(-keep)
+      .map((line, index) => {
+        try {
+          return normalizePersistedLogRecord(JSON.parse(line), index, kind);
+        } catch {
+          return normalizePersistedLogRecord({
+            timestamp: new Date(0).toISOString(),
+            level: 'info',
+            scope: 'logfile',
+            message: line,
+          }, index, kind);
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function mergeLogEntries(memoryEntries, fileEntries) {
+  const seen = new Set();
+  const merged = [];
+  for (const entry of [...fileEntries, ...memoryEntries]) {
+    const key = `${entry.timestamp}\0${entry.level}\0${entry.scope}\0${entry.message}\0${JSON.stringify(entry.details ?? '')}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(entry);
+  }
+  merged.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+  return merged;
+}
+
 function appendLog(target, level, scope, message, details) {
   const entry = {
     id: ++logSequence,
@@ -268,8 +374,10 @@ function appendLog(target, level, scope, message, details) {
     details: redactForLog(details),
   };
   target.push(entry);
-  const max = target === canvasLogs ? canvasLogOptions().maxMemoryEntries : 1000;
+  const isCanvas = target === canvasLogs;
+  const max = isCanvas ? canvasLogOptions().maxMemoryEntries : 1000;
   if (target.length > max) target.splice(0, target.length - max);
+  appendLogFile(isCanvas ? 'canvas' : 'system', entry);
   return entry;
 }
 
@@ -290,7 +398,8 @@ function readLogs(target, url, kind = 'system') {
   const level = String(url.searchParams.get('level') || 'all').toLowerCase();
   const search = String(url.searchParams.get('search') || '').trim().toLowerCase();
   const limit = Math.max(1, Math.min(1000, Number.parseInt(url.searchParams.get('limit') || String(DEFAULT_LOG_LIMIT), 10) || DEFAULT_LOG_LIMIT));
-  const entries = target
+  const allEntries = mergeLogEntries(target, readPersistedLogEntries(kind, limit));
+  const entries = allEntries
     .filter((entry) => level === 'all' || entry.level === level)
     .filter((entry) => {
       if (!search) return true;
@@ -303,10 +412,11 @@ function readLogs(target, url, kind = 'system') {
     success: true,
     entries,
     stats: {
-      total: target.length,
+      total: allEntries.length,
+      memoryTotal: target.length,
       filtered: entries.length,
       maxMemoryEntries: options.maxMemoryEntries,
-      logFile: kind === 'canvas' ? 'memory://canvas' : 'memory://system',
+      logFile: logFileForKind(kind),
     },
   };
 }
@@ -1166,9 +1276,9 @@ async function handleCompatApi(req, res, url) {
   if (req.method === 'GET' && p === '/api/config/export') return sendJson(res, 200, api.repository.exportConfig());
   if (req.method === 'GET' && p === '/api/default-prompts') return sendJson(res, 200, getDefaultPrompts());
   if (req.method === 'GET' && p === '/api/logs') return sendJson(res, 200, readLogs(systemLogs, url, 'system'));
-  if (req.method === 'POST' && p === '/api/logs/clear') { systemLogs.length = 0; return sendJson(res, 200, readLogs(systemLogs, url, 'system')); }
+  if (req.method === 'POST' && p === '/api/logs/clear') { systemLogs.length = 0; clearLogFile('system'); logSystem('info', 'logger', 'System logs cleared'); return sendJson(res, 200, readLogs(systemLogs, url, 'system')); }
   if (req.method === 'GET' && p === '/api/canvas/logs') return sendJson(res, 200, readLogs(canvasLogs, url, 'canvas'));
-  if (req.method === 'POST' && p === '/api/canvas/logs/clear') { canvasLogs.length = 0; return sendJson(res, 200, readLogs(canvasLogs, url, 'canvas')); }
+  if (req.method === 'POST' && p === '/api/canvas/logs/clear') { canvasLogs.length = 0; clearLogFile('canvas'); logCanvas('info', 'canvas.logger', 'Canvas logs cleared'); return sendJson(res, 200, readLogs(canvasLogs, url, 'canvas')); }
   if (req.method === 'GET' && p === '/api/canvas/cards') return sendJson(res, 200, { success: true, items: managedCards(), total: managedCards().length });
   const adminCardMatch = p.match(/^\/api\/canvas\/cards\/(gallery|interrogation)\/(.+)$/);
   if (req.method === 'DELETE' && adminCardMatch) {
@@ -1352,9 +1462,27 @@ async function handleCanvasApi(req, res, url) {
 }
 
 const server = http.createServer(async (req, res) => {
+  const startedAt = Date.now();
+  let requestUrl;
+  res.on('finish', () => {
+    if (!requestUrl) return;
+    const pathname = requestUrl.pathname;
+    if (pathname.startsWith('/api/logs') || pathname.startsWith('/api/canvas/logs')) return;
+    if (!pathname.startsWith('/api/') && !pathname.startsWith('/canvas-api/')) return;
+    const details = {
+      method: req.method,
+      path: pathname,
+      statusCode: res.statusCode,
+      durationMs: Date.now() - startedAt,
+      query: Object.fromEntries(requestUrl.searchParams.entries()),
+    };
+    if (pathname.startsWith('/canvas-api/')) logCanvas(res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info', 'http.canvas', 'Canvas API request completed', details);
+    else logSystem(res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info', 'http.admin', 'Admin API request completed', details);
+  });
   try {
     if (req.method === 'OPTIONS') return sendJson(res, 200, { ok: true });
     const url = new URL(req.url || '/', `http://${req.headers.host || `${host}:${port}`}`);
+    requestUrl = url;
     if (url.pathname === '/favicon.ico') return serveFile(res, canvasRoot, '/canvas/favicon.ico', '/canvas/', false);
     if (url.pathname === '/') return send(res, 302, '', { location: '/canvas/' });
     if (url.pathname === '/admin') return send(res, 302, '', { location: '/admin/' });

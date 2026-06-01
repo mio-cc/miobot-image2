@@ -97,6 +97,17 @@ test('local verify server restores legacy template library from project.interrog
 
   await waitForHealth(port, stderrRef);
 
+  const logResponse = await fetch(`http://127.0.0.1:${port}/api/logs?limit=20`, {
+    headers: { authorization: 'Bearer change-me-on-first-login' },
+  });
+  assert.equal(logResponse.status, 200);
+  const logs = await logResponse.json();
+  assert.equal(logs.success, true);
+  assert.ok(String(logs.stats.logFile).endsWith('system.ndjson'));
+  assert.ok(logs.entries.some((entry) => entry.scope === 'server'));
+  const systemLogRaw = await fs.readFile(path.join(runtime, 'logs', 'system.ndjson'), 'utf8');
+  assert.match(systemLogRaw, /"scope":"server"/);
+
   const listResponse = await fetch(`http://127.0.0.1:${port}/canvas-api/interrogations`);
   assert.equal(listResponse.status, 200);
   const list = await listResponse.json();

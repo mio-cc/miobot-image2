@@ -1,4 +1,6 @@
-﻿import type { LogLevel, PackageDescriptor, SerializableError } from '@miobot-v2/shared';
+import fs from 'node:fs';
+import path from 'node:path';
+import type { LogLevel, PackageDescriptor, SerializableError } from '@miobot-v2/shared';
 
 export const LOGGER_PACKAGE: PackageDescriptor = {
   name: '@miobot-v2/logger',
@@ -81,6 +83,26 @@ export class ConsoleLogSink implements LoggerSink {
   }
 }
 
+export class JsonFileLogSink implements LoggerSink {
+  readonly filePath: string;
+  readonly maxBytes: number;
+
+  constructor(filePath: string, maxBytes = 5 * 1024 * 1024) {
+    this.filePath = path.resolve(filePath);
+    this.maxBytes = Math.max(64 * 1024, Math.trunc(maxBytes));
+  }
+
+  write(record: LogRecord): void {
+    try {
+      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+      rotateIfNeeded(this.filePath, this.maxBytes);
+      fs.appendFileSync(this.filePath, `${JSON.stringify(record)}\n`, 'utf8');
+    } catch {
+      // Logging must never break runtime behavior.
+    }
+  }
+}
+
 export class StructuredLogger {
   private readonly scope: string;
   private readonly level: LogLevel;
@@ -145,4 +167,17 @@ export function redactValue(value: unknown, redactKeys: Set<string> = new Set(DE
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function rotateIfNeeded(filePath: string, maxBytes: number): void {
+  try {
+    if (!fs.existsSync(filePath)) return;
+    const stat = fs.statSync(filePath);
+    if (stat.size <= maxBytes) return;
+    const rotated = `${filePath}.1`;
+    fs.rmSync(rotated, { force: true });
+    fs.renameSync(filePath, rotated);
+  } catch {
+    // Best-effort rotation.
+  }
 }
