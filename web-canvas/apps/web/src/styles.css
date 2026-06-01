@@ -550,8 +550,8 @@ button:disabled {
   border-radius: 999px;
   background: rgb(5 10 18 / 0.72);
   color: #ffffff;
-  opacity: 0;
-  transform: translateY(-4px);
+  opacity: 1;
+  transform: translateY(0);
   transition:
     background 160ms ease,
     border-color 160ms ease,
@@ -565,7 +565,6 @@ button:disabled {
   height: 1rem;
 }
 
-.masonry-card:hover .masonry-card__favorite,
 .masonry-card__favorite:focus-visible,
 .masonry-card__favorite[data-active="true"] {
   opacity: 1;
@@ -7010,6 +7009,14 @@ body {
 [data-ui-tooltip]:hover::after,
 [data-ui-tooltip]:focus-visible::after {
   transform: translate3d(-50%, 0, 0) rotate(45deg) scale(1);
+}
+
+.masonry-card .masonry-card__favorite[data-ui-tooltip] {
+  position: absolute;
+  top: 0.55rem;
+  right: 0.55rem;
+  opacity: 1;
+  transform: none;
 }
 
 .canvas-back-top {
