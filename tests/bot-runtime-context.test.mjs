@@ -5,6 +5,7 @@ import {
   collectMessageContext,
   extractForwardIds,
   extractMessageText,
+  parseRemotePromptInput,
   resolveReferencedMessage,
   withReferenceContext,
 } from '../scripts/bot-runtime.mjs';
@@ -135,5 +136,24 @@ test('bot runtime: json forward ids and bridged forward targets are collected', 
     'getForwardMessage',
     'getForwardMessage',
   ]);
+});
+
+test('bot runtime: remote prompt input parser supports v1 detail, paging and filters', () => {
+  assert.deepEqual(parseRemotePromptInput('id:abc-123'), {
+    query: '',
+    id: 'abc-123',
+    page: 1,
+    type: '',
+    category: '',
+    tag: '',
+  });
+  assert.deepEqual(parseRemotePromptInput('type:image cat:anime tag:portrait cyber girl p3'), {
+    query: 'cyber girl',
+    id: '',
+    page: 3,
+    type: 'IMAGE',
+    category: 'anime',
+    tag: 'portrait',
+  });
 });
 

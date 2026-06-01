@@ -182,7 +182,7 @@ export function extractFreeModeDirectives(userContent: string): FreeModeDirectiv
   return {
     rawPrompt: parsed.prompt,
     tokens: parsed.tokens,
-    size: parsed.tokens.some((token) => /^(\d{2,5}x\d{2,5}|\d{1,2}:\d{1,2})!/i.test(token)) ? parsed.size : undefined,
+    size: parsed.tokens.some((token) => /^(\d{2,5}x\d{2,5}|\d{1,2}:\d{1,2}|[124]k)!/i.test(token)) ? parsed.size : undefined,
     count: parsed.tokens.some((token) => /^(\d+|n=\d+)!/i.test(token)) ? parsed.count : undefined,
     quality: parsed.quality,
     templateId: parsed.templateId,

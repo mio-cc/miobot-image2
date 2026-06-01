@@ -68,6 +68,17 @@ test('image params: parses explicit size and clamps count', () => {
   assert.equal(params.prompt, 'landscape');
 });
 
+test('image params: parses v1 scale directives with aspect ratio', () => {
+  const wide = parseImageCommand('2k! 16:9! 星空城市');
+  assert.equal(wide.scale, '2k');
+  assert.equal(wide.ratio, '16:9');
+  assert.equal(wide.size, '2048x1152');
+  assert.equal(wide.prompt, '星空城市');
+
+  const square = parseImageCommand('4k! 头像');
+  assert.equal(square.size, '4096x4096');
+});
+
 test('image params: unknown bang token is kept in prompt with warning', () => {
   const params = parseImageCommand('weird! subject');
   assert.equal(params.prompt, 'weird! subject');

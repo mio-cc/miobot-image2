@@ -455,6 +455,13 @@ async function normalizeIncomingMessage(adapter, event) {
     ? await resolveReferencedMessage(adapter, replyToMessageId, event.self_id || adapter.selfQqId)
     : emptyReferenceContext();
   const currentImages = extractImageUrls(message, rawMessage);
+  const currentForwardContext = hasForwardPayload(message, rawMessage)
+    ? await collectMessageContext(adapter, { message, raw_message: rawMessage })
+    : emptyReferenceContext();
+  const currentForwardText = currentForwardContext.text
+    ? `【当前消息合并转发】\n${currentForwardContext.text}`
+    : '';
+  const referenceText = [reference.text, currentForwardText].filter(Boolean).join('\n\n');
   return {
     chatType,
     rawMessage,
@@ -464,11 +471,15 @@ async function normalizeIncomingMessage(adapter, event) {
     userId: event.user_id ?? event.userId ?? event.sender?.user_id ?? event.sender?.userId,
     replyToMessageId,
     replyToBot: reference.replyToBot,
-    referenceText: reference.text,
-    referenceImages: reference.images,
+    referenceText,
+    referenceImages: uniqueStrings([...reference.images, ...currentForwardContext.images]),
     referenceMessageId: replyToMessageId,
-    images: uniqueStrings([...currentImages, ...reference.images]),
+    images: uniqueStrings([...currentImages, ...reference.images, ...currentForwardContext.images]),
   };
+}
+
+function hasForwardPayload(message, rawMessage = '') {
+  return extractForwardIds(message, rawMessage).length > 0 || extractForwardMessageItems({ message, raw_message: rawMessage }).length > 0;
 }
 
 function segmentsToCq(message) {
@@ -844,19 +855,73 @@ function renderTemplateLibrary(config) {
 }
 
 async function renderRemoteOrLocalTemplateSearch(config, query) {
-  const keyword = String(query || '').trim();
+  const parsedInput = parseRemotePromptInput(query);
   if (promptsChatEnabled(config)) {
-    if (!keyword) return remotePromptHelpText(config);
+    if (!parsedInput.query && !parsedInput.id) return remotePromptHelpText(config);
     try {
-      const prompts = await searchPromptsChat(config, keyword, { limit: config.promptsChat?.displayLimit || 5 });
-      if (prompts.length) return renderRemotePromptResults(config, keyword, prompts);
-      return `prompts.chat 没有搜到结果：${keyword}\n\n${renderTemplateSearch(config, keyword)}`;
+      if (parsedInput.id) {
+        const prompt = await getPromptsChatPrompt(config, parsedInput.id);
+        return renderRemotePromptDetail(config, prompt);
+      }
+
+      const displayLimit = Math.max(1, Math.min(10, Number(config.promptsChat?.displayLimit || 5)));
+      const limit = Math.max(displayLimit, Math.min(50, Math.max(Number(config.promptsChat?.searchLimit || 20), parsedInput.page * displayLimit)));
+      const searchQuery = await maybeRewriteRemoteSearchQuery(config, parsedInput.query);
+      const prompts = await searchPromptsChat(config, searchQuery, {
+        limit,
+        type: parsedInput.type,
+        category: parsedInput.category,
+        tag: parsedInput.tag,
+      });
+      const ranked = rankRemotePrompts(prompts, `${parsedInput.query} ${searchQuery}`);
+      const start = (parsedInput.page - 1) * displayLimit;
+      const pageItems = ranked.slice(start, start + displayLimit);
+      if (pageItems.length) return renderRemotePromptResults(config, parsedInput.query, searchQuery, pageItems, parsedInput.page, start, ranked.length);
+      return `prompts.chat 没有搜到结果：${parsedInput.query}\n\n${renderTemplateSearch(config, parsedInput.query)}`;
     } catch (error) {
       logger.warn('prompts.chat 搜索失败，降级到本地模板库', { error: normalizeError(error) });
-      return `prompts.chat 搜索失败，已改用本地模板库。\n\n${renderTemplateSearch(config, keyword)}`;
+      return `prompts.chat 搜索失败，已改用本地模板库。\n\n${renderTemplateSearch(config, parsedInput.query || parsedInput.id)}`;
     }
   }
-  return renderTemplateSearch(config, keyword);
+  return renderTemplateSearch(config, parsedInput.query || parsedInput.id);
+}
+
+export function parseRemotePromptInput(rawText = '') {
+  let text = String(rawText || '').trim();
+  let page = 1;
+  let type = '';
+  let category = '';
+  let tag = '';
+
+  text = text.replace(/\s+(?:p|page|page=|页|第)(\d{1,2})\s*$/i, (_full, rawPage) => {
+    page = Math.max(1, Math.min(10, Number(rawPage || 1)));
+    return '';
+  }).trim();
+
+  text = text.replace(/\btype[:=]([a-z]+)\b/ig, (_full, rawType) => {
+    type = normalizeRemotePromptType(rawType);
+    return '';
+  }).trim();
+
+  text = text.replace(/\b(?:cat|category)[:=]([a-z0-9_-]+)\b/ig, (_full, rawCategory) => {
+    category = String(rawCategory || '').trim();
+    return '';
+  }).trim();
+
+  text = text.replace(/\btag[:=]([a-z0-9_-]+)\b/ig, (_full, rawTag) => {
+    tag = String(rawTag || '').trim();
+    return '';
+  }).trim();
+
+  const idMatch = text.match(/^id[:：\s]+(.+)$/i);
+  return {
+    query: idMatch ? '' : text,
+    id: idMatch ? idMatch[1].trim() : '',
+    page,
+    type,
+    category,
+    tag,
+  };
 }
 
 function renderTemplateSearch(config, query) {
@@ -888,12 +953,8 @@ async function resolveRemoteOrLocalSmartPrompt(config, query, message) {
   const cleanQuery = String(query || '').trim();
   if (promptsChatEnabled(config) && cleanQuery) {
     try {
-      const prompts = await searchPromptsChat(config, cleanQuery, { limit: config.promptsChat?.smartCandidateLimit || 6 });
-      const selected = prompts.find((item) => item.content) || prompts[0];
-      if (selected?.content) {
-        logger.info('prompts.chat 智能模板命中', { promptId: selected.id, title: selected.title });
-        return renderRemotePromptContent(selected, cleanQuery);
-      }
+      const smart = await buildSmartPromptsChatPrompt(config, cleanQuery);
+      if (smart.finalPrompt) return smart.finalPrompt;
     } catch (error) {
       logger.warn('prompts.chat 智能模板失败', { error: normalizeError(error) });
       if (config.promptsChat?.fallbackToRawPrompt === false) throw error;
@@ -901,6 +962,123 @@ async function resolveRemoteOrLocalSmartPrompt(config, query, message) {
   }
   const template = findBestTemplate(config, cleanQuery);
   return template ? renderLocalTemplate(template, cleanQuery || message.referenceText || template.title) : withReferenceContext(cleanQuery || '根据当前上下文生成图片', message);
+}
+
+async function buildSmartPromptsChatPrompt(config, rawPrompt) {
+  const pc = config.promptsChat || {};
+  const queries = await buildRemoteSmartSearchQueries(config, rawPrompt);
+  const searchResults = await Promise.all(queries.map((item) => searchPromptsChat(config, item, {
+    limit: pc.smartSearchLimit || 24,
+    type: pc.searchType,
+  }).catch((error) => {
+    logger.warn('prompts.chat 智能搜索单路失败', { query: item, error: normalizeError(error) });
+    return [];
+  })));
+  const ranked = mergeUniqueRemotePrompts(searchResults, rawPrompt);
+  if (!ranked.length) return { selectedId: 'none', selectedTitle: 'none', reason: '未搜索到远程模板', finalPrompt: rawPrompt, queries };
+  const candidates = await hydrateRemoteCandidates(config, ranked.slice(0, Math.max(1, Number(pc.smartCandidateLimit || 6))));
+  const model = String(pc.smartModel || '').trim();
+  if (!model || model === 'none') {
+    const selected = candidates.find((item) => item.content) || candidates[0];
+    return {
+      selectedId: selected?.id || 'none',
+      selectedTitle: selected?.title || 'none',
+      reason: 'smartModel 未配置，使用排序最高模板',
+      finalPrompt: selected ? renderRemotePromptContent(selected, rawPrompt) : rawPrompt,
+      queries,
+    };
+  }
+  try {
+    const candidatesText = formatRemoteCandidatesForModel(config, candidates);
+    const template = pc.smartPromptTemplate || 'Return JSON only: {"selectedId":"id or none","finalPrompt":"ready-to-use image prompt"}. User request: {{rawPrompt}}\n\nCandidate prompts:\n{{candidates}}';
+    const instruction = renderRuntimeTemplate(template, { rawPrompt, candidates: candidatesText });
+    const adapter = createLlm(config, pc.smartNodeIndex, 120000, 'prompts-chat-smart');
+    const result = await adapter.createText({
+      model,
+      timeoutMs: 120000,
+      messages: [{ role: 'system', content: instruction }],
+    });
+    const parsed = parseSmartRemotePromptResult(result.text, candidates, rawPrompt);
+    logger.info('prompts.chat 智能模板融合完成', { selectedId: parsed.selectedId, selectedTitle: parsed.selectedTitle, reason: parsed.reason });
+    return { ...parsed, queries };
+  } catch (error) {
+    logger.warn('prompts.chat 智能融合失败，使用排序最高模板', { error: normalizeError(error) });
+    const selected = candidates.find((item) => item.content) || candidates[0];
+    return {
+      selectedId: selected?.id || 'none',
+      selectedTitle: selected?.title || 'none',
+      reason: '智能融合失败，使用排序最高模板',
+      finalPrompt: selected ? renderRemotePromptContent(selected, rawPrompt) : rawPrompt,
+      queries,
+    };
+  }
+}
+
+async function buildRemoteSmartSearchQueries(config, rawPrompt) {
+  const primary = await maybeRewriteRemoteSearchQuery(config, rawPrompt);
+  return uniqueStrings([
+    primary,
+    rawPrompt,
+    `${primary} image prompt`,
+    `${primary} cinematic`,
+    `${primary} illustration`,
+  ]).slice(0, 4);
+}
+
+function mergeUniqueRemotePrompts(promptLists, query) {
+  const byId = new Map();
+  for (const prompts of promptLists) {
+    for (const prompt of prompts) {
+      const key = prompt.id || `${prompt.title}:${prompt.contentPreview}`;
+      if (!key || byId.has(key)) continue;
+      byId.set(key, prompt);
+    }
+  }
+  return rankRemotePrompts([...byId.values()], query);
+}
+
+async function hydrateRemoteCandidates(config, prompts) {
+  return Promise.all(prompts.map(async (prompt) => {
+    if (!prompt.id) return prompt;
+    try {
+      const detail = await getPromptsChatPrompt(config, prompt.id);
+      return { ...prompt, ...detail, content: detail.content || prompt.content, contentPreview: detail.contentPreview || prompt.contentPreview };
+    } catch (error) {
+      logger.warn('prompts.chat 完整模板拉取失败，保留搜索摘要', { promptId: prompt.id, error: normalizeError(error) });
+      return prompt;
+    }
+  }));
+}
+
+function formatRemoteCandidatesForModel(config, prompts) {
+  const max = Math.max(400, Math.min(5000, Number(config.promptsChat?.smartCandidateContentChars || 1800)));
+  return prompts.map((prompt, index) => [
+    `Candidate ${index + 1}`,
+    `id: ${prompt.id || 'none'}`,
+    `title: ${prompt.title}`,
+    prompt.type ? `type: ${prompt.type}` : '',
+    prompt.category ? `category: ${prompt.category}` : '',
+    prompt.tags?.length ? `tags: ${prompt.tags.join(', ')}` : '',
+    prompt.description ? `description: ${prompt.description}` : '',
+    `content:\n${String(prompt.content || prompt.contentPreview || '').slice(0, max)}`,
+  ].filter(Boolean).join('\n')).join('\n\n---\n\n');
+}
+
+function parseSmartRemotePromptResult(raw, candidates, rawPrompt) {
+  const cleaned = cleanupModelText(raw);
+  let parsed = {};
+  try { parsed = JSON.parse(cleaned); } catch { parsed = { finalPrompt: cleaned }; }
+  const ids = new Set(candidates.map((item) => item.id).filter(Boolean));
+  const selectedId = String(parsed.selectedId || parsed.id || '').trim();
+  const matched = ids.has(selectedId) ? candidates.find((item) => item.id === selectedId) : undefined;
+  const finalPrompt = String(parsed.finalPrompt || parsed.prompt || '').trim()
+    || (matched ? renderRemotePromptContent(matched, rawPrompt) : cleaned || rawPrompt);
+  return {
+    selectedId: matched?.id || 'none',
+    selectedTitle: matched?.title || String(parsed.selectedTitle || parsed.title || 'none').trim() || 'none',
+    reason: String(parsed.reason || '').trim(),
+    finalPrompt,
+  };
 }
 
 function renderLocalTemplate(template, prompt) {
@@ -933,10 +1111,51 @@ function remotePromptHelpText(config) {
 async function searchPromptsChat(config, query, options = {}) {
   const limit = Math.max(1, Math.min(50, Number(options.limit || config.promptsChat?.searchLimit || 10)));
   const args = { query: String(query || '').trim(), limit };
-  if (config.promptsChat?.searchType) args.type = config.promptsChat.searchType;
+  const type = options.type || config.promptsChat?.searchType;
+  if (type) args.type = normalizeRemotePromptType(type);
+  if (options.category) args.category = String(options.category);
+  if (options.tag) args.tag = String(options.tag);
   const parsed = await callPromptsChatTool(config, 'search_prompts', args);
   const items = Array.isArray(parsed?.prompts) ? parsed.prompts : Array.isArray(parsed) ? parsed : [];
   return items.map(normalizeRemotePrompt).filter((item) => item.id || item.title || item.content);
+}
+
+async function getPromptsChatPrompt(config, id) {
+  const parsed = await callPromptsChatTool(config, 'get_prompt', { id: String(id || '').trim(), fill_variables: false });
+  return normalizeRemotePrompt(parsed);
+}
+
+async function maybeRewriteRemoteSearchQuery(config, query) {
+  const raw = String(query || '').trim();
+  if (!raw) return raw;
+  const pc = config.promptsChat || {};
+  const model = String(pc.smartModel || '').trim();
+  if (!pc.queryRewriteEnabled || !model || model === 'none') return raw;
+  try {
+    const template = pc.searchQueryPromptTemplate || 'Return JSON only: {"queries":["query"]}. User request: {{rawPrompt}}';
+    const adapter = createLlm(config, pc.smartNodeIndex, Math.min(60000, Number(pc.requestTimeoutMs || 60000) || 60000), 'prompts-chat-query');
+    const result = await adapter.createText({
+      model,
+      timeoutMs: Math.min(60000, Number(pc.requestTimeoutMs || 60000) || 60000),
+      messages: [{ role: 'system', content: renderRuntimeTemplate(template, { rawPrompt: raw }) }],
+    });
+    const queries = parseRemoteQueryRewrite(result.text);
+    return queries[0] || raw;
+  } catch (error) {
+    logger.warn('prompts.chat 搜索词改写失败，使用原始关键词', { error: normalizeError(error) });
+    return raw;
+  }
+}
+
+function parseRemoteQueryRewrite(raw) {
+  const cleaned = cleanupModelText(raw);
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed)) return uniqueStrings(parsed.map(String));
+    if (Array.isArray(parsed?.queries)) return uniqueStrings(parsed.queries.map(String));
+    if (parsed?.query) return uniqueStrings([String(parsed.query)]);
+  } catch {}
+  return uniqueStrings(cleaned.split(/\r?\n|[,，;]/).map((item) => item.replace(/^[-*\d.\s]+/, '').trim()).filter(Boolean));
 }
 
 async function callPromptsChatTool(config, name, args) {
@@ -992,30 +1211,86 @@ function normalizeRemotePrompt(item) {
   const content = String(item?.content || item?.prompt || item?.contentPreview || item?.preview || '').trim();
   return {
     id: String(item?.id || '').trim(),
+    slug: String(item?.slug || '').trim(),
     title: String(item?.title || item?.name || item?.slug || 'Untitled prompt').trim(),
     description: String(item?.description || '').trim(),
     content,
     contentPreview: String(item?.contentPreview || item?.preview || content || '').trim(),
+    type: normalizeRemotePromptType(item?.type),
+    author: String(item?.author || '').trim(),
     category: String(item?.category || '').trim(),
     tags: Array.isArray(item?.tags) ? item.tags.map((tag) => String(tag).trim()).filter(Boolean) : [],
+    votes: Number(item?.votes || 0),
+    createdAt: String(item?.createdAt || item?.created_at || '').trim(),
     link: String(item?.link || item?.url || '').trim(),
   };
 }
 
-function renderRemotePromptResults(config, query, prompts) {
+function normalizeRemotePromptType(value) {
+  const normalized = String(value || '').trim().toUpperCase();
+  return ['TEXT', 'STRUCTURED', 'IMAGE', 'VIDEO', 'AUDIO'].includes(normalized) ? normalized : '';
+}
+
+function rankRemotePrompts(prompts, query) {
+  const words = new Set(String(query || '').toLowerCase().split(/[^a-z0-9\u4e00-\u9fa5]+/i).map((item) => item.trim()).filter((item) => item.length >= 2));
+  return [...prompts].sort((a, b) => scoreRemotePrompt(b, words) - scoreRemotePrompt(a, words));
+}
+
+function scoreRemotePrompt(prompt, words) {
+  const haystack = [prompt.title, prompt.description, prompt.category, prompt.tags?.join(' '), prompt.contentPreview, prompt.content].join(' ').toLowerCase();
+  let score = 0;
+  if (prompt.type === 'IMAGE') score += 40;
+  if (/image|photo|portrait|cinematic|illustration|visual|generation/i.test(`${prompt.category} ${prompt.tags?.join(' ')}`)) score += 24;
+  score += Math.min(20, Math.max(0, Number(prompt.votes || 0)) * 2);
+  for (const word of words) if (haystack.includes(word)) score += 6;
+  if (prompt.contentPreview || prompt.content) score += 4;
+  return score;
+}
+
+function renderRemotePromptResults(config, query, searchQuery, prompts, page = 1, start = 0, total = prompts.length) {
   const searchAlias = firstAlias(config.bot?.commands?.remotePromptSearch) || 'pp';
   const smartAlias = firstAlias(config.bot?.commands?.remotePromptSmartImage) || 'spp';
   return [
-    `prompts.chat: ${query}`,
+    `prompts.chat: ${query}（第 ${page} 页 / 共 ${total} 条）`,
+    searchQuery && searchQuery !== query ? `实际搜索词：${searchQuery}` : '',
     ...prompts.map((prompt, index) => {
-      const meta = [prompt.category, prompt.tags?.length ? prompt.tags.join(', ') : ''].filter(Boolean).join(' · ');
+      const rank = start + index + 1;
+      const meta = formatRemotePromptMeta(prompt);
       const preview = String(prompt.contentPreview || prompt.content || '').replace(/\s+/g, ' ').slice(0, 180);
-      return `${index + 1}. ${prompt.title}${prompt.id ? `\nID: ${prompt.id}` : ''}${meta ? `\n${meta}` : ''}${prompt.description ? `\n简介: ${prompt.description}` : ''}${preview ? `\n模板预览：${preview}` : ''}`;
+      return `${rank}. ${prompt.title}${prompt.id ? `\nID: ${prompt.id}` : ''}${meta ? `\n${meta}` : ''}${prompt.description ? `\n简介: ${prompt.description}` : ''}${preview ? `\n模板预览：${preview}` : ''}`;
     }),
     '',
-    `查看/继续搜索：${searchAlias} 关键词`,
+    `查看详情：${searchAlias} id:<ID>`,
+    `翻页：${searchAlias} ${query} p${page + 1}`,
     `智能套用生图：${smartAlias}! ${query}`,
-  ].join('\n\n');
+  ].filter(Boolean).join('\n\n');
+}
+
+function renderRemotePromptDetail(config, prompt) {
+  const searchAlias = firstAlias(config.bot?.commands?.remotePromptSearch) || 'pp';
+  const smartAlias = firstAlias(config.bot?.commands?.remotePromptSmartImage) || 'spp';
+  const content = String(prompt.content || prompt.contentPreview || '').trim();
+  return [
+    `prompts.chat 详情：${prompt.title}`,
+    prompt.id ? `ID: ${prompt.id}` : '',
+    formatRemotePromptMeta(prompt),
+    prompt.description ? `简介：${prompt.description}` : '',
+    prompt.link ? `链接：${prompt.link}` : '',
+    content ? `模板内容：\n${content.slice(0, 3500)}${content.length > 3500 ? '\n……（内容过长已截断）' : ''}` : '该模板没有返回正文内容。',
+    '',
+    `继续搜索：${searchAlias} 关键词`,
+    `套用生图：${smartAlias}! 你的画面描述`,
+  ].filter(Boolean).join('\n\n');
+}
+
+function formatRemotePromptMeta(prompt) {
+  return [
+    prompt.type ? `类型: ${prompt.type}` : '',
+    prompt.category ? `分类: ${prompt.category}` : '',
+    prompt.author ? `作者: ${prompt.author}` : '',
+    prompt.votes ? `票数: ${prompt.votes}` : '',
+    prompt.tags?.length ? `标签: ${prompt.tags.join(', ')}` : '',
+  ].filter(Boolean).join(' / ');
 }
 
 function renderRemotePromptContent(prompt, query) {
@@ -1053,6 +1328,14 @@ function trimReply(text, maxChars) {
   const n = Number(maxChars);
   if (!Number.isFinite(n) || n <= 0 || value.length <= n) return value;
   return `${value.slice(0, Math.max(1, n))}\n\n（内容过长已截断）`;
+}
+
+function cleanupModelText(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^```(?:json|text)?/i, '')
+    .replace(/```$/i, '')
+    .trim();
 }
 
 function decodeURIComponentSafe(value) {

@@ -22,6 +22,7 @@ export interface ParsedImageParams {
   quality?: string;
   templateId?: string;
   ratio?: string;
+  scale?: string;
   tokens: string[];
   warnings: string[];
 }
@@ -206,6 +207,8 @@ export function parseImageCommand(input: string, options: ImageCommandParseOptio
   let quality = options.defaultQuality;
   let templateId: string | undefined;
   let ratio: string | undefined;
+  let scale: string | undefined;
+  let explicitSize = false;
   const promptParts: string[] = [];
 
   for (const part of String(input || '').split(/\s+/)) {
@@ -225,12 +228,19 @@ export function parseImageCommand(input: string, options: ImageCommandParseOptio
     }
     if (/^\d{2,5}x\d{2,5}$/i.test(lower)) {
       size = normalizeSize(lower);
+      explicitSize = true;
       tokens.push(token);
       continue;
     }
     if (/^\d{1,2}:\d{1,2}$/.test(lower)) {
       ratio = lower;
-      size = sizeFromRatio(lower);
+      if (!explicitSize) size = sizeFromRatio(lower, scale);
+      tokens.push(token);
+      continue;
+    }
+    if (/^[124]k$/.test(lower)) {
+      scale = lower;
+      if (!explicitSize) size = ratio ? sizeFromRatio(ratio, scale) : sizeFromScale(scale);
       tokens.push(token);
       continue;
     }
@@ -261,6 +271,7 @@ export function parseImageCommand(input: string, options: ImageCommandParseOptio
     quality,
     templateId,
     ratio,
+    scale,
     tokens,
     warnings,
   };
@@ -300,12 +311,32 @@ function extractSerializableError(error: unknown): SerializableError {
   return normalizeError(error);
 }
 
-function sizeFromRatio(ratio: string): string {
+function sizeFromRatio(ratio: string, scaleToken?: string): string {
   const [w, h] = ratio.split(':').map((item) => Number(item));
   if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return '1024x1024';
-  const landscape = w / h;
-  if (Math.abs(landscape - 1) < 0.08) return '1024x1024';
-  return landscape > 1 ? '1536x1024' : '1024x1536';
+  if (!scaleToken) {
+    const landscape = w / h;
+    if (Math.abs(landscape - 1) < 0.08) return '1024x1024';
+    return landscape > 1 ? '1536x1024' : '1024x1536';
+  }
+  const longEdge = scaleLongEdge(scaleToken);
+  if (Math.abs(w / h - 1) < 0.08) return `${longEdge}x${longEdge}`;
+  if (w > h) return `${longEdge}x${roundToMultiple(longEdge * h / w)}`;
+  return `${roundToMultiple(longEdge * w / h)}x${longEdge}`;
+}
+
+function sizeFromScale(scaleToken: string): string {
+  const edge = scaleLongEdge(scaleToken);
+  return `${edge}x${edge}`;
+}
+
+function scaleLongEdge(scaleToken = '1k'): number {
+  const n = Number(String(scaleToken || '1k').toLowerCase().replace(/k$/, '')) || 1;
+  return Math.max(1024, Math.trunc(n) * 1024);
+}
+
+function roundToMultiple(value: number, multiple = 64): number {
+  return Math.max(multiple, Math.round(value / multiple) * multiple);
 }
 
 function normalizeSize(value: string): string {
