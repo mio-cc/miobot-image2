@@ -26,6 +26,8 @@ RUN_TESTS="${RUN_TESTS:-0}"
 DATA_DIR="${DATA_DIR:-/var/lib/${APP_NAME}}"
 RUNTIME_DIR="${MIOBOT_RUNTIME_DIR:-${DATA_DIR}}"
 CONFIG_PATH="${MIOBOT_CONFIG_PATH:-${DATA_DIR}/config.json}"
+CANVAS_STATE_PATH="${MIOBOT_CANVAS_STATE_PATH:-${RUNTIME_DIR}/canvas-state.json}"
+CANVAS_ASSET_DIR="${MIOBOT_CANVAS_ASSET_DIR:-${RUNTIME_DIR}/canvas-assets}"
 LOG_DIR="${LOG_DIR:-/var/log/${APP_NAME}}"
 ENV_FILE="${ENV_FILE:-/etc/${APP_NAME}.env}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-30}"
@@ -159,7 +161,7 @@ ensure_pnpm() {
 
 ensure_dirs() {
   log "准备目录"
-  install -d -m 0755 "$APP_DIR" "$DATA_DIR" "$RUNTIME_DIR" "$LOG_DIR"
+  install -d -m 0755 "$APP_DIR" "$DATA_DIR" "$RUNTIME_DIR" "$CANVAS_ASSET_DIR" "$LOG_DIR"
 }
 
 backup_config() {
@@ -173,6 +175,32 @@ backup_config() {
   install -d -m 0755 "$backup_dir"
   cp -a "$CONFIG_PATH" "$backup_file"
   log "已备份配置：$backup_file"
+}
+
+backup_runtime_data() {
+  local backup_dir stamp
+  backup_dir="${DATA_DIR}/backups"
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  install -d -m 0755 "$backup_dir"
+
+  if [ -f "$CONFIG_PATH" ]; then
+    cp -a "$CONFIG_PATH" "${backup_dir}/config.${stamp}.json"
+    log "已备份配置：${backup_dir}/config.${stamp}.json"
+  else
+    warn "没有发现配置文件，跳过配置备份：$CONFIG_PATH"
+  fi
+
+  if [ -f "$CANVAS_STATE_PATH" ]; then
+    cp -a "$CANVAS_STATE_PATH" "${backup_dir}/canvas-state.${stamp}.json"
+    log "已备份画布/模板库状态：${backup_dir}/canvas-state.${stamp}.json"
+  else
+    warn "没有发现画布状态文件，跳过状态备份：$CANVAS_STATE_PATH"
+  fi
+
+  if [ -d "$CANVAS_ASSET_DIR" ] && [ -n "$(find "$CANVAS_ASSET_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+    tar -C "$(dirname "$CANVAS_ASSET_DIR")" -czf "${backup_dir}/canvas-assets.${stamp}.tar.gz" "$(basename "$CANVAS_ASSET_DIR")"
+    log "已备份画布/模板库图片资源：${backup_dir}/canvas-assets.${stamp}.tar.gz"
+  fi
 }
 
 migrate_legacy_runtime_config() {
@@ -191,6 +219,99 @@ migrate_legacy_runtime_config() {
       chmod 0644 "$CONFIG_PATH"
       log "已迁移旧配置：$candidate -> $CONFIG_PATH"
       return
+    fi
+  done
+}
+
+merge_legacy_canvas_state_file() {
+  local source_state="$1"
+  [ -f "$source_state" ] || return
+
+  if [ ! -f "$CANVAS_STATE_PATH" ]; then
+    install -d -m 0755 "$(dirname "$CANVAS_STATE_PATH")"
+    cp -a "$source_state" "$CANVAS_STATE_PATH"
+    chmod 0644 "$CANVAS_STATE_PATH"
+    log "已迁移旧画布/模板库状态：$source_state -> $CANVAS_STATE_PATH"
+    return
+  fi
+
+  local merge_report
+  merge_report="$("${NODE_BIN:-node}" - "$CANVAS_STATE_PATH" "$source_state" <<'NODE'
+const fs = require('fs');
+const [targetPath, sourcePath] = process.argv.slice(2);
+
+function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+  } catch {
+    return {};
+  }
+}
+
+function byId(items) {
+  const out = [];
+  const seen = new Set();
+  for (const item of Array.isArray(items) ? items : []) {
+    const id = String(item && item.id || item && item.outputId || '');
+    const key = id || JSON.stringify(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
+function interrogationsOf(state) {
+  if (Array.isArray(state.interrogations)) return state.interrogations;
+  if (Array.isArray(state.project?.interrogations)) return state.project.interrogations;
+  return [];
+}
+
+const target = readJson(targetPath);
+const source = readJson(sourcePath);
+const mergedInterrogations = byId([...interrogationsOf(target), ...interrogationsOf(source)]);
+const mergedGallery = byId([...(Array.isArray(target.gallery) ? target.gallery : []), ...(Array.isArray(source.gallery) ? source.gallery : [])]);
+const mergedAssets = byId([...(Array.isArray(target.assets) ? target.assets : []), ...(Array.isArray(source.assets) ? source.assets : [])]);
+
+const beforeInterrogations = interrogationsOf(target).length;
+const beforeGallery = Array.isArray(target.gallery) ? target.gallery.length : 0;
+target.version = target.version || source.version || 1;
+target.savedAt = new Date().toISOString();
+target.gallery = mergedGallery;
+target.interrogations = mergedInterrogations;
+target.assets = mergedAssets;
+target.project = target.project && typeof target.project === 'object' ? target.project : {};
+target.project.interrogations = mergedInterrogations;
+target.project.history = Array.isArray(target.project.history)
+  ? target.project.history
+  : (Array.isArray(source.project?.history) ? source.project.history : []);
+target.project.updatedAt = target.savedAt;
+fs.writeFileSync(targetPath, `${JSON.stringify(target, null, 2)}\n`, 'utf8');
+console.log(JSON.stringify({
+  addedInterrogations: Math.max(0, mergedInterrogations.length - beforeInterrogations),
+  addedGallery: Math.max(0, mergedGallery.length - beforeGallery),
+}));
+NODE
+)"
+  log "已合并旧画布/模板库状态：$source_state -> $CANVAS_STATE_PATH ${merge_report}"
+}
+
+migrate_legacy_canvas_runtime() {
+  local candidate
+  for candidate in \
+    "$APP_DIR/.runtime" \
+    "$PROJECT_SOURCE/.runtime"
+  do
+    [ -d "$candidate" ] || continue
+
+    if [ -f "$candidate/canvas-state.json" ]; then
+      merge_legacy_canvas_state_file "$candidate/canvas-state.json" || true
+    fi
+
+    if [ -d "$candidate/canvas-assets" ]; then
+      install -d -m 0755 "$CANVAS_ASSET_DIR"
+      rsync -a "$candidate/canvas-assets/" "$CANVAS_ASSET_DIR/"
+      log "已合并旧画布/模板库图片资源：$candidate/canvas-assets/ -> $CANVAS_ASSET_DIR/"
     fi
   done
 }
@@ -341,6 +462,8 @@ MIOBOT_VERIFY_PORT=${PORT}
 MIOBOT_ENABLE_BOT=${MIOBOT_ENABLE_BOT:-1}
 MIOBOT_RUNTIME_DIR=${RUNTIME_DIR}
 MIOBOT_CONFIG_PATH=${CONFIG_PATH}
+MIOBOT_CANVAS_STATE_PATH=${CANVAS_STATE_PATH}
+MIOBOT_CANVAS_ASSET_DIR=${CANVAS_ASSET_DIR}
 DATA_DIR=${DATA_DIR}
 LOG_DIR=${LOG_DIR}
 PATH=$(managed_path)
@@ -449,6 +572,8 @@ Source dir:       ${PROJECT_SOURCE}
 Data dir:         ${DATA_DIR}
 Runtime dir:      ${RUNTIME_DIR}
 Config path:      ${CONFIG_PATH}
+Canvas state:     ${CANVAS_STATE_PATH}
+Canvas assets:    ${CANVAS_ASSET_DIR}
 Log dir:          ${LOG_DIR}
 Env file:         ${ENV_FILE}
 Host/Port:        ${HOST}:${PORT}
@@ -459,6 +584,8 @@ systemctl:        $(command -v systemctl 2>/dev/null || echo not-found)
 curl:             $(command -v curl 2>/dev/null || echo not-found)
 rsync:            $(command -v rsync 2>/dev/null || echo not-found)
 Config exists:    $([ -f "$CONFIG_PATH" ] && echo yes || echo no)
+Canvas state:     $([ -f "$CANVAS_STATE_PATH" ] && echo yes || echo no)
+Canvas assets:    $([ -d "$CANVAS_ASSET_DIR" ] && echo yes || echo no)
 Service exists:   $(service_exists && echo yes || echo no)
 EOF
   if have_cmd systemctl && service_exists; then
@@ -477,9 +604,10 @@ install_all() {
   ensure_node
   ensure_pnpm
   ensure_dirs
-  backup_config
+  backup_runtime_data
   sync_source
   migrate_legacy_runtime_config
+  migrate_legacy_canvas_runtime
   install_dependencies
   build_project
   write_env_file
@@ -494,9 +622,10 @@ rebuild_all() {
   ensure_node
   ensure_pnpm
   ensure_dirs
-  backup_config
+  backup_runtime_data
   sync_source
   migrate_legacy_runtime_config
+  migrate_legacy_canvas_runtime
   install_dependencies
   build_project
   write_env_file
@@ -518,6 +647,7 @@ env_only() {
   ensure_pnpm
   ensure_dirs
   migrate_legacy_runtime_config
+  migrate_legacy_canvas_runtime
   write_env_file
   write_systemd_unit
   doctor
@@ -570,6 +700,9 @@ print_summary() {
 
 配置持久化：
   ${CONFIG_PATH}
+画廊/模板库持久化：
+  ${CANVAS_STATE_PATH}
+  ${CANVAS_ASSET_DIR}
 
 服务：
   ${SERVICE_NAME}
@@ -587,9 +720,9 @@ Miobot v2 Linux 运维脚本（root-only）
 命令：
   install         首次部署：检测环境 -> 安装依赖 -> 构建 -> 写 systemd -> 启动
   deploy          同 install
-  git-update      一键拉取 Git 更新：git pull -> 备份配置 -> 构建 -> 重启
+  git-update      一键拉取 Git 更新：git pull -> 备份配置/画廊/模板库 -> 构建 -> 重启
   pull            同 git-update
-  rebuild         一键重构：备份配置 -> 同步源码 -> 依赖 -> 构建 -> 重启（不拉 Git）
+  rebuild         一键重构：备份配置/画廊/模板库 -> 同步源码 -> 依赖 -> 构建 -> 重启（不拉 Git）
   env             只检测/安装系统环境并写 systemd/env
   doctor          打印环境诊断，不改动系统
   start           启动服务
@@ -598,7 +731,8 @@ Miobot v2 Linux 运维脚本（root-only）
   status          查看服务状态
   logs            追踪日志，LINES=300 可调整初始行数
   health          健康检查
-  backup-config   备份 ${CONFIG_PATH}
+  backup-config   仅备份 ${CONFIG_PATH}
+  backup-data     备份配置、画廊、模板库状态和图片资源
   restore-config  恢复配置：restore-config /path/to/config.json
   uninstall       移除 systemd 服务；PURGE_DATA=1 时同时删应用和数据
 
@@ -608,6 +742,8 @@ Miobot v2 Linux 运维脚本（root-only）
   HOST=${HOST}
   DATA_DIR=${DATA_DIR}
   MIOBOT_CONFIG_PATH=${CONFIG_PATH}
+  MIOBOT_CANVAS_STATE_PATH=${CANVAS_STATE_PATH}
+  MIOBOT_CANVAS_ASSET_DIR=${CANVAS_ASSET_DIR}
   RUN_TESTS=1
   STRICT_LOCKFILE=1
   GIT_REMOTE=${GIT_REMOTE}
@@ -637,7 +773,8 @@ run_action() {
     status) service_status "$@" ;;
     logs|log|tail) service_logs "$@" ;;
     health) health_check "$@" ;;
-    backup-config|backup) require_root; ensure_dirs; backup_config "$@" ;;
+    backup-config) require_root; ensure_dirs; backup_config "$@" ;;
+    backup-data|backup) require_root; ensure_dirs; backup_runtime_data "$@" ;;
     restore-config|restore) restore_config "$@" ;;
     uninstall|remove) uninstall_service "$@" ;;
     help|-h|--help) usage ;;
@@ -662,6 +799,7 @@ interactive_menu() {
    服务名称： ${SERVICE_NAME}
    监听端口： ${PORT}
    配置文件： ${CONFIG_PATH}
+   画布状态： ${CANVAS_STATE_PATH}
 
   1) 首次部署 / 安装环境 / 构建 / 启动
   2) 启动服务
@@ -673,7 +811,7 @@ interactive_menu() {
   8) 一键重构 / 重新构建 / 重启（不拉 Git）
   9) 环境检测
  10) 健康检查
- 11) 备份配置
+ 11) 备份配置/画廊/模板库
  12) 只修复环境和 systemd 配置
  13) 卸载 systemd 服务（默认保留数据）
   0) 退出
@@ -692,7 +830,7 @@ EOF
       8) run_action rebuild; pause_menu ;;
       9) run_action doctor; pause_menu ;;
       10) run_action health; pause_menu ;;
-      11) run_action backup-config; pause_menu ;;
+      11) run_action backup-data; pause_menu ;;
       12) run_action env; pause_menu ;;
       13) run_action uninstall; pause_menu ;;
       0|q|Q|exit) exit 0 ;;

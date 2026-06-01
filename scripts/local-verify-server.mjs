@@ -23,7 +23,7 @@ const host = process.env.MIOBOT_HOST || process.env.HOST || 'localhost';
 const persistedCanvasState = await loadPersistedCanvasState();
 
 let gallery = Array.isArray(persistedCanvasState.gallery) ? persistedCanvasState.gallery : [];
-let interrogations = Array.isArray(persistedCanvasState.interrogations) ? persistedCanvasState.interrogations : [];
+let interrogations = initialInterrogationsFromState(persistedCanvasState);
 let project = normalizePersistedProject(persistedCanvasState.project, interrogations);
 const assets = restorePersistedAssets(persistedCanvasState, gallery, interrogations, project);
 let canvasStateSaveTimer = null;
@@ -104,11 +104,18 @@ function collectAsset(asset, map) {
   map.set(String(asset.id), asset);
 }
 
+function initialInterrogationsFromState(state = {}) {
+  if (Array.isArray(state.interrogations)) return state.interrogations;
+  if (Array.isArray(state.project?.interrogations)) return state.project.interrogations;
+  return [];
+}
+
 function restorePersistedAssets(state, galleryItems = [], interrogationItems = [], projectState = {}) {
   const map = new Map();
   for (const asset of Array.isArray(state.assets) ? state.assets : []) collectAsset(asset, map);
   for (const item of galleryItems) collectAsset(item.asset, map);
   for (const item of interrogationItems) collectAsset(item.asset, map);
+  for (const item of Array.isArray(projectState.interrogations) ? projectState.interrogations : []) collectAsset(item.asset, map);
   for (const record of Array.isArray(projectState.history) ? projectState.history : []) {
     for (const output of Array.isArray(record.outputs) ? record.outputs : []) collectAsset(output.asset, map);
   }
