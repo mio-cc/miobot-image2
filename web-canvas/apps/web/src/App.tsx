@@ -788,6 +788,7 @@ export function App() {
         progress: 100,
         error: error instanceof Error ? error.message : "反推失败"
       });
+      scheduleRemovePendingInterrogationItem(pendingItem.id);
       setInterrogateError("");
       setInterrogateStatus("");
     } finally {
@@ -878,6 +879,18 @@ export function App() {
     setInterrogateItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   }
 
+  function scheduleRemovePendingGalleryItem(id: string) {
+    window.setTimeout(() => {
+      setGalleryItems((current) => current.filter((item) => item.outputId !== id));
+    }, 1000);
+  }
+
+  function scheduleRemovePendingInterrogationItem(id: string) {
+    window.setTimeout(() => {
+      setInterrogateItems((current) => current.filter((item) => item.id !== id));
+    }, 1000);
+  }
+
   async function submitGeneration(snapshot = buildRequestSnapshot()) {
     const currentValidation = validateForm({
       mode: snapshot.mode,
@@ -940,6 +953,7 @@ export function App() {
           error: generationFailureText(record),
           status: "failed"
         });
+        scheduleRemovePendingGalleryItem(pendingItem.outputId);
       } else if (failedCount > 0) {
         setToast({ tone: "warning", message: `${failedCount} 张生成失败，其余已保存到画廊。` });
       }
@@ -950,6 +964,7 @@ export function App() {
         error: error instanceof Error ? error.message : "生成失败",
         status: "failed"
       });
+      scheduleRemovePendingGalleryItem(pendingItem.outputId);
     } finally {
       setIsGenerating(false);
     }
