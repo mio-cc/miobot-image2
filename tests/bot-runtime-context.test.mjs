@@ -10,9 +10,10 @@ import {
 } from '../scripts/bot-runtime.mjs';
 
 class FakeAdapter {
-  constructor(messages = {}, forwards = {}) {
+  constructor(messages = {}, forwards = {}, bridges = {}) {
     this.messages = messages;
     this.forwards = forwards;
+    this.bridges = bridges;
     this.calls = [];
   }
   async getMessage(id) {
@@ -24,6 +25,10 @@ class FakeAdapter {
     this.calls.push(['getForwardMessage', String(id)]);
     if (!(String(id) in this.forwards)) throw new Error(`missing forward ${id}`);
     return this.forwards[String(id)];
+  }
+  getForwardBridgeTargets(id) {
+    this.calls.push(['getForwardBridgeTargets', String(id)]);
+    return this.bridges[String(id)] || [];
   }
 }
 
@@ -66,7 +71,7 @@ test('bot runtime: referenced merged forward content is collected for upstream c
   assert.match(upstream, /^总结一下/);
   assert.match(upstream, /【引用内容 #quote-1】/);
   assert.match(upstream, /第一条：需求是保留引用内容/);
-  assert.deepEqual(adapter.calls.map((call) => call[0]), ['getMessage', 'getForwardMessage']);
+  assert.deepEqual(adapter.calls.map((call) => call[0]), ['getMessage', 'getForwardBridgeTargets', 'getForwardMessage']);
 });
 
 test('bot runtime: referenced bot ownership and CQ forward ids are parsed', async () => {
@@ -80,5 +85,55 @@ test('bot runtime: referenced bot ownership and CQ forward ids are parsed', asyn
   const ref = await resolveReferencedMessage(adapter, 'bot', '10000');
   assert.equal(ref.replyToBot, true);
   assert.match(ref.text, /上一轮回答/);
+});
+
+test('bot runtime: json forward ids and bridged forward targets are collected', async () => {
+  const adapter = new FakeAdapter(
+    {
+      q: {
+        sender: { user_id: '2000' },
+        message: [
+          {
+            type: 'json',
+            data: {
+              data: JSON.stringify({
+                meta: { news: { title: '合并记录卡片', desc: '请总结里面的方案' } },
+                forward_id: 'outer-forward',
+              }),
+            },
+          },
+        ],
+      },
+    },
+    {
+      'inner-forward': {
+        messages: [
+          {
+            sender: { nickname: '需求方' },
+            message: [{ type: 'text', data: { text: '引用里的真实需求：保留合并聊天内容。' } }],
+          },
+        ],
+      },
+      'outer-forward': {
+        messages: [{ sender: { nickname: '外层' }, message: [{ type: 'text', data: { text: '外层记录' } }] }],
+      },
+    },
+    { 'outer-forward': ['inner-forward'] },
+  );
+
+  assert.deepEqual(extractForwardIds([{ type: 'json', data: { data: JSON.stringify({ forward_id: 'fwd-json' }) } }]), ['fwd-json']);
+  assert.match(extractMessageText({ meta: { detail_1: { title: '标题', desc: '描述' } }, finalPrompt: '最终提示词' }), /最终提示词/);
+
+  const ref = await resolveReferencedMessage(adapter, 'q', '10000');
+  assert.match(ref.text, /合并记录卡片/);
+  assert.match(ref.text, /真实需求/);
+  assert.match(ref.text, /外层记录/);
+  assert.deepEqual(adapter.calls.map((call) => call[0]), [
+    'getMessage',
+    'getForwardBridgeTargets',
+    'getForwardBridgeTargets',
+    'getForwardMessage',
+    'getForwardMessage',
+  ]);
 });
 

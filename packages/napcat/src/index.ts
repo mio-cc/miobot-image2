@@ -1,6 +1,8 @@
 import { normalizeError } from '../../core/src/index.js';
 import type { StructuredLogger } from '../../logger/src/index.js';
 import type { PackageDescriptor, SerializableError } from '@miobot-v2/shared';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { WebSocket as WsWebSocket } from 'ws';
 
 export const NAPCAT_PACKAGE: PackageDescriptor = {
@@ -124,6 +126,8 @@ export class NapcatAdapter {
   private manualClose = false;
   private readonly pendingActions = new Map<string, PendingAction>();
   private readonly handlers = new Map<string, Set<NapcatEventHandler>>();
+  private readonly forwardBridgeTargets = new Map<string, string[]>();
+  private forwardBridgeLoaded = false;
   private lastConnectedAt: number | null = null;
   selfQqId = '';
 
@@ -352,6 +356,13 @@ export class NapcatAdapter {
     return response.data ?? response;
   }
 
+  getForwardBridgeTargets(forwardId: number | string): string[] {
+    this.loadForwardBridgeStore();
+    const id = String(forwardId || '').trim();
+    if (!id) return [];
+    return [...(this.forwardBridgeTargets.get(id) || [])];
+  }
+
   private async sendAndReportResult(action: string, params: Record<string, unknown>, timeoutMs: number): Promise<NapcatSendResult> {
     try {
       const response = await this.callAction(action, params, timeoutMs);
@@ -400,6 +411,25 @@ export class NapcatAdapter {
     this.logger?.error('napcat socket error', { error: normalizeError(error) });
     this.rejectPendingActions(error instanceof Error ? error : new Error(String(error)));
     void this.emit('error', error);
+  }
+
+  private loadForwardBridgeStore(): void {
+    if (this.forwardBridgeLoaded) return;
+    this.forwardBridgeLoaded = true;
+    const storePath = path.resolve(process.cwd(), 'output', 'forward-bridges.json');
+    try {
+      if (!fs.existsSync(storePath)) return;
+      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8') || '{}');
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+      for (const [key, value] of Object.entries(parsed)) {
+        if (!Array.isArray(value)) continue;
+        const targets = value.map((item) => String(item || '').trim()).filter(Boolean);
+        if (key && targets.length) this.forwardBridgeTargets.set(String(key), Array.from(new Set(targets)));
+      }
+      this.logger?.info('napcat forward bridge store loaded', { path: storePath, entries: this.forwardBridgeTargets.size });
+    } catch (error) {
+      this.logger?.warn('napcat forward bridge store load failed', { path: storePath, error: normalizeError(error) });
+    }
   }
 
   private handleClose(code?: number, reason?: unknown): void {

@@ -51,6 +51,8 @@ const FALLBACK_COMMANDS = {
 
 const MAX_REFERENCE_TEXT_CHARS = 16000;
 const MAX_FORWARD_DEPTH = 2;
+const JSON_TEXT_KEYS = new Set(['text', 'content', 'summary', 'prompt', 'finalPrompt', 'title', 'desc', 'description']);
+const FORWARD_ID_KEYS = new Set(['forward_id', 'forwardId', 'res_id', 'resid']);
 
 let currentAdapter = null;
 let currentNapcatKey = '';
@@ -127,6 +129,55 @@ function createImage(adapter, config, reply) {
     interrogateTimeoutMs: config.llm?.interrogateTimeoutMs || config.canvas?.interrogateTimeoutMs,
     promptTemplates: config.bot?.promptTemplates || [],
     interrogatePromptTemplate: config.llm?.interrogatePromptTemplate || config.canvas?.interrogatePromptTemplate,
+  });
+}
+
+async function maybeEnhancePrompt(config, rawPrompt, enhance = {}) {
+  const prompt = String(rawPrompt || '').trim();
+  if (!prompt) return prompt;
+  const mode = enhance?.enhanceMode || 'none';
+  if (mode === 'disable') return prompt;
+  const shouldEnhance = mode === 'force' || mode === 'toggle' || Boolean(config.llm?.enhanceEnabled);
+  const model = String(config.llm?.enhanceModel || '').trim();
+  if (!shouldEnhance || !model || model === 'none') return prompt;
+  try {
+    const template = config.llm?.enhancePromptTemplate || '请把用户原始提示词改写为适合图像生成模型的提示词：{{rawPrompt}}';
+    const instruction = renderRuntimeTemplate(template, { rawPrompt: prompt, prompt });
+    const adapter = createLlm(config, config.llm?.enhanceNodeIndex, config.llm?.imageTimeoutMs || 120000, 'enhance');
+    const result = await adapter.createText({
+      model,
+      timeoutMs: config.llm?.imageTimeoutMs || 120000,
+      messages: [
+        { role: 'system', content: instruction },
+        { role: 'user', content: prompt },
+      ],
+    });
+    const enhanced = extractPromptFromModelText(result.text);
+    if (enhanced) {
+      logger.info('提示词润色完成', { mode, beforeLength: prompt.length, afterLength: enhanced.length });
+      return enhanced;
+    }
+  } catch (error) {
+    logger.warn('提示词润色失败，降级使用原始提示词', { error: normalizeError(error) });
+  }
+  return prompt;
+}
+
+function extractPromptFromModelText(value) {
+  const cleaned = cleanupModelText(value);
+  if (!cleaned) return '';
+  try {
+    const parsed = JSON.parse(cleaned);
+    const fromJson = parsed?.prompt ?? parsed?.finalPrompt ?? parsed?.positive_prompt ?? parsed?.positivePrompt ?? parsed?.description ?? parsed?.text;
+    if (fromJson) return String(fromJson).trim();
+  } catch {}
+  return cleaned;
+}
+
+function renderRuntimeTemplate(template, values) {
+  return String(template || '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_match, key) => {
+    const value = values[key];
+    return value === undefined || value === null ? '' : String(value);
   });
 }
 
@@ -271,7 +322,10 @@ async function handleCommand(adapter, config, reply, context, decision, message)
         await reply.replyText(context, '图像生成功能未启用，请在后台开启“图像生成”。');
         return;
       }
-      await image.generate({ rawPrompt: withReferenceContext(args || message.commandText || '生成一张图片', message), context });
+      await image.generate({
+        rawPrompt: await maybeEnhancePrompt(config, withReferenceContext(args || message.commandText || '生成一张图片', message), decision.metadata?.enhance),
+        context,
+      });
       break;
     case 'img2Img':
     case 'editImage': {
@@ -280,7 +334,11 @@ async function handleCommand(adapter, config, reply, context, decision, message)
         await reply.replyText(context, '请在消息里附带图片，或回复一条含图片的消息后再使用图生图/改图命令。');
         return;
       }
-      await image.edit({ rawPrompt: args || '根据参考图重新生成', images, context });
+      await image.edit({
+        rawPrompt: await maybeEnhancePrompt(config, args || '根据参考图重新生成', decision.metadata?.enhance),
+        images,
+        context,
+      });
       break;
     }
     case 'interrogate': {
@@ -299,11 +357,14 @@ async function handleCommand(adapter, config, reply, context, decision, message)
         return;
       }
       const source = args || message.referenceText || message.commandText || '根据引用内容生成图片';
-      await image.generate({ rawPrompt: withReferenceContext(source, message), context });
+      await image.generate({
+        rawPrompt: await maybeEnhancePrompt(config, withReferenceContext(source, message), decision.metadata?.enhance),
+        context,
+      });
       break;
     }
     case 'remotePromptSearch': {
-      await reply.replyText(context, renderTemplateSearch(config, args || message.referenceText || ''));
+      await reply.replyText(context, await renderRemoteOrLocalTemplateSearch(config, args || message.referenceText || ''));
       break;
     }
     case 'remotePromptSmartImage': {
@@ -312,8 +373,7 @@ async function handleCommand(adapter, config, reply, context, decision, message)
         return;
       }
       const query = String(args || message.referenceText || message.commandText || '').trim();
-      const template = findBestTemplate(config, query);
-      const rawPrompt = template ? renderLocalTemplate(template, query || message.referenceText || template.title) : withReferenceContext(query || '根据当前上下文生成图片', message);
+      const rawPrompt = await resolveRemoteOrLocalSmartPrompt(config, query || message.referenceText || message.commandText || '', message);
       await image.generate({ rawPrompt, context });
       break;
     }
@@ -509,17 +569,7 @@ export async function collectMessageContext(adapter, payload, depth = 0, seenFor
 
   if (depth < MAX_FORWARD_DEPTH && adapter?.getForwardMessage) {
     for (const forwardId of extractForwardIds(messageBodyOf(payload), rawMessageOf(payload))) {
-      if (!forwardId || seenForwardIds.has(forwardId)) continue;
-      seenForwardIds.add(forwardId);
-      try {
-        const forwardPayload = await adapter.getForwardMessage(forwardId);
-        const child = await collectMessageContext(adapter, forwardPayload, depth + 1, seenForwardIds);
-        if (child.text) textParts.push(`【合并聊天记录 ${forwardId}】\n${child.text}`);
-        images.push(...child.images);
-      } catch (error) {
-        logger.warn('读取合并聊天记录失败', { forwardId, error: normalizeError(error) });
-        textParts.push(`【合并聊天记录 ${forwardId} 读取失败】`);
-      }
+      await collectForwardContext(adapter, forwardId, depth, seenForwardIds, textParts, images);
     }
   }
 
@@ -527,6 +577,30 @@ export async function collectMessageContext(adapter, payload, depth = 0, seenFor
     text: truncateReferenceText(textParts.filter(Boolean).join('\n')),
     images: uniqueStrings(images),
   };
+}
+
+async function collectForwardContext(adapter, forwardId, depth, seenForwardIds, textParts, images) {
+  const id = String(forwardId || '').trim();
+  if (!id || seenForwardIds.has(id) || depth >= MAX_FORWARD_DEPTH) return;
+  seenForwardIds.add(id);
+
+  const bridgedTargets = typeof adapter?.getForwardBridgeTargets === 'function'
+    ? uniqueStrings(adapter.getForwardBridgeTargets(id) || [])
+    : [];
+  for (const target of bridgedTargets) {
+    await collectForwardContext(adapter, target, depth + 1, seenForwardIds, textParts, images);
+  }
+
+  if (!adapter?.getForwardMessage) return;
+  try {
+    const forwardPayload = await adapter.getForwardMessage(id);
+    const child = await collectMessageContext(adapter, forwardPayload, depth + 1, seenForwardIds);
+    if (child.text) textParts.push(`【合并聊天记录 ${id}】\n${child.text}`);
+    images.push(...child.images);
+  } catch (error) {
+    logger.warn('读取合并聊天记录失败', { forwardId: id, error: normalizeError(error) });
+    textParts.push(`【合并聊天记录 ${id} 读取失败】`);
+  }
 }
 
 export function withReferenceContext(text, message) {
@@ -556,6 +630,8 @@ export function extractMessageText(payload) {
   }
   if (typeof payload.raw_message === 'string') return cleanupRawText(payload.raw_message);
   if (typeof payload.message === 'object') return extractMessageText(payload.message);
+  const structured = collectJsonTextFields(payload).join('\n').trim();
+  if (structured) return structured;
   return '';
 }
 
@@ -570,7 +646,7 @@ function segmentToText(segment) {
   if (type === 'record') return '[语音]';
   if (type === 'video') return '[视频]';
   if (type === 'file') return `[文件：${data.name || data.file || data.file_name || '未命名'}]`;
-  if (type === 'forward') return `[合并聊天记录：${data.id || data.file || data.resid || 'unknown'}]`;
+  if (type === 'forward') return `[合并聊天记录：${data.id || data.file || data.resid || data.res_id || data.forward_id || data.forwardId || 'unknown'}]`;
   if (type === 'node') return extractMessageText(data.content || data.message || data);
   if (type === 'json') return extractJsonSegmentText(data.data || data.content || data.text || '');
   if (type === 'xml') return cleanupRawText(data.data || data.content || data.text || '[XML 消息]');
@@ -582,14 +658,7 @@ function extractJsonSegmentText(value) {
   if (!raw) return '';
   try {
     const parsed = JSON.parse(raw);
-    return [
-      parsed?.meta?.news?.title,
-      parsed?.meta?.news?.desc,
-      parsed?.meta?.detail_1?.title,
-      parsed?.meta?.detail_1?.desc,
-      parsed?.prompt,
-      parsed?.summary,
-    ].map((item) => String(item || '').trim()).filter(Boolean).join('\n') || raw.slice(0, 1000);
+    return collectJsonTextFields(parsed).join('\n') || raw.slice(0, 1000);
   } catch {
     return raw.slice(0, 1000);
   }
@@ -598,19 +667,76 @@ function extractJsonSegmentText(value) {
 export function extractForwardIds(message, raw = '') {
   const ids = [];
   const body = messageBodyOf(message);
-  if (Array.isArray(body)) {
-    for (const segment of body) {
-      if (segment?.type !== 'forward') continue;
-      const data = segment.data || {};
-      const value = data.id ?? data.file ?? data.resid;
-      if (value !== undefined && value !== null) ids.push(String(value));
-    }
-  }
+  collectForwardIdsFromUnknown(body, ids);
   const text = typeof raw === 'string' && raw ? raw : typeof message === 'string' ? message : '';
-  for (const match of text.matchAll(/\[CQ:forward,[^\]]*(?:id|file|resid)=([^,\]]+)/g)) {
+  for (const match of text.matchAll(/\[CQ:forward,[^\]]*(?:id|file|resid|res_id|forward_id)=([^,\]]+)/gi)) {
     if (match[1]) ids.push(decodeURIComponentSafe(match[1]));
   }
   return uniqueStrings(ids);
+}
+
+function collectJsonTextFields(value, result = [], depth = 0) {
+  if (value === undefined || value === null || depth > 6) return result;
+  if (typeof value === 'string') return result;
+  if (Array.isArray(value)) {
+    for (const item of value) collectJsonTextFields(item, result, depth + 1);
+    return uniqueStrings(result);
+  }
+  if (typeof value !== 'object') return result;
+  for (const [key, item] of Object.entries(value)) {
+    if (item === undefined || item === null) continue;
+    if (typeof item === 'string' && JSON_TEXT_KEYS.has(key)) {
+      const cleaned = cleanupJsonTextValue(item);
+      if (cleaned) result.push(cleaned);
+      continue;
+    }
+    if (typeof item === 'object') collectJsonTextFields(item, result, depth + 1);
+  }
+  return uniqueStrings(result).slice(0, 40);
+}
+
+function cleanupJsonTextValue(value) {
+  const text = String(value || '').replace(/\r\n/g, '\n').trim();
+  if (!text || /^https?:\/\//i.test(text) || /^base64:\/\//i.test(text)) return '';
+  return text.length > 2000 ? `${text.slice(0, 1999).trim()}…` : text;
+}
+
+function collectForwardIdsFromUnknown(value, ids, depth = 0) {
+  if (value === undefined || value === null || depth > 6) return;
+  if (typeof value === 'string') {
+    for (const match of value.matchAll(/\[CQ:forward,[^\]]*(?:id|file|resid|res_id|forward_id)=([^,\]]+)/gi)) {
+      if (match[1]) ids.push(decodeURIComponentSafe(match[1]));
+    }
+    const decoded = decodeURIComponentSafe(value).trim();
+    if (/^[\[{]/.test(decoded)) {
+      try { collectForwardIdsFromUnknown(JSON.parse(decoded), ids, depth + 1); } catch {}
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectForwardIdsFromUnknown(item, ids, depth + 1);
+    return;
+  }
+  if (typeof value !== 'object') return;
+
+  const type = String(value.type || '').toLowerCase();
+  const data = value.data && typeof value.data === 'object' ? value.data : {};
+  if (type === 'forward') {
+    for (const key of ['id', 'file', 'resid', 'res_id', 'forward_id', 'forwardId']) {
+      if (data[key] !== undefined && data[key] !== null) ids.push(String(data[key]));
+    }
+  }
+  if (type === 'json') collectForwardIdsFromUnknown(data.data ?? data.content ?? data.text, ids, depth + 1);
+
+  for (const [key, item] of Object.entries(value)) {
+    if (FORWARD_ID_KEYS.has(key) && item !== undefined && item !== null && typeof item !== 'object') {
+      ids.push(String(item));
+      continue;
+    }
+    if (['message', 'content', 'messages', 'nodes', 'data', 'forward', 'meta', 'extra'].includes(key)) {
+      collectForwardIdsFromUnknown(item, ids, depth + 1);
+    }
+  }
 }
 
 function extractForwardMessageItems(payload) {
@@ -668,7 +794,7 @@ function cleanupRawText(raw) {
     .replace(/\[CQ:image,[^\]]+\]/g, '[图片]')
     .replace(/\[CQ:record,[^\]]+\]/g, '[语音]')
     .replace(/\[CQ:video,[^\]]+\]/g, '[视频]')
-    .replace(/\[CQ:forward,[^\]]*(?:id|file|resid)=([^,\]]+)[^\]]*\]/g, (_all, id) => `[合并聊天记录：${decodeURIComponentSafe(id)}]`)
+    .replace(/\[CQ:forward,[^\]]*(?:id|file|resid|res_id|forward_id)=([^,\]]+)[^\]]*\]/gi, (_all, id) => `[合并聊天记录：${decodeURIComponentSafe(id)}]`)
     .replace(/\[CQ:json,[^\]]*data=([^,\]]+)[^\]]*\]/g, (_all, data) => extractJsonSegmentText(data))
     .replace(/\[CQ:[^\]]+\]/g, '')
     .replace(/[ \t]+\n/g, '\n')
@@ -694,7 +820,13 @@ function helpText(config) {
     `- ${firstAlias(commands.img2Img) || '图生图'} <提示词> + 图片：参考图生成`,
     `- ${firstAlias(commands.editImage) || '改图'} <提示词> + 图片：编辑图片`,
     `- ${firstAlias(commands.interrogate) || '反推'} + 图片：图片反推提示词`,
+    `- ${firstAlias(commands.originalImage) || '原图'}：回复图片/合并转发后取原图`,
+    `- ${firstAlias(commands.templateLibrary) || '模板库'}：查看本地模板`,
+    `- ${firstAlias(commands.referencedTemplateImage) || '套模板'} <主体>：引用模板消息并生图`,
+    `- ${firstAlias(commands.remotePromptSearch) || 'pp'} <关键词>：搜索 prompts.chat / 本地模板`,
+    `- ${firstAlias(commands.remotePromptSmartImage) || 'spp'}! <描述>：智能套用模板生图`,
     `- ${firstAlias(commands.clear) || '/clear'}：清空当前会话`,
+    `- 生图命令里可加 ${firstAlias(commands.toggleEnhance) || '润色'} / ${firstAlias(commands.disableEnhance) || '原文'} 控制提示词润色`,
     '群聊普通对话需要 @机器人，图片命令可直接触发。',
   ].join('\n');
 }
@@ -702,7 +834,29 @@ function helpText(config) {
 function renderTemplateLibrary(config) {
   const templates = config.bot?.promptTemplates || [];
   if (!templates.length) return '当前没有本地模板。';
-  return templates.slice(0, 20).map((item) => `${item.id} · ${item.title}`).join('\n');
+  return [
+    `本地模板库（${templates.length} 个）：`,
+    ...templates.slice(0, 20).map((item, index) => {
+      const preview = String(item.prompt || '').replace(/\s+/g, ' ').trim().slice(0, 180);
+      return `${index + 1}. ${item.id} · ${item.title}${preview ? `\n${preview}` : ''}`;
+    }),
+  ].join('\n\n');
+}
+
+async function renderRemoteOrLocalTemplateSearch(config, query) {
+  const keyword = String(query || '').trim();
+  if (promptsChatEnabled(config)) {
+    if (!keyword) return remotePromptHelpText(config);
+    try {
+      const prompts = await searchPromptsChat(config, keyword, { limit: config.promptsChat?.displayLimit || 5 });
+      if (prompts.length) return renderRemotePromptResults(config, keyword, prompts);
+      return `prompts.chat 没有搜到结果：${keyword}\n\n${renderTemplateSearch(config, keyword)}`;
+    } catch (error) {
+      logger.warn('prompts.chat 搜索失败，降级到本地模板库', { error: normalizeError(error) });
+      return `prompts.chat 搜索失败，已改用本地模板库。\n\n${renderTemplateSearch(config, keyword)}`;
+    }
+  }
+  return renderTemplateSearch(config, keyword);
 }
 
 function renderTemplateSearch(config, query) {
@@ -730,6 +884,25 @@ function findBestTemplate(config, query) {
     || templates[0];
 }
 
+async function resolveRemoteOrLocalSmartPrompt(config, query, message) {
+  const cleanQuery = String(query || '').trim();
+  if (promptsChatEnabled(config) && cleanQuery) {
+    try {
+      const prompts = await searchPromptsChat(config, cleanQuery, { limit: config.promptsChat?.smartCandidateLimit || 6 });
+      const selected = prompts.find((item) => item.content) || prompts[0];
+      if (selected?.content) {
+        logger.info('prompts.chat 智能模板命中', { promptId: selected.id, title: selected.title });
+        return renderRemotePromptContent(selected, cleanQuery);
+      }
+    } catch (error) {
+      logger.warn('prompts.chat 智能模板失败', { error: normalizeError(error) });
+      if (config.promptsChat?.fallbackToRawPrompt === false) throw error;
+    }
+  }
+  const template = findBestTemplate(config, cleanQuery);
+  return template ? renderLocalTemplate(template, cleanQuery || message.referenceText || template.title) : withReferenceContext(cleanQuery || '根据当前上下文生成图片', message);
+}
+
 function renderLocalTemplate(template, prompt) {
   const rawPrompt = String(prompt || '').trim();
   const templateText = String(template?.prompt || '').trim();
@@ -739,6 +912,124 @@ function renderLocalTemplate(template, prompt) {
     .replace(/\{\{\s*prompt\s*\}\}/g, rawPrompt)
     .trim();
   return rendered || rawPrompt;
+}
+
+function promptsChatEnabled(config) {
+  return Boolean(config.promptsChat?.enabled && String(config.promptsChat?.endpoint || '').trim());
+}
+
+function remotePromptHelpText(config) {
+  const commands = config.bot?.commands || {};
+  const searchAlias = firstAlias(commands.remotePromptSearch) || 'pp';
+  const smartAlias = firstAlias(commands.remotePromptSmartImage) || 'spp';
+  return [
+    'prompts.chat 远程模板库',
+    `搜索：${searchAlias} 关键词`,
+    `详情/筛选会尽量透传到 prompts.chat，当前 v2 会自动降级本地模板。`,
+    `智能套用生图：${smartAlias}! 你的画面描述`,
+  ].join('\n');
+}
+
+async function searchPromptsChat(config, query, options = {}) {
+  const limit = Math.max(1, Math.min(50, Number(options.limit || config.promptsChat?.searchLimit || 10)));
+  const args = { query: String(query || '').trim(), limit };
+  if (config.promptsChat?.searchType) args.type = config.promptsChat.searchType;
+  const parsed = await callPromptsChatTool(config, 'search_prompts', args);
+  const items = Array.isArray(parsed?.prompts) ? parsed.prompts : Array.isArray(parsed) ? parsed : [];
+  return items.map(normalizeRemotePrompt).filter((item) => item.id || item.title || item.content);
+}
+
+async function callPromptsChatTool(config, name, args) {
+  const endpoint = String(config.promptsChat?.endpoint || '').trim();
+  const headers = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json, text/event-stream',
+  };
+  const apiKey = String(config.promptsChat?.apiKey || process.env.PROMPTS_API_KEY || '').trim();
+  if (apiKey) headers.PROMPTS_API_KEY = apiKey;
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: Date.now(),
+      method: 'tools/call',
+      params: { name, arguments: args },
+    }),
+    signal: AbortSignal.timeout(Math.max(5000, Number(config.promptsChat?.requestTimeoutMs || 20000))),
+  });
+  const raw = await response.text();
+  if (!response.ok) throw new Error(`prompts.chat HTTP ${response.status}`);
+  const envelope = parseMcpEnvelope(raw);
+  if (envelope?.error) throw new Error(envelope.error?.message || JSON.stringify(envelope.error));
+  return parseToolJson(envelope?.result);
+}
+
+function parseMcpEnvelope(raw) {
+  if (raw && typeof raw === 'object') return raw;
+  const text = String(raw || '').trim();
+  const eventPayloads = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trim())
+    .filter((line) => line && line !== '[DONE]');
+  const candidates = eventPayloads.length ? eventPayloads : [text];
+  let parsed;
+  for (const item of candidates) parsed = JSON.parse(item);
+  return parsed;
+}
+
+function parseToolJson(result) {
+  const text = Array.isArray(result?.content)
+    ? result.content.find((item) => item?.type === 'text' && typeof item.text === 'string')?.text
+    : '';
+  if (!text) return result;
+  try { return JSON.parse(text); } catch { return { text }; }
+}
+
+function normalizeRemotePrompt(item) {
+  const content = String(item?.content || item?.prompt || item?.contentPreview || item?.preview || '').trim();
+  return {
+    id: String(item?.id || '').trim(),
+    title: String(item?.title || item?.name || item?.slug || 'Untitled prompt').trim(),
+    description: String(item?.description || '').trim(),
+    content,
+    contentPreview: String(item?.contentPreview || item?.preview || content || '').trim(),
+    category: String(item?.category || '').trim(),
+    tags: Array.isArray(item?.tags) ? item.tags.map((tag) => String(tag).trim()).filter(Boolean) : [],
+    link: String(item?.link || item?.url || '').trim(),
+  };
+}
+
+function renderRemotePromptResults(config, query, prompts) {
+  const searchAlias = firstAlias(config.bot?.commands?.remotePromptSearch) || 'pp';
+  const smartAlias = firstAlias(config.bot?.commands?.remotePromptSmartImage) || 'spp';
+  return [
+    `prompts.chat: ${query}`,
+    ...prompts.map((prompt, index) => {
+      const meta = [prompt.category, prompt.tags?.length ? prompt.tags.join(', ') : ''].filter(Boolean).join(' · ');
+      const preview = String(prompt.contentPreview || prompt.content || '').replace(/\s+/g, ' ').slice(0, 180);
+      return `${index + 1}. ${prompt.title}${prompt.id ? `\nID: ${prompt.id}` : ''}${meta ? `\n${meta}` : ''}${prompt.description ? `\n简介: ${prompt.description}` : ''}${preview ? `\n模板预览：${preview}` : ''}`;
+    }),
+    '',
+    `查看/继续搜索：${searchAlias} 关键词`,
+    `智能套用生图：${smartAlias}! ${query}`,
+  ].join('\n\n');
+}
+
+function renderRemotePromptContent(prompt, query) {
+  const content = String(prompt.content || prompt.contentPreview || '').trim();
+  if (!content) return query;
+  if (/\{\{\s*(prompt|rawPrompt|input|subject)\s*\}\}/i.test(content)) {
+    return content
+      .replace(/\{\{\s*rawPrompt\s*\}\}/gi, query)
+      .replace(/\{\{\s*prompt\s*\}\}/gi, query)
+      .replace(/\{\{\s*input\s*\}\}/gi, query)
+      .replace(/\{\{\s*subject\s*\}\}/gi, query)
+      .trim();
+  }
+  return `${content}\n\nUser request: ${query}`.trim();
 }
 
 function firstAlias(value) {
