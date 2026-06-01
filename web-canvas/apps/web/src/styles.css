@@ -6719,35 +6719,34 @@ body {
   }
 }
 
-/* Explicit custom-row layout. This does not depend on CSS :has() and prevents
-   width/height inputs from ever sharing the same row space with quality/format. */
-@media (max-width: 900px) {
-  .playground-input-card .playground-param-roll .playground-param-row--custom-size,
-  .playground-input-card[data-mobile-collapsed="false"] .playground-param-roll .playground-param-row--custom-size,
-  .playground-input-card[data-mobile-collapsed="true"][data-hover-suppressed="false"]:hover
-    .playground-param-roll .playground-param-row--custom-size,
-  .canvas-workspace .control-pane.playground-input-bar[data-manual-collapsed="true"][data-hover-suppressed="false"]:hover
-    .playground-input-card[data-mobile-collapsed="true"] .playground-param-roll .playground-param-row--custom-size {
-    display: flex !important;
-    flex-wrap: wrap !important;
-    align-items: flex-start !important;
-    gap: 7px !important;
-    width: 100% !important;
-    min-width: 0 !important;
-  }
+/* Explicit custom-row layout. This does not depend on CSS :has() or viewport
+   breakpoints and prevents width/height inputs from sharing row space with
+   quality/format in half-width desktop windows. */
+.playground-input-card .playground-param-roll .playground-param-row--custom-size,
+.playground-input-card[data-mobile-collapsed="false"] .playground-param-roll .playground-param-row--custom-size,
+.playground-input-card[data-mobile-collapsed="true"][data-hover-suppressed="false"]:hover
+  .playground-param-roll .playground-param-row--custom-size,
+.canvas-workspace .control-pane.playground-input-bar[data-manual-collapsed="true"][data-hover-suppressed="false"]:hover
+  .playground-input-card[data-mobile-collapsed="true"] .playground-param-roll .playground-param-row--custom-size {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: flex-start !important;
+  gap: 7px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
 
-  .playground-input-card .playground-param-roll .playground-param-row--custom-size .playground-param-field--custom-size {
-    flex: 1 1 100% !important;
-    width: 100% !important;
-    min-width: 0 !important;
-  }
+.playground-input-card .playground-param-roll .playground-param-row--custom-size .playground-param-field--custom-size {
+  flex: 1 1 100% !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
 
-  .playground-input-card .playground-param-roll .playground-param-row--custom-size
-    .playground-param-field:not(.playground-param-field--custom-size) {
-    flex: 1 1 92px !important;
-    width: auto !important;
-    min-width: 92px !important;
-  }
+.playground-input-card .playground-param-roll .playground-param-row--custom-size
+  .playground-param-field:not(.playground-param-field--custom-size) {
+  flex: 1 1 92px !important;
+  width: auto !important;
+  min-width: 92px !important;
 }
 
 @media (max-width: 480px) {
