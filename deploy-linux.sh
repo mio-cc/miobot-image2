@@ -276,6 +276,7 @@ NODE_ENV=production
 MIOBOT_HOST=${HOST}
 MIOBOT_PORT=${PORT}
 MIOBOT_VERIFY_PORT=${PORT}
+MIOBOT_ENABLE_BOT=${MIOBOT_ENABLE_BOT:-1}
 MIOBOT_RUNTIME_DIR=${RUNTIME_DIR}
 MIOBOT_CONFIG_PATH=${CONFIG_PATH}
 DATA_DIR=${DATA_DIR}
@@ -293,7 +294,7 @@ write_systemd_unit() {
   log "写入 systemd 服务：${SERVICE_NAME}.service"
   cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
-Description=Miobot v2 Admin and Canvas
+Description=Miobot v2 Admin, Canvas and Bot
 After=network-online.target
 Wants=network-online.target
 
@@ -303,7 +304,7 @@ User=root
 Group=root
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=-${ENV_FILE}
-ExecStart=${NODE_BIN} scripts/local-verify-server.mjs
+ExecStart=${NODE_BIN} scripts/miobot-service.mjs
 Restart=always
 RestartSec=3
 KillSignal=SIGTERM

@@ -1,6 +1,6 @@
 {
   "name": "napcat-omnibot-v2",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Staged rewrite skeleton for Napcat-OmniBot v2.",
@@ -9,15 +9,20 @@
     "packages/*"
   ],
   "scripts": {
-    "start": "node scripts/local-verify-server.mjs",
+    "start": "node scripts/miobot-service.mjs",
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test tests/*.test.mjs",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "start:verify": "node scripts/local-verify-server.mjs",
+    "start:bot": "node scripts/bot-runtime.mjs",
     "deploy:linux": "bash deploy-linux.sh"
   },
   "devDependencies": {
     "@types/node": "^20.12.7",
+    "@types/ws": "^8.5.13",
     "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
   }
 }

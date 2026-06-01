@@ -7,6 +7,7 @@ import { createWebApi, derivePanelToken } from '../dist/packages/web-api/src/ind
 import { getDefaultPrompts } from '../dist/packages/config/src/index.js';
 import { createImageModule, renderPromptTemplate } from '../dist/packages/image/src/index.js';
 import { createOpenAICompatibleAdapter } from '../dist/packages/llm/src/index.js';
+import { NapcatAdapter } from '../dist/packages/napcat/src/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -83,6 +84,46 @@ function send(res, status, body, headers = {}) {
 }
 function sendJson(res, status, body) { send(res, status, JSON.stringify(body, null, 2), { 'content-type': 'application/json; charset=utf-8' }); }
 function sendHtml(res, html) { send(res, 200, html, { 'content-type': 'text/html; charset=utf-8' }); }
+
+function waitForNapcatOpen(adapter, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Napcat WebSocket 连接超时 (${timeoutMs}ms)`)), timeoutMs);
+    const cleanup = () => clearTimeout(timer);
+    adapter.on('open', (snapshot) => { cleanup(); resolve(snapshot); });
+    adapter.on('error', (error) => { cleanup(); reject(error instanceof Error ? error : new Error(String(error))); });
+    adapter.on('close', (event) => { cleanup(); reject(new Error(`Napcat WebSocket 已关闭: ${event?.code || ''} ${event?.reason || ''}`.trim())); });
+    adapter.connect();
+  });
+}
+
+async function testNapcatConnection() {
+  const cfg = currentConfig();
+  const wsUrl = String(cfg.napcat?.wsUrl || '').trim();
+  if (!wsUrl) throw new Error('Napcat WebSocket 地址为空');
+  const adapter = new NapcatAdapter({
+    wsUrl,
+    token: cfg.napcat?.token || '',
+    actionTimeoutMs: cfg.napcat?.actionTimeoutMs || 15000,
+    textSendTimeoutMs: cfg.napcat?.textSendTimeoutMs || 15000,
+    imageSendTimeoutMs: cfg.napcat?.imageSendTimeoutMs || 120000,
+    forwardSendTimeoutMs: cfg.napcat?.forwardSendTimeoutMs || 300000,
+    getMessageTimeoutMs: cfg.napcat?.getMessageTimeoutMs || 10000,
+    autoReconnect: false,
+  });
+  try {
+    const snapshot = await waitForNapcatOpen(adapter, 8000);
+    let loginInfo = undefined;
+    try {
+      const response = await adapter.callAction('get_login_info', {}, cfg.napcat?.actionTimeoutMs || 15000);
+      loginInfo = response.data || response;
+    } catch (error) {
+      loginInfo = { warning: error?.message || String(error) };
+    }
+    return { snapshot, loginInfo };
+  } finally {
+    adapter.disconnect();
+  }
+}
 async function readBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -486,7 +527,32 @@ async function handleCompatApi(req, res, url) {
   if (req.method === 'POST' && p === '/api/logs/clear') return sendJson(res, 200, { success: true, entries: [], stats: { total: 0 } });
   if (req.method === 'GET' && p === '/api/canvas/logs') return sendJson(res, 200, { success: true, entries: [], stats: { total: 0 } });
   if (req.method === 'POST' && p === '/api/canvas/logs/clear') return sendJson(res, 200, { success: true, entries: [], stats: { total: 0 } });
-  if (req.method === 'POST' && p === '/api/test-napcat') return sendJson(res, 200, { success: true, message: '本地验收服务：Napcat 配置格式正常。', currentBot: { connected: false, verifyMode: true } });
+  if (req.method === 'POST' && p === '/api/test-napcat') {
+    try {
+      const result = await testNapcatConnection();
+      const login = result.loginInfo || {};
+      const userId = login.user_id ?? login.userId ?? login.self_id ?? '';
+      const nickname = login.nickname ?? login.nick ?? '';
+      return sendJson(res, 200, {
+        success: true,
+        message: 'Napcat 长连接测试成功。',
+        currentBot: {
+          connected: true,
+          verifyMode: false,
+          readyStateText: result.snapshot?.readyStateText,
+          selfQqId: userId ? String(userId) : result.snapshot?.selfQqId,
+          nickname,
+          loginInfo: result.loginInfo,
+        },
+      });
+    } catch (error) {
+      return sendJson(res, 502, {
+        success: false,
+        message: error?.message || String(error),
+        currentBot: { connected: false, verifyMode: false },
+      });
+    }
+  }
   if (req.method === 'POST' && p === '/api/test-image') {
     const startedAt = Date.now();
     try {

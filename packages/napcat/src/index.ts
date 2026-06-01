@@ -1,6 +1,7 @@
-﻿import { normalizeError } from '../../core/src/index.js';
+import { normalizeError } from '../../core/src/index.js';
 import type { StructuredLogger } from '../../logger/src/index.js';
 import type { PackageDescriptor, SerializableError } from '@miobot-v2/shared';
+import { WebSocket as WsWebSocket } from 'ws';
 
 export const NAPCAT_PACKAGE: PackageDescriptor = {
   name: '@miobot-v2/napcat',
@@ -516,9 +517,7 @@ export function extractForwardIdFromResponse(response: NapcatActionResponse): st
 
 export function createGlobalWebSocketFactory(): NapcatSocketFactory {
   return (url, options) => {
-    const Ctor = (globalThis as any).WebSocket;
-    if (!Ctor) throw new Error('No WebSocket implementation available; inject socketFactory or install a runtime adapter.');
-    const ws = new Ctor(url, options?.headers ? { headers: options.headers } : undefined);
+    const ws = new WsWebSocket(url, options?.headers ? { headers: options.headers } : undefined);
     return adaptEventTargetWebSocket(ws);
   };
 }
