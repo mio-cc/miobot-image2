@@ -610,7 +610,7 @@ function applyHfPreset(kind: string) {
   } else if (kind === 'asr') {
     Object.assign(f, { pipelineTag: 'automatic-speech-recognition', inference: '', gated: 'false', sort: 'downloads', direction: '-1', onlyChatCompatible: false });
   } else if (kind === 'private') {
-    Object.assign(f, { includePrivate: true, gated: '', inference: '', sort: 'last_modified', direction: '-1' });
+    Object.assign(f, { includePrivate: true, gated: '', inference: '', sort: 'lastModified', direction: '-1' });
   } else if (kind === 'hot') {
     Object.assign(f, { inference: 'warm', sort: 'downloads', direction: '-1', limit: 100 });
   }
@@ -1686,9 +1686,9 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                   <select v-model="config.huggingFace.filters.sort" class="input-field">
                     <option value="downloads">下载量</option>
                     <option value="likes">点赞数</option>
-                    <option value="last_modified">最近更新</option>
-                    <option value="created_at">创建时间</option>
-                    <option value="trending_score">趋势热度</option>
+                    <option value="lastModified">最近更新</option>
+                    <option value="createdAt">创建时间</option>
+                    <option value="trendingScore">趋势热度</option>
                   </select>
                 </div>
                 <div>

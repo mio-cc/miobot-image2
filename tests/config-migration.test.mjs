@@ -211,6 +211,12 @@ test('migration: hugging face config and cached models are normalized', () => {
   assert.deepEqual(result.config.huggingFace.cachedModels[0].tags, ['chat', 'vision']);
 });
 
+test('migration: hugging face legacy snake_case sort names are converted for Hub API', () => {
+  assert.equal(importConfig({ huggingFace: { filters: { sort: 'last_modified' } } }).config.huggingFace.filters.sort, 'lastModified');
+  assert.equal(importConfig({ huggingFace: { filters: { sort: 'created_at' } } }).config.huggingFace.filters.sort, 'createdAt');
+  assert.equal(importConfig({ huggingFace: { filters: { sort: 'trending_score' } } }).config.huggingFace.filters.sort, 'trendingScore');
+});
+
 test('migration: model node can split combined base url and key paste', () => {
   const result = importConfig({
     llm: {

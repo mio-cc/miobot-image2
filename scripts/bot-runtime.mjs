@@ -1511,28 +1511,28 @@ function uniqueStrings(values) {
 function helpText(config) {
   const commands = config.bot?.commands || {};
   const ownerLines = [
-    '- ?????@bot /?????????? Hugging Face ????',
-    '- ?????@bot /q 1.1 ? @bot /?? 1.1???????/??',
-    '- ?????@bot /q hf.1 ? @bot /?? hf.1??? Hugging Face ??',
-    '- ?????@?? /???@?? /???@bot /?? 3?@bot /ttsk?@bot /ttsg',
+    '- 主人命令：@bot /模型：查看普通接口与 Hugging Face 模型编码',
+    '- 主人命令：@bot /q 1.1 或 @bot /切换 1.1：切换普通接口/模型',
+    '- 主人命令：@bot /q hf.1 或 @bot /切换 hf.1：切换 Hugging Face 模型',
+    '- 主人命令：@某人 /拉黑、@某人 /拉白、@bot /撤回 3、@bot /ttsk、@bot /ttsg',
   ];
   return [
-    'Miobot ?????',
-    `- ${firstAlias(commands.genImage) || '??'} <???>?????`,
-    `- ${firstAlias(commands.img2Img) || '???'} <???> + ????????`,
-    `- ${firstAlias(commands.editImage) || '??'} <???> + ???????`,
-    `- ${firstAlias(commands.interrogate) || '??'} + ??????????`,
-    `- ${firstAlias(commands.originalImage) || '??'}?????/????????`,
-    `- ${firstAlias(commands.templateLibrary) || '???'}???????`,
-    `- ${firstAlias(commands.referencedTemplateImage) || '???'} <??>??????????`,
-    `- ${firstAlias(commands.remotePromptSearch) || 'pp'} <???>??? prompts.chat / ????`,
-    `- ${firstAlias(commands.remotePromptSmartImage) || 'spp'}! <??>?????????`,
-    `- ${firstAlias(commands.clear) || '/clear'}???????`,
-    `- ??????? ${firstAlias(commands.toggleEnhance) || '??'} / ${firstAlias(commands.disableEnhance) || '??'} ???????`,
+    'Miobot 可用命令：',
+    `- ${firstAlias(commands.genImage) || '生图'} <提示词>：生成图片`,
+    `- ${firstAlias(commands.img2Img) || '图生图'} <提示词> + 图片：参考图生成`,
+    `- ${firstAlias(commands.editImage) || '改图'} <提示词> + 图片：编辑图片`,
+    `- ${firstAlias(commands.interrogate) || '反推'} + 图片：图片反推提示词`,
+    `- ${firstAlias(commands.originalImage) || '原图'}：回复图片/合并转发后取原图`,
+    `- ${firstAlias(commands.templateLibrary) || '模板库'}：查看本地模板`,
+    `- ${firstAlias(commands.referencedTemplateImage) || '套模板'} <主体>：引用模板消息并生图`,
+    `- ${firstAlias(commands.remotePromptSearch) || 'pp'} <关键词>：搜索 prompts.chat / 本地模板`,
+    `- ${firstAlias(commands.remotePromptSmartImage) || 'spp'}! <描述>：智能套用模板生图`,
+    `- ${firstAlias(commands.clear) || '/clear'}：清空当前会话`,
+    `- 生图命令里可加 ${firstAlias(commands.toggleEnhance) || '润色'} / ${firstAlias(commands.disableEnhance) || '原文'} 控制提示词润色`,
     '',
     ...ownerLines,
     '',
-    '???????? @??????????????',
+    '群聊普通对话需要 @机器人，图片命令可直接触发。',
   ].join('\n');
 }
 

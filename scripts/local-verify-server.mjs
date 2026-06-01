@@ -984,7 +984,7 @@ function buildHfHubUrl(hf = {}, filters = {}) {
   const library = String(filters.library || '').trim();
   const inference = String(filters.inference || '').trim();
   const gated = String(filters.gated || '').trim();
-  const sort = String(filters.sort || 'downloads').trim();
+  const sort = normalizeHfSortForApi(filters.sort);
   const direction = String(filters.direction || '-1').trim() === '1' ? '1' : '-1';
   const limit = Math.max(1, Math.min(200, Number.parseInt(String(filters.limit || '50'), 10) || 50));
   const tags = String(filters.tags || '').split(/[,，、;\s]+/).map((tag) => tag.trim()).filter(Boolean);
@@ -1000,6 +1000,29 @@ function buildHfHubUrl(hf = {}, filters = {}) {
   url.searchParams.set('full', 'false');
   for (const tag of tags) url.searchParams.append('filter', tag);
   return url;
+}
+
+function normalizeHfSortForApi(value) {
+  const raw = String(value || 'downloads').trim();
+  const mapped = {
+    last_modified: 'lastModified',
+    created_at: 'createdAt',
+    trending_score: 'trendingScore',
+  }[raw] || raw;
+  return ['downloads', 'likes', 'lastModified', 'createdAt', 'trendingScore'].includes(mapped) ? mapped : 'downloads';
+}
+
+async function requestHfHubUrl(url, headers, timeoutMs) {
+  const response = await fetch(url, {
+    method: 'GET',
+    headers,
+    signal: AbortSignal.timeout(Math.max(5000, Number(timeoutMs) || 120000)),
+  });
+  const contentType = response.headers.get('content-type') || '';
+  const payload = contentType.includes('application/json')
+    ? await response.json().catch(() => ({}))
+    : await response.text().catch(() => '');
+  return { response, payload };
 }
 
 async function fetchHuggingFaceHubModels(hf = {}, filters = {}, force = false) {
@@ -1020,15 +1043,14 @@ async function fetchHuggingFaceHubModels(hf = {}, filters = {}, force = false) {
   const headers = { Accept: 'application/json' };
   const token = String(hf.token || '').trim();
   if (token) headers.Authorization = `Bearer ${token}`;
-  const response = await fetch(url, {
-    method: 'GET',
-    headers,
-    signal: AbortSignal.timeout(Math.max(5000, Number(hf.timeoutMs) || 120000)),
-  });
-  const contentType = response.headers.get('content-type') || '';
-  const payload = contentType.includes('application/json')
-    ? await response.json().catch(() => ({}))
-    : await response.text().catch(() => '');
+  let { response, payload } = await requestHfHubUrl(url, headers, hf.timeoutMs);
+  if (!response.ok && response.status === 400 && String(url.searchParams.get('sort') || '') !== 'downloads') {
+    const details = typeof payload === 'string' ? payload : payload?.error || payload?.message || '';
+    if (/sort/i.test(String(details))) {
+      url.searchParams.set('sort', 'downloads');
+      ({ response, payload } = await requestHfHubUrl(url, headers, hf.timeoutMs));
+    }
+  }
   if (!response.ok) {
     const details = typeof payload === 'string'
       ? payload.slice(0, 300)
