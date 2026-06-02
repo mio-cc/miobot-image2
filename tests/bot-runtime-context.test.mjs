@@ -11,6 +11,7 @@ import {
   extractMessageText,
   parseOwnerCommand,
   parseRemotePromptInput,
+  replyFailureTextWithoutTts,
   renderModelCodeList,
   buildTtsPreprocessMessages,
   renderTtsPreprocessPrompt,
@@ -267,6 +268,27 @@ test('bot runtime: tts preprocess prompt renders placeholders for upstream model
   assert.deepEqual(messages, [
     { role: 'system', content: '只输出语音文本：短回复' },
     { role: 'user', content: '短回复' },
+  ]);
+});
+
+test('bot runtime: failure replies bypass policy tts wrapper', async () => {
+  const calls = [];
+  const baseReply = {
+    async replyText(context, text, strategy) {
+      calls.push({ context, text, strategy });
+      return { success: true, kind: 'text', strategy, attempts: [] };
+    },
+  };
+  const context = { chatType: 'group', groupId: '100', userId: '200', replyToMessageId: 'm1' };
+  const result = await replyFailureTextWithoutTts(baseReply, context, new Error('stream error: stream ID 7; INTERNAL_ERROR'), 'quote');
+
+  assert.equal(result.success, true);
+  assert.deepEqual(calls, [
+    {
+      context,
+      text: '处理失败：stream error: stream ID 7; INTERNAL_ERROR',
+      strategy: 'quote',
+    },
   ]);
 });
 

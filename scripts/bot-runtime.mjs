@@ -641,6 +641,15 @@ function createPolicyReply(baseReply, adapter, config) {
   };
 }
 
+export function formatRuntimeFailureMessage(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return `处理失败：${message}`;
+}
+
+export async function replyFailureTextWithoutTts(baseReply, context, error, strategy = 'quote') {
+  return baseReply.replyText(context, formatRuntimeFailureMessage(error), strategy);
+}
+
 async function replyTextWithPolicies(baseReply, adapter, config, context, text, strategy) {
   const value = String(text || '').trim();
   if (!value) return baseReply.replyText(context, text, strategy);
@@ -915,7 +924,8 @@ async function handleIncoming(adapter, event) {
   if (decision.kind === 'ignored') return;
 
   const trackedAdapter = createTrackedNapcatClient(adapter, config);
-  const reply = createPolicyReply(createReply(trackedAdapter, config), trackedAdapter, config);
+  const baseReply = createReply(trackedAdapter, config);
+  const reply = createPolicyReply(baseReply, trackedAdapter, config);
   const context = {
     chatType: message.chatType,
     groupId: message.groupId,
@@ -938,8 +948,13 @@ async function handleIncoming(adapter, event) {
       await handleChat(config, reply, context, withReferenceContext(decision.args, message));
     }
   } catch (error) {
-    logger.error('消息处理失败', { error: normalizeError(error), decision });
-    await reply.replyText(context, `处理失败：${error instanceof Error ? error.message : String(error)}`, 'quote');
+    const normalized = normalizeError(error);
+    logger.error('消息处理失败', { error: normalized, decision });
+    try {
+      await replyFailureTextWithoutTts(baseReply, context, error, 'quote');
+    } catch (replyError) {
+      logger.error('发送失败提示失败', { error: normalizeError(replyError), originalError: normalized, decision });
+    }
   }
 }
 

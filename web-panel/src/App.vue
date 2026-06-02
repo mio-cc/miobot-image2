@@ -1,6 +1,6 @@
-﻿// @START [TASK-001]: 顶级暗色玻璃拟态UI与丝滑响应式交互重构
+// @START [TASK-001]: 顶级暗色玻璃拟态UI与丝滑响应式交互重构
 <script setup lang="ts">
-import { ref, onMounted, watch, onBeforeUnmount } from 'vue';
+import { ref, onMounted, watch, onBeforeUnmount, nextTick } from 'vue';
 import axios from 'axios';
 
 const API_BASE = `${window.location.origin}/api`;
@@ -76,6 +76,9 @@ const logStats = ref<any>(null);
 const logAutoRefresh = ref(true);
 const logTimer = ref<number | null>(null);
 const logCopyStatus = ref('');
+const copyFallbackText = ref('');
+const copyFallbackTitle = ref('');
+const copyFallbackTextarea = ref<HTMLTextAreaElement | null>(null);
 const canvasLogEntries = ref<LogEntry[]>([]);
 const canvasLogLoading = ref(false);
 const canvasLogError = ref('');
@@ -842,28 +845,69 @@ function formatLogEntry(entry: LogEntry) {
   ].filter(Boolean).join('\n');
 }
 
+async function writeClipboardText(text: string) {
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.top = '0';
+  textarea.style.left = '0';
+  textarea.style.width = '1px';
+  textarea.style.height = '1px';
+  textarea.style.opacity = '0.01';
+  textarea.style.pointerEvents = 'none';
+  textarea.style.zIndex = '-1';
+  document.body.appendChild(textarea);
+  textarea.focus({ preventScroll: true });
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+  const copied = document.execCommand('copy');
+  document.body.removeChild(textarea);
+  if (!copied) throw new Error('当前浏览器拦截了自动复制');
+}
+
+async function openManualCopyFallback(text: string, label: string) {
+  copyFallbackTitle.value = label;
+  copyFallbackText.value = text;
+  await nextTick();
+  selectCopyFallbackText();
+}
+
+function selectCopyFallbackText() {
+  const textarea = copyFallbackTextarea.value;
+  if (!textarea) return;
+  textarea.focus({ preventScroll: true });
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+}
+
+function closeCopyFallback() {
+  copyFallbackText.value = '';
+  copyFallbackTitle.value = '';
+}
+
 async function copyText(text: string, label = '已复制') {
+  const value = String(text || '');
+  if (!value.trim()) {
+    showToast('没有可复制的日志内容', 'info');
+    return;
+  }
   try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-    } else {
-      const textarea = document.createElement('textarea');
-      textarea.value = text;
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-    }
+    await writeClipboardText(value);
+    closeCopyFallback();
     logCopyStatus.value = label;
     showToast(label, 'success');
     window.setTimeout(() => {
       if (logCopyStatus.value === label) logCopyStatus.value = '';
     }, 1800);
   } catch (e: any) {
-    logCopyStatus.value = `复制失败: ${e.message || e}`;
-    showToast(`复制失败: ${e.message || e}`, 'error');
+    await openManualCopyFallback(value, label);
+    logCopyStatus.value = '浏览器禁止自动复制，已打开手动复制框';
+    showToast('浏览器禁止自动复制，长按/全选手动复制', 'info');
   }
 }
 
@@ -2769,17 +2813,22 @@ async function generateTemplateTitle(tpl: any, idx: number) {
             </div>
 
             <!-- Canvas log configuration -->
-            <div class="card p-5 canvas-log-card">
-              <div class="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between mb-4">
-                <div>
-                  <h3 class="text-base font-bold text-white">📜 独立画布日志管理器</h3>
-                  <p class="text-zinc-500 text-xs mt-0.5" v-if="canvasLogStats">
-                    内存日志: <code class="text-cyan-300 font-mono">{{ canvasLogStats.memoryTotal ?? canvasLogStats.total }}/{{ canvasLogStats.maxMemoryEntries }}</code> 条 · 总数: <code class="text-cyan-300 font-mono">{{ canvasLogStats.total }}</code> 条 · 日志文件: <code class="text-zinc-400 font-mono">{{ canvasLogStats.logFile }}</code>
-                  </p>
-                  <p class="text-zinc-500 text-xs mt-0.5" v-else>记录并显示画布专属的接口通信、生图渲染、反推调用记录</p>
+            <div class="card p-5 canvas-log-card log-panel-card log-panel-card--canvas">
+              <div class="log-panel-head">
+                <div class="log-panel-title">
+                  <span class="log-panel-icon">画</span>
+                  <div>
+                    <h3>独立画布日志管理器</h3>
+                    <p v-if="canvasLogStats">
+                      <span>内存 <code>{{ canvasLogStats.memoryTotal ?? canvasLogStats.total }}/{{ canvasLogStats.maxMemoryEntries }}</code></span>
+                      <span>总数 <code>{{ canvasLogStats.total }}</code></span>
+                      <span class="log-file-path">文件 <code>{{ canvasLogStats.logFile }}</code></span>
+                    </p>
+                    <p v-else>记录画布接口通信、生图渲染、反推调用与图库同步状态。</p>
+                  </div>
                 </div>
-                
-                <div class="canvas-log-controls grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-[120px_120px_1fr_auto_auto_auto] gap-3 xl:min-w-[760px]">
+
+                <div class="log-controls canvas-log-controls">
                   <div>
                     <label class="label-sm">级别</label>
                     <select v-model="canvasLogLevel" @change="fetchCanvasLogs()" class="input-field font-mono">
@@ -2799,26 +2848,29 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                       <option :value="1000">1000</option>
                     </select>
                   </div>
-                  <div>
+                  <div class="log-search-field">
                     <label class="label-sm">搜索关键字</label>
                     <input v-model="canvasLogSearch" @keyup.enter="fetchCanvasLogs()" class="input-field" placeholder="输入范围或错误信息..." />
                   </div>
-                  <button @click="fetchCanvasLogs()" :disabled="canvasLogLoading" class="btn-outline text-xs xl:self-end h-[38px] px-3.5 flex items-center justify-center">
-                    {{ canvasLogLoading ? '⏳...' : '刷新' }}
+                  <button @click="fetchCanvasLogs()" :disabled="canvasLogLoading" class="btn-outline log-touch-button">
+                    {{ canvasLogLoading ? '读取中' : '刷新' }}
                   </button>
-                  <button @click="copyCanvasVisibleLogs" :disabled="!canvasLogEntries.length" class="btn-outline text-xs xl:self-end h-[38px] px-3.5 flex items-center justify-center">
-                    复制
+                  <button @click="copyCanvasVisibleLogs" :disabled="!canvasLogEntries.length" class="btn-outline log-touch-button log-touch-button--copy">
+                    复制当前
                   </button>
-                  <button @click="clearCanvasLogs" :disabled="canvasLogLoading" class="btn-danger text-xs xl:self-end h-[38px] px-3.5 flex items-center justify-center">
+                  <button @click="clearCanvasLogs" :disabled="canvasLogLoading" class="btn-danger log-touch-button">
                     清空
                   </button>
                 </div>
               </div>
 
               <!-- Canvas log switch -->
-              <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-4xl mt-5 pt-4 border-t border-white/5">
-                <label class="flex items-center justify-between gap-3 rounded-xl border border-white/5 bg-zinc-950/30 px-3.5 py-2.5 cursor-pointer">
-                  <span class="text-xs text-zinc-300">开启画布日志记录</span>
+              <div class="log-settings-grid">
+                <label class="log-toggle-card">
+                  <span>
+                    <strong>画布日志记录</strong>
+                    <em>{{ config.canvas.logs.enabled ? '正在写入' : '已暂停' }}</em>
+                  </span>
                   <input type="checkbox" v-model="config.canvas.logs.enabled" class="rounded accent-indigo-500 h-4.5 w-4.5" />
                 </label>
                 <div>
@@ -2837,32 +2889,33 @@ async function generateTemplateTitle(tpl: any, idx: number) {
               </div>
 
               <!-- Canvas Log List Terminal -->
-              <div class="mt-4 border border-white/5 rounded-2xl overflow-hidden bg-[#030508] shadow-inner">
-                <div class="px-5 py-3.5 border-b border-white/5 bg-zinc-950/60 flex items-center justify-between">
-                  <span class="text-xs font-semibold text-zinc-300 font-mono">日志输出</span>
-                  <span class="text-[10px] text-zinc-500 font-mono">{{ canvasLogEntries.length }} 条符合过滤条件</span>
+              <div class="log-terminal log-terminal--compact">
+                <div class="log-terminal__bar">
+                  <div>
+                    <span class="log-terminal__title">画布日志输出</span>
+                    <small>{{ canvasLogEntries.length }} 条符合过滤条件</small>
+                  </div>
+                  <button @click="copyCanvasVisibleLogs" :disabled="!canvasLogEntries.length" class="log-copy-button log-copy-button--bar">复制全部</button>
                 </div>
-                
-                <div v-if="canvasLogLoading && !canvasLogEntries.length" class="p-8 text-xs text-zinc-500 text-center font-mono animate-pulse">
+
+                <div v-if="canvasLogLoading && !canvasLogEntries.length" class="log-empty-state animate-pulse">
                   正在读取日志缓冲区...
                 </div>
-                <div v-else-if="!canvasLogEntries.length" class="p-8 text-xs text-zinc-600 text-center font-mono">
+                <div v-else-if="!canvasLogEntries.length" class="log-empty-state">
                   当前没有画布日志记录。
                 </div>
-                <div v-else class="max-h-[360px] overflow-y-auto font-mono">
-                  <div v-for="entry in canvasLogEntries" :key="entry.id" class="border-b border-white/5 px-5 py-3 text-[11px] leading-relaxed hover:bg-white/[0.01]">
-                    <div class="flex flex-wrap items-center gap-2 mb-1.5">
-                      <span :class="['text-[9px] px-1.5 py-0.5 rounded-md font-extrabold uppercase border', levelBadgeClass(entry.level)]">{{ logLevelText(entry.level) }}</span>
-                      <span class="text-zinc-500 font-mono text-[10px]">{{ entry.timestamp }}</span>
-                      <span class="text-cyan-400 font-semibold font-mono">[{{ entry.scope }}]</span>
-                      <span class="text-zinc-600 text-[10px]">#{{ entry.id }}</span>
-                      <button @click="copyLogEntry(entry)" class="text-[9px] rounded border border-white/5 px-2 py-0.5 text-zinc-400 hover:text-white hover:bg-white/5 transition-colors ml-auto font-sans">
-                        复制
-                      </button>
-                    </div>
-                    <div class="text-zinc-200 whitespace-pre-wrap break-all">{{ entry.message }}</div>
-                    <pre v-if="formatLogDetails(entry.details)" class="mt-2 max-h-56 overflow-auto rounded-lg border border-white/5 bg-black/40 p-3 text-[10px] text-zinc-400 whitespace-pre-wrap break-all leading-normal">{{ formatLogDetails(entry.details) }}</pre>
-                  </div>
+                <div v-else class="log-terminal__list log-terminal__list--compact">
+                  <article v-for="entry in canvasLogEntries" :key="entry.id" class="log-entry log-entry--compact">
+                    <header class="log-entry__meta">
+                      <span :class="['log-level-badge', levelBadgeClass(entry.level)]">{{ logLevelText(entry.level) }}</span>
+                      <time>{{ entry.timestamp }}</time>
+                      <span class="log-entry__scope">{{ entry.scope }}</span>
+                      <span class="log-entry__id">#{{ entry.id }}</span>
+                      <button @click="copyLogEntry(entry)" class="log-copy-button">复制本条</button>
+                    </header>
+                    <p class="log-entry__message selectable-log-text">{{ entry.message }}</p>
+                    <pre v-if="formatLogDetails(entry.details)" class="log-entry__details selectable-log-text">{{ formatLogDetails(entry.details) }}</pre>
+                  </article>
                 </div>
               </div>
 
@@ -2952,17 +3005,22 @@ async function generateTemplateTitle(tpl: any, idx: number) {
 
           <!-- ═══ Tab: Logs (运行日志) ═══ -->
           <div v-show="currentPage === 'logs'" class="space-y-6 animate-fadein">
-            <div class="card p-5">
-              <div class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-                <div>
-                  <h3 class="text-base font-bold text-white">📜 机器人运行系统日志</h3>
-                  <p class="text-zinc-500 text-xs mt-0.5" v-if="logStats">
-                    内存日志: <code class="text-indigo-400 font-mono">{{ logStats.memoryTotal ?? logStats.total }}/{{ logStats.maxMemoryEntries }}</code> 条 · 总数: <code class="text-indigo-400 font-mono">{{ logStats.total }}</code> 条 · 持久文件: <code class="text-zinc-400 font-mono">{{ logStats.logFile }}</code>
-                  </p>
-                  <p class="text-zinc-500 text-xs mt-0.5" v-else>正在监控实时系统运行日志...</p>
+            <div class="card p-5 log-panel-card log-panel-card--system">
+              <div class="log-panel-head">
+                <div class="log-panel-title">
+                  <span class="log-panel-icon">志</span>
+                  <div>
+                    <h3>机器人运行系统日志</h3>
+                    <p v-if="logStats">
+                      <span>内存 <code>{{ logStats.memoryTotal ?? logStats.total }}/{{ logStats.maxMemoryEntries }}</code></span>
+                      <span>总数 <code>{{ logStats.total }}</code></span>
+                      <span class="log-file-path">文件 <code>{{ logStats.logFile }}</code></span>
+                    </p>
+                    <p v-else>正在监控实时系统运行日志与机器人消息处理链路。</p>
+                  </div>
                 </div>
-                
-                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-[120px_120px_1fr_auto_auto_auto_auto] gap-3 xl:min-w-[860px]">
+
+                <div class="log-controls log-controls--system">
                   <div>
                     <label class="label-sm">级别</label>
                     <select v-model="logLevel" @change="fetchLogs()" class="input-field font-mono">
@@ -2982,74 +3040,69 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                       <option :value="1000">1000</option>
                     </select>
                   </div>
-                  <div>
+                  <div class="log-search-field">
                     <label class="label-sm">全文匹配检索</label>
                     <input v-model="logSearch" @keyup.enter="fetchLogs()" class="input-field" placeholder="模糊检索范围 / 报错词..." />
                   </div>
                   
-                  <label class="flex items-center gap-1.5 text-xs font-semibold text-zinc-400 cursor-pointer xl:pb-2.5">
+                  <label class="log-auto-refresh">
                     <input type="checkbox" v-model="logAutoRefresh" class="rounded accent-indigo-500 h-4.5 w-4.5" />
-                    自动刷新
+                    <span>自动刷新</span>
                   </label>
                   
-                  <button @click="fetchLogs()" :disabled="logLoading" class="btn-outline text-xs xl:self-end h-[38px] px-3.5 flex items-center justify-center">
-                    {{ logLoading ? '⏳...' : '刷新' }}
+                  <button @click="fetchLogs()" :disabled="logLoading" class="btn-outline log-touch-button">
+                    {{ logLoading ? '读取中' : '刷新' }}
                   </button>
-                  <button @click="copyVisibleLogs" :disabled="!logEntries.length" class="btn-outline text-xs xl:self-end h-[38px] px-3.5 flex items-center justify-center">
+                  <button @click="copyVisibleLogs" :disabled="!logEntries.length" class="btn-outline log-touch-button log-touch-button--copy">
                     复制当前
                   </button>
-                  <button @click="clearLogs" :disabled="logLoading" class="btn-danger text-xs xl:self-end h-[38px] px-3.5 flex items-center justify-center">
+                  <button @click="clearLogs" :disabled="logLoading" class="btn-danger log-touch-button">
                     清空
                   </button>
                 </div>
               </div>
-              <p v-if="logError" class="text-rose-400 text-xs mt-3 animate-fadein">❌ {{ logError }}</p>
-              <p v-if="logCopyStatus" class="text-emerald-400 text-xs mt-3 animate-fadein">{{ logCopyStatus }}</p>
+              <p v-if="logError" class="log-inline-status log-inline-status--error animate-fadein">{{ logError }}</p>
+              <p v-if="logCopyStatus" class="log-inline-status log-inline-status--success animate-fadein">{{ logCopyStatus }}</p>
             </div>
 
             <!-- Terminal block for System logs -->
-            <div class="card overflow-hidden bg-[#030508] border border-white/5 shadow-2xl">
-              <div class="px-5 py-3.5 border-b border-white/5 bg-zinc-950/60 flex items-center justify-between">
-                <span class="text-xs font-semibold text-zinc-300 font-mono">日志输出</span>
-                <span class="text-[10px] text-zinc-500 font-mono">{{ logEntries.length }} 级别记录</span>
+            <div class="card log-terminal log-terminal--system">
+              <div class="log-terminal__bar">
+                <div>
+                  <span class="log-terminal__title">系统日志输出</span>
+                  <small>{{ logEntries.length }} 条级别记录</small>
+                </div>
+                <button @click="copyVisibleLogs" :disabled="!logEntries.length" class="log-copy-button log-copy-button--bar">复制全部</button>
               </div>
               
-              <div v-if="logLoading && !logEntries.length" class="p-12 text-xs text-zinc-500 text-center font-mono animate-pulse">
+              <div v-if="logLoading && !logEntries.length" class="log-empty-state animate-pulse">
                 正在连接系统日志缓冲区...
               </div>
-              <div v-else-if="!logEntries.length" class="p-12 text-xs text-zinc-600 text-center font-mono">
+              <div v-else-if="!logEntries.length" class="log-empty-state">
                 当前日志流为空，等待机器人交互。
               </div>
-              <div v-else class="max-h-[500px] overflow-y-auto font-mono">
-                <div v-for="entry in logEntries" :key="entry.id" class="border-b border-white/5 px-5 py-3.5 hover:bg-white/[0.01] transition-colors">
-                  <div class="grid grid-cols-1 xl:grid-cols-[1fr_minmax(360px,1.2fr)] gap-4">
-                    
-                    <div class="min-w-0">
-                      <div class="flex flex-wrap items-center gap-2 mb-2">
-                        <span :class="['text-[9px] px-1.5 py-0.5 rounded-md font-extrabold uppercase border', levelBadgeClass(entry.level)]">{{ logLevelText(entry.level) }}</span>
-                        <span class="text-zinc-500 text-[10px]">{{ entry.timestamp }}</span>
-                        <span class="text-cyan-400 font-semibold">[{{ entry.scope }}]</span>
-                        <span class="text-zinc-600 text-[10px]">#{{ entry.id }}</span>
-                        <button @click="copyLogEntry(entry)" class="text-[9px] rounded border border-white/5 px-2 py-0.5 text-zinc-400 hover:text-white hover:bg-white/5 font-sans transition-colors">
-                          复制本条
-                        </button>
-                      </div>
-                      <div class="text-zinc-200 text-xs leading-relaxed whitespace-pre-wrap break-all">{{ entry.message }}</div>
-                    </div>
-                    
-                    <!-- Details panel -->
-                    <div v-if="formatLogDetails(entry.details)" class="min-w-0 rounded-xl border border-white/5 bg-black/40">
-                      <div class="flex items-center justify-between gap-2 border-b border-white/5 px-3 py-2">
-                        <span class="text-[10px] font-bold text-zinc-500 font-mono">原始堆栈 / 结构化数据</span>
-                        <button @click="copyLogDetails(entry)" class="text-[9px] rounded border border-white/5 px-2 py-0.5 text-zinc-300 hover:text-white hover:bg-white/5 font-sans transition-colors">
-                          复制详情
-                        </button>
-                      </div>
-                      <pre class="max-h-56 overflow-auto whitespace-pre-wrap break-all p-3 text-[10px] leading-relaxed text-zinc-400">{{ formatLogDetails(entry.details) }}</pre>
-                    </div>
-                    
+              <div v-else class="log-terminal__list">
+                <article v-for="entry in logEntries" :key="entry.id" class="log-entry">
+                  <div class="log-entry__main">
+                    <header class="log-entry__meta">
+                      <span :class="['log-level-badge', levelBadgeClass(entry.level)]">{{ logLevelText(entry.level) }}</span>
+                      <time>{{ entry.timestamp }}</time>
+                      <span class="log-entry__scope">{{ entry.scope }}</span>
+                      <span class="log-entry__id">#{{ entry.id }}</span>
+                      <button @click="copyLogEntry(entry)" class="log-copy-button">复制本条</button>
+                    </header>
+                    <p class="log-entry__message selectable-log-text">{{ entry.message }}</p>
                   </div>
-                </div>
+
+                  <!-- Details panel -->
+                  <div v-if="formatLogDetails(entry.details)" class="log-entry__details-panel">
+                    <div class="log-entry__details-head">
+                      <span>原始堆栈 / 结构化数据</span>
+                      <button @click="copyLogDetails(entry)" class="log-copy-button">复制详情</button>
+                    </div>
+                    <pre class="log-entry__details selectable-log-text">{{ formatLogDetails(entry.details) }}</pre>
+                  </div>
+                </article>
               </div>
             </div>
           </div>
@@ -3079,6 +3132,40 @@ async function generateTemplateTitle(tpl: any, idx: number) {
 
         </div>
       </main>
+    </div>
+
+    <div v-if="copyFallbackText" class="copy-fallback-overlay" role="dialog" aria-modal="true" aria-labelledby="manual-copy-title" @click.self="closeCopyFallback">
+      <section class="copy-fallback-card">
+        <div class="copy-fallback-card__header">
+          <div>
+            <p class="copy-fallback-kicker">移动端手动复制</p>
+            <h3 id="manual-copy-title">自动复制被浏览器拦截</h3>
+          </div>
+          <button type="button" class="copy-fallback-close" aria-label="关闭手动复制窗口" @click="closeCopyFallback">×</button>
+        </div>
+        <p class="copy-fallback-help">
+          {{ copyFallbackTitle }}。已为你选中日志文本。手机端如果按钮复制无效，请长按下方内容，选择全选并复制。
+        </p>
+        <textarea
+          ref="copyFallbackTextarea"
+          class="copy-fallback-textarea"
+          :value="copyFallbackText"
+          readonly
+          @focus="selectCopyFallbackText"
+          @click="selectCopyFallbackText"
+        ></textarea>
+        <div class="copy-fallback-actions">
+          <button type="button" class="btn-outline" @click="selectCopyFallbackText">重新选中</button>
+          <button type="button" class="btn-primary" @click="closeCopyFallback">完成</button>
+        </div>
+      </section>
+    </div>
+
+    <div v-if="toasts.length" class="toast-container" aria-live="polite">
+      <div v-for="toast in toasts" :key="toast.id" :class="['custom-toast', `custom-toast--${toast.type}`]">
+        <span>{{ toast.message }}</span>
+        <div class="toast-progress"></div>
+      </div>
     </div>
   </div>
 </template>
