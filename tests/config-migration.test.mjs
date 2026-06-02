@@ -144,6 +144,16 @@ test('migration: bot owner and tts settings are normalized', () => {
         speed: 9,
         volume: -99,
         latency: 'turbo',
+        preprocess: {
+          enabled: 'true',
+          nodeIndex: 99,
+          model: ' tts-translator ',
+          timeoutMs: 1,
+          delayMs: 999999,
+          maxOutputChars: 999999,
+          promptTemplate: '处理：{{text}}',
+          fallbackToOriginal: 'false',
+        },
       },
     },
   });
@@ -161,6 +171,14 @@ test('migration: bot owner and tts settings are normalized', () => {
   assert.equal(result.config.bot.tts.speed, 2);
   assert.equal(result.config.bot.tts.volume, -20);
   assert.equal(result.config.bot.tts.latency, 'normal');
+  assert.equal(result.config.bot.tts.preprocess.enabled, true);
+  assert.equal(result.config.bot.tts.preprocess.nodeIndex, 0);
+  assert.equal(result.config.bot.tts.preprocess.model, 'tts-translator');
+  assert.equal(result.config.bot.tts.preprocess.timeoutMs, 5000);
+  assert.equal(result.config.bot.tts.preprocess.delayMs, 30000);
+  assert.equal(result.config.bot.tts.preprocess.maxOutputChars, 8000);
+  assert.equal(result.config.bot.tts.preprocess.promptTemplate, '处理：{{text}}');
+  assert.equal(result.config.bot.tts.preprocess.fallbackToOriginal, false);
 });
 
 test('migration: hugging face config and cached models are normalized', () => {

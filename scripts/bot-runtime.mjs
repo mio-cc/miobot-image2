@@ -27,6 +27,7 @@ const logger = createLogger({
   level: process.env.MIOBOT_LOG_LEVEL || 'info',
   sinks: [new ConsoleLogSink(), new JsonFileLogSink(systemLogPath)],
 });
+const DEFAULT_TTS_PREPROCESS_PROMPT = '你是文本转语音前置处理助手。请把机器人回复翻译/改写成适合语音合成的文本，并按需要穿插语音标签。要求：1. 保留原意，不额外扩写；2. 标签必须是语音模型可直接识别的文本；3. 只输出最终要送入语音 API 的文本，不要解释，不要 Markdown。待处理文本：{{text}}';
 
 const DIRECT_GROUP_COMMANDS = [
   'help',
@@ -228,6 +229,24 @@ function renderRuntimeTemplate(template, values) {
     const value = values[key];
     return value === undefined || value === null ? '' : String(value);
   });
+}
+
+export function renderTtsPreprocessPrompt(template, text) {
+  const value = String(text || '').trim();
+  return renderRuntimeTemplate(template || DEFAULT_TTS_PREPROCESS_PROMPT, {
+    text: value,
+    rawText: value,
+    input: value,
+    replyText: value,
+  });
+}
+
+export function buildTtsPreprocessMessages(template, text) {
+  const value = String(text || '').trim();
+  return [
+    { role: 'system', content: renderTtsPreprocessPrompt(template, value) },
+    { role: 'user', content: value },
+  ];
 }
 
 function createRouter(config, botId) {
@@ -628,13 +647,16 @@ async function replyTextWithPolicies(baseReply, adapter, config, context, text, 
 
   if (shouldUseTts(config, value)) {
     try {
-      const audio = await synthesizeSpeech(config.bot.tts, value);
+      const ttsInput = await prepareTtsText(config, value);
+      const audio = await synthesizeSpeech(config.bot.tts, ttsInput.text);
       const result = context.chatType === 'group'
         ? await adapter.sendGroupRecord(context.groupId, audio.file, strategy === 'quote' ? context.replyToMessageId : undefined)
         : await adapter.sendPrivateRecord(context.userId, audio.file);
       logger.info('文本转语音发送完成', {
         chatType: context.chatType,
         chars: value.length,
+        ttsChars: ttsInput.text.length,
+        preprocessed: Boolean(ttsInput.preprocessed),
         provider: config.bot.tts.provider,
         format: audio.format,
       });
@@ -693,6 +715,63 @@ function shouldUseTts(config, text) {
   if (!String(tts.apiKey || '').trim()) return false;
   if (tts.provider === 'fish-audio' && !String(tts.voiceId || '').trim()) return false;
   return true;
+}
+
+async function prepareTtsText(config, text) {
+  const value = String(text || '').trim();
+  const preprocess = config.bot?.tts?.preprocess || {};
+  if (!preprocess.enabled) return { text: value, preprocessed: false };
+
+  const model = String(preprocess.model || '').trim();
+  if (!model || model === 'none') return { text: value, preprocessed: false, skipped: 'model' };
+
+  const timeoutMs = Math.max(5000, Math.trunc(Number(preprocess.timeoutMs || 60000)));
+  const delayMs = Math.max(0, Math.min(30000, Math.trunc(Number(preprocess.delayMs || 0))));
+  const maxOutputChars = Math.max(1, Math.min(8000, Math.trunc(Number(preprocess.maxOutputChars || 1000))));
+  const startedAt = Date.now();
+
+  try {
+    const adapter = createLlm(config, preprocess.nodeIndex ?? config.llm?.chatNodeIndex, timeoutMs, 'tts-preprocess');
+    const result = await adapter.createText({
+      model,
+      timeoutMs,
+      reasoningEffort: config.llm?.reasoningEffort,
+      messages: buildTtsPreprocessMessages(preprocess.promptTemplate, value),
+    });
+    let processed = extractTtsPreprocessText(result.text);
+    if (processed.length > maxOutputChars) processed = processed.slice(0, maxOutputChars).trim();
+    if (!processed) throw new Error('TTS preprocess returned empty text');
+    if (delayMs > 0) await sleep(delayMs);
+    logger.info('TTS 前置翻译/标签处理完成', {
+      model,
+      nodeIndex: preprocess.nodeIndex,
+      inputChars: value.length,
+      outputChars: processed.length,
+      durationMs: Date.now() - startedAt,
+      delayMs,
+    });
+    return { text: processed, preprocessed: true, delayMs, durationMs: Date.now() - startedAt };
+  } catch (error) {
+    logger.warn('TTS 前置翻译/标签处理失败', {
+      model,
+      nodeIndex: preprocess.nodeIndex,
+      fallbackToOriginal: preprocess.fallbackToOriginal !== false,
+      error: normalizeError(error),
+    });
+    if (preprocess.fallbackToOriginal !== false) return { text: value, preprocessed: false, failed: true };
+    throw error;
+  }
+}
+
+function extractTtsPreprocessText(value) {
+  const cleaned = cleanupModelText(value);
+  if (!cleaned) return '';
+  try {
+    const parsed = JSON.parse(cleaned);
+    const fromJson = parsed?.ttsText ?? parsed?.voiceText ?? parsed?.speechText ?? parsed?.text ?? parsed?.output ?? parsed?.result;
+    if (fromJson) return String(fromJson).trim();
+  } catch {}
+  return cleaned.trim();
 }
 
 async function synthesizeSpeech(tts, text) {

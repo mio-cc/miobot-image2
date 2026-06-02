@@ -12,6 +12,8 @@ import {
   parseOwnerCommand,
   parseRemotePromptInput,
   renderModelCodeList,
+  buildTtsPreprocessMessages,
+  renderTtsPreprocessPrompt,
   resolveReferencedMessage,
   splitReplyText,
   withReferenceContext,
@@ -255,6 +257,17 @@ test('bot runtime: owner model list and switch commands parse', () => {
     }, '10000'),
     { command: 'switchModel', code: '1.2' },
   );
+});
+
+test('bot runtime: tts preprocess prompt renders placeholders for upstream model', () => {
+  const prompt = renderTtsPreprocessPrompt('请翻译并加入语气标签：{{text}} / {{replyText}}', '你好，世界');
+  assert.equal(prompt, '请翻译并加入语气标签：你好，世界 / 你好，世界');
+
+  const messages = buildTtsPreprocessMessages('只输出语音文本：{{input}}', '短回复');
+  assert.deepEqual(messages, [
+    { role: 'system', content: '只输出语音文本：短回复' },
+    { role: 'user', content: '短回复' },
+  ]);
 });
 
 test('bot runtime: model code catalog orders ordinary nodes before hugging face and switch updates draft', () => {

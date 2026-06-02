@@ -265,6 +265,16 @@ function ensureCanvasConfig() {
       speed: 1,
       volume: 0,
       latency: 'normal',
+      preprocess: {
+        enabled: false,
+        nodeIndex: config.value.llm?.chatNodeIndex ?? 0,
+        model: config.value.llm?.chatModel || 'gpt-4o-mini',
+        timeoutMs: 60000,
+        delayMs: 0,
+        maxOutputChars: 1000,
+        promptTemplate: defaultPrompts.value?.ttsPreprocessPromptTemplate || '你是文本转语音前置处理助手。请把机器人回复翻译/改写成适合语音合成的文本，并按需要穿插语音标签。只输出最终要送入语音 API 的文本，不要解释，不要 Markdown。待处理文本：{{text}}',
+        fallbackToOriginal: true,
+      },
     };
   }
   config.value.bot.tts.provider ||= 'fish-audio';
@@ -277,6 +287,15 @@ function ensureCanvasConfig() {
   config.value.bot.tts.speed ??= 1;
   config.value.bot.tts.volume ??= 0;
   config.value.bot.tts.latency ||= 'normal';
+  if (!config.value.bot.tts.preprocess) config.value.bot.tts.preprocess = {};
+  config.value.bot.tts.preprocess.enabled ??= false;
+  config.value.bot.tts.preprocess.nodeIndex ??= config.value.llm?.chatNodeIndex ?? 0;
+  config.value.bot.tts.preprocess.model ||= config.value.llm?.chatModel || 'gpt-4o-mini';
+  config.value.bot.tts.preprocess.timeoutMs ??= 60000;
+  config.value.bot.tts.preprocess.delayMs ??= 0;
+  config.value.bot.tts.preprocess.maxOutputChars ??= 1000;
+  config.value.bot.tts.preprocess.promptTemplate ||= defaultPrompts.value?.ttsPreprocessPromptTemplate || '你是文本转语音前置处理助手。请把机器人回复翻译/改写成适合语音合成的文本，并按需要穿插语音标签。只输出最终要送入语音 API 的文本，不要解释，不要 Markdown。待处理文本：{{text}}';
+  config.value.bot.tts.preprocess.fallbackToOriginal ??= true;
   if (!config.value.bot.imageCompression) {
     config.value.bot.imageCompression = { enabled: true, scale: 0.65, quality: 82 };
   }
@@ -2121,6 +2140,57 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                 <div>
                   <label class="label-sm">音量</label>
                   <input type="number" min="-20" max="20" step="1" v-model.number="config.bot.tts.volume" class="input-field" />
+                </div>
+              </div>
+              <div class="mt-5 rounded-2xl border border-violet-400/20 bg-violet-500/5 p-4">
+                <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <h3 class="font-bold text-slate-100">🎛️ 语音前置翻译 / 标签模型</h3>
+                    <p class="text-slate-400 text-xs mt-1">AI 文本回复命中“多少字以内转语音”后，先经过这里的模型翻译、改写并穿插语音标签，再送入语音 API。</p>
+                  </div>
+                  <label class="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-950/60 border border-violet-400/20 min-w-[190px]">
+                    <span class="font-semibold text-sm text-slate-100">启用前置处理</span>
+                    <input type="checkbox" v-model="config.bot.tts.preprocess.enabled" class="h-5 w-5 accent-violet-500" />
+                  </label>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
+                  <div>
+                    <label class="label-sm">模型节点</label>
+                    <select v-model.number="config.bot.tts.preprocess.nodeIndex" :disabled="!config.bot.tts.preprocess.enabled" class="input-field disabled:opacity-50 disabled:cursor-not-allowed">
+                      <option v-for="item in nodeOptions()" :key="`tts-pre-node-${item.idx}`" :value="item.idx">{{ item.node.name || `节点 ${item.idx + 1}` }}</option>
+                    </select>
+                    <span class="text-slate-400 text-xs mt-1 block">使用模型与节点页里的普通 OpenAI 兼容节点。</span>
+                  </div>
+                  <div>
+                    <label class="label-sm">前置模型 ID</label>
+                    <input v-model="config.bot.tts.preprocess.model" list="dl-tts-preprocess" :disabled="!config.bot.tts.preprocess.enabled" class="input-field disabled:opacity-50 disabled:cursor-not-allowed" placeholder="gpt-4o-mini / deepseek-v4-flash" />
+                    <datalist id="dl-tts-preprocess"><option v-for="m in modelsForNode(config.bot.tts.preprocess.nodeIndex, config.bot.tts.preprocess.model)" :key="m" :value="m" /></datalist>
+                  </div>
+                  <div>
+                    <label class="label-sm">前置超时（毫秒）</label>
+                    <input type="number" min="5000" max="300000" step="1000" v-model.number="config.bot.tts.preprocess.timeoutMs" :disabled="!config.bot.tts.preprocess.enabled" class="input-field disabled:opacity-50 disabled:cursor-not-allowed" />
+                  </div>
+                  <div>
+                    <label class="label-sm">送入语音前延迟（毫秒）</label>
+                    <input type="number" min="0" max="30000" step="100" v-model.number="config.bot.tts.preprocess.delayMs" :disabled="!config.bot.tts.preprocess.enabled" class="input-field disabled:opacity-50 disabled:cursor-not-allowed" />
+                    <span class="text-slate-400 text-xs mt-1 block">用于等待上游、模拟停顿或控制发语音节奏。</span>
+                  </div>
+                  <div>
+                    <label class="label-sm">前置输出最多字符</label>
+                    <input type="number" min="1" max="8000" step="50" v-model.number="config.bot.tts.preprocess.maxOutputChars" :disabled="!config.bot.tts.preprocess.enabled" class="input-field disabled:opacity-50 disabled:cursor-not-allowed" />
+                  </div>
+                  <label class="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-950/60 border border-slate-800">
+                    <span>
+                      <span class="font-semibold text-sm text-slate-100 block">失败降级原文</span>
+                      <span class="text-slate-400 text-xs">前置模型异常时仍用原回复发语音。</span>
+                    </span>
+                    <input type="checkbox" v-model="config.bot.tts.preprocess.fallbackToOriginal" :disabled="!config.bot.tts.preprocess.enabled" class="h-5 w-5 accent-violet-500 disabled:opacity-50" />
+                  </label>
+                </div>
+                <div class="mt-4">
+                  <label class="label-sm">前置提示词模板</label>
+                  <textarea v-model="config.bot.tts.preprocess.promptTemplate" :disabled="!config.bot.tts.preprocess.enabled" rows="7" class="input-field font-mono text-sm disabled:opacity-50 disabled:cursor-not-allowed"></textarea>
+                  <span class="text-slate-400 text-xs mt-1 block">可用占位符：<code>{{text}}</code> / <code>{{rawText}}</code> / <code>{{input}}</code> / <code>{{replyText}}</code>。模型只应输出最终送入语音 API 的文本。</span>
                 </div>
               </div>
               <div class="mt-4 text-xs text-slate-400 leading-6 rounded-xl border border-cyan-500/10 bg-cyan-500/5 p-3">
