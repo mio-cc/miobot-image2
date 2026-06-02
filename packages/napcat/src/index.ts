@@ -269,10 +269,8 @@ export class NapcatAdapter {
     }, this.options.textSendTimeoutMs);
   }
 
-  async sendGroupRecord(groupId: number | string, fileUrl: string, replyToMessageId?: number | string): Promise<NapcatSendResult> {
-    const message: NapcatMessageSegment[] = [];
-    if (replyToMessageId !== undefined) message.push({ type: 'reply', data: { id: String(replyToMessageId) } });
-    message.push({ type: 'record', data: { file: fileUrl } });
+  async sendGroupRecord(groupId: number | string, fileUrl: string, _replyToMessageId?: number | string): Promise<NapcatSendResult> {
+    const message: NapcatMessageSegment[] = [{ type: 'record', data: { file: fileUrl } }];
     return this.sendAndReportResult('send_group_msg', { group_id: groupId, message }, this.options.imageSendTimeoutMs);
   }
 

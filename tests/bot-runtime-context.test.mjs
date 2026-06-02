@@ -7,9 +7,13 @@ import {
   buildModelCodeCatalog,
   buildBotGalleryPayload,
   collectMessageContext,
+  collectRecentUserStandaloneContext,
+  extractStandaloneMessageContext,
   extractForwardIds,
   extractMentionedUserIds,
   extractMessageText,
+  isOnlyBotMentionMessage,
+  looksLikeImageIntent,
   parseOwnerCommand,
   parseRemotePromptInput,
   replyFailureTextWithoutTts,
@@ -22,10 +26,11 @@ import {
 } from '../scripts/bot-runtime.mjs';
 
 class FakeAdapter {
-  constructor(messages = {}, forwards = {}, bridges = {}) {
+  constructor(messages = {}, forwards = {}, bridges = {}, actions = {}) {
     this.messages = messages;
     this.forwards = forwards;
     this.bridges = bridges;
+    this.actions = actions;
     this.calls = [];
   }
   async getMessage(id) {
@@ -41,6 +46,12 @@ class FakeAdapter {
   getForwardBridgeTargets(id) {
     this.calls.push(['getForwardBridgeTargets', String(id)]);
     return this.bridges[String(id)] || [];
+  }
+  async callAction(action, params) {
+    this.calls.push(['callAction', action, params]);
+    const value = this.actions[action];
+    if (value === undefined) throw new Error(`missing action ${action}`);
+    return typeof value === 'function' ? value(params) : value;
   }
 }
 
@@ -97,6 +108,104 @@ test('bot runtime: referenced bot ownership and CQ forward ids are parsed', asyn
   const ref = await resolveReferencedMessage(adapter, 'bot', '10000');
   assert.equal(ref.replyToBot, true);
   assert.match(ref.text, /上一轮回答/);
+});
+
+test('bot runtime: pure bot mention is detected only for a bare bot at', () => {
+  const message = {
+    chatType: 'group',
+    rawMessage: '[CQ:at,qq=10000]',
+    mentions: ['10000'],
+    segments: [{ type: 'at', data: { qq: '10000' } }],
+  };
+  const decision = {
+    kind: 'freeMode',
+    commandText: '',
+    trigger: { mentionTriggered: true, replyTriggered: false, commandTriggered: false, commandText: '', textWithoutReply: '[CQ:at,qq=10000]' },
+  };
+  assert.equal(isOnlyBotMentionMessage(message, '10000', decision), true);
+  assert.equal(isOnlyBotMentionMessage({ ...message, rawMessage: '[CQ:at,qq=10000] 画一张猫' }, '10000', { ...decision, commandText: '画一张猫' }), false);
+  assert.equal(isOnlyBotMentionMessage({ ...message, mentions: ['10000', '20000'], rawMessage: '[CQ:at,qq=10000][CQ:at,qq=20000]' }, '10000', decision), false);
+  assert.equal(isOnlyBotMentionMessage({ ...message, replyToMessageId: 'r1' }, '10000', decision), false);
+});
+
+test('bot runtime: recent user standalone context filters by user, minute window and never expands forwards', async () => {
+  const now = 1_780_406_400_000;
+  const history = [
+    {
+      message_id: '1',
+      time: Math.floor((now - 15_000) / 1000),
+      sender: { user_id: '20000' },
+      message: [
+        { type: 'text', data: { text: '别人消息' } },
+      ],
+    },
+    {
+      message_id: '2',
+      time: Math.floor((now - 20_000) / 1000),
+      sender: { user_id: '12345' },
+      message: [
+        { type: 'text', data: { text: '把这张图片补充完整' } },
+        { type: 'image', data: { url: 'https://example.test/a.png' } },
+      ],
+    },
+    {
+      message_id: '3',
+      time: Math.floor((now - 25_000) / 1000),
+      sender: { user_id: '12345' },
+      message: [
+        { type: 'forward', data: { id: 'secret-forward' } },
+      ],
+    },
+    {
+      message_id: '4',
+      time: Math.floor((now - 120_000) / 1000),
+      sender: { user_id: '12345' },
+      message: [{ type: 'text', data: { text: '两分钟前的备用消息' } }],
+    },
+    {
+      message_id: '5',
+      time: Math.floor(now / 1000),
+      sender: { user_id: '12345' },
+      message: [{ type: 'at', data: { qq: '10000' } }],
+    },
+  ];
+  const adapter = new FakeAdapter({}, {}, {}, {
+    get_group_msg_history: { status: 'ok', retcode: 0, data: { messages: history } },
+  });
+
+  const context = await collectRecentUserStandaloneContext(adapter, {
+    chatType: 'group',
+    groupId: '9000',
+    userId: '12345',
+    messageId: '5',
+  }, { freeMode: { maxInputImages: 1 }, napcat: { getMessageTimeoutMs: 5000 } }, { now });
+
+  assert.equal(context.mode, 'last-minute');
+  assert.equal(context.messages.length, 2);
+  assert.match(context.messages[0].text, /把这张图片补充完整/);
+  assert.match(context.messages[1].text, /合并聊天记录/);
+  assert.deepEqual(context.images, ['https://example.test/a.png']);
+  assert.deepEqual(adapter.calls.filter((call) => call[0] === 'getForwardMessage'), []);
+});
+
+test('bot runtime: standalone extraction and image-intent guard avoid non-text TTS paths', () => {
+  const standalone = extractStandaloneMessageContext({
+    message: [
+      { type: 'text', data: { text: '看看这个' } },
+      { type: 'forward', data: { id: 'fwd-never-read' } },
+      { type: 'node', data: { content: [{ type: 'text', data: { text: '不应读取的节点内容' } }] } },
+      { type: 'image', data: { url: 'https://example.test/1.png' } },
+      { type: 'image', data: { url: 'https://example.test/2.png' } },
+    ],
+  }, { maxImages: 1 });
+
+  assert.match(standalone.text, /看看这个/);
+  assert.match(standalone.text, /内容未读取/);
+  assert.doesNotMatch(standalone.text, /不应读取的节点内容/);
+  assert.deepEqual(standalone.images, ['https://example.test/1.png']);
+  assert.equal(looksLikeImageIntent('把这张图片补充完整'), true);
+  assert.equal(looksLikeImageIntent('画一张猫猫头像'), true);
+  assert.equal(looksLikeImageIntent('今天天气怎么样'), false);
 });
 
 test('bot runtime: json forward ids and bridged forward targets are collected', async () => {

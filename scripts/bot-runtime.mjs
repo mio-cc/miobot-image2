@@ -59,6 +59,9 @@ const FALLBACK_COMMANDS = {
 
 const MAX_REFERENCE_TEXT_CHARS = 16000;
 const MAX_FORWARD_DEPTH = 2;
+const PURE_MENTION_HISTORY_LIMIT = 50;
+const PURE_MENTION_WINDOW_MS = 60 * 1000;
+const PURE_MENTION_FALLBACK_USER_MESSAGES = 5;
 const JSON_TEXT_KEYS = new Set(['text', 'content', 'summary', 'prompt', 'finalPrompt', 'title', 'desc', 'description']);
 const FORWARD_ID_KEYS = new Set(['forward_id', 'forwardId', 'res_id', 'resid']);
 
@@ -713,13 +716,11 @@ async function replyTextWithPolicies(baseReply, adapter, config, context, text, 
   const value = String(text || '').trim();
   if (!value) return baseReply.replyText(context, text, strategy);
 
-  if (shouldUseTts(config, value)) {
+  if (shouldUseTts(config, value, context)) {
     try {
       const ttsInput = await prepareTtsText(config, value);
       const audio = await synthesizeSpeech(config.bot.tts, ttsInput.text);
-      const result = context.chatType === 'group'
-        ? await adapter.sendGroupRecord(context.groupId, audio.file)
-        : await adapter.sendPrivateRecord(context.userId, audio.file);
+      const result = await sendPlainTtsRecord(adapter, context, audio.file);
       logger.info('文本转语音发送完成', {
         chatType: context.chatType,
         chars: value.length,
@@ -728,7 +729,7 @@ async function replyTextWithPolicies(baseReply, adapter, config, context, text, 
         provider: config.bot.tts.provider,
         format: audio.format,
       });
-      return { kind: 'text', strategy: 'tts', success: result.success, attempts: [{ method: 'sendRecord', success: result.success, result }] };
+      return { kind: 'record', strategy: 'plain', success: result.success, attempts: [{ method: 'sendPlainTtsRecord', success: result.success, result }] };
     } catch (error) {
       logger.warn('文本转语音失败，降级发送文本', { error: normalizeError(error), chars: value.length });
     }
@@ -745,6 +746,13 @@ async function replyTextWithPolicies(baseReply, adapter, config, context, text, 
     if (index < chunks.length - 1 && delay > 0) await sleep(delay);
   }
   return last;
+}
+
+async function sendPlainTtsRecord(adapter, context, fileUrl) {
+  if (context.chatType === 'group') {
+    return adapter.sendGroupRecord(context.groupId, fileUrl);
+  }
+  return adapter.sendPrivateRecord(context.userId, fileUrl);
 }
 
 export function splitReplyText(text, options = {}) {
@@ -773,17 +781,43 @@ export function splitReplyText(text, options = {}) {
   return chunks;
 }
 
-function shouldUseTts(config, text) {
+function shouldUseTts(config, text, context = {}) {
+  if (!isPlainTextTtsContext(context)) return false;
   const tts = config.bot?.tts || {};
   if (!tts.enabled) return false;
   const value = String(text || '').trim();
   if (!value) return false;
   if (isRuntimeFailureText(value)) return false;
+  if (looksLikeImageIntent(value)) return false;
   const limit = Math.max(1, Number(tts.autoTextMaxChars || 0));
   if (value.length > limit) return false;
   if (!String(tts.apiKey || '').trim()) return false;
   if (tts.provider === 'fish-audio' && !activeFishVoiceId(tts)) return false;
   return true;
+}
+
+function isPlainTextTtsContext(context = {}) {
+  if (context?.ttsAllowed !== true) return false;
+  if (context?.replyPayloadKind && context.replyPayloadKind !== 'text') return false;
+  return context?.chatType === 'group' || context?.chatType === 'private';
+}
+
+export function looksLikeImageIntent(text) {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  return [
+    /(?:^|[\s，,。！？!?:：])(?:生图|出图|画图|绘图|做图|改图|修图|扩图|补图|补全图片|图片补全|重绘|图生图|垫图)(?:$|[\s，,。！？!?:：])/i,
+    /(?:^|[\s，,。！？!?:：])(?:画|绘制|生成)(?:一张|一个|一幅|这个|图片|照片|头像|海报|壁纸|插画|角色图|立绘|表情包)/i,
+    /(?:图片|照片|插画|头像|海报|壁纸|立绘|表情包).{0,12}(?:生成|编辑|修改|改|修|补全|补充完整|扩展|重绘|处理|发|做)/i,
+    /(?:生成|编辑|修改|改|修|补全|补充完整|扩展|重绘|处理|发|做).{0,12}(?:图片|照片|插画|头像|海报|壁纸|立绘|表情包)/i,
+    /\b(?:draw|generate\s+(?:an?\s+)?image|create\s+(?:an?\s+)?image|edit\s+(?:this\s+)?image|image\s+(?:edit|generation)|inpaint|outpaint|img2img)\b/i,
+  ].some((pattern) => pattern.test(value));
+}
+
+function looksLikeImageEditFollowupIntent(text) {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  return /(?:补全|补充完整|扩图|扩展|延展|重绘|修一下|改一下|处理一下|去掉|移除|换成|加上|添加|背景|抠图|高清|放大|修复|完善)/i.test(value);
 }
 
 function isRuntimeFailureText(text) {
@@ -1005,6 +1039,10 @@ async function handleIncoming(adapter, event) {
   };
 
   try {
+    if (isOnlyBotMentionMessage(message, botId, decision)) {
+      await handlePureMention(adapter, config, reply, baseReply, context, message, decision);
+      return;
+    }
     if (decision.kind === 'command') {
       await handleCommand(adapter, config, reply, context, decision, message);
       return;
@@ -1025,6 +1063,451 @@ async function handleIncoming(adapter, event) {
       logger.error('发送失败提示失败', { error: normalizeError(replyError), originalError: normalized, decision });
     }
   }
+}
+
+async function handlePureMention(adapter, config, reply, baseReply, context, message, decision) {
+  const recent = await collectRecentUserStandaloneContext(adapter, message, config);
+  if (!recent.messages.length) {
+    logger.info('纯 @bot 未找到可用的最近单条消息', {
+      groupId: message.groupId,
+      userId: message.userId,
+      totalFetched: recent.totalFetched,
+      mode: recent.mode,
+    });
+    await reply.replyText(context, '我看到 @ 了，但最近没有找到可处理的单条消息；可以直接在 @ 后面补一句需求。');
+    return;
+  }
+
+  const inferred = await inferPureMentionIntent(config, recent, message);
+  logger.info('纯 @bot 最近消息意图解析完成', {
+    groupId: message.groupId,
+    userId: message.userId,
+    mode: recent.mode,
+    selectedMessages: recent.messages.length,
+    imageCount: recent.images.length,
+    action: inferred.action,
+    chars: String(inferred.userContent || '').length,
+    source: inferred.source,
+  });
+
+  if (!inferred.userContent || inferred.action === 'none') {
+    await reply.replyText(context, '我看到 @ 了，但没有判断出你要我处理哪条最近消息；可以直接在 @ 后写清楚需求。');
+    return;
+  }
+
+  const userContent = String(inferred.userContent || '').trim();
+  const isImageRequest = inferred.action === 'image'
+    || looksLikeImageIntent(userContent)
+    || (recent.images.length > 0 && inferred.useImages !== false && looksLikeImageEditFollowupIntent(userContent));
+  const syntheticMessage = {
+    ...message,
+    rawMessage: userContent,
+    commandText: userContent,
+    referenceText: '',
+    referenceImages: [],
+    referenceMessageId: undefined,
+    images: inferred.useImages === false ? [] : recent.images,
+    pureMentionContext: recent,
+  };
+
+  if (isImageRequest) {
+    if (!config.freeMode?.enabled) {
+      await baseReply.replyText(context, '我判断这是图片处理/生成请求，但自由模式未启用；请在后台开启自由模式后再试。', 'quote');
+      return;
+    }
+    await handleFreeMode(adapter, config, reply, context, userContent, syntheticMessage, { disableTtsOnText: true, baseReply });
+    return;
+  }
+
+  await handleChat(config, reply, context, userContent);
+}
+
+export function isOnlyBotMentionMessage(message, botId = '', decision = {}) {
+  if (!message || message.chatType !== 'group') return false;
+  if (message.replyToMessageId) return false;
+  if (!['freeMode', 'chat'].includes(String(decision?.kind || ''))) return false;
+
+  const trigger = decision?.trigger || {};
+  if (!trigger.mentionTriggered || trigger.replyTriggered || trigger.commandTriggered) return false;
+  if (String(decision?.commandText ?? trigger.commandText ?? '').trim()) return false;
+
+  const botQq = normalizeQqId(botId);
+  if (!botQq) return false;
+  const mentions = (message.mentions?.length
+    ? message.mentions
+    : extractMentionedUserIds(message.segments || message.rawMessage, message.rawMessage))
+    .map(normalizeQqId)
+    .filter(Boolean);
+  if (!mentions.includes(botQq)) return false;
+  if (mentions.some((id) => id !== botQq)) return false;
+
+  const textWithoutReply = stripRuntimeReplySegments(trigger.textWithoutReply || message.rawMessage || '');
+  const botAt = new RegExp(`\\[CQ:at,qq=${escapeRegExp(botQq)}(?:,[^\\]]*)?\\]`, 'gi');
+  const remaining = textWithoutReply
+    .replace(botAt, '')
+    .replace(/[\s+＋,，。.!！?？:：;；、\-—_~～]/g, '')
+    .trim();
+  return remaining === '';
+}
+
+function stripRuntimeReplySegments(text) {
+  return String(text || '').replace(/\[CQ:reply,[^\]]+\]/g, '').trim();
+}
+
+export async function collectRecentUserStandaloneContext(adapter, message, config = {}, options = {}) {
+  const groupId = message?.groupId;
+  const userId = normalizeQqId(message?.userId);
+  const maxImages = maxPureMentionInputImages(config);
+  if (!adapter?.callAction || !groupId || !userId || message?.chatType !== 'group') {
+    return emptyRecentStandaloneContext('unavailable', maxImages);
+  }
+
+  const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
+  const rawMessages = await fetchGroupHistoryMessages(adapter, groupId, message, config);
+  const currentId = stringifyComparableId(message?.messageId);
+  const sorted = sortHistoryMessagesRecentFirst(rawMessages);
+  const sameUser = [];
+
+  for (const item of sorted) {
+    if (normalizeQqId(messageSenderId(item)) !== userId) continue;
+    const itemId = stringifyComparableId(messageIdOf(item));
+    if (currentId && itemId && itemId === currentId) continue;
+    const standalone = extractStandaloneMessageContext(item, { maxImages });
+    if (!standalone.text && !standalone.images.length) continue;
+    sameUser.push({
+      messageId: messageIdOf(item),
+      timestampMs: messageTimestampMs(item),
+      text: standalone.text,
+      images: standalone.images,
+    });
+  }
+
+  const minuteMessages = sameUser.filter((item) => {
+    const ts = Number(item.timestampMs || 0);
+    return ts > 0 && ts <= now + 10000 && now - ts <= PURE_MENTION_WINDOW_MS;
+  });
+  const selectedRaw = minuteMessages.length
+    ? minuteMessages
+    : sameUser.slice(0, PURE_MENTION_FALLBACK_USER_MESSAGES);
+  const capped = capRecentStandaloneImages(selectedRaw, maxImages);
+  return {
+    mode: minuteMessages.length ? 'last-minute' : 'last-five',
+    totalFetched: rawMessages.length,
+    sameUserCount: sameUser.length,
+    maxImages,
+    messages: capped.messages,
+    images: capped.images,
+    formatted: formatRecentStandaloneMessages(capped.messages),
+  };
+}
+
+function emptyRecentStandaloneContext(mode = 'empty', maxImages = 0) {
+  return { mode, totalFetched: 0, sameUserCount: 0, maxImages, messages: [], images: [], formatted: '' };
+}
+
+function maxPureMentionInputImages(config = {}) {
+  const raw = Number(config.freeMode?.maxInputImages ?? 6);
+  if (!Number.isFinite(raw)) return 6;
+  return Math.max(0, Math.min(12, Math.trunc(raw)));
+}
+
+async function fetchGroupHistoryMessages(adapter, groupId, message, config = {}) {
+  const timeoutMs = Math.max(3000, Number(config.napcat?.getMessageTimeoutMs || 10000));
+  const count = PURE_MENTION_HISTORY_LIMIT;
+  const attempts = [];
+  const seq = message?.messageSeq ?? message?.message_seq;
+  if (seq !== undefined && seq !== null && String(seq).trim() !== '') {
+    attempts.push({ group_id: groupId, message_seq: normalizeHistorySeq(seq), count });
+  }
+  attempts.push({ group_id: groupId, count });
+
+  const seen = new Set();
+  let lastError;
+  for (const params of attempts) {
+    const key = JSON.stringify(params);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    try {
+      const response = await adapter.callAction('get_group_msg_history', params, timeoutMs);
+      const messages = extractHistoryMessages(response);
+      if (messages.length) return messages;
+    } catch (error) {
+      lastError = error;
+      logger.warn('读取群聊最近消息失败，尝试降级参数', { groupId, params, error: normalizeError(error) });
+    }
+  }
+  if (lastError) logger.warn('群聊最近消息读取不可用，纯 @bot 上下文降级为空', { groupId, error: normalizeError(lastError) });
+  return [];
+}
+
+function normalizeHistorySeq(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : String(value);
+}
+
+function extractHistoryMessages(response) {
+  const candidates = [
+    response?.data?.messages,
+    response?.data?.message,
+    response?.data,
+    response?.messages,
+    response?.message,
+    response,
+  ];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate.filter(Boolean);
+  }
+  return [];
+}
+
+function sortHistoryMessagesRecentFirst(messages = []) {
+  const copy = [...messages];
+  return copy.sort((a, b) => {
+    const ta = messageTimestampMs(a);
+    const tb = messageTimestampMs(b);
+    if (ta || tb) return (tb || 0) - (ta || 0);
+    const ia = numericMessageOrder(messageIdOf(a));
+    const ib = numericMessageOrder(messageIdOf(b));
+    if (ia || ib) return (ib || 0) - (ia || 0);
+    return 0;
+  });
+}
+
+function numericMessageOrder(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function capRecentStandaloneImages(messages, maxImages) {
+  const images = [];
+  const cappedMessages = [];
+  for (const item of messages) {
+    const remaining = Math.max(0, maxImages - images.length);
+    const itemImages = remaining > 0 ? uniqueStrings(item.images || []).slice(0, remaining) : [];
+    images.push(...itemImages);
+    cappedMessages.push({ ...item, images: itemImages });
+  }
+  return { messages: cappedMessages, images: uniqueStrings(images).slice(0, maxImages) };
+}
+
+export function extractStandaloneMessageContext(payload, options = {}) {
+  const maxImages = Math.max(0, Math.min(12, Math.trunc(Number(options.maxImages ?? 6))));
+  const body = messageBodyOf(payload);
+  const raw = rawMessageOf(payload);
+  let text = '';
+  if (Array.isArray(body)) {
+    text = body.map(standaloneSegmentToText).filter(Boolean).join('\n').trim();
+  } else if (typeof body === 'string') {
+    text = cleanupStandaloneRawText(body);
+  } else if (raw) {
+    text = cleanupStandaloneRawText(raw);
+  } else if (body && typeof body === 'object') {
+    text = collectJsonTextFields(body).join('\n').trim();
+  }
+  const images = maxImages > 0 ? extractImageUrls(body, raw).slice(0, maxImages) : [];
+  return {
+    text: truncateReferenceText(text, Math.max(1000, Number(options.maxTextChars || 4000))),
+    images: uniqueStrings(images),
+  };
+}
+
+function standaloneSegmentToText(segment) {
+  if (!segment || typeof segment !== 'object') return '';
+  const type = String(segment.type || '').toLowerCase();
+  const data = segment.data || {};
+  if (type === 'text') return String(data.text || '').trim();
+  if (type === 'at') return '';
+  if (type === 'reply') return '';
+  if (type === 'image') return '[图片]';
+  if (type === 'record') return '[语音]';
+  if (type === 'video') return '[视频]';
+  if (type === 'file') return `[文件：${data.name || data.file || data.file_name || '未命名'}]`;
+  if (type === 'forward') return `[合并聊天记录：${data.id || data.file || data.resid || data.res_id || data.forward_id || data.forwardId || 'unknown'}（内容未读取）]`;
+  if (type === 'node') return '[合并聊天节点（内容未读取）]';
+  if (type === 'json') return extractJsonSegmentStandaloneText(data.data || data.content || data.text || '');
+  if (type === 'xml') return cleanupStandaloneRawText(data.data || data.content || data.text || '[XML 消息]');
+  return '';
+}
+
+function cleanupStandaloneRawText(raw) {
+  return decodeURIComponentSafe(String(raw || ''))
+    .replace(/\[CQ:reply,[^\]]+\]/g, '')
+    .replace(/\[CQ:at,[^\]]+\]/g, '')
+    .replace(/\[CQ:image,[^\]]+\]/g, '[图片]')
+    .replace(/\[CQ:record,[^\]]+\]/g, '[语音]')
+    .replace(/\[CQ:video,[^\]]+\]/g, '[视频]')
+    .replace(/\[CQ:forward,[^\]]*(?:id|file|resid|res_id|forward_id)=([^,\]]+)[^\]]*\]/gi, (_all, id) => `[合并聊天记录：${decodeURIComponentSafe(id)}（内容未读取）]`)
+    .replace(/\[CQ:json,[^\]]*data=([^,\]]+)[^\]]*\]/g, (_all, data) => extractJsonSegmentStandaloneText(data))
+    .replace(/\[CQ:[^\]]+\]/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function extractJsonSegmentStandaloneText(value) {
+  const raw = decodeURIComponentSafe(String(value || '')).trim();
+  if (!raw) return '';
+  try {
+    const parsed = JSON.parse(raw);
+    if (extractForwardIds(parsed).length || extractForwardMessageItems(parsed).length) return '[合并聊天记录（内容未读取）]';
+    return collectJsonTextFields(parsed).join('\n') || raw.slice(0, 1000);
+  } catch {
+    return raw.slice(0, 1000);
+  }
+}
+
+function formatRecentStandaloneMessages(messages = []) {
+  return messages.map((item, index) => {
+    const time = formatShortTime(item.timestampMs);
+    const id = item.messageId !== undefined && item.messageId !== null ? ` id=${item.messageId}` : '';
+    const header = `#${index + 1}${time ? ` ${time}` : ''}${id}`;
+    const body = [
+      String(item.text || '').trim(),
+      item.images?.length ? `[图片 ${item.images.length} 张]` : '',
+    ].filter(Boolean).join('\n') || '（空消息）';
+    return `${header}\n${body}`;
+  }).join('\n\n');
+}
+
+function formatShortTime(timestampMs) {
+  const ts = Number(timestampMs || 0);
+  if (!ts) return '';
+  const date = new Date(ts);
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+async function inferPureMentionIntent(config, recent, message) {
+  const fallback = fallbackPureMentionIntent(recent);
+  if (!recent?.messages?.length) return { action: 'none', userContent: '', useImages: false, source: 'empty' };
+  try {
+    const useFreeMode = Boolean(config.freeMode?.enabled);
+    const adapter = createLlm(
+      config,
+      useFreeMode ? config.freeMode?.nodeIndex : config.llm?.chatNodeIndex,
+      Math.min(Math.max(30000, Number(config.freeMode?.timeoutMs || 60000)), 120000),
+      'mention-context',
+    );
+    const result = await adapter.createText({
+      model: useFreeMode ? activeFreeModeModel(config) : activeChatModel(config),
+      timeoutMs: Math.min(Math.max(30000, Number(config.freeMode?.timeoutMs || 60000)), 120000),
+      reasoningEffort: config.llm?.reasoningEffort,
+      messages: [
+        {
+          role: 'system',
+          content: [
+            '你是 QQ 机器人 Miobot 的“纯 @ 上下文选择器”。',
+            '用户这次只 @ 了机器人，没有写需求。你会看到同一用户在同一群聊里的最近单条消息。',
+            '这些消息已经严格排除了合并聊天记录内部内容，只保留单条消息文本、普通图片占位和图片数量。',
+            '任务：判断最近消息里是否有用户想补充给机器人的请求；剔除闲聊、对其他人的话、合并聊天内容和无关内容。',
+            '如果是图片生成、图片编辑、修图、补图、扩图、把图片补充完整、图生图等，必须返回 action="image"，不要返回 text。',
+            '只输出 JSON：{"action":"text|image|none","userContent":"要交给机器人的用户需求","useImages":true|false,"reason":"简短原因"}。',
+          ].join('\n'),
+        },
+        {
+          role: 'user',
+          content: [
+            `当前纯 @ 消息：group=${message.groupId} user=${message.userId} message=${message.messageId}`,
+            `候选范围：${recent.mode}；最多可用图片：${recent.maxImages}；实际图片：${recent.images.length}`,
+            '最近单条消息：',
+            recent.formatted,
+          ].join('\n'),
+        },
+      ],
+    });
+    return normalizePureMentionIntentResult(result.text, recent, fallback);
+  } catch (error) {
+    logger.warn('纯 @bot 最近消息 AI 过滤失败，使用保守降级', { error: normalizeError(error) });
+    return fallback;
+  }
+}
+
+function normalizePureMentionIntentResult(raw, recent, fallback) {
+  const parsed = extractJsonObjectFromModelText(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fallback;
+  let action = String(parsed.action || parsed.kind || '').toLowerCase().trim();
+  let userContent = String(parsed.userContent || parsed.content || parsed.text || parsed.prompt || '').trim();
+  if (!['text', 'image', 'none'].includes(action)) action = userContent ? 'text' : 'none';
+  if (!userContent && action === 'image' && recent.images.length) userContent = '请根据最近发送的图片处理。';
+  if (looksLikeImageIntent(userContent)) action = 'image';
+  if (action === 'none' || !userContent) return { action: 'none', userContent: '', useImages: false, source: 'llm' };
+  return {
+    action: action === 'image' ? 'image' : 'text',
+    userContent: truncateReferenceText(userContent, 12000),
+    useImages: parsed.useImages !== false,
+    source: 'llm',
+  };
+}
+
+function fallbackPureMentionIntent(recent) {
+  const item = recent?.messages?.find((entry) => entry.text || entry.images?.length);
+  if (!item) return { action: 'none', userContent: '', useImages: false, source: 'fallback' };
+  const userContent = String(item.text || '').trim() || (item.images?.length ? '请根据最近发送的图片处理。' : '');
+  if (!userContent) return { action: 'none', userContent: '', useImages: false, source: 'fallback' };
+  const action = looksLikeImageIntent(userContent) || item.images?.length ? 'image' : 'text';
+  return {
+    action,
+    userContent: truncateReferenceText(userContent, 12000),
+    useImages: Boolean(item.images?.length),
+    source: 'fallback',
+  };
+}
+
+function extractJsonObjectFromModelText(raw) {
+  const cleaned = cleanupModelText(raw);
+  try { return JSON.parse(cleaned); } catch {}
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try { return JSON.parse(cleaned.slice(start, end + 1)); } catch {}
+  }
+  return undefined;
+}
+
+function messageSenderId(payload) {
+  if (!payload || typeof payload !== 'object') return undefined;
+  return payload.sender?.user_id
+    ?? payload.sender?.userId
+    ?? payload.user_id
+    ?? payload.userId
+    ?? payload.data?.sender?.user_id
+    ?? payload.data?.sender?.userId
+    ?? payload.data?.user_id
+    ?? payload.data?.userId;
+}
+
+function messageIdOf(payload) {
+  if (!payload || typeof payload !== 'object') return undefined;
+  return payload.message_id
+    ?? payload.messageId
+    ?? payload.id
+    ?? payload.data?.message_id
+    ?? payload.data?.messageId
+    ?? payload.data?.id;
+}
+
+function messageTimestampMs(payload) {
+  if (!payload || typeof payload !== 'object') return 0;
+  const raw = payload.time
+    ?? payload.timestamp
+    ?? payload.message_time
+    ?? payload.messageTime
+    ?? payload.data?.time
+    ?? payload.data?.timestamp
+    ?? payload.data?.message_time
+    ?? payload.data?.messageTime;
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return numeric > 10_000_000_000 ? Math.trunc(numeric) : Math.trunc(numeric * 1000);
+}
+
+function stringifyComparableId(value) {
+  if (value === undefined || value === null) return '';
+  return String(value).trim();
+}
+
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function handleCommand(adapter, config, reply, context, decision, message) {
@@ -1128,7 +1611,7 @@ async function handleCommand(adapter, config, reply, context, decision, message)
   }
 }
 
-async function handleFreeMode(adapter, config, reply, context, args, message) {
+async function handleFreeMode(adapter, config, reply, context, args, message, options = {}) {
   const image = createImage(adapter, config, undefined);
   const planner = createLlm(config, config.freeMode?.nodeIndex, config.freeMode?.timeoutMs, 'free-mode');
   const engine = createFreeModeEngine({
@@ -1141,10 +1624,13 @@ async function handleFreeMode(adapter, config, reply, context, args, message) {
     plannerPromptTemplate: config.freeMode?.plannerPromptTemplate,
     preferEditWhenImagePresent: config.freeMode?.preferEditWhenImagePresent,
   });
+  const inputImages = await imagesFromMessageOrReply(adapter, message);
+  const userContent = withReferenceContext(args, message);
+  const ttsAllowed = options.disableTtsOnText !== true && inputImages.length === 0 && !looksLikeImageIntent(userContent);
   const result = await engine.handle({
-    userContent: withReferenceContext(args, message),
-    images: await imagesFromMessageOrReply(adapter, message),
-    context,
+    userContent,
+    images: inputImages,
+    context: { ...context, ttsAllowed, replyPayloadKind: 'text', replySource: 'freeMode' },
   });
   await syncBotImageResultToCanvasGallery(config, result.imageResults || [], {
     mode: result.mode || 'generate',
@@ -1283,7 +1769,7 @@ async function handleChat(config, reply, context, text) {
     reasoningEffort: config.llm?.reasoningEffort,
   });
   const answer = cleanupModelText(result.text);
-  await reply.replyText(context, answer || '模型没有返回内容。');
+  await reply.replyText({ ...context, ttsAllowed: true, replyPayloadKind: 'text', replySource: 'chat' }, answer || '模型没有返回内容。');
   const next = [...history, { role: 'user', content: prompt }, { role: 'assistant', content: answer }];
   sessions.set(key, pruneHistory(next, config));
 }
@@ -1315,6 +1801,7 @@ async function normalizeIncomingMessage(adapter, event) {
     commandText: rawMessage,
     mentions,
     messageId: event.message_id ?? event.messageId,
+    messageSeq: event.message_seq ?? event.messageSeq ?? event.seq,
     groupId: event.group_id ?? event.groupId,
     userId: event.user_id ?? event.userId ?? event.sender?.user_id ?? event.sender?.userId,
     replyToMessageId,
@@ -1677,7 +2164,7 @@ function helpText(config) {
     '- 主人命令：@bot /模型：查看普通接口与 Hugging Face 模型编码',
     '- 主人命令：@bot /q 1.1 或 @bot /切换 1.1：切换普通接口/模型',
     '- 主人命令：@bot /q hf.1 或 @bot /切换 hf.1：切换 Hugging Face 模型',
-    '- 主人命令：@某人 /拉黑、@某人 /拉白、@bot /撤回 3、@bot /ttsk、@bot /ttsg',
+    '- 主人命令：@某人 /拉黑、@某人 /拉白、@bot /撤回 3、@bot /ttsk、@bot /ttsg、@bot /tts.1',
   ];
   return [
     'Miobot 可用命令：',

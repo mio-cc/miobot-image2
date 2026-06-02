@@ -204,7 +204,6 @@ test('napcat adapter: sends record segments for group and private voice messages
   assert.equal(groupAction.action, 'send_group_msg');
   assert.equal(groupAction.params.group_id, 1000);
   assert.deepEqual(groupAction.params.message, [
-    { type: 'reply', data: { id: '777' } },
     { type: 'record', data: { file: 'base64://audio-data' } },
   ]);
   sockets[0].message({ echo: groupAction.echo, status: 'ok', retcode: 0, data: { message_id: 778 } });
