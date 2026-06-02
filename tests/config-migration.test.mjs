@@ -138,6 +138,7 @@ test('migration: bot owner and tts settings are normalized', () => {
         apiKey: 'secret',
         model: '',
         voiceId: ' voice-a ',
+        voiceIds: [' voice-b ', 'voice-a', 'voice-c'],
         format: 'ogg',
         autoTextMaxChars: 99999,
         timeoutMs: 1,
@@ -165,6 +166,7 @@ test('migration: bot owner and tts settings are normalized', () => {
   assert.equal(result.config.bot.tts.apiUrl, 'https://tts.example/v1');
   assert.equal(result.config.bot.tts.model, 's2-pro');
   assert.equal(result.config.bot.tts.voiceId, 'voice-a');
+  assert.deepEqual(result.config.bot.tts.voiceIds, ['voice-a', 'voice-b', 'voice-c']);
   assert.equal(result.config.bot.tts.format, 'mp3');
   assert.equal(result.config.bot.tts.autoTextMaxChars, 4000);
   assert.equal(result.config.bot.tts.timeoutMs, 5000);

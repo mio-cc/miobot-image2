@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 
 import {
+  applyTtsVoiceSwitchDraft,
   applyModelSwitchDraft,
   buildModelCodeCatalog,
   buildBotGalleryPayload,
@@ -231,6 +232,15 @@ test('bot runtime: owner commands require bot address where appropriate and targ
     }, '10000'),
     { command: 'ttsOn' },
   );
+
+  assert.deepEqual(
+    parseOwnerCommand({
+      chatType: 'group',
+      rawMessage: '[CQ:at,qq=10000] /tts.2',
+      mentions: ['10000'],
+    }, '10000'),
+    { command: 'switchTtsVoice', index: 2 },
+  );
 });
 
 test('bot runtime: owner model list and switch commands parse', () => {
@@ -273,23 +283,32 @@ test('bot runtime: tts preprocess prompt renders placeholders for upstream model
 
 test('bot runtime: failure replies bypass policy tts wrapper', async () => {
   const calls = [];
-  const baseReply = {
-    async replyText(context, text, strategy) {
-      calls.push({ context, text, strategy });
-      return { success: true, kind: 'text', strategy, attempts: [] };
+  const adapter = {
+    async sendGroupText(groupId, text, replyToMessageId) {
+      calls.push({ method: 'sendGroupText', groupId, text, replyToMessageId });
+      return { success: true };
     },
   };
   const context = { chatType: 'group', groupId: '100', userId: '200', replyToMessageId: 'm1' };
-  const result = await replyFailureTextWithoutTts(baseReply, context, new Error('stream error: stream ID 7; INTERNAL_ERROR'), 'quote');
+  const result = await replyFailureTextWithoutTts(adapter, context, new Error('stream error: stream ID 7; INTERNAL_ERROR'));
 
   assert.equal(result.success, true);
   assert.deepEqual(calls, [
     {
-      context,
+      method: 'sendGroupText',
+      groupId: '100',
       text: '处理失败：stream error: stream ID 7; INTERNAL_ERROR',
-      strategy: 'quote',
+      replyToMessageId: 'm1',
     },
   ]);
+});
+
+test('bot runtime: owner tts voice switch uses numbered fish reference ids', () => {
+  const draft = { bot: { tts: { enabled: true, voiceId: 'voice-a', voiceIds: ['voice-b', 'voice-c'] } } };
+  const result = applyTtsVoiceSwitchDraft(draft, 2);
+  assert.equal(result.ok, true);
+  assert.equal(draft.bot.tts.voiceId, 'voice-b');
+  assert.deepEqual(draft.bot.tts.voiceIds, ['voice-a', 'voice-b', 'voice-c']);
 });
 
 test('bot runtime: model code catalog orders ordinary nodes before hugging face and switch updates draft', () => {

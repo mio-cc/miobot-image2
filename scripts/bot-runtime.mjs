@@ -333,6 +333,10 @@ export function parseOwnerCommand(message, botId = '') {
   if (ttsMatch) {
     return { command: ttsMatch[1].toLowerCase() === 'ttsk' ? 'ttsOn' : 'ttsOff' };
   }
+  const ttsVoiceMatch = text.match(/(?:^|\s)\/\s*tts\.(\d{1,2})(?:\s|$)/i);
+  if (ttsVoiceMatch) {
+    return { command: 'switchTtsVoice', index: Math.max(1, Number.parseInt(ttsVoiceMatch[1], 10) || 1) };
+  }
   const modelListMatch = text.match(/(?:^|\s)\/\s*(模型|models?)(?:\s|$)/i);
   if (modelListMatch) {
     return { command: 'modelList' };
@@ -496,6 +500,44 @@ export function applyModelSwitchDraft(draft, rawCode) {
   return { ok: true, message: `已切换到接口 ${node.code}「${node.name}」模型 ${model.code}：${model.id}` };
 }
 
+function normalizeTtsVoiceIdsFromTts(tts = {}) {
+  const source = Array.isArray(tts.voiceIds) ? tts.voiceIds : [];
+  const legacy = String(tts.voiceId || '').trim();
+  const seen = new Set();
+  const out = [];
+  for (const value of [legacy, ...source]) {
+    const id = String(value || '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+export function applyTtsVoiceSwitchDraft(draft, index) {
+  const n = Math.max(1, Math.trunc(Number(index) || 1));
+  if (!draft.bot) draft.bot = {};
+  if (!draft.bot.tts) draft.bot.tts = {};
+  const ids = normalizeTtsVoiceIdsFromTts(draft.bot.tts);
+  draft.bot.tts.voiceIds = ids;
+  if (!ids.length) return { ok: false, message: '还没有配置 Fish Voice / Reference ID，请先在后台 TTS 里添加。' };
+  const voiceId = ids[n - 1];
+  if (!voiceId) return { ok: false, message: `没有找到语音编号 tts.${n}。当前可用：${ids.map((_id, idx) => `tts.${idx + 1}`).join(' / ')}` };
+  draft.bot.tts.voiceId = voiceId;
+  return {
+    ok: true,
+    voiceId,
+    index: n,
+    message: `已切换 Fish Voice #${n}：${maskVoiceIdForDisplay(voiceId)}。TTS 当前${draft.bot.tts.enabled ? '已开启' : '未开启'}。`,
+  };
+}
+
+function maskVoiceIdForDisplay(value) {
+  const text = String(value || '').trim();
+  if (text.length <= 12) return text;
+  return `${text.slice(0, 6)}...${text.slice(-4)}`;
+}
+
 async function handleOwnerCommand(adapter, config, message, command) {
   if (command.command === 'modelList') {
     await sendAdminText(adapter, message, renderModelCodeList(config));
@@ -525,6 +567,16 @@ async function handleOwnerCommand(adapter, config, message, command) {
     });
     await sendAdminText(adapter, message, enabled ? '文本转语音已开启。' : '文本转语音已关闭。');
     logger.info('主人切换文本转语音', { owner: message.userId, enabled });
+    return;
+  }
+  if (command.command === 'switchTtsVoice') {
+    let result = { ok: false, message: '切换语音失败' };
+    saveRuntimeConfig((draft) => {
+      result = applyTtsVoiceSwitchDraft(draft, command.index);
+      return draft;
+    });
+    await sendAdminText(adapter, message, result.message);
+    logger.info('主人切换 Fish Voice ID', { owner: message.userId, index: command.index, ok: result.ok });
     return;
   }
 
@@ -646,8 +698,15 @@ export function formatRuntimeFailureMessage(error) {
   return `处理失败：${message}`;
 }
 
-export async function replyFailureTextWithoutTts(baseReply, context, error, strategy = 'quote') {
-  return baseReply.replyText(context, formatRuntimeFailureMessage(error), strategy);
+export async function replyFailureTextWithoutTts(sender, context, error) {
+  const text = formatRuntimeFailureMessage(error);
+  if (context?.chatType === 'group' && typeof sender?.sendGroupText === 'function') {
+    return sender.sendGroupText(context.groupId, text, context.replyToMessageId);
+  }
+  if (context?.chatType === 'private' && typeof sender?.sendPrivateText === 'function') {
+    return sender.sendPrivateText(context.userId, text);
+  }
+  return sender.replyText(context, text, 'quote');
 }
 
 async function replyTextWithPolicies(baseReply, adapter, config, context, text, strategy) {
@@ -659,7 +718,7 @@ async function replyTextWithPolicies(baseReply, adapter, config, context, text, 
       const ttsInput = await prepareTtsText(config, value);
       const audio = await synthesizeSpeech(config.bot.tts, ttsInput.text);
       const result = context.chatType === 'group'
-        ? await adapter.sendGroupRecord(context.groupId, audio.file, strategy === 'quote' ? context.replyToMessageId : undefined)
+        ? await adapter.sendGroupRecord(context.groupId, audio.file)
         : await adapter.sendPrivateRecord(context.userId, audio.file);
       logger.info('文本转语音发送完成', {
         chatType: context.chatType,
@@ -719,11 +778,21 @@ function shouldUseTts(config, text) {
   if (!tts.enabled) return false;
   const value = String(text || '').trim();
   if (!value) return false;
+  if (isRuntimeFailureText(value)) return false;
   const limit = Math.max(1, Number(tts.autoTextMaxChars || 0));
   if (value.length > limit) return false;
   if (!String(tts.apiKey || '').trim()) return false;
-  if (tts.provider === 'fish-audio' && !String(tts.voiceId || '').trim()) return false;
+  if (tts.provider === 'fish-audio' && !activeFishVoiceId(tts)) return false;
   return true;
+}
+
+function isRuntimeFailureText(text) {
+  const value = String(text || '').trim();
+  return value.startsWith('处理失败：') || value.startsWith('处理失败:');
+}
+
+function activeFishVoiceId(tts = {}) {
+  return String(tts.voiceId || normalizeTtsVoiceIdsFromTts(tts)[0] || '').trim();
 }
 
 async function prepareTtsText(config, text) {
@@ -797,7 +866,7 @@ async function synthesizeSpeech(tts, text) {
     headers.model = String(tts.model || 's2-pro').trim() || 's2-pro';
     body = {
       text,
-      reference_id: String(tts.voiceId || '').trim(),
+      reference_id: activeFishVoiceId(tts),
       format,
       normalize: true,
       latency: tts.latency || 'normal',
@@ -951,7 +1020,7 @@ async function handleIncoming(adapter, event) {
     const normalized = normalizeError(error);
     logger.error('消息处理失败', { error: normalized, decision });
     try {
-      await replyFailureTextWithoutTts(baseReply, context, error, 'quote');
+      await replyFailureTextWithoutTts(trackedAdapter, context, error);
     } catch (replyError) {
       logger.error('发送失败提示失败', { error: normalizeError(replyError), originalError: normalized, decision });
     }

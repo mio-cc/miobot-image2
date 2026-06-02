@@ -261,6 +261,7 @@ function ensureCanvasConfig() {
       apiKey: '',
       model: 's2-pro',
       voiceId: '',
+      voiceIds: [],
       voice: 'alloy',
       format: 'mp3',
       autoTextMaxChars: 180,
@@ -283,6 +284,7 @@ function ensureCanvasConfig() {
   config.value.bot.tts.provider ||= 'fish-audio';
   config.value.bot.tts.apiUrl ||= config.value.bot.tts.provider === 'openai-compatible' ? 'https://api.openai.com/v1/audio/speech' : 'https://api.fish.audio/v1/tts';
   config.value.bot.tts.model ||= config.value.bot.tts.provider === 'openai-compatible' ? 'tts-1' : 's2-pro';
+  normalizeTtsVoiceIds();
   config.value.bot.tts.voice ||= 'alloy';
   config.value.bot.tts.format ||= 'mp3';
   config.value.bot.tts.autoTextMaxChars ??= 180;
@@ -1125,6 +1127,55 @@ function addPromptTemplate() {
 function removePromptTemplate(idx: number) {
   promptTemplates().splice(idx, 1);
   normalizePromptTemplateIds();
+}
+
+function normalizeTtsVoiceIds() {
+  const tts = config.value?.bot?.tts;
+  if (!tts) return [];
+  const source = Array.isArray(tts.voiceIds) ? tts.voiceIds : [];
+  const active = String(tts.voiceId || '').trim();
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const item of [active, ...source]) {
+    const id = String(item || '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  tts.voiceIds = ids;
+  if (!tts.voiceId && ids.length) tts.voiceId = ids[0];
+  return ids;
+}
+
+function addTtsVoiceId() {
+  const tts = config.value?.bot?.tts;
+  if (!tts) return;
+  if (!Array.isArray(tts.voiceIds)) tts.voiceIds = [];
+  tts.voiceIds.push('');
+}
+
+function removeTtsVoiceId(index: number) {
+  const tts = config.value?.bot?.tts;
+  if (!tts || !Array.isArray(tts.voiceIds)) return;
+  const removed = String(tts.voiceIds[index] || '').trim();
+  tts.voiceIds.splice(index, 1);
+  if (removed && tts.voiceId === removed) tts.voiceId = tts.voiceIds.map((item: string) => String(item || '').trim()).find(Boolean) || '';
+  normalizeTtsVoiceIds();
+}
+
+function selectTtsVoiceId(index: number) {
+  const tts = config.value?.bot?.tts;
+  if (!tts || !Array.isArray(tts.voiceIds)) return;
+  const id = String(tts.voiceIds[index] || '').trim();
+  if (id) tts.voiceId = id;
+}
+
+function onTtsVoiceIdInput(index: number) {
+  const tts = config.value?.bot?.tts;
+  if (!tts || !Array.isArray(tts.voiceIds)) return;
+  const current = String(tts.voiceIds[index] || '').trim();
+  if (!tts.voiceId && current) tts.voiceId = current;
+  if (tts.voiceId === current) tts.voiceId = current;
 }
 
 async function convertPromptToTemplate() {
@@ -2098,7 +2149,7 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                   <input :value="config.bot.ownerQQs?.join(', ')"
                     @input="config.bot.ownerQQs = ($event.target as HTMLInputElement).value.split(/[\n,，；;]+/).map((s:string) => s.trim()).filter(Boolean)"
                     class="input-field" placeholder="多个 QQ 用逗号或换行分隔" />
-                  <span class="text-slate-400 text-xs mt-1 block">只有这里的 QQ 可以执行 /拉黑、/拉白、/撤回、/ttsk、/ttsg。</span>
+                  <span class="text-slate-400 text-xs mt-1 block">只有这里的 QQ 可以执行 /拉黑、/拉白、/撤回、/ttsk、/ttsg、/tts.N。</span>
                 </div>
               </div>
               <div class="mt-4 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
@@ -2108,6 +2159,7 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                   <div><code>@某人 /拉白</code>：解除该群内该 QQ 黑名单</div>
                   <div><code>@bot /撤回</code> 或 <code>@bot /c3</code>：撤回最近 1/3 条可撤回消息</div>
                   <div><code>@bot /ttsk</code> / <code>@bot /ttsg</code>：开启/关闭自动语音回复</div>
+                  <div><code>@bot /tts.1</code> / <code>@bot /tts.2</code>：切换 Fish Voice 编号</div>
                 </div>
               </div>
             </div>
@@ -2144,9 +2196,29 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                   <label class="label-sm">模型 ID / 后端</label>
                   <input v-model="config.bot.tts.model" class="input-field" placeholder="Fish: s2-pro；兼容模式: tts-1" />
                 </div>
-                <div v-if="config.bot.tts.provider === 'fish-audio'">
-                  <label class="label-sm">Fish Voice / Reference ID</label>
-                  <input v-model="config.bot.tts.voiceId" class="input-field" placeholder="voice model id / reference_id" />
+                <div v-if="config.bot.tts.provider === 'fish-audio'" class="lg:col-span-3">
+                  <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-2">
+                    <div>
+                      <label class="label-sm mb-1">Fish Voice / Reference ID 列表</label>
+                      <span class="text-slate-400 text-xs">按编号保存，主人可发送 <code>@bot /tts.1</code>、<code>@bot /tts.2</code> 快速切换。</span>
+                    </div>
+                    <button type="button" @click="addTtsVoiceId" class="btn-outline text-xs px-3 py-1.5">＋ 添加 Voice ID</button>
+                  </div>
+                  <div class="space-y-2">
+                    <div v-if="!config.bot.tts.voiceIds?.length" class="rounded-xl border border-dashed border-slate-700 bg-slate-950/40 p-3 text-xs text-slate-400">
+                      还没有添加 Reference ID。点击“添加 Voice ID”后粘贴 Fish Audio 的 reference_id。
+                    </div>
+                    <div v-for="(_voiceId, idx) in config.bot.tts.voiceIds" :key="`tts-voice-${idx}`" class="tts-voice-row">
+                      <button type="button" @click="selectTtsVoiceId(idx)" :class="['tts-voice-index', config.bot.tts.voiceId === String(config.bot.tts.voiceIds[idx] || '').trim() ? 'tts-voice-index--active' : '']">
+                        #{{ idx + 1 }}
+                      </button>
+                      <input v-model="config.bot.tts.voiceIds[idx]" @input="onTtsVoiceIdInput(idx)" class="input-field font-mono" placeholder="Fish reference_id / voice model id" />
+                      <button type="button" @click="selectTtsVoiceId(idx)" class="btn-outline text-xs px-3">设为当前</button>
+                      <button type="button" @click="removeTtsVoiceId(idx)" class="btn-danger text-xs px-3">删除</button>
+                    </div>
+                  </div>
+                  <input v-model="config.bot.tts.voiceId" class="input-field font-mono mt-3" placeholder="当前启用的 Reference ID，可由 /tts.N 切换" />
+                  <span class="text-slate-400 text-xs mt-1 block">当前启用：<code>{{ config.bot.tts.voiceId || '未选择' }}</code></span>
                 </div>
                 <div v-else>
                   <label class="label-sm">兼容模式 Voice</label>
