@@ -37,9 +37,17 @@ const interrogationJobs = new Map();
 const systemLogs = [];
 const canvasLogs = [];
 let logSequence = 0;
+let modelRefreshInFlight = null;
+let dailyModelRefreshTimer = null;
+let startupModelRefreshTimer = null;
 
 const LOG_LEVEL_ORDER = { debug: 10, info: 20, warn: 30, error: 40 };
 const DEFAULT_LOG_LIMIT = 300;
+const MODEL_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const MODEL_REFRESH_TIMEOUT_MS = Math.max(5000, envNumber('MIOBOT_MODEL_REFRESH_TIMEOUT_MS', 20000));
+const MODEL_REFRESH_STARTUP_DELAY_MS = Math.max(1000, envNumber('MIOBOT_MODEL_REFRESH_STARTUP_DELAY_MS', 45000));
+const MODEL_REFRESH_DAILY_HOUR = Math.max(0, Math.min(23, envNumber('MIOBOT_MODEL_REFRESH_DAILY_HOUR', 3)));
+const MODEL_REFRESH_DAILY_MINUTE = Math.max(0, Math.min(59, envNumber('MIOBOT_MODEL_REFRESH_DAILY_MINUTE', 20)));
 
 const sizePresets = [
   { id: 'square-1k', label: '1:1', width: 1024, height: 1024, description: 'Square composition' },
@@ -61,6 +69,11 @@ const stylePresets = [
   { id: 'poster', label: 'Poster', prompt: 'bold poster composition, strong focal point, refined typography space, cinematic color grading' },
   { id: 'avatar', label: 'Avatar', prompt: 'expressive avatar portrait, clean silhouette, high readability, distinctive character design' },
 ];
+
+function envNumber(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) ? value : fallback;
+}
 
 async function loadPersistedConfig() {
   try {
@@ -734,7 +747,7 @@ function startBackgroundJob(map, job, runner, logScope) {
       job.progress = 100;
       job.error = asErrorMessage(error);
       job.updatedAt = new Date().toISOString();
-      logCanvas('error', logScope, '后台任务失败', { jobId: job.id, durationMs: Date.now() - startedAt, error: job.error });
+      logCanvas('error', logScope, '后台任务失败', { jobId: job.id, durationMs: Date.now() - startedAt, error: job.error, errorDetails: errorLogDetails(error) });
     } finally {
       if (job.timer) clearInterval(job.timer);
       setTimeout(() => map.delete(job.id), 30 * 60 * 1000).unref?.();
@@ -772,6 +785,26 @@ function createInterrogationJob(image) {
 
 function asErrorMessage(error) {
   return error?.normalized?.message || error?.message || String(error);
+}
+
+function errorLogDetails(error) {
+  const normalized = error?.normalized || {};
+  return {
+    name: error?.name,
+    message: asErrorMessage(error),
+    category: normalized.category,
+    code: normalized.code,
+    status: normalized.status,
+    retryable: normalized.retryable,
+    details: normalized.details,
+    responsePreview: responseDataPreview(error?.responseData),
+  };
+}
+
+function responseDataPreview(value) {
+  if (value === undefined || value === null) return undefined;
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  return text.length > 1200 ? `${text.slice(0, 1200)}…` : text;
 }
 
 function imageMimeFromDataUrl(dataUrl) {
@@ -870,7 +903,87 @@ function createNodeAdapter(node, timeoutMs) {
     },
     timeoutMs,
     retryPolicy: { retries: 0, delayMs: 0 },
+    logger: createCanvasLlmLogger(node),
   });
+}
+
+function createCanvasLlmLogger(node) {
+  const nodeDetails = {
+    node: node?.name || '',
+    provider: node?.provider || '',
+    baseUrl: cleanupApiBaseUrl(node?.baseUrl || ''),
+  };
+  return {
+    info(message, details) {
+      logCanvas('debug', 'canvas.llm', message, { ...nodeDetails, ...sanitizeLlmLogDetails(details) });
+    },
+    warn(message, details) {
+      logCanvas('warn', 'canvas.llm', message, { ...nodeDetails, ...sanitizeLlmLogDetails(details) });
+    },
+    error(message, details) {
+      logCanvas('error', 'canvas.llm', message, { ...nodeDetails, ...sanitizeLlmLogDetails(details) });
+    },
+  };
+}
+
+function sanitizeLlmLogDetails(details = {}) {
+  const copy = details && typeof details === 'object' ? { ...details } : {};
+  if (copy.error && typeof copy.error === 'object') {
+    copy.error = {
+      name: copy.error.name,
+      message: copy.error.message,
+      category: copy.error.category,
+      code: copy.error.code,
+      status: copy.error.status,
+      retryable: copy.error.retryable,
+      details: copy.error.details,
+    };
+  }
+  return copy;
+}
+
+function normalizeModelName(value = '') {
+  return String(value || '').trim().toLowerCase();
+}
+
+function nodeSupportsModel(node, model) {
+  const expected = normalizeModelName(model);
+  if (!expected) return false;
+  const models = Array.isArray(node?.models) ? node.models : [];
+  return models.some((item) => normalizeModelName(item) === expected);
+}
+
+function canvasImageFallbackNodes(preferredNode, model) {
+  const cfg = currentConfig();
+  const nodes = Array.isArray(cfg.llm?.apiKeys) ? cfg.llm.apiKeys : [];
+  return nodes.filter((candidate) => {
+    if (!candidate || candidate === preferredNode) return false;
+    if (candidate.enabled === false || !candidate.baseUrl) return false;
+    return nodeSupportsModel(candidate, model);
+  });
+}
+
+function shouldFallbackCanvasImageNode(error) {
+  const normalized = error?.normalized || {};
+  const message = String(asErrorMessage(error) || '').toLowerCase();
+  const code = String(normalized.code || '').toLowerCase();
+  const status = Number(normalized.status);
+  return (
+    status === 404 ||
+    status >= 500 ||
+    normalized.category === 'network' ||
+    normalized.category === 'timeout' ||
+    message.includes('not found') ||
+    code.includes('not_found')
+  );
+}
+
+function canvasNodeLogDetails(node) {
+  return {
+    node: node?.name || '',
+    provider: node?.provider || '',
+    baseUrl: cleanupApiBaseUrl(node?.baseUrl || ''),
+  };
 }
 
 function normalizeNodeConnectionInput(baseUrlInput = '', keyInput = '') {
@@ -930,6 +1043,166 @@ async function fetchOpenAIModels(baseUrl, key, timeoutMs = 20000) {
     .map((item) => String(item || '').trim())
     .filter(Boolean);
   return [...new Set(models)].sort((a, b) => a.localeCompare(b));
+}
+
+function isHuggingFaceLikeNode(node = {}) {
+  const text = `${node.name || ''} ${node.baseUrl || ''}`.toLowerCase();
+  return text.includes('huggingface.co') || text.includes('hf.co') || text.includes('hugging face') || text.includes('huggingface');
+}
+
+function isModelListStale(node = {}, now = Date.now()) {
+  const fetchedAt = Date.parse(String(node.modelsFetchedAt || ''));
+  return !Number.isFinite(fetchedAt) || now - fetchedAt >= MODEL_REFRESH_INTERVAL_MS;
+}
+
+function nextDailyModelRefreshDelay(now = new Date()) {
+  const next = new Date(now);
+  next.setHours(MODEL_REFRESH_DAILY_HOUR, MODEL_REFRESH_DAILY_MINUTE, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  return Math.max(1000, next.getTime() - now.getTime());
+}
+
+function refreshableOpenAIModelNodes(nodes, force = false) {
+  const now = Date.now();
+  return nodes
+    .map((node, index) => ({ node, index }))
+    .filter(({ node }) => node && node.enabled !== false && node.baseUrl && !isHuggingFaceLikeNode(node))
+    .filter(({ node }) => force || isModelListStale(node, now));
+}
+
+function startModelListAutoRefresh() {
+  scheduleNextDailyModelRefresh();
+  startupModelRefreshTimer = setTimeout(() => {
+    refreshOpenAICompatibleModelLists({ reason: 'startup-stale', force: false }).catch((error) => {
+      logSystem('warn', 'admin.models.auto', '启动后自动刷新模型列表失败', { error: error?.message || String(error) });
+    });
+  }, MODEL_REFRESH_STARTUP_DELAY_MS);
+  startupModelRefreshTimer.unref?.();
+}
+
+function scheduleNextDailyModelRefresh() {
+  if (dailyModelRefreshTimer) clearTimeout(dailyModelRefreshTimer);
+  const delayMs = nextDailyModelRefreshDelay();
+  dailyModelRefreshTimer = setTimeout(() => {
+    refreshOpenAICompatibleModelLists({ reason: 'daily', force: true })
+      .catch((error) => {
+        logSystem('warn', 'admin.models.auto', '每日自动刷新模型列表失败', { error: error?.message || String(error) });
+      })
+      .finally(() => scheduleNextDailyModelRefresh());
+  }, delayMs);
+  dailyModelRefreshTimer.unref?.();
+  logSystem('info', 'admin.models.auto', '已安排每日自动刷新模型列表', {
+    dailyAt: `${String(MODEL_REFRESH_DAILY_HOUR).padStart(2, '0')}:${String(MODEL_REFRESH_DAILY_MINUTE).padStart(2, '0')}`,
+    nextRunInMs: delayMs,
+    excludes: ['Hugging Face'],
+  });
+}
+
+async function refreshOpenAICompatibleModelLists({ reason = 'manual', force = false } = {}) {
+  if (modelRefreshInFlight) return modelRefreshInFlight;
+  modelRefreshInFlight = refreshOpenAICompatibleModelListsInner({ reason, force })
+    .finally(() => {
+      modelRefreshInFlight = null;
+    });
+  return modelRefreshInFlight;
+}
+
+async function refreshOpenAICompatibleModelListsInner({ reason, force }) {
+  const startedAt = Date.now();
+  const cfg = currentConfig();
+  const nodes = Array.isArray(cfg.llm?.apiKeys) ? cfg.llm.apiKeys : [];
+  const targets = refreshableOpenAIModelNodes(nodes, force);
+  if (!targets.length) {
+    logSystem('debug', 'admin.models.auto', '没有需要自动刷新的 OpenAI 兼容模型节点', { reason, force, nodeCount: nodes.length });
+    return { refreshed: 0, failed: 0, skipped: nodes.length };
+  }
+
+  logSystem('info', 'admin.models.auto', '开始自动刷新 OpenAI 兼容模型列表', {
+    reason,
+    force,
+    targetCount: targets.length,
+    excludes: ['Hugging Face'],
+    timeoutMs: MODEL_REFRESH_TIMEOUT_MS,
+  });
+
+  const successes = [];
+  const failures = [];
+  const skippedEmpty = [];
+  for (const { node, index } of targets) {
+    try {
+      const models = await fetchOpenAIModels(node.baseUrl, node.key, MODEL_REFRESH_TIMEOUT_MS);
+      if (!models.length) {
+        skippedEmpty.push({ index, node: node.name, baseUrl: cleanupApiBaseUrl(node.baseUrl) });
+        logSystem('warn', 'admin.models.auto', '模型列表自动刷新返回空列表，已保留旧列表', {
+          index,
+          node: node.name,
+          baseUrl: cleanupApiBaseUrl(node.baseUrl),
+        });
+        continue;
+      }
+      successes.push({
+        index,
+        nodeName: node.name,
+        baseUrl: node.baseUrl,
+        key: node.key,
+        models,
+        fetchedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      failures.push({
+        index,
+        node: node.name,
+        baseUrl: cleanupApiBaseUrl(node.baseUrl),
+        error: error?.message || String(error),
+      });
+      logSystem('warn', 'admin.models.auto', '模型列表自动刷新单节点失败', failures[failures.length - 1]);
+    }
+  }
+
+  if (successes.length) {
+    const latestConfig = currentConfig();
+    const latestNodes = Array.isArray(latestConfig.llm?.apiKeys) ? latestConfig.llm.apiKeys : [];
+    const nextNodes = latestNodes.map((node, index) => {
+      const refreshed = successes.find((item) => item.index === index);
+      if (!refreshed) return node;
+      if (node.baseUrl !== refreshed.baseUrl || node.key !== refreshed.key) return node;
+      return { ...node, models: refreshed.models, modelsFetchedAt: refreshed.fetchedAt };
+    });
+    const saved = await persistSavedConfig(api.repository.saveConfig({ llm: { apiKeys: nextNodes } }));
+    logSelectedModelAvailabilityWarnings(saved.config);
+  }
+
+  const summary = {
+    reason,
+    refreshed: successes.length,
+    failed: failures.length,
+    skippedEmpty: skippedEmpty.length,
+    durationMs: Date.now() - startedAt,
+  };
+  logSystem(successes.length ? 'info' : failures.length ? 'warn' : 'debug', 'admin.models.auto', '自动刷新 OpenAI 兼容模型列表完成', summary);
+  return summary;
+}
+
+function logSelectedModelAvailabilityWarnings(cfg = currentConfig()) {
+  const nodes = Array.isArray(cfg.llm?.apiKeys) ? cfg.llm.apiKeys : [];
+  const checks = [
+    { section: 'canvas.image', nodeIndex: cfg.canvas?.imageNodeIndex, model: cfg.canvas?.imageModel },
+    { section: 'canvas.edit', nodeIndex: cfg.canvas?.editNodeIndex, model: cfg.canvas?.editModel },
+    { section: 'bot.image', nodeIndex: cfg.llm?.imageNodeIndex, model: cfg.llm?.imageModel },
+    { section: 'bot.edit', nodeIndex: cfg.llm?.editNodeIndex, model: cfg.llm?.editModel },
+  ];
+  for (const check of checks) {
+    const node = nodes[Math.max(0, Math.min(nodes.length - 1, Number(check.nodeIndex) || 0))];
+    if (!node || !check.model || !Array.isArray(node.models) || !node.models.length) continue;
+    if (nodeSupportsModel(node, check.model)) continue;
+    logSystem('warn', 'admin.models.auto', '当前配置的模型已不在刷新后的节点模型列表中，请在后台重新选择', {
+      section: check.section,
+      nodeIndex: Number(check.nodeIndex) || 0,
+      node: node.name,
+      model: check.model,
+      modelCount: node.models.length,
+    });
+  }
 }
 
 const HF_CHAT_PIPELINES = new Set([
@@ -1380,30 +1653,59 @@ async function runCanvasGeneration(mode, body = {}) {
     outputFormat,
   });
 
-  const adapter = createNodeAdapter(node, timeoutMs);
-  let result;
-  if (isEdit) {
-    const references = Array.isArray(body.referenceImages)
-      ? body.referenceImages
-      : body.referenceImage
-        ? [body.referenceImage]
-        : [];
-    const images = references
-      .map((image) => String(image?.dataUrl || image?.url || '').trim())
-      .filter(Boolean);
-    if (!images.length) throw new Error('改图缺少参考图。');
-    const mask = String(body.maskImage?.dataUrl || body.maskImage?.url || '').trim() || undefined;
-    result = await adapter.editImage({
+  const operation = isEdit ? 'image-edit' : 'image-generation';
+  const upstreamEndpoint = isEdit ? '/images/edits' : '/images/generations';
+  let referenceCount = 0;
+  let hasMask = false;
+  const references = isEdit
+    ? (Array.isArray(body.referenceImages)
+        ? body.referenceImages
+        : body.referenceImage
+          ? [body.referenceImage]
+          : [])
+    : [];
+  const images = references
+    .map((image) => String(image?.dataUrl || image?.url || '').trim())
+    .filter(Boolean);
+  referenceCount = images.length;
+  const mask = isEdit ? (String(body.maskImage?.dataUrl || body.maskImage?.url || '').trim() || undefined) : undefined;
+  hasMask = Boolean(mask);
+  if (isEdit && !images.length) throw new Error('\u6539\u56fe\u7f3a\u5c11\u53c2\u8003\u56fe\u3002');
+
+  const logUpstreamImageFailure = (attemptNode, error) => {
+    logCanvas('error', 'canvas.image', '\u4e0a\u6e38\u56fe\u50cf\u63a5\u53e3\u8c03\u7528\u5931\u8d25', {
+      operation,
+      upstreamEndpoint,
+      ...canvasNodeLogDetails(attemptNode),
       model,
-      prompt,
-      images,
-      mask,
-      size: size.api,
-      quality,
-      timeoutMs,
+      request: {
+        promptChars: rawPrompt.length,
+        size: size.api,
+        count,
+        quality: quality || 'auto',
+        outputFormat,
+        referenceCount,
+        hasMask,
+        timeoutMs,
+      },
+      error: errorLogDetails(error),
     });
-  } else {
-    result = await adapter.generateImages({
+  };
+
+  const invokeImageNode = async (targetNode) => {
+    const adapter = createNodeAdapter(targetNode, timeoutMs);
+    if (isEdit) {
+      return adapter.editImage({
+        model,
+        prompt,
+        images,
+        mask,
+        size: size.api,
+        quality,
+        timeoutMs,
+      });
+    }
+    return adapter.generateImages({
       model,
       prompt,
       size: size.api,
@@ -1411,6 +1713,35 @@ async function runCanvasGeneration(mode, body = {}) {
       quality,
       timeoutMs,
     });
+  };
+
+  let result;
+  try {
+    result = await invokeImageNode(node);
+  } catch (error) {
+    logUpstreamImageFailure(node, error);
+    if (!shouldFallbackCanvasImageNode(error)) throw error;
+    const fallbackNodes = canvasImageFallbackNodes(node, model);
+    if (!fallbackNodes.length) throw error;
+    let lastFallbackError = error;
+    for (const fallbackNode of fallbackNodes) {
+      logCanvas('warn', 'canvas.image', '\u5f53\u524d\u56fe\u50cf\u8282\u70b9\u4e0d\u53ef\u7528\uff0c\u81ea\u52a8\u5207\u6362\u5019\u9009\u8282\u70b9\u91cd\u8bd5', {
+        operation,
+        upstreamEndpoint,
+        model,
+        from: canvasNodeLogDetails(node),
+        to: canvasNodeLogDetails(fallbackNode),
+        reason: errorLogDetails(lastFallbackError),
+      });
+      try {
+        result = await invokeImageNode(fallbackNode);
+        break;
+      } catch (fallbackError) {
+        lastFallbackError = fallbackError;
+        logUpstreamImageFailure(fallbackNode, fallbackError);
+      }
+    }
+    if (!result) throw lastFallbackError;
   }
 
   if (!Array.isArray(result.images) || result.images.length === 0) {
@@ -1773,8 +2104,13 @@ const server = http.createServer(async (req, res) => {
       durationMs: Date.now() - startedAt,
       query: Object.fromEntries(requestUrl.searchParams.entries()),
     };
-    if (pathname.startsWith('/canvas-api/')) logCanvas(res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info', 'http.canvas', 'Canvas API request completed', details);
-    else logSystem(res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info', 'http.admin', 'Admin API request completed', details);
+    const level = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info';
+    const isRecoverPoll = pathname === '/canvas-api/gallery' && requestUrl.searchParams.has('recover');
+    if (pathname.startsWith('/canvas-api/')) {
+      logCanvas(isRecoverPoll && level === 'info' ? 'debug' : level, 'http.canvas', isRecoverPoll ? 'Canvas recovery poll completed' : 'Canvas API request completed', details);
+    } else {
+      logSystem(level, 'http.admin', 'Admin API request completed', details);
+    }
   });
   try {
     if (req.method === 'OPTIONS') return sendJson(res, 200, { ok: true });
@@ -1798,6 +2134,12 @@ server.listen(port, host, () => {
   console.log(`Miobot v2 admin/canvas server listening on http://${host}:${port}/`);
   logSystem('info', 'server', 'Web 服务已启动', { host, port, configPath, canvasStatePath, canvasAssetDir });
   logCanvas('info', 'canvas.server', '画布接口已启动', { host, port, canvasStatePath, canvasAssetDir, galleryItems: gallery.length, templateItems: interrogations.length });
+  startModelListAutoRefresh();
 });
-process.on('SIGTERM', () => server.close(() => process.exit(0)));
-process.on('SIGINT', () => server.close(() => process.exit(0)));
+function shutdown() {
+  if (dailyModelRefreshTimer) clearTimeout(dailyModelRefreshTimer);
+  if (startupModelRefreshTimer) clearTimeout(startupModelRefreshTimer);
+  server.close(() => process.exit(0));
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

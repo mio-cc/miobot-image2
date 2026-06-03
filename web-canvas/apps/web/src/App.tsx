@@ -117,6 +117,13 @@ interface GenerationRequestSnapshot {
 
 type GenerationJobStatus = "queued" | "running" | "succeeded" | "failed";
 
+class GenerationJobFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GenerationJobFailedError";
+  }
+}
+
 interface GenerationJob {
   id: string;
   mode: "generate" | "edit";
@@ -1010,6 +1017,16 @@ export function App() {
       }
       throw new Error("未找到可恢复的生成任务结果");
     } catch (error) {
+      if (error instanceof GenerationJobFailedError) {
+        updatePendingGalleryItem(pendingItem.outputId, {
+          clientStatus: "failed",
+          progress: 100,
+          error: error.message,
+          status: "failed"
+        });
+        scheduleRemovePendingGalleryItem(pendingItem.outputId);
+        return;
+      }
       const recovered = await recoverCompletedGeneration(entry.snapshot, pendingItem);
       if (recovered) {
         removeStoredPendingGeneration(pendingItem.outputId);
@@ -1156,6 +1173,16 @@ export function App() {
         }
       }
     } catch (error) {
+      if (error instanceof GenerationJobFailedError) {
+        updatePendingGalleryItem(pendingItem.outputId, {
+          clientStatus: "failed",
+          progress: 100,
+          error: error.message,
+          status: "failed"
+        });
+        scheduleRemovePendingGalleryItem(pendingItem.outputId);
+        return;
+      }
       updatePendingGalleryItem(pendingItem.outputId, {
         clientStatus: "running",
         progress: 96,
@@ -2716,7 +2743,7 @@ async function waitForGenerationJob(jobId: string, onPoll?: (job: GenerationJob)
     const job = data.job;
     onPoll?.(job);
     if (job.status === "succeeded" && job.record) return job.record;
-    if (job.status === "failed") throw new Error(job.error || "生成失败");
+    if (job.status === "failed") throw new GenerationJobFailedError(job.error || "生成失败");
   }
   throw new Error("生成任务等待超时，请稍后刷新作品库查看结果。");
 }
