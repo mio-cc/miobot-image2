@@ -196,7 +196,7 @@ function ensureCanvasConfig() {
       defaultQuality: 'auto',
       defaultOutputFormat: 'png',
       defaultCount: 1,
-      defaultSizePresetId: 'square-1k',
+      defaultSizePresetId: 'auto',
       defaultStylePresetId: 'none',
       interrogateNodeIndex: config.value.llm?.interrogateNodeIndex || config.value.llm?.chatNodeIndex || 0,
       interrogateModel: config.value.llm?.interrogateModel || config.value.llm?.chatModel || 'gpt-4o-mini',
@@ -208,14 +208,19 @@ function ensureCanvasConfig() {
       interrogateTemplateTimeoutMs: 300000,
       maxHistory: 50,
       dataDir: '',
+      brand: { logoText: 'Mio', pageTitle: 'Mio 图像画布', faviconUrl: '/canvas/favicon.ico' },
       logs: { enabled: true, level: 'info', maxMemoryEntries: 1000 },
     };
   }
   config.value.canvas.defaultQuality ||= 'auto';
   config.value.canvas.defaultOutputFormat ||= 'png';
   config.value.canvas.defaultCount ??= 1;
-  config.value.canvas.defaultSizePresetId ||= 'square-1k';
+  config.value.canvas.defaultSizePresetId ||= 'auto';
   config.value.canvas.defaultStylePresetId ||= 'none';
+  if (!config.value.canvas.brand) config.value.canvas.brand = {};
+  config.value.canvas.brand.logoText ||= 'Mio';
+  config.value.canvas.brand.pageTitle ||= 'Mio 图像画布';
+  config.value.canvas.brand.faviconUrl ||= '/canvas/favicon.ico';
   config.value.canvas.interrogateNodeIndex ??= config.value.llm?.interrogateNodeIndex ?? config.value.llm?.chatNodeIndex ?? 0;
   config.value.canvas.interrogateModel ||= config.value.llm?.interrogateModel || config.value.llm?.chatModel || 'gpt-4o-mini';
   config.value.canvas.interrogatePromptTemplate ||= config.value.llm?.interrogatePromptTemplate || defaultPrompts.value?.interrogatePromptTemplate || '请分析这张图片，并反推一段适合图像生成模型复现它的提示词。';
@@ -2645,6 +2650,31 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                   <a href="/canvas" target="_blank" class="btn-outline text-xs py-1.5 px-3">打开画布</a>
                 </div>
               </div>
+
+              <div class="mb-4 rounded-2xl border border-indigo-500/10 bg-indigo-500/5 p-4">
+                <div class="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <h3 class="text-sm font-bold text-white">前台品牌显示</h3>
+                    <p class="text-[11px] text-zinc-500">控制画布页左上角 Logo 文案、浏览器标签标题和 Favicon / ICO。</p>
+                  </div>
+                  <span class="rounded-full border border-indigo-400/20 bg-indigo-400/10 px-2.5 py-1 text-[10px] font-bold text-indigo-200">保存配置后刷新画布生效</span>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                  <div>
+                    <label class="label-sm">Logo 字</label>
+                    <input v-model="config.canvas.brand.logoText" class="input-field font-mono" placeholder="Mio" />
+                  </div>
+                  <div>
+                    <label class="label-sm">浏览器标签</label>
+                    <input v-model="config.canvas.brand.pageTitle" class="input-field" placeholder="Mio 图像画布" />
+                  </div>
+                  <div class="md:col-span-2">
+                    <label class="label-sm">ICO / Favicon URL</label>
+                    <input v-model="config.canvas.brand.faviconUrl" class="input-field font-mono" placeholder="/canvas/favicon.ico 或 https://.../favicon.ico" />
+                    <p class="mt-1 text-[10px] text-zinc-500">支持站内路径、HTTPS 图片地址或 data:image/...；留空会回退到默认图标。</p>
+                  </div>
+                </div>
+              </div>
               
               <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
                 <label class="flex items-center justify-between gap-3 rounded-xl border border-white/5 bg-zinc-900/40 px-3.5 py-2.5 cursor-pointer">
@@ -2737,6 +2767,7 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                 <div>
                   <label class="label-sm">默认尺寸</label>
                   <select v-model="config.canvas.defaultSizePresetId" class="input-field font-mono">
+                    <option value="auto">自动（模型决定）</option>
                     <option value="square-1k">1:1 方图 1024×1024</option>
                     <option value="poster-portrait">2:3 竖版海报 1024×1536</option>
                     <option value="portrait-2k">3:4 竖图 1152×1536</option>

@@ -77,9 +77,16 @@ interface UploadedImage extends ReferenceImageInput {
   previewUrl: string;
 }
 
+interface CanvasBrandConfig {
+  logoText: string;
+  pageTitle: string;
+  faviconUrl: string;
+}
+
 interface CanvasRuntimeConfig {
   model: string;
   models: string[];
+  brand: CanvasBrandConfig;
   sizePresets: SizePreset[];
   qualities: ImageQuality[];
   outputFormats: OutputFormat[];
@@ -153,6 +160,21 @@ interface InterrogationJobResponse {
   job: InterrogationJob;
 }
 
+interface StoredPendingGeneration {
+  version: 1;
+  createdAt: number;
+  pendingItem: GalleryCardItem;
+  snapshot: GenerationRequestSnapshot;
+  jobId?: string;
+}
+
+interface StoredPendingInterrogation {
+  version: 1;
+  createdAt: number;
+  pendingItem: InterrogationCardItem;
+  jobId?: string;
+}
+
 const MAX_REFERENCE_IMAGES = 3;
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const SUPPORTED_UPLOAD_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
@@ -165,11 +187,23 @@ const LIGHTBOX_IMAGE_SIZES = "100vw";
 const LIGHTBOX_MIN_ZOOM = 0.25;
 const LIGHTBOX_MAX_ZOOM = 6;
 const COLLECTION_FETCH_LIMIT = 120;
+const CARD_PROMPT_PREVIEW_CHARS = 180;
+const INITIAL_COLLECTION_RENDER_LIMIT = 72;
+const COLLECTION_RENDER_BATCH_SIZE = 24;
+const SEARCH_DEBOUNCE_MS = 180;
+const PENDING_GENERATION_STORAGE_KEY = "miobot.canvas.pending.generations.v1";
+const PENDING_INTERROGATION_STORAGE_KEY = "miobot.canvas.pending.interrogations.v1";
+const PENDING_JOB_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 type ReferenceStatusFilter = "all" | "done" | "failed";
 
 const fallbackRuntimeConfig: CanvasRuntimeConfig = {
   model: "gpt-image-2",
   models: ["gpt-image-2"],
+  brand: {
+    logoText: "Mio",
+    pageTitle: "Mio 图像画布",
+    faviconUrl: "/canvas/favicon.ico"
+  },
   sizePresets: SIZE_PRESETS,
   qualities: IMAGE_QUALITIES,
   outputFormats: OUTPUT_FORMATS,
@@ -178,7 +212,7 @@ const fallbackRuntimeConfig: CanvasRuntimeConfig = {
     quality: "auto",
     outputFormat: "png",
     count: 1,
-    sizePresetId: "square-1k"
+    sizePresetId: AUTO_SIZE_PRESET_ID
   }
 };
 
@@ -271,8 +305,10 @@ export function App() {
   const [galleryQuery, setGalleryQuery] = useState("");
   const [interrogateItems, setInterrogateItems] = useState<InterrogationCardItem[]>([]);
   const [interrogateQuery, setInterrogateQuery] = useState("");
-  const deferredGalleryQuery = useDeferredValue(galleryQuery);
-  const deferredInterrogateQuery = useDeferredValue(interrogateQuery);
+  const debouncedGalleryQuery = useDebouncedValue(galleryQuery, SEARCH_DEBOUNCE_MS);
+  const debouncedInterrogateQuery = useDebouncedValue(interrogateQuery, SEARCH_DEBOUNCE_MS);
+  const deferredGalleryQuery = useDeferredValue(debouncedGalleryQuery);
+  const deferredInterrogateQuery = useDeferredValue(debouncedInterrogateQuery);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [statusFilter, setStatusFilter] = useState<ReferenceStatusFilter>("all");
   const [isGenerationOpen, setIsGenerationOpen] = useState(true);
@@ -340,11 +376,15 @@ export function App() {
     if (galleryItems.length) return filteredGalleryItems;
     return [];
   }, [filteredGalleryItems, galleryItems.length]);
+  const galleryRenderLimit = useProgressiveRenderLimit(visibleGalleryItems.length, INITIAL_COLLECTION_RENDER_LIMIT, COLLECTION_RENDER_BATCH_SIZE);
+  const renderedGalleryItems = useMemo(() => visibleGalleryItems.slice(0, galleryRenderLimit), [galleryRenderLimit, visibleGalleryItems]);
 
   const visibleInterrogateItems = useMemo(() => {
     if (interrogateItems.length) return filteredInterrogateItems;
     return [];
   }, [filteredInterrogateItems, interrogateItems.length]);
+  const interrogateRenderLimit = useProgressiveRenderLimit(visibleInterrogateItems.length, INITIAL_COLLECTION_RENDER_LIMIT, COLLECTION_RENDER_BATCH_SIZE);
+  const renderedInterrogateItems = useMemo(() => visibleInterrogateItems.slice(0, interrogateRenderLimit), [interrogateRenderLimit, visibleInterrogateItems]);
 
   const selectedLightboxItem = lightboxState?.kind === "gallery" ? visibleGalleryItems[lightboxState.index] ?? null : null;
   const selectedInterrogateLightboxItem = lightboxState?.kind === "interrogate" ? visibleInterrogateItems[lightboxState.index] ?? null : null;
@@ -403,6 +443,7 @@ export function App() {
   );
   const promptCharacterCount = prompt.trim().length;
   const primaryReferenceImage = referenceImages[0] ?? null;
+  const brandLogoText = runtimeConfig.brand.logoText || fallbackRuntimeConfig.brand.logoText;
 
   const refreshGallery = useCallback(async (signal?: AbortSignal) => {
     setIsGalleryLoading(true);
@@ -415,7 +456,8 @@ export function App() {
       })}`), { signal });
       if (!response.ok) throw new Error(await readApiError(response, "图库加载失败"));
       const body = (await response.json()) as GalleryResponse;
-      setGalleryItems(Array.isArray(body.items) ? body.items : []);
+      const fetchedItems = Array.isArray(body.items) ? body.items : [];
+      setGalleryItems((current) => mergeFetchedGalleryItems(fetchedItems, current));
     } catch (error) {
       if (isAbortError(error)) return;
       const message = error instanceof Error ? error.message : "图库加载失败";
@@ -437,7 +479,8 @@ export function App() {
       })}`), { signal });
       if (!response.ok) throw new Error(await readApiError(response, "模板库加载失败"));
       const body = (await response.json()) as InterrogationResponse;
-      setInterrogateItems(Array.isArray(body.items) ? body.items : []);
+      const fetchedItems = Array.isArray(body.items) ? body.items : [];
+      setInterrogateItems((current) => mergeFetchedInterrogationItems(fetchedItems, current));
     } catch (error) {
       if (isAbortError(error)) return;
       const message = error instanceof Error ? error.message : "模板库加载失败";
@@ -475,6 +518,42 @@ export function App() {
     return () => {
       disposed = true;
     };
+  }, []);
+
+  useEffect(() => {
+    applyDocumentBrand(runtimeConfig.brand);
+  }, [runtimeConfig.brand]);
+
+  useEffect(() => {
+    const pendingGenerations = readStoredPendingGenerations();
+    if (pendingGenerations.length) {
+      setGalleryItems((current) => mergeFetchedGalleryItems([], [
+        ...pendingGenerations.map((entry) => ({
+          ...entry.pendingItem,
+          clientStatus: (entry.pendingItem.clientStatus === "failed" ? "failed" : "running") as ClientCardStatus,
+          progress: Math.max(entry.pendingItem.progress ?? 12, 12)
+        })),
+        ...current
+      ]));
+      pendingGenerations.forEach((entry) => {
+        void resumePendingGeneration(entry);
+      });
+    }
+
+    const pendingInterrogations = readStoredPendingInterrogations();
+    if (pendingInterrogations.length) {
+      setInterrogateItems((current) => mergeFetchedInterrogationItems([], [
+        ...pendingInterrogations.map((entry) => ({
+          ...entry.pendingItem,
+          clientStatus: (entry.pendingItem.clientStatus === "failed" ? "failed" : "running") as ClientCardStatus,
+          progress: Math.max(entry.pendingItem.progress ?? 12, 12)
+        })),
+        ...current
+      ]));
+      pendingInterrogations.forEach((entry) => {
+        void resumePendingInterrogation(entry);
+      });
+    }
   }, []);
 
   useEffect(() => {
@@ -718,36 +797,48 @@ export function App() {
   }
 
   async function submitInterrogation() {
-    if (!interrogateImage) {
+    const sourceImage = interrogateImage;
+    if (!sourceImage) {
       setInterrogateError("请先上传一张图片。");
       return;
     }
 
-    const pendingItem = createPendingInterrogationItem(interrogateImage);
+    const pendingItem = createPendingInterrogationItem(sourceImage);
+    const imageInput = toReferenceImageInput(sourceImage);
+    upsertStoredPendingInterrogation({
+      version: 1,
+      createdAt: Date.now(),
+      pendingItem
+    });
     setIsInterrogating(true);
     setInterrogateError("");
     setInterrogateStatus("");
     setActiveTab("interrogate");
     setMobileView("gallery");
     setInterrogateItems((current) => [pendingItem, ...current]);
+    resetInterrogationForm();
     try {
       const response = await fetch(apiPath("/interrogate?async=1"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: toReferenceImageInput(interrogateImage) })
+        body: JSON.stringify({ image: imageInput })
       });
       if (!response.ok) throw new Error(await readApiError(response, "反推失败"));
       const data = (await response.json()) as InterrogateImageResult | InterrogationJobResponse;
-      const item = isInterrogationJobResponse(data)
-        ? await waitForInterrogationJob(data.job.id, (job) => {
+      let item: InterrogationItem;
+      if (isInterrogationJobResponse(data)) {
+        patchStoredPendingInterrogation(pendingItem.id, { jobId: data.job.id });
+        item = await waitForInterrogationJob(data.job.id, (job) => {
           updatePendingInterrogationItem(pendingItem.id, {
             clientStatus: job.status === "queued" ? "queued" : "running",
             progress: clamp(Math.round(job.progress ?? 10), 6, 98)
           });
-        })
-        : data.item;
+        });
+      } else {
+        item = data.item;
+      }
       setInterrogateItems((current) => [item, ...current.filter((entry) => entry.id !== item.id && entry.id !== pendingItem.id)]);
-      setInterrogateImage(null);
+      removeStoredPendingInterrogation(pendingItem.id);
       setInterrogateStatus("已反推并保存到模板库。");
     } catch (error) {
       updatePendingInterrogationItem(pendingItem.id, {
@@ -847,15 +938,114 @@ export function App() {
   }
 
   function scheduleRemovePendingGalleryItem(id: string) {
+    removeStoredPendingGeneration(id);
     window.setTimeout(() => {
       setGalleryItems((current) => current.filter((item) => item.outputId !== id));
     }, 1000);
   }
 
   function scheduleRemovePendingInterrogationItem(id: string) {
+    removeStoredPendingInterrogation(id);
     window.setTimeout(() => {
       setInterrogateItems((current) => current.filter((item) => item.id !== id));
     }, 1000);
+  }
+
+  function resetGenerationForm() {
+    const defaultSizePresetId = runtimeConfig.defaults.sizePresetId || AUTO_SIZE_PRESET_ID;
+    setPrompt("");
+    setMode("text");
+    setReferenceImages([]);
+    setMaskImage(null);
+    setQuality(runtimeConfig.defaults.quality);
+    setOutputFormat(runtimeConfig.defaults.outputFormat);
+    setCount(runtimeConfig.defaults.count);
+    setSizePresetId(defaultSizePresetId);
+    setSize(sizeForPreset(runtimeConfig.sizePresets, defaultSizePresetId));
+    setNotice(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function resetInterrogationForm() {
+    setInterrogateImage(null);
+    setInterrogateError("");
+    setInterrogateStatus("");
+    if (interrogateInputRef.current) interrogateInputRef.current.value = "";
+  }
+
+  function mergeGenerationRecordIntoGallery(record: GenerationRecord, pendingId: string): GalleryImageItem[] {
+    const nextGalleryItems = galleryItemsForRecord(record);
+    if (nextGalleryItems.length) {
+      setGalleryItems((current) => [
+        ...nextGalleryItems,
+        ...current.filter((item) => item.outputId !== pendingId && !nextGalleryItems.some((nextItem) => nextItem.outputId === item.outputId))
+      ]);
+    }
+    return nextGalleryItems;
+  }
+
+  async function resumePendingGeneration(entry: StoredPendingGeneration) {
+    const pendingItem = entry.pendingItem;
+    updatePendingGalleryItem(pendingItem.outputId, { clientStatus: "running", progress: Math.max(pendingItem.progress ?? 12, 12) });
+    try {
+      let record: GenerationRecord | null = null;
+      if (entry.jobId) {
+        record = await waitForGenerationJob(entry.jobId, (job) => {
+          updatePendingGalleryItem(pendingItem.outputId, {
+            clientStatus: job.status === "queued" ? "queued" : "running",
+            progress: clamp(Math.round(job.progress ?? 10), 6, 98)
+          });
+        });
+      }
+      if (record) {
+        mergeGenerationRecordIntoGallery(record, pendingItem.outputId);
+        setLastRequest(entry.snapshot);
+        removeStoredPendingGeneration(pendingItem.outputId);
+        return;
+      }
+      const recovered = await recoverCompletedGeneration(entry.snapshot, pendingItem);
+      if (recovered) {
+        removeStoredPendingGeneration(pendingItem.outputId);
+        return;
+      }
+      throw new Error("未找到可恢复的生成任务结果");
+    } catch (error) {
+      const recovered = await recoverCompletedGeneration(entry.snapshot, pendingItem);
+      if (recovered) {
+        removeStoredPendingGeneration(pendingItem.outputId);
+        return;
+      }
+      updatePendingGalleryItem(pendingItem.outputId, {
+        clientStatus: "failed",
+        progress: 100,
+        error: error instanceof Error ? error.message : "生成任务恢复失败",
+        status: "failed"
+      });
+      scheduleRemovePendingGalleryItem(pendingItem.outputId);
+    }
+  }
+
+  async function resumePendingInterrogation(entry: StoredPendingInterrogation) {
+    const pendingItem = entry.pendingItem;
+    updatePendingInterrogationItem(pendingItem.id, { clientStatus: "running", progress: Math.max(pendingItem.progress ?? 12, 12) });
+    try {
+      if (!entry.jobId) throw new Error("未拿到反推任务 ID，无法恢复轮询");
+      const item = await waitForInterrogationJob(entry.jobId, (job) => {
+        updatePendingInterrogationItem(pendingItem.id, {
+          clientStatus: job.status === "queued" ? "queued" : "running",
+          progress: clamp(Math.round(job.progress ?? 10), 6, 98)
+        });
+      });
+      setInterrogateItems((current) => [item, ...current.filter((entryItem) => entryItem.id !== item.id && entryItem.id !== pendingItem.id)]);
+      removeStoredPendingInterrogation(pendingItem.id);
+    } catch (error) {
+      updatePendingInterrogationItem(pendingItem.id, {
+        clientStatus: "failed",
+        progress: 100,
+        error: error instanceof Error ? error.message : "生成任务恢复失败"
+      });
+      scheduleRemovePendingInterrogationItem(pendingItem.id);
+    }
   }
 
   function mergeRecoveredGalleryItems(recoveredItems: GalleryImageItem[], pendingId: string) {
@@ -907,12 +1097,19 @@ export function App() {
     }
 
     const pendingItem = createPendingGalleryItem(snapshot);
+    upsertStoredPendingGeneration({
+      version: 1,
+      createdAt: Date.now(),
+      pendingItem,
+      snapshot
+    });
     setIsGenerating(true);
     setNotice(null);
     setLatestRecord(null);
     setActiveTab("gallery");
     setMobileView("gallery");
     setGalleryItems((current) => [pendingItem, ...current]);
+    resetGenerationForm();
 
     try {
       const response = await fetch(apiPath(`${snapshot.endpoint}?async=1`), {
@@ -922,25 +1119,22 @@ export function App() {
       });
       if (!response.ok) throw new Error(await readApiError(response, "生成失败"));
       const data = (await response.json()) as GenerationResponse | GenerationJobResponse;
-      const record = isGenerationJobResponse(data)
-        ? await waitForGenerationJob(data.job.id, (job) => {
+      let record: GenerationRecord;
+      if (isGenerationJobResponse(data)) {
+        patchStoredPendingGeneration(pendingItem.outputId, { jobId: data.job.id });
+        record = await waitForGenerationJob(data.job.id, (job) => {
           updatePendingGalleryItem(pendingItem.outputId, {
             clientStatus: job.status === "queued" ? "queued" : "running",
             progress: clamp(Math.round(job.progress ?? 10), 6, 98)
           });
-        })
-        : data.record;
+        });
+      } else {
+        record = data.record;
+      }
       setLatestRecord(record);
       setLastRequest(snapshot);
 
-      const nextGalleryItems = galleryItemsForRecord(record);
-      if (nextGalleryItems.length) {
-        setGalleryItems((current) => [
-          ...nextGalleryItems,
-          ...current.filter((item) => item.outputId !== pendingItem.outputId && !nextGalleryItems.some((nextItem) => nextItem.outputId === item.outputId))
-        ]);
-      }
-
+      const nextGalleryItems = mergeGenerationRecordIntoGallery(record, pendingItem.outputId);
       const succeededCount = nextGalleryItems.length;
       const failedCount = record.outputs.filter((output) => output.status === "failed").length;
       if (succeededCount > 0 && activeTab === "interrogate") {
@@ -955,8 +1149,11 @@ export function App() {
           status: "failed"
         });
         scheduleRemovePendingGalleryItem(pendingItem.outputId);
-      } else if (failedCount > 0) {
-        setToast({ tone: "warning", message: `${failedCount} 张生成失败，其余已保存到画廊。` });
+      } else {
+        removeStoredPendingGeneration(pendingItem.outputId);
+        if (failedCount > 0) {
+          setToast({ tone: "warning", message: `${failedCount} 张生成失败，其余已保存到画廊。` });
+        }
       }
     } catch (error) {
       updatePendingGalleryItem(pendingItem.outputId, {
@@ -966,7 +1163,9 @@ export function App() {
         status: undefined
       });
       const recovered = await recoverCompletedGeneration(snapshot, pendingItem);
-      if (!recovered) {
+      if (recovered) {
+        removeStoredPendingGeneration(pendingItem.outputId);
+      } else {
         updatePendingGalleryItem(pendingItem.outputId, {
           clientStatus: "failed",
           progress: 100,
@@ -1227,9 +1426,9 @@ export function App() {
       >
         <div className="safe-area-x safe-header-inner canvas-header-main max-w-7xl mx-auto flex items-center justify-between relative">
           <div className="flex-1 min-w-0 pr-2 flex items-center gap-2">
-            <h1 className="inline-flex items-start relative mr-2">
+            <h1 className="hidden sm:inline-flex items-start relative mr-2">
               <span className="text-[17px] sm:text-lg font-bold tracking-tight text-gray-800 hover:text-gray-600 transition-colors">
-                Mio
+                {brandLogoText}
               </span>
             </h1>
           </div>
@@ -1324,7 +1523,7 @@ export function App() {
             </div>
           ) : visibleGalleryItems.length ? (
             <div className="masonry-gallery">
-              {visibleGalleryItems.map((item) => (
+              {renderedGalleryItems.map((item, index) => (
                 <article className="masonry-card" data-client-status={item.clientStatus || "ready"} key={item.outputId}>
                   {item.clientStatus ? (
                     <div
@@ -1352,7 +1551,7 @@ export function App() {
                         width={item.asset.width}
                         height={item.asset.height}
                         decoding="async"
-                        loading="lazy"
+                        loading={index < 4 ? "eager" : "lazy"}
                       />
                       <span className="zoom-pill">
                         <Maximize2 className="icon" aria-hidden="true" />
@@ -1383,7 +1582,7 @@ export function App() {
                       aria-label={`复制完整提示词：${promptExcerpt(item.prompt, 40)}`}
                       onClick={() => void copyPrompt(item.prompt, "提示词")}
                     >
-                      {item.prompt}
+                      {cardPromptPreview(item.prompt)}
                     </button>
                     <div className="masonry-card__meta">
                       <span>{item.clientStatus === "failed" ? "生成失败" : item.clientStatus ? "生成中" : `${item.size.width}x${item.size.height}`}</span>
@@ -1423,7 +1622,7 @@ export function App() {
               </div>
             ) : visibleInterrogateItems.length ? (
               <div className="masonry-gallery masonry-gallery--interrogate">
-                {visibleInterrogateItems.map((item) => (
+                {renderedInterrogateItems.map((item, index) => (
                   <article className="masonry-card" data-client-status={item.clientStatus || "ready"} key={item.id}>
                     {item.clientStatus ? (
                       <div
@@ -1452,7 +1651,7 @@ export function App() {
                           width={item.asset.width}
                           height={item.asset.height}
                           decoding="async"
-                          loading="lazy"
+                          loading={index < 4 ? "eager" : "lazy"}
                         />
                         <span className="zoom-pill">
                           <Maximize2 className="icon" aria-hidden="true" />
@@ -1483,7 +1682,7 @@ export function App() {
                         aria-label={`复制完整模板提示词：${promptExcerpt(item.templatePrompt || item.prompt, 40)}`}
                         onClick={() => void copyPrompt(item.templatePrompt || item.prompt, "模板提示词")}
                       >
-                        {item.templatePrompt || item.prompt}
+                        {cardPromptPreview(item.templatePrompt || item.prompt)}
                       </button>
                       <div className="masonry-card__meta">
                         <span>{item.clientStatus === "failed" ? "反推失败" : item.clientStatus ? "反推中" : "反推"}</span>
@@ -2214,9 +2413,161 @@ function MaskBrushEditor({ image, onMaskChange }: { image: UploadedImage; onMask
   );
 }
 
+function normalizeBrandConfig(value: unknown): CanvasBrandConfig {
+  const record = isRecord(value) ? value : {};
+  const logoText = normalizeBrandString(record.logoText, fallbackRuntimeConfig.brand.logoText);
+  const pageTitle = normalizeBrandString(record.pageTitle, fallbackRuntimeConfig.brand.pageTitle);
+  const faviconUrl = normalizeBrandString(record.faviconUrl, fallbackRuntimeConfig.brand.faviconUrl);
+  return { logoText, pageTitle, faviconUrl };
+}
+
+function normalizeBrandString(value: unknown, fallback: string): string {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text || fallback;
+}
+
+function applyDocumentBrand(brand: CanvasBrandConfig) {
+  const nextBrand = normalizeBrandConfig(brand);
+  document.title = nextBrand.pageTitle;
+  if (!nextBrand.faviconUrl) return;
+
+  let link = document.querySelector<HTMLLinkElement>('link[rel~="icon"]');
+  if (!link) {
+    link = document.createElement("link");
+    link.rel = "icon";
+    document.head.appendChild(link);
+  }
+  link.href = nextBrand.faviconUrl;
+  link.type = faviconMimeType(nextBrand.faviconUrl);
+}
+
+function faviconMimeType(url: string): string {
+  const clean = url.split("?")[0]?.toLowerCase() ?? "";
+  if (clean.endsWith(".svg")) return "image/svg+xml";
+  if (clean.endsWith(".png")) return "image/png";
+  if (clean.endsWith(".jpg") || clean.endsWith(".jpeg")) return "image/jpeg";
+  if (clean.endsWith(".webp")) return "image/webp";
+  return "image/x-icon";
+}
+
+function mergeFetchedGalleryItems(fetchedItems: GalleryImageItem[], currentItems: GalleryCardItem[]): GalleryCardItem[] {
+  const pendingItems = currentItems.filter(isPendingGalleryItem);
+  const seen = new Set<string>();
+  return [...pendingItems, ...fetchedItems].filter((item) => {
+    const id = item.outputId;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
+function mergeFetchedInterrogationItems(fetchedItems: InterrogationItem[], currentItems: InterrogationCardItem[]): InterrogationCardItem[] {
+  const pendingItems = currentItems.filter(isPendingInterrogationItem);
+  const seen = new Set<string>();
+  return [...pendingItems, ...fetchedItems].filter((item) => {
+    const id = item.id;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
+function isPendingGalleryItem(item: GalleryCardItem): boolean {
+  return Boolean(item.clientStatus) || item.outputId.startsWith("pending-");
+}
+
+function isPendingInterrogationItem(item: InterrogationCardItem): boolean {
+  return Boolean(item.clientStatus) || item.id.startsWith("pending-int-");
+}
+
+function readStoredPendingGenerations(): StoredPendingGeneration[] {
+  return readStoredPendingList<StoredPendingGeneration>(PENDING_GENERATION_STORAGE_KEY).filter(isStoredPendingGeneration);
+}
+
+function readStoredPendingInterrogations(): StoredPendingInterrogation[] {
+  return readStoredPendingList<StoredPendingInterrogation>(PENDING_INTERROGATION_STORAGE_KEY).filter(isStoredPendingInterrogation);
+}
+
+function upsertStoredPendingGeneration(entry: StoredPendingGeneration) {
+  const entries = readStoredPendingGenerations().filter((item) => item.pendingItem.outputId !== entry.pendingItem.outputId);
+  writeStoredPendingList(PENDING_GENERATION_STORAGE_KEY, [entry, ...entries]);
+}
+
+function upsertStoredPendingInterrogation(entry: StoredPendingInterrogation) {
+  const entries = readStoredPendingInterrogations().filter((item) => item.pendingItem.id !== entry.pendingItem.id);
+  writeStoredPendingList(PENDING_INTERROGATION_STORAGE_KEY, [sanitizeStoredPendingInterrogation(entry), ...entries]);
+}
+
+
+function sanitizeStoredPendingInterrogation(entry: StoredPendingInterrogation): StoredPendingInterrogation {
+  return {
+    ...entry,
+    pendingItem: {
+      ...entry.pendingItem,
+      asset: {
+        ...entry.pendingItem.asset,
+        url: ""
+      }
+    }
+  };
+}
+
+function patchStoredPendingGeneration(id: string, patch: Partial<StoredPendingGeneration>) {
+  const entries = readStoredPendingGenerations().map((entry) => entry.pendingItem.outputId === id ? { ...entry, ...patch } : entry);
+  writeStoredPendingList(PENDING_GENERATION_STORAGE_KEY, entries);
+}
+
+function patchStoredPendingInterrogation(id: string, patch: Partial<StoredPendingInterrogation>) {
+  const entries = readStoredPendingInterrogations().map((entry) => entry.pendingItem.id === id ? { ...entry, ...patch } : entry);
+  writeStoredPendingList(PENDING_INTERROGATION_STORAGE_KEY, entries);
+}
+
+function removeStoredPendingGeneration(id: string) {
+  const entries = readStoredPendingGenerations().filter((entry) => entry.pendingItem.outputId !== id);
+  writeStoredPendingList(PENDING_GENERATION_STORAGE_KEY, entries);
+}
+
+function removeStoredPendingInterrogation(id: string) {
+  const entries = readStoredPendingInterrogations().filter((entry) => entry.pendingItem.id !== id);
+  writeStoredPendingList(PENDING_INTERROGATION_STORAGE_KEY, entries);
+}
+
+function readStoredPendingList<T>(key: string): T[] {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed as T[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredPendingList<T>(key: string, entries: T[]) {
+  try {
+    if (entries.length) window.localStorage.setItem(key, JSON.stringify(entries));
+    else window.localStorage.removeItem(key);
+  } catch {
+    // localStorage may be disabled; pending cards still work in-memory for this session.
+  }
+}
+
+function isStoredPendingGeneration(value: StoredPendingGeneration): value is StoredPendingGeneration {
+  if (!isRecord(value) || value.version !== 1 || typeof value.createdAt !== "number") return false;
+  if (Date.now() - value.createdAt > PENDING_JOB_MAX_AGE_MS) return false;
+  return isRecord(value.pendingItem) && typeof value.pendingItem.outputId === "string" && isRecord(value.snapshot);
+}
+
+function isStoredPendingInterrogation(value: StoredPendingInterrogation): value is StoredPendingInterrogation {
+  if (!isRecord(value) || value.version !== 1 || typeof value.createdAt !== "number") return false;
+  if (Date.now() - value.createdAt > PENDING_JOB_MAX_AGE_MS) return false;
+  return isRecord(value.pendingItem) && typeof value.pendingItem.id === "string";
+}
+
 function normalizeRuntimeConfig(value: unknown): CanvasRuntimeConfig {
   const record = isRecord(value) ? value : {};
   const defaults = isRecord(record.defaults) ? record.defaults : {};
+  const brand = normalizeBrandConfig(record.brand);
   const sizePresets = normalizeSizePresets(record.sizePresets);
   const qualities = normalizeArray(record.qualities, IMAGE_QUALITIES, isImageQuality);
   const outputFormats = normalizeArray(record.outputFormats, OUTPUT_FORMATS, isOutputFormat);
@@ -2233,6 +2584,7 @@ function normalizeRuntimeConfig(value: unknown): CanvasRuntimeConfig {
   return {
     model: typeof record.model === "string" ? record.model : fallbackRuntimeConfig.model,
     models: Array.isArray(record.models) ? record.models.map(String).filter(Boolean) : fallbackRuntimeConfig.models,
+    brand,
     sizePresets,
     qualities,
     outputFormats,
@@ -2632,8 +2984,45 @@ function promptExcerpt(value: string, maxLength: number): string {
   return compact.length > maxLength ? `${compact.slice(0, maxLength)}...` : compact;
 }
 
+function cardPromptPreview(value: string): string {
+  const compact = value.replace(/\s+/gu, " ").trim();
+  if (compact.length <= CARD_PROMPT_PREVIEW_CHARS) return compact;
+  return `${compact.slice(0, CARD_PROMPT_PREVIEW_CHARS).trim()}…`;
+}
+
 function normalizeSearch(value: string): string {
   return value.replace(/\s+/gu, " ").trim().toLocaleLowerCase();
+}
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), Math.max(0, delayMs));
+    return () => window.clearTimeout(timer);
+  }, [delayMs, value]);
+
+  return debounced;
+}
+
+function useProgressiveRenderLimit(total: number, initialLimit: number, batchSize: number): number {
+  const normalizedInitial = Math.max(1, initialLimit);
+  const normalizedBatch = Math.max(1, batchSize);
+  const [limit, setLimit] = useState(() => Math.min(total, normalizedInitial));
+
+  useEffect(() => {
+    setLimit(Math.min(total, normalizedInitial));
+  }, [normalizedInitial, total]);
+
+  useEffect(() => {
+    if (limit >= total) return;
+    const timer = window.setTimeout(() => {
+      setLimit((current) => Math.min(total, current + normalizedBatch));
+    }, 48);
+    return () => window.clearTimeout(timer);
+  }, [limit, normalizedBatch, total]);
+
+  return Math.min(limit, total);
 }
 
 function normalizeWheelDelta(event: WheelEvent): number {

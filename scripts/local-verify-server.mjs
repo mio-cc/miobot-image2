@@ -1625,7 +1625,31 @@ async function handleCanvasApi(req, res, url) {
   const body = ['POST','PUT','PATCH'].includes(req.method || '') ? await readBody(req) : undefined;
   const p = url.pathname.replace(/^\/canvas-api/, '') || '/';
   if (req.method === 'GET' && p === '/health') return sendJson(res, 200, { status: 'ok' });
-  if (req.method === 'GET' && p === '/config') return sendJson(res, 200, { model: currentConfig().canvas.imageModel, models: [currentConfig().canvas.imageModel, currentConfig().canvas.editModel].filter(Boolean), sizePresets, stylePresets, qualities: ['auto','low','medium','high'], outputFormats: ['png','jpeg','webp'], counts: [1,2,4,8,16], defaults: { quality: currentConfig().canvas.defaultQuality, outputFormat: currentConfig().canvas.defaultOutputFormat, count: currentConfig().canvas.defaultCount, sizePresetId: currentConfig().canvas.defaultSizePresetId, stylePresetId: currentConfig().canvas.defaultStylePresetId } });
+  if (req.method === 'GET' && p === '/config') {
+    const canvas = currentConfig().canvas || {};
+    const brand = canvas.brand || {};
+    return sendJson(res, 200, {
+      model: canvas.imageModel,
+      models: [canvas.imageModel, canvas.editModel].filter(Boolean),
+      brand: {
+        logoText: String(brand.logoText || 'Mio'),
+        pageTitle: String(brand.pageTitle || 'Mio 图像画布'),
+        faviconUrl: String(brand.faviconUrl || '/canvas/favicon.ico'),
+      },
+      sizePresets,
+      stylePresets,
+      qualities: ['auto','low','medium','high'],
+      outputFormats: ['png','jpeg','webp'],
+      counts: [1,2,4,8,16],
+      defaults: {
+        quality: canvas.defaultQuality,
+        outputFormat: canvas.defaultOutputFormat,
+        count: canvas.defaultCount,
+        sizePresetId: canvas.defaultSizePresetId || 'auto',
+        stylePresetId: canvas.defaultStylePresetId,
+      },
+    });
+  }
   if (req.method === 'GET' && p === '/auth/status') return sendJson(res, 200, { signedIn: false, source: 'local-verify', available: true });
   if (req.method === 'GET' && p === '/provider-config') return sendJson(res, 200, { sources: [{ id: 'local', label: 'Local verify provider', configured: true, available: true }], current: 'local', model: currentConfig().canvas.imageModel });
   if (req.method === 'PUT' && p === '/provider-config') return sendJson(res, 200, { ok: true, source: 'local' });

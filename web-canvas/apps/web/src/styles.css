@@ -7130,3 +7130,58 @@ body {
     display: none;
   }
 }
+
+/* Performance/responsive pass 2026-06-03:
+   - hide the brand mark only on true phone-width layouts so tablet/narrow desktop keeps left branding;
+   - keep long bot prompts cheap to lay out in cards while preserving full-copy on click;
+   - remove expensive per-card blur/hover work on touch devices. */
+@media (max-width: 640px) {
+  .canvas-header-main h1 {
+    display: none !important;
+  }
+
+  .canvas-header-main > .flex-1 {
+    display: none !important;
+  }
+
+  .canvas-header-main {
+    justify-content: center !important;
+  }
+}
+
+.masonry-card,
+.gallery-skeleton__card {
+  contain: layout paint style !important;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 420px;
+}
+
+.masonry-card {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.masonry-card__prompt-copy {
+  max-height: calc(0.88rem * 1.58 * 2) !important;
+  overflow: hidden !important;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+  line-break: anywhere;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .masonry-card:hover {
+    transform: none !important;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, .06) !important;
+  }
+
+  .masonry-card:hover .masonry-card__image img {
+    filter: none !important;
+    transform: none !important;
+  }
+
+  .masonry-card:hover .masonry-card__image::after {
+    opacity: 0 !important;
+  }
+}
