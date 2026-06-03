@@ -7185,3 +7185,43 @@ body {
     opacity: 0 !important;
   }
 }
+
+/* Row-ordered masonry: CSS columns fill one column before the next, which makes
+   the gallery read top-to-bottom first. Grid placement keeps DOM order reading
+   left-to-right, then top-to-bottom while JS spans preserve the waterfall gaps. */
+.masonry-gallery {
+  --masonry-row-size: 8px;
+  display: grid !important;
+  grid-template-columns: repeat(auto-fill, minmax(clamp(190px, 17vw, 250px), 1fr)) !important;
+  grid-auto-flow: row !important;
+  grid-auto-rows: var(--masonry-row-size) !important;
+  align-items: start !important;
+  gap: 14px !important;
+  column-count: initial !important;
+  column-width: initial !important;
+  column-gap: initial !important;
+}
+
+.masonry-card {
+  width: 100% !important;
+  margin: 0 !important;
+  break-inside: auto !important;
+  content-visibility: visible !important;
+  align-self: start !important;
+}
+
+.masonry-card {
+  display: block !important;
+}
+
+@media (max-width: 1180px) {
+  .masonry-gallery {
+    gap: 10px !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .masonry-gallery {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}

@@ -392,6 +392,13 @@ export function App() {
   }, [filteredInterrogateItems, interrogateItems.length]);
   const interrogateRenderLimit = useProgressiveRenderLimit(visibleInterrogateItems.length, INITIAL_COLLECTION_RENDER_LIMIT, COLLECTION_RENDER_BATCH_SIZE);
   const renderedInterrogateItems = useMemo(() => visibleInterrogateItems.slice(0, interrogateRenderLimit), [interrogateRenderLimit, visibleInterrogateItems]);
+  const masonryLayoutKey = useMemo(
+    () => activeTab === "gallery"
+      ? `gallery:${renderedGalleryItems.map((item) => item.outputId).join("|")}`
+      : `interrogate:${renderedInterrogateItems.map((item) => item.id).join("|")}`,
+    [activeTab, renderedGalleryItems, renderedInterrogateItems]
+  );
+  const masonryGalleryRef = useRowOrderedMasonry<HTMLDivElement>(masonryLayoutKey);
 
   const selectedLightboxItem = lightboxState?.kind === "gallery" ? visibleGalleryItems[lightboxState.index] ?? null : null;
   const selectedInterrogateLightboxItem = lightboxState?.kind === "interrogate" ? visibleInterrogateItems[lightboxState.index] ?? null : null;
@@ -1549,7 +1556,7 @@ export function App() {
               ))}
             </div>
           ) : visibleGalleryItems.length ? (
-            <div className="masonry-gallery">
+            <div className="masonry-gallery" ref={masonryGalleryRef}>
               {renderedGalleryItems.map((item, index) => (
                 <article className="masonry-card" data-client-status={item.clientStatus || "ready"} key={item.outputId}>
                   {item.clientStatus ? (
@@ -1648,7 +1655,7 @@ export function App() {
                 ))}
               </div>
             ) : visibleInterrogateItems.length ? (
-              <div className="masonry-gallery masonry-gallery--interrogate">
+              <div className="masonry-gallery masonry-gallery--interrogate" ref={masonryGalleryRef}>
                 {renderedInterrogateItems.map((item, index) => (
                   <article className="masonry-card" data-client-status={item.clientStatus || "ready"} key={item.id}>
                     {item.clientStatus ? (
@@ -3050,6 +3057,67 @@ function useProgressiveRenderLimit(total: number, initialLimit: number, batchSiz
   }, [limit, normalizedBatch, total]);
 
   return Math.min(limit, total);
+}
+
+function useRowOrderedMasonry<T extends HTMLElement>(layoutKey: string) {
+  const ref = useRef<T | null>(null);
+
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+
+    let frame = 0;
+    let resizeObserver: ResizeObserver | null = null;
+    const cardSelector = ".masonry-card, .gallery-skeleton__card";
+    const getCards = () => Array.from(root.querySelectorAll<HTMLElement>(cardSelector));
+
+    const measure = () => {
+      frame = 0;
+      const styles = window.getComputedStyle(root);
+      const rowSize = Number.parseFloat(styles.getPropertyValue("--masonry-row-size")) || 8;
+      const rowGap = Number.parseFloat(styles.rowGap) || 0;
+      const cards = getCards();
+
+      for (const card of cards) card.style.gridRowEnd = "auto";
+      for (const card of cards) {
+        const height = card.getBoundingClientRect().height;
+        const span = Math.max(1, Math.ceil((height + rowGap) / (rowSize + rowGap)));
+        card.style.gridRowEnd = `span ${span}`;
+      }
+    };
+
+    const scheduleMeasure = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(measure);
+    };
+
+    const observeCards = () => {
+      resizeObserver?.disconnect();
+      if (!("ResizeObserver" in window)) return;
+      resizeObserver = new ResizeObserver(scheduleMeasure);
+      resizeObserver.observe(root);
+      for (const card of getCards()) resizeObserver.observe(card);
+    };
+
+    observeCards();
+    scheduleMeasure();
+
+    const mutationObserver = new MutationObserver(() => {
+      observeCards();
+      scheduleMeasure();
+    });
+    mutationObserver.observe(root, { childList: true, subtree: true });
+    window.addEventListener("resize", scheduleMeasure);
+
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      mutationObserver.disconnect();
+      window.removeEventListener("resize", scheduleMeasure);
+    };
+  }, [layoutKey]);
+
+  return ref;
 }
 
 function normalizeWheelDelta(event: WheelEvent): number {
