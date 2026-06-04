@@ -4,10 +4,12 @@ import assert from 'node:assert/strict';
 import {
   applyTtsVoiceSwitchDraft,
   applyModelSwitchDraft,
+  buildSplitTextForwardNodes,
   buildModelCodeCatalog,
   buildBotGalleryPayload,
   collectMessageContext,
   collectRecentUserStandaloneContext,
+  createPolicyReply,
   extractStandaloneMessageContext,
   extractForwardIds,
   extractMentionedUserIds,
@@ -97,6 +99,40 @@ test('bot runtime: referenced merged forward content is collected for upstream c
   assert.match(upstream, /【引用内容 #quote-1】/);
   assert.match(upstream, /第一条：需求是保留引用内容/);
   assert.deepEqual(adapter.calls.map((call) => call[0]), ['getMessage', 'getForwardBridgeTargets', 'getForwardMessage']);
+});
+
+test('bot runtime: nested merged forward content is collected from inner forwards', async () => {
+  const adapter = new FakeAdapter(
+    {
+      quote: {
+        sender: { user_id: '3000' },
+        message: [{ type: 'forward', data: { id: 'outer' } }],
+      },
+    },
+    {
+      outer: {
+        messages: [
+          { sender: { nickname: '外层' }, message: [{ type: 'text', data: { text: '外层说明' } }, { type: 'forward', data: { id: 'inner' } }] },
+        ],
+      },
+      inner: {
+        messages: [
+          { sender: { nickname: '内层' }, message: [{ type: 'text', data: { text: '内层真实需求：把反推结果保留。' } }] },
+        ],
+      },
+    },
+  );
+
+  const ref = await resolveReferencedMessage(adapter, 'quote', '10000');
+  assert.match(ref.text, /外层说明/);
+  assert.match(ref.text, /内层真实需求/);
+  assert.deepEqual(adapter.calls.map((call) => call[0]), [
+    'getMessage',
+    'getForwardBridgeTargets',
+    'getForwardMessage',
+    'getForwardBridgeTargets',
+    'getForwardMessage',
+  ]);
 });
 
 test('bot runtime: referenced bot ownership and CQ forward ids are parsed', async () => {
@@ -538,3 +574,31 @@ test('bot runtime: long text splitter preserves content without truncation', () 
   assert.deepEqual(splitReplyText('短文本', { maxChars: 0 }), ['短文本']);
 });
 
+test('bot runtime: long forward text is split into nodes inside one merged forward message', async () => {
+  const adapterCalls = [];
+  const adapter = {
+    async sendGroupTextForward(groupId, nodes, botName) {
+      adapterCalls.push({ method: 'sendGroupTextForward', groupId, nodes, botName });
+      return { success: true, forwardId: 'fwd-text' };
+    },
+  };
+  const baseReply = {
+    async replyText() {
+      throw new Error('baseReply.replyText should not be called for split forward text');
+    },
+  };
+  const reply = createPolicyReply(baseReply, adapter, {
+    bot: {
+      replyStrategies: { text: 'forward' },
+      textReply: { maxChars: 10, showPartPrefix: true, splitDelayMs: 0 },
+      tts: { enabled: false },
+    },
+  });
+  const result = await reply.replyText({ chatType: 'group', groupId: 1000, botName: 'Miobot' }, '第一段内容很长。第二段继续补充说明。');
+  assert.equal(result.success, true);
+  assert.equal(adapterCalls.length, 1);
+  assert.equal(adapterCalls[0].method, 'sendGroupTextForward');
+  assert.ok(adapterCalls[0].nodes.length > 1);
+  assert.match(adapterCalls[0].nodes[0].content, /^\(1\/\d+\)/);
+  assert.equal(buildSplitTextForwardNodes(['a', 'b'], { showPartPrefix: false }, 'Bot')[1].title, 'Bot 2/2');
+});

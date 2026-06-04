@@ -1755,7 +1755,21 @@ async function handleCompatApi(req, res, url) {
   }
   if (!isAuthorized(req.headers)) return sendJson(res, 401, { error: 'Unauthorized' });
   if (req.method === 'GET' && p === '/api/config') return sendJson(res, 200, currentConfig());
-  if (req.method === 'POST' && p === '/api/config') { const saved = await persistSavedConfig(api.repository.saveConfig(body)); logSystem('info', 'admin.config', '配置已保存', { changedPaths: saved.hotReload?.changedPaths, napcatReconnectRequired: saved.hotReload?.napcatReconnectRequired }); return sendJson(res, 200, { success: true, message: saved.message, config: saved.config, hotReload: saved.hotReload, auth: authBody(saved.hotReload.passwordSeedChanged), token: saved.config.panel.passwordSeed }); }
+  if (req.method === 'POST' && p === '/api/config') {
+    const saved = await persistSavedConfig(api.repository.saveConfig(body));
+    logSystem('info', 'admin.config', '配置已保存', { changedPaths: saved.hotReload?.changedPaths, napcatReconnectRequired: saved.hotReload?.napcatReconnectRequired });
+    const compact = url.searchParams.get('compact') === '1' || req.headers['x-miobot-compact-response'] === '1';
+    const responseBody = {
+      success: true,
+      message: saved.message,
+      hotReload: saved.hotReload,
+      auth: authBody(saved.hotReload.passwordSeedChanged),
+      token: saved.config.panel.passwordSeed,
+      revision: saved.revision,
+    };
+    if (!compact) responseBody.config = saved.config;
+    return sendJson(res, 200, responseBody);
+  }
   if (req.method === 'POST' && p === '/api/config/import') { const saved = await persistSavedConfig(api.repository.importAndSave(body)); logSystem('info', 'admin.config', '配置已导入', { migrations: saved.importResult?.migrations, warnings: saved.importResult?.warnings }); return sendJson(res, 200, { success: true, message: saved.message, config: saved.config, importResult: saved.importResult, hotReload: saved.hotReload, auth: authBody(saved.hotReload.passwordSeedChanged), token: saved.config.panel.passwordSeed }); }
   if (req.method === 'GET' && p === '/api/config/export') return sendJson(res, 200, api.repository.exportConfig());
   if (req.method === 'GET' && p === '/api/default-prompts') return sendJson(res, 200, getDefaultPrompts());

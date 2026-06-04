@@ -416,10 +416,16 @@ async function saveConfig() {
   saveStatus.value = '⏳ 保存中...';
   showToast('正在向服务器提交配置...', 'info');
   try {
-    await axios.post(`${API_BASE}/config`, config.value, { headers: authHeaders() });
-    if (config.value?.panel?.passwordSeed && token.value !== config.value.panel.passwordSeed) {
-      token.value = config.value.panel.passwordSeed;
+    const payload = buildConfigSavePayload(config.value);
+    const res = await axios.post(`${API_BASE}/config?compact=1`, payload, { headers: authHeaders() });
+    const nextToken = res.data?.token || res.data?.auth?.token || config.value?.panel?.passwordSeed;
+    if (nextToken && token.value !== nextToken) {
+      token.value = nextToken;
       localStorage.setItem('np_token', token.value);
+    }
+    if (res.data?.config) {
+      config.value = res.data.config;
+      ensureCanvasConfig();
     }
     saveStatus.value = '✅ 配置已热重载生效！';
     showToast('配置保存并热重载成功！', 'success');
@@ -427,6 +433,18 @@ async function saveConfig() {
     saveStatus.value = `❌ 失败: ${e.message}`; 
     showToast(`保存失败: ${e.message}`, 'error');
   }
+}
+
+function buildConfigSavePayload(source: any) {
+  const payload = JSON.parse(JSON.stringify(source || {}));
+  // Do not echo large Hugging Face cache fields on ordinary settings save.
+  // The backend merges this as a patch, so omitted cache fields stay unchanged.
+  if (payload.huggingFace && typeof payload.huggingFace === 'object') {
+    delete payload.huggingFace.cachedModels;
+    delete payload.huggingFace.cachedAt;
+    delete payload.huggingFace.cacheQueryHash;
+  }
+  return payload;
 }
 
 async function exportConfig() {

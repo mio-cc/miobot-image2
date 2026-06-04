@@ -58,7 +58,7 @@ const FALLBACK_COMMANDS = {
 };
 
 const MAX_REFERENCE_TEXT_CHARS = 16000;
-const MAX_FORWARD_DEPTH = 2;
+const MAX_FORWARD_DEPTH = 4;
 const PURE_MENTION_HISTORY_LIMIT = 50;
 const PURE_MENTION_WINDOW_MS = 60 * 1000;
 const PURE_MENTION_FALLBACK_USER_MESSAGES = 5;
@@ -781,7 +781,7 @@ async function recallRecentMessages(adapter, message, count = 1) {
   if (recalled) logger.info('主人撤回机器人消息', { owner: message.userId, chatKey: key, count: recalled });
 }
 
-function createPolicyReply(baseReply, adapter, config) {
+export function createPolicyReply(baseReply, adapter, config) {
   return {
     replyText: (context, text, strategy) => replyTextWithPolicies(baseReply, adapter, config, context, text, strategy),
     replyImages: (context, images, strategy) => baseReply.replyImages(context, images, strategy),
@@ -827,16 +827,47 @@ async function replyTextWithPolicies(baseReply, adapter, config, context, text, 
   }
 
   const chunks = splitReplyText(value, config.bot?.textReply || {});
+  const resolvedTextStrategy = resolveRuntimeTextStrategy(strategy, config);
+  if (chunks.length > 1 && resolvedTextStrategy === 'forward') {
+    const nodes = buildSplitTextForwardNodes(chunks, config.bot?.textReply || {}, context?.botName || 'Miobot');
+    if (context?.chatType === 'group' && typeof adapter?.sendGroupTextForward === 'function') {
+      const result = await adapter.sendGroupTextForward(context.groupId, nodes, context.botName || 'Miobot');
+      return { ...result, kind: 'text', strategy: 'forward', attempts: [{ kind: 'text', strategy: 'forward', method: 'sendGroupTextForward(split)', success: result.success, error: result.error }] };
+    }
+    if (context?.chatType === 'private' && typeof adapter?.sendPrivateTextForward === 'function') {
+      const result = await adapter.sendPrivateTextForward(context.userId, nodes, context.botName || 'Miobot');
+      return { ...result, kind: 'text', strategy: 'forward', attempts: [{ kind: 'text', strategy: 'forward', method: 'sendPrivateTextForward(split)', success: result.success, error: result.error }] };
+    }
+  }
   let last;
   for (let index = 0; index < chunks.length; index += 1) {
-    const body = chunks.length > 1 && config.bot?.textReply?.showPartPrefix !== false
-      ? `(${index + 1}/${chunks.length})\n${chunks[index]}`
-      : chunks[index];
+    const body = formatSplitTextChunk(chunks[index], index, chunks.length, config.bot?.textReply || {});
     last = await baseReply.replyText(context, body, strategy);
     const delay = Number(config.bot?.textReply?.splitDelayMs || 0);
     if (index < chunks.length - 1 && delay > 0) await sleep(delay);
   }
   return last;
+}
+
+function resolveRuntimeTextStrategy(strategy, config = {}) {
+  const value = String(strategy || config.bot?.replyStrategies?.text || config.bot?.replyFormat || 'forward');
+  return ['forward', 'at', 'quote', 'plain'].includes(value) ? value : 'forward';
+}
+
+export function buildSplitTextForwardNodes(chunks, options = {}, botName = 'Miobot') {
+  const cleanChunks = (Array.isArray(chunks) ? chunks : [])
+    .map((chunk) => String(chunk || '').trim())
+    .filter(Boolean);
+  return cleanChunks.map((chunk, index) => ({
+    title: `${botName} ${index + 1}/${cleanChunks.length}`,
+    content: formatSplitTextChunk(chunk, index, cleanChunks.length, options),
+  }));
+}
+
+function formatSplitTextChunk(chunk, index, total, options = {}) {
+  const text = String(chunk || '').trim();
+  if (total > 1 && options.showPartPrefix !== false) return `(${index + 1}/${total})\n${text}`;
+  return text;
 }
 
 async function sendPlainTtsRecord(adapter, context, fileUrl) {
