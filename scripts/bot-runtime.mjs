@@ -1843,19 +1843,79 @@ function extractReplyIdFromRaw(raw) {
 }
 
 function extractImageUrls(message, raw = '') {
-  const urls = [];
+  const candidates = [];
+  const addCandidate = (value) => {
+    const normalized = normalizeImageCandidate(value);
+    if (normalized.value) candidates.push(normalized);
+  };
   if (Array.isArray(message)) {
     for (const segment of message) {
       if (segment?.type !== 'image') continue;
       const data = segment.data || {};
       const value = data.url || data.file || data.path;
-      if (value) urls.push(String(value));
+      if (value) addCandidate(value);
     }
   }
-  for (const match of String(raw || '').matchAll(/\[CQ:image,[^\]]*(?:url|file)=([^,\]]+)/g)) {
-    if (match[1]) urls.push(decodeURIComponentSafe(match[1]));
+  for (const match of String(raw || '').matchAll(/\[CQ:image,([^\]]*)\]/g)) {
+    const attrs = parseCqAttributes(match[1]);
+    addCandidate(attrs.url || attrs.file || attrs.path);
   }
-  return uniqueStrings(urls);
+  return dedupeImageCandidates(candidates);
+}
+
+function parseCqAttributes(rawAttrs) {
+  const attrs = {};
+  for (const part of String(rawAttrs || '').split(',')) {
+    const index = part.indexOf('=');
+    if (index <= 0) continue;
+    const key = part.slice(0, index).trim().toLowerCase();
+    attrs[key] = normalizeCqValue(part.slice(index + 1));
+  }
+  return attrs;
+}
+
+function normalizeImageCandidate(value) {
+  const normalized = normalizeCqValue(value).trim();
+  if (!normalized) return { value: '', key: '' };
+  return { value: normalized, key: imageCandidateKey(normalized) };
+}
+
+function normalizeCqValue(value) {
+  return decodeHtmlEntities(decodeURIComponentSafe(String(value || '')));
+}
+
+function dedupeImageCandidates(candidates) {
+  const byKey = new Map();
+  for (const candidate of candidates) {
+    if (!candidate.value) continue;
+    const existing = byKey.get(candidate.key);
+    if (!existing || imageCandidateRank(candidate.value) > imageCandidateRank(existing.value)) byKey.set(candidate.key, candidate);
+  }
+  return [...byKey.values()].map((candidate) => candidate.value);
+}
+
+function imageCandidateRank(value) {
+  if (/^https?:\/\//i.test(value)) return 3;
+  if (/^(?:base64|data):/i.test(value)) return 2;
+  return 1;
+}
+
+function imageCandidateKey(value) {
+  const normalized = String(value || '').trim();
+  const lower = normalized.toLowerCase();
+  try {
+    const url = new URL(normalized);
+    const fileId = url.searchParams.get('fileid') || url.searchParams.get('file_id');
+    if (fileId) return `fileid:${fileId}`;
+    url.searchParams.delete('rkey');
+    url.searchParams.delete('t');
+    return `url:${url.toString().toLowerCase()}`;
+  } catch {
+    // Not a URL.
+  }
+  const fileMatch = lower.match(/(?:^|[\\/])([a-f0-9]{16,}\.(?:png|jpe?g|gif|webp|bmp))(?:$|\?)/i);
+  if (fileMatch) return `file:${fileMatch[1].toLowerCase()}`;
+  return `raw:${lower}`;
 }
 
 async function imagesFromMessageOrReply(adapter, message) {
@@ -2677,6 +2737,21 @@ function cleanupModelText(value) {
 
 function decodeURIComponentSafe(value) {
   try { return decodeURIComponent(value); } catch { return value; }
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || '')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_all, code) => decodeEntityCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_all, code) => decodeEntityCode(Number.parseInt(code, 16)));
+}
+
+function decodeEntityCode(code) {
+  return Number.isFinite(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
 }
 
 function startConfigWatcher() {

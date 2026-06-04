@@ -110,6 +110,19 @@ test('bot runtime: referenced bot ownership and CQ forward ids are parsed', asyn
   assert.match(ref.text, /上一轮回答/);
 });
 
+test('bot runtime: QQ image segment and raw CQ image are deduped as one reference image', async () => {
+  const url = 'https://multimedia.nt.qq.com.cn/download?appid=1407&fileid=EhQSingleImageId&rkey=RKEY-A';
+  const context = await collectMessageContext(null, {
+    message: [
+      { type: 'image', data: { file: 'D4A735EAE0E6966FE5F22C1DD20231CB.png', url } },
+    ],
+    raw_message: '[CQ:image,file=D4A735EAE0E6966FE5F22C1DD20231CB.png,sub_type=0,url=https://multimedia.nt.qq.com.cn/download?appid=1407&amp;fileid=EhQSingleImageId&amp;rkey=RKEY-B,file_size=108999]',
+  });
+
+  assert.equal(context.images.length, 1);
+  assert.deepEqual(context.images, [url]);
+});
+
 test('bot runtime: pure bot mention is detected only for a bare bot at', () => {
   const message = {
     chatType: 'group',

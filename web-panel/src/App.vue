@@ -47,6 +47,15 @@ function showToast(message: string, type: 'success' | 'error' | 'info' = 'info')
   }, 4000);
 }
 
+function clampLogLimit(value: unknown, fallback = 300) {
+  const parsed = Math.trunc(Number(value));
+  return Number.isFinite(parsed) ? Math.max(1, Math.min(5000, parsed)) : fallback;
+}
+
+function readSavedLogLimit(key: string, fallback = 300) {
+  return clampLogLimit(localStorage.getItem(key), fallback);
+}
+
 const isAuthenticated = ref(false);
 const password = ref('');
 const loginError = ref('');
@@ -71,7 +80,7 @@ const logLoading = ref(false);
 const logError = ref('');
 const logLevel = ref('all');
 const logSearch = ref('');
-const logLimit = ref(300);
+const logLimit = ref(readSavedLogLimit('np_system_log_limit', 300));
 const logStats = ref<any>(null);
 const logAutoRefresh = ref(true);
 const logTimer = ref<number | null>(null);
@@ -84,7 +93,7 @@ const canvasLogLoading = ref(false);
 const canvasLogError = ref('');
 const canvasLogLevel = ref('all');
 const canvasLogSearch = ref('');
-const canvasLogLimit = ref(300);
+const canvasLogLimit = ref(readSavedLogLimit('np_canvas_log_limit', 300));
 const canvasLogStats = ref<any>(null);
 const canvasLogCopyStatus = ref('');
 const canvasCards = ref<CanvasManagedCard[]>([]);
@@ -696,8 +705,21 @@ function hfFormatDate(value: string) {
   return Number.isFinite(d.getTime()) ? d.toLocaleString() : value;
 }
 
+function applySystemLogLimit() {
+  logLimit.value = clampLogLimit(logLimit.value);
+  localStorage.setItem('np_system_log_limit', String(logLimit.value));
+  fetchLogs();
+}
+
+function applyCanvasLogLimit() {
+  canvasLogLimit.value = clampLogLimit(canvasLogLimit.value);
+  localStorage.setItem('np_canvas_log_limit', String(canvasLogLimit.value));
+  fetchCanvasLogs();
+}
+
 async function fetchLogs(showLoading = true) {
   if (!isAuthenticated.value) return;
+  logLimit.value = clampLogLimit(logLimit.value);
   if (showLoading) logLoading.value = true;
   logError.value = '';
   try {
@@ -737,6 +759,7 @@ async function clearLogs() {
 
 async function fetchCanvasLogs(showLoading = true) {
   if (!isAuthenticated.value) return;
+  canvasLogLimit.value = clampLogLimit(canvasLogLimit.value);
   if (showLoading) canvasLogLoading.value = true;
   canvasLogError.value = '';
   try {
@@ -2942,14 +2965,20 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                       <option value="error">错误</option>
                     </select>
                   </div>
-                  <div>
-                    <label class="label-sm">查看上限</label>
-                    <select v-model.number="canvasLogLimit" @change="fetchCanvasLogs()" class="input-field font-mono">
-                      <option :value="100">100</option>
-                      <option :value="300">300</option>
-                      <option :value="500">500</option>
-                      <option :value="1000">1000</option>
-                    </select>
+                  <div class="log-limit-field">
+                    <label class="label-sm">显示条数</label>
+                    <input
+                      v-model.number="canvasLogLimit"
+                      @change="applyCanvasLogLimit"
+                      @keyup.enter="applyCanvasLogLimit"
+                      type="number"
+                      min="1"
+                      max="5000"
+                      step="50"
+                      class="input-field font-mono"
+                      placeholder="300"
+                    />
+                    <span class="log-limit-hint">1-5000</span>
                   </div>
                   <div class="log-search-field">
                     <label class="label-sm">搜索关键字</label>
@@ -3134,14 +3163,20 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                       <option value="error">错误</option>
                     </select>
                   </div>
-                  <div>
-                    <label class="label-sm">查看上限</label>
-                    <select v-model.number="logLimit" @change="fetchLogs()" class="input-field font-mono">
-                      <option :value="100">100</option>
-                      <option :value="300">300</option>
-                      <option :value="500">500</option>
-                      <option :value="1000">1000</option>
-                    </select>
+                  <div class="log-limit-field">
+                    <label class="label-sm">显示条数</label>
+                    <input
+                      v-model.number="logLimit"
+                      @change="applySystemLogLimit"
+                      @keyup.enter="applySystemLogLimit"
+                      type="number"
+                      min="1"
+                      max="5000"
+                      step="50"
+                      class="input-field font-mono"
+                      placeholder="300"
+                    />
+                    <span class="log-limit-hint">1-5000</span>
                   </div>
                   <div class="log-search-field">
                     <label class="label-sm">全文匹配检索</label>
@@ -3277,6 +3312,23 @@ async function generateTemplateTitle(tpl: any, idx: number) {
 /* Page transition custom smoothing */
 .animate-fadein {
   animation: fadein 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.log-limit-field {
+  min-width: 112px;
+}
+
+.log-limit-field .input-field {
+  width: 112px;
+}
+
+.log-limit-hint {
+  display: block;
+  margin-top: 4px;
+  color: rgba(148, 163, 184, 0.82);
+  font-size: 11px;
+  line-height: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 </style>
 // @END [TASK-001]

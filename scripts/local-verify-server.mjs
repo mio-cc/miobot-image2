@@ -411,7 +411,7 @@ function logCanvas(level, scope, message, details) {
 function readLogs(target, url, kind = 'system') {
   const level = String(url.searchParams.get('level') || 'all').toLowerCase();
   const search = String(url.searchParams.get('search') || '').trim().toLowerCase();
-  const limit = Math.max(1, Math.min(1000, Number.parseInt(url.searchParams.get('limit') || String(DEFAULT_LOG_LIMIT), 10) || DEFAULT_LOG_LIMIT));
+  const limit = Math.max(1, Math.min(5000, Number.parseInt(url.searchParams.get('limit') || String(DEFAULT_LOG_LIMIT), 10) || DEFAULT_LOG_LIMIT));
   const allEntries = mergeLogEntries(target, readPersistedLogEntries(kind, limit));
   const entries = allEntries
     .filter((entry) => level === 'all' || entry.level === level)
