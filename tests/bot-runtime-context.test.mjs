@@ -406,7 +406,7 @@ test('bot runtime: failure replies bypass policy tts wrapper', async () => {
     {
       method: 'sendGroupText',
       groupId: '100',
-      text: '处理失败：stream error: stream ID 7; INTERNAL_ERROR',
+      text: 'LSP，你想干什么',
       replyToMessageId: 'm1',
     },
   ]);

@@ -38,6 +38,7 @@ export function classifyError(message: string, code?: string, status?: number): 
   if (haystack.includes('timeout') || haystack.includes('econnaborted')) return 'timeout';
   if (['econnreset', 'enetunreach', 'eai_again', 'etimedout'].some((item) => haystack.includes(item)) || haystack.includes('socket hang up') || haystack.includes('stream error')) return 'network';
   if (haystack.includes('internal_error') || haystack.includes('internal server error') || haystack.includes('internal_server_error') || haystack.includes('data[].error')) return 'upstream';
+  if (haystack.includes('authentication token') || haystack.includes('invalidated') || haystack.includes('unauthorized') || haystack.includes('invalid api key')) return 'validation';
   if (haystack.includes('missing b64_json') || haystack.includes('missing base64') || haystack.includes('missing url') || haystack.includes('missing b64_json/base64/url')) return 'validation';
   if (status !== undefined && status >= 500) return 'upstream';
   if (status !== undefined && status >= 400) return 'validation';

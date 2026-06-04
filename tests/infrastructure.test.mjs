@@ -81,6 +81,12 @@ test('error-normalizer: validation errors are serializable but not retryable', (
   assert.equal(error.retryable, false);
 });
 
+test('error-normalizer: invalidated auth tokens are validation errors', () => {
+  const error = normalizeError(new Error('Your authentication token has been invalidated. Please try signing in again.'));
+  assert.equal(error.category, 'validation');
+  assert.equal(error.retryable, false);
+});
+
 test('timeout-policy: resolves per-operation timeout with min/max clamps', () => {
   assert.equal(resolveTimeoutMs({ defaultMs: 1000, byOperation: { image: 5000 }, minMs: 100, maxMs: 3000 }, 'image'), 3000);
   assert.equal(resolveTimeoutMs({ defaultMs: 50, minMs: 100 }, 'chat'), 100);

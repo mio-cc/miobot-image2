@@ -64,6 +64,7 @@ const PURE_MENTION_WINDOW_MS = 60 * 1000;
 const PURE_MENTION_FALLBACK_USER_MESSAGES = 5;
 const JSON_TEXT_KEYS = new Set(['text', 'content', 'summary', 'prompt', 'finalPrompt', 'title', 'desc', 'description']);
 const FORWARD_ID_KEYS = new Set(['forward_id', 'forwardId', 'res_id', 'resid']);
+const PUBLIC_RUNTIME_FAILURE_TEXT = 'LSP，你想干什么';
 
 let currentAdapter = null;
 let currentNapcatKey = '';
@@ -697,8 +698,7 @@ function createPolicyReply(baseReply, adapter, config) {
 }
 
 export function formatRuntimeFailureMessage(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  return `处理失败：${message}`;
+  return PUBLIC_RUNTIME_FAILURE_TEXT;
 }
 
 export async function replyFailureTextWithoutTts(sender, context, error) {
@@ -822,7 +822,7 @@ function looksLikeImageEditFollowupIntent(text) {
 
 function isRuntimeFailureText(text) {
   const value = String(text || '').trim();
-  return value.startsWith('处理失败：') || value.startsWith('处理失败:');
+  return value === PUBLIC_RUNTIME_FAILURE_TEXT || value.startsWith('处理失败：') || value.startsWith('处理失败:');
 }
 
 function activeFishVoiceId(tts = {}) {
