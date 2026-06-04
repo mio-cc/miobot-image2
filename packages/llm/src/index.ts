@@ -186,7 +186,7 @@ export class OpenAICompatibleAdapter {
     };
     if (request.quality) payload.quality = request.quality;
     const response = await this.postJson('/images/generations', payload, 'image-generation', request.model, request.timeoutMs);
-    return { ...parseImageResponse(response.data), status: response.status };
+    return { ...this.parseImageResponseWithLog(response.data, 'image-generation', request.model, response.status), status: response.status };
   }
 
   async editImage(request: ImageEditRequest): Promise<ImageResult> {
@@ -200,7 +200,25 @@ export class OpenAICompatibleAdapter {
     if (request.mask) payload.mask = request.mask;
     if (request.quality) payload.quality = request.quality;
     const response = await this.postJson('/images/edits', payload, 'image-edit', request.model, request.timeoutMs);
-    return { ...parseImageResponse(response.data), status: response.status };
+    return { ...this.parseImageResponseWithLog(response.data, 'image-edit', request.model, response.status), status: response.status };
+  }
+
+  private parseImageResponseWithLog(data: unknown, operation: ProviderOperation, model: string, status: number): ImageResult {
+    try {
+      return parseImageResponse(data);
+    } catch (error) {
+      const provider = this.node.provider || this.node.name || 'openai-compatible';
+      const normalized = error instanceof LlmProviderError ? error.normalized : normalizeError(error);
+      this.logger?.error('llm image response parse failed', {
+        operation,
+        provider,
+        model,
+        status,
+        error: normalized,
+        responsePreview: previewProviderData(data),
+      });
+      throw error;
+    }
   }
 
   private async postJson(endpoint: string, body: unknown, operation: ProviderOperation, model: string, timeoutMs?: number): Promise<ProviderHttpResponse> {
@@ -355,5 +373,22 @@ function asRecord(value: unknown): Record<string, any> {
 
 function trimTrailingSlash(value: string): string {
   return String(value || '').replace(/\/+$/, '');
+}
+
+function previewProviderData(data: unknown): unknown {
+  const seen = new WeakSet<object>();
+  const sanitized = JSON.stringify(data, (_key, value) => {
+    if (typeof value === 'string') {
+      if (value.length > 240 && /^[A-Za-z0-9+/=_-]+$/.test(value)) return `${value.slice(0, 32)}…<${value.length} chars>`;
+      return value.length > 500 ? `${value.slice(0, 500)}…<${value.length} chars>` : value;
+    }
+    if (value && typeof value === 'object') {
+      if (seen.has(value)) return '[Circular]';
+      seen.add(value);
+    }
+    return value;
+  });
+  if (!sanitized) return data;
+  return sanitized.length > 1600 ? `${sanitized.slice(0, 1600)}…<${sanitized.length} chars>` : sanitized;
 }
 

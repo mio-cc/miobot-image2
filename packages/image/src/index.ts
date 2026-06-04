@@ -159,21 +159,31 @@ export class ImageModule {
       defaultQuality: this.options.defaultQuality,
     });
     const prompt = applyTemplateById(params.prompt, params.templateId, this.options.promptTemplates);
+    const request = {
+      model: input.model || this.options.editModel || this.options.imageModel,
+      prompt,
+      images: input.images,
+      mask: input.mask,
+      size: params.size,
+      quality: params.quality,
+      timeoutMs: input.timeoutMs || this.options.editTimeoutMs,
+    };
     try {
-      const result = await this.options.llm.editImage({
-        model: input.model || this.options.editModel || this.options.imageModel,
-        prompt,
-        images: input.images,
-        mask: input.mask,
-        size: params.size,
-        quality: params.quality,
-        timeoutMs: input.timeoutMs || this.options.editTimeoutMs,
-      });
+      const result = await this.editWithReferenceFallback(request);
       const images = artifactsToSendableImages(result.images);
       const reply = input.context && this.options.reply ? await this.options.reply.replyImages(input.context, images) : undefined;
       return { prompt, params: { ...params, prompt }, images, artifacts: result.images, reply };
     } catch (error) {
       throw new ImageModuleError('edit', error);
+    }
+  }
+
+  private async editWithReferenceFallback(request: Parameters<ImageLlmClient['editImage']>[0]): Promise<ImageResult> {
+    try {
+      return await this.options.llm.editImage(request);
+    } catch (error) {
+      if (!shouldRetrySingleReferenceEdit(error, request.images)) throw error;
+      return await this.options.llm.editImage({ ...request, images: [request.images[0]] });
     }
   }
 
@@ -303,6 +313,16 @@ export function artifactsToSendableImages(artifacts: ImageArtifact[]): string[] 
 
 export function isUpstreamImageError(error: unknown): boolean {
   return extractSerializableError(error).category === 'upstream';
+}
+
+export function shouldRetrySingleReferenceEdit(error: unknown, images: string[]): boolean {
+  if (!Array.isArray(images) || images.filter(Boolean).length <= 1) return false;
+  const normalized = extractSerializableError(error);
+  if (normalized.retryable === false) return false;
+  const message = `${normalized.message || ''} ${normalized.code || ''}`.toLowerCase();
+  if (normalized.category === 'network' || normalized.category === 'timeout') return true;
+  if (normalized.category !== 'upstream') return false;
+  return /stream|disconnect|timeout|temporar|internal|overload|gateway|rate/.test(message);
 }
 
 function extractSerializableError(error: unknown): SerializableError {

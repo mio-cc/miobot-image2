@@ -10,6 +10,7 @@ import {
   isUpstreamImageError,
   parseImageCommand,
   renderPromptTemplate,
+  shouldRetrySingleReferenceEdit,
 } from '../dist/packages/image/src/index.js';
 
 class FakeLlm {
@@ -141,6 +142,49 @@ test('image module: edit upstream errors are recognizable', async () => {
   await assert.rejects(
     () => module.edit({ rawPrompt: '改图', images: ['base64://input'] }),
     (error) => error.operation === 'edit' && error.normalized.category === 'upstream' && isUpstreamImageError(error),
+  );
+});
+
+test('image module: multi-reference edit retries once with the first image on transient stream failures', async () => {
+  const llm = new FakeLlm();
+  let attempt = 0;
+  llm.editImage = async (request) => {
+    llm.calls.push({ method: 'editImage', request });
+    attempt += 1;
+    if (attempt === 1) {
+      assert.deepEqual(request.images, ['base64://first', 'base64://second']);
+      throw new LlmProviderError('stream error: stream disconnected before completion', { category: 'network', retryable: true });
+    }
+    assert.deepEqual(request.images, ['base64://first']);
+    return llm.editResponse;
+  };
+  const module = new ImageModule({ llm, imageModel: 'gpt-image-2' });
+  const result = await module.edit({ rawPrompt: '美颜', images: ['base64://first', 'base64://second'] });
+  assert.equal(llm.calls.length, 2);
+  assert.deepEqual(result.images, ['https://example.test/edited.png']);
+});
+
+test('image module: single-reference fallback only applies to transient multi-image edit errors', () => {
+  assert.equal(
+    shouldRetrySingleReferenceEdit(
+      new LlmProviderError('stream error: stream disconnected before completion', { category: 'network', retryable: true }),
+      ['a', 'b'],
+    ),
+    true,
+  );
+  assert.equal(
+    shouldRetrySingleReferenceEdit(
+      new LlmProviderError('Image response missing data[]', { category: 'validation', retryable: false }),
+      ['a', 'b'],
+    ),
+    false,
+  );
+  assert.equal(
+    shouldRetrySingleReferenceEdit(
+      new LlmProviderError('stream error: stream disconnected before completion', { category: 'network', retryable: true }),
+      ['a'],
+    ),
+    false,
   );
 });
 
