@@ -22,6 +22,7 @@ import {
   buildTtsPreprocessMessages,
   renderTtsPreprocessPrompt,
   resolveReferencedMessage,
+  shouldRetryEditWithInlinedImages,
   splitReplyText,
   withReferenceContext,
 } from '../scripts/bot-runtime.mjs';
@@ -147,6 +148,31 @@ test('bot runtime: remote edit image URLs are inlined as data URLs before provid
   assert.equal(images[0], 'data:image/jpeg;base64,AQIDBA==');
   assert.equal(images[1], 'data:image/png;base64,EXISTING');
   assert.equal(images[2], 'data:image/png;base64,RAW');
+});
+
+test('bot runtime: edit image fallback inlines remote URLs only after URL delivery failures', () => {
+  const images = ['https://multimedia.nt.qq.com.cn/download?fileid=abc&rkey=def'];
+  assert.equal(
+    shouldRetryEditWithInlinedImages(
+      { normalized: { category: 'network', retryable: true, message: 'stream error: stream disconnected before completion' } },
+      images,
+    ),
+    true,
+  );
+  assert.equal(
+    shouldRetryEditWithInlinedImages(
+      { normalized: { category: 'validation', retryable: false, message: 'Your authentication token has been invalidated.', code: 'auth_unavailable' } },
+      images,
+    ),
+    false,
+  );
+  assert.equal(
+    shouldRetryEditWithInlinedImages(
+      { normalized: { category: 'network', retryable: true, message: 'stream error' } },
+      ['data:image/png;base64,abc'],
+    ),
+    false,
+  );
 });
 
 test('bot runtime: pure bot mention is detected only for a bare bot at', () => {

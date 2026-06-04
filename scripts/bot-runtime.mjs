@@ -223,21 +223,39 @@ function imageMimeTypeFromUrl(value) {
   return '';
 }
 
+export function shouldRetryEditWithInlinedImages(error, images) {
+  const hasRemoteImage = (Array.isArray(images) ? images : []).some((image) => /^https?:\/\//i.test(String(image || '').trim()));
+  if (!hasRemoteImage) return false;
+  const normalized = error?.normalized || normalizeError(error);
+  const message = `${normalized.message || ''} ${normalized.code || ''}`.toLowerCase();
+  if (/auth|api[-_ ]?key|credential|token|invalidated|unauthori[sz]ed/.test(message)) return false;
+  if (normalized.category === 'network' || normalized.category === 'timeout') return true;
+  if (normalized.retryable === true) return true;
+  if (!['upstream', 'validation', 'unknown'].includes(normalized.category)) return false;
+  return /stream|disconnect|internal|temporar|overload|gateway|timeout|image[_ -]?url|invalid.*image|download|fetch|forbidden|not found|404|403|bad request/.test(message);
+}
+
 function createImage(adapter, config, reply) {
   const llm = {
     generateImages: (request) => createLlm(config, config.llm?.imageNodeIndex, config.llm?.imageTimeoutMs, 'image').generateImages(request),
     editImage: async (request) => {
       const remoteCount = (Array.isArray(request.images) ? request.images : []).filter((image) => /^https?:\/\//i.test(String(image || '').trim())).length;
-      const images = await normalizeBotEditImagesForProvider(request.images);
-      if (remoteCount) {
-        logger.info('改图参考图已转换为内联 data URL', {
+      const editAdapter = createLlm(config, config.llm?.editNodeIndex ?? config.llm?.imageNodeIndex, config.llm?.imageTimeoutMs, 'image-edit');
+      try {
+        return await editAdapter.editImage(request);
+      } catch (error) {
+        if (!shouldRetryEditWithInlinedImages(error, request.images)) throw error;
+        const images = await normalizeBotEditImagesForProvider(request.images);
+        const dataUrlCount = images.filter((image) => /^data:image\//i.test(String(image || ''))).length;
+        if (dataUrlCount <= 0) throw error;
+        logger.warn('改图 URL 直传失败，已降级为内联 data URL 重试', {
           imageCount: images.length,
           remoteCount,
-          dataUrlCount: images.filter((image) => /^data:image\//i.test(String(image || ''))).length,
+          dataUrlCount,
+          reason: normalizeError(error),
         });
+        return await editAdapter.editImage({ ...request, images });
       }
-      return createLlm(config, config.llm?.editNodeIndex ?? config.llm?.imageNodeIndex, config.llm?.imageTimeoutMs, 'image-edit')
-        .editImage({ ...request, images });
     },
     createVision: (request) => createLlm(config, config.llm?.interrogateNodeIndex ?? config.llm?.chatNodeIndex, config.llm?.interrogateTimeoutMs, 'interrogate').createVision(request),
   };
