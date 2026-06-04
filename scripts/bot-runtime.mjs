@@ -65,6 +65,7 @@ const PURE_MENTION_FALLBACK_USER_MESSAGES = 5;
 const JSON_TEXT_KEYS = new Set(['text', 'content', 'summary', 'prompt', 'finalPrompt', 'title', 'desc', 'description']);
 const FORWARD_ID_KEYS = new Set(['forward_id', 'forwardId', 'res_id', 'resid']);
 const PUBLIC_RUNTIME_FAILURE_TEXT = 'LSP，你想干什么';
+const EDIT_IMAGE_DOWNLOAD_LIMIT_BYTES = Math.max(1024 * 1024, Number(process.env.MIOBOT_EDIT_IMAGE_DOWNLOAD_LIMIT_BYTES || 20 * 1024 * 1024));
 
 let currentAdapter = null;
 let currentNapcatKey = '';
@@ -163,10 +164,81 @@ function createReply(adapter, config) {
   });
 }
 
+export async function normalizeBotEditImagesForProvider(images, options = {}) {
+  const source = Array.isArray(images) ? images : [];
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const maxBytes = Math.max(1, Number(options.maxBytes || EDIT_IMAGE_DOWNLOAD_LIMIT_BYTES));
+  const converted = [];
+  for (const image of source) {
+    const value = String(image || '').trim();
+    if (!value) continue;
+    if (/^data:image\//i.test(value)) {
+      converted.push(value);
+      continue;
+    }
+    if (/^base64:\/\//i.test(value)) {
+      converted.push(`data:image/png;base64,${value.slice('base64://'.length)}`);
+      continue;
+    }
+    if (/^https?:\/\//i.test(value) && typeof fetchImpl === 'function') {
+      try {
+        converted.push(await downloadImageAsDataUrl(value, { fetchImpl, maxBytes }));
+        continue;
+      } catch (error) {
+        logger.warn('改图参考图下载内联失败，保留原始 URL', { error: normalizeError(error) });
+      }
+    }
+    converted.push(value);
+  }
+  return converted;
+}
+
+async function downloadImageAsDataUrl(url, { fetchImpl, maxBytes }) {
+  const response = await fetchImpl(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 Miobot/2.0',
+      Accept: 'image/avif,image/webp,image/png,image/jpeg,image/*,*/*;q=0.8',
+    },
+  });
+  if (!response?.ok) throw new Error(`image download failed HTTP ${response?.status || 0}`);
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  if (!buffer.length) throw new Error('image download returned empty body');
+  if (buffer.length > maxBytes) throw new Error(`image download too large: ${buffer.length} > ${maxBytes}`);
+  const contentType = normalizeImageMimeType(response.headers?.get?.('content-type')) || imageMimeTypeFromUrl(url) || 'image/png';
+  return `data:${contentType};base64,${buffer.toString('base64')}`;
+}
+
+function normalizeImageMimeType(value) {
+  const mime = String(value || '').split(';')[0].trim().toLowerCase();
+  return mime.startsWith('image/') ? mime : '';
+}
+
+function imageMimeTypeFromUrl(value) {
+  const path = String(value || '').split('?')[0].toLowerCase();
+  if (path.endsWith('.jpg') || path.endsWith('.jpeg')) return 'image/jpeg';
+  if (path.endsWith('.webp')) return 'image/webp';
+  if (path.endsWith('.gif')) return 'image/gif';
+  if (path.endsWith('.png')) return 'image/png';
+  return '';
+}
+
 function createImage(adapter, config, reply) {
   const llm = {
     generateImages: (request) => createLlm(config, config.llm?.imageNodeIndex, config.llm?.imageTimeoutMs, 'image').generateImages(request),
-    editImage: (request) => createLlm(config, config.llm?.editNodeIndex ?? config.llm?.imageNodeIndex, config.llm?.imageTimeoutMs, 'image-edit').editImage(request),
+    editImage: async (request) => {
+      const remoteCount = (Array.isArray(request.images) ? request.images : []).filter((image) => /^https?:\/\//i.test(String(image || '').trim())).length;
+      const images = await normalizeBotEditImagesForProvider(request.images);
+      if (remoteCount) {
+        logger.info('改图参考图已转换为内联 data URL', {
+          imageCount: images.length,
+          remoteCount,
+          dataUrlCount: images.filter((image) => /^data:image\//i.test(String(image || ''))).length,
+        });
+      }
+      return createLlm(config, config.llm?.editNodeIndex ?? config.llm?.imageNodeIndex, config.llm?.imageTimeoutMs, 'image-edit')
+        .editImage({ ...request, images });
+    },
     createVision: (request) => createLlm(config, config.llm?.interrogateNodeIndex ?? config.llm?.chatNodeIndex, config.llm?.interrogateTimeoutMs, 'interrogate').createVision(request),
   };
   return createImageModule({
@@ -180,6 +252,7 @@ function createImage(adapter, config, reply) {
     defaultQuality: config.canvas?.defaultQuality || undefined,
     imageTimeoutMs: config.llm?.imageTimeoutMs || config.canvas?.imageTimeoutMs,
     editTimeoutMs: config.llm?.imageTimeoutMs || config.canvas?.imageTimeoutMs,
+    imageEditRequestMode: config.canvas?.imageEditRequestMode || config.llm?.imageEditRequestMode || 'auto',
     interrogateTimeoutMs: config.llm?.interrogateTimeoutMs || config.canvas?.interrogateTimeoutMs,
     promptTemplates: config.bot?.promptTemplates || [],
     interrogatePromptTemplate: config.llm?.interrogatePromptTemplate || config.canvas?.interrogatePromptTemplate,

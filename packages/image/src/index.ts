@@ -34,9 +34,11 @@ export interface ImageCommandParseOptions {
   maxCount?: number;
 }
 
+export type ImageEditRequestMode = 'auto' | 'json-images' | 'json-image' | 'multipart';
+
 export interface ImageLlmClient {
   generateImages(request: { model: string; prompt: string; size?: string; count?: number; quality?: string; timeoutMs?: number }): Promise<ImageResult>;
-  editImage(request: { model: string; prompt: string; images: string[]; mask?: string; size?: string; quality?: string; timeoutMs?: number }): Promise<ImageResult>;
+  editImage(request: { model: string; prompt: string; images: string[]; mask?: string; size?: string; quality?: string; timeoutMs?: number; requestMode?: ImageEditRequestMode }): Promise<ImageResult>;
   createVision(request: { model: string; prompt: string; imageUrls: string[]; timeoutMs?: number; maxTokens?: number }): Promise<TextCompletionResult>;
 }
 
@@ -51,6 +53,7 @@ export interface ImageModuleOptions {
   defaultQuality?: string;
   imageTimeoutMs?: number;
   editTimeoutMs?: number;
+  imageEditRequestMode?: ImageEditRequestMode;
   interrogateTimeoutMs?: number;
   promptTemplates?: PromptTemplate[];
   interrogatePromptTemplate?: string;
@@ -122,6 +125,7 @@ export class ImageModule {
       defaultQuality: options.defaultQuality,
       imageTimeoutMs: positiveInt(options.imageTimeoutMs, 300000),
       editTimeoutMs: positiveInt(options.editTimeoutMs, positiveInt(options.imageTimeoutMs, 300000)),
+      imageEditRequestMode: normalizeImageEditRequestMode(options.imageEditRequestMode),
       interrogateTimeoutMs: positiveInt(options.interrogateTimeoutMs, 300000),
       promptTemplates: options.promptTemplates || [],
       interrogatePromptTemplate: options.interrogatePromptTemplate,
@@ -167,6 +171,7 @@ export class ImageModule {
       size: params.size,
       quality: params.quality,
       timeoutMs: input.timeoutMs || this.options.editTimeoutMs,
+      requestMode: this.options.imageEditRequestMode,
     };
     try {
       const result = await this.editWithReferenceFallback(request);
@@ -323,6 +328,10 @@ export function shouldRetrySingleReferenceEdit(error: unknown, images: string[])
   if (normalized.category === 'network' || normalized.category === 'timeout') return true;
   if (normalized.category !== 'upstream') return false;
   return /stream|disconnect|timeout|temporar|internal|overload|gateway|rate/.test(message);
+}
+
+function normalizeImageEditRequestMode(value: unknown): ImageEditRequestMode {
+  return value === 'json-images' || value === 'json-image' || value === 'multipart' ? value : 'auto';
 }
 
 function extractSerializableError(error: unknown): SerializableError {

@@ -112,9 +112,53 @@ test('llm adapter: editImage parses image edit responses', async () => {
     },
   });
   const result = await adapter.editImage({ model: 'gpt-image-2', prompt: 'make it blue', images: ['base64://input'], mask: 'base64://mask' });
-  assert.equal(captured.image, 'base64://input');
-  assert.equal(captured.mask, 'base64://mask');
+  assert.deepEqual(captured.images, [{ image_url: 'data:image/png;base64,input' }]);
+  assert.deepEqual(captured.mask, { image_url: 'data:image/png;base64,mask' });
   assert.equal(result.images[0].data, 'edited');
+});
+
+test('llm adapter: editImage keeps legacy json-image request mode available', async () => {
+  let captured;
+  const adapter = new OpenAICompatibleAdapter({
+    node,
+    transport: async (request) => {
+      captured = request.body;
+      return { status: 200, data: { data: [{ b64_json: 'edited' }] } };
+    },
+  });
+  await adapter.editImage({
+    model: 'gpt-image-2',
+    prompt: 'make it blue',
+    images: ['https://example.test/input.png'],
+    mask: 'https://example.test/mask.png',
+    requestMode: 'json-image',
+  });
+  assert.equal(captured.image, 'https://example.test/input.png');
+  assert.equal(captured.mask, 'https://example.test/mask.png');
+  assert.equal(captured.images, undefined);
+});
+
+test('llm adapter: editImage supports multipart request mode for inline images', async () => {
+  let captured;
+  const adapter = new OpenAICompatibleAdapter({
+    node,
+    transport: async (request) => {
+      captured = request;
+      return { status: 200, data: { data: [{ b64_json: 'edited' }] } };
+    },
+  });
+  await adapter.editImage({
+    model: 'gpt-image-2',
+    prompt: 'make it blue',
+    images: ['data:image/png;base64,AQID'],
+    mask: 'base64://BAUG',
+    requestMode: 'multipart',
+  });
+  assert.ok(captured.body instanceof FormData);
+  assert.equal(captured.headers['Content-Type'], undefined);
+  const entries = Array.from(captured.body.entries());
+  assert.ok(entries.some(([key]) => key === 'image'));
+  assert.ok(entries.some(([key]) => key === 'mask'));
 });
 
 test('llm adapter: retries retryable transport failures', async () => {

@@ -953,31 +953,6 @@ function nodeSupportsModel(node, model) {
   return models.some((item) => normalizeModelName(item) === expected);
 }
 
-function canvasImageFallbackNodes(preferredNode, model) {
-  const cfg = currentConfig();
-  const nodes = Array.isArray(cfg.llm?.apiKeys) ? cfg.llm.apiKeys : [];
-  return nodes.filter((candidate) => {
-    if (!candidate || candidate === preferredNode) return false;
-    if (candidate.enabled === false || !candidate.baseUrl) return false;
-    return nodeSupportsModel(candidate, model);
-  });
-}
-
-function shouldFallbackCanvasImageNode(error) {
-  const normalized = error?.normalized || {};
-  const message = String(asErrorMessage(error) || '').toLowerCase();
-  const code = String(normalized.code || '').toLowerCase();
-  const status = Number(normalized.status);
-  return (
-    status === 404 ||
-    status >= 500 ||
-    normalized.category === 'network' ||
-    normalized.category === 'timeout' ||
-    message.includes('not found') ||
-    code.includes('not_found')
-  );
-}
-
 function canvasNodeLogDetails(node) {
   return {
     node: node?.name || '',
@@ -1686,6 +1661,7 @@ async function runCanvasGeneration(mode, body = {}) {
         outputFormat,
         referenceCount,
         hasMask,
+        requestMode: isEdit ? (canvas.imageEditRequestMode || cfg.llm?.imageEditRequestMode || 'auto') : undefined,
         timeoutMs,
       },
       error: errorLogDetails(error),
@@ -1703,6 +1679,7 @@ async function runCanvasGeneration(mode, body = {}) {
         size: size.api,
         quality,
         timeoutMs,
+        requestMode: canvas.imageEditRequestMode || cfg.llm?.imageEditRequestMode || 'auto',
       });
     }
     return adapter.generateImages({
@@ -1720,28 +1697,7 @@ async function runCanvasGeneration(mode, body = {}) {
     result = await invokeImageNode(node);
   } catch (error) {
     logUpstreamImageFailure(node, error);
-    if (!shouldFallbackCanvasImageNode(error)) throw error;
-    const fallbackNodes = canvasImageFallbackNodes(node, model);
-    if (!fallbackNodes.length) throw error;
-    let lastFallbackError = error;
-    for (const fallbackNode of fallbackNodes) {
-      logCanvas('warn', 'canvas.image', '\u5f53\u524d\u56fe\u50cf\u8282\u70b9\u4e0d\u53ef\u7528\uff0c\u81ea\u52a8\u5207\u6362\u5019\u9009\u8282\u70b9\u91cd\u8bd5', {
-        operation,
-        upstreamEndpoint,
-        model,
-        from: canvasNodeLogDetails(node),
-        to: canvasNodeLogDetails(fallbackNode),
-        reason: errorLogDetails(lastFallbackError),
-      });
-      try {
-        result = await invokeImageNode(fallbackNode);
-        break;
-      } catch (fallbackError) {
-        lastFallbackError = fallbackError;
-        logUpstreamImageFailure(fallbackNode, fallbackError);
-      }
-    }
-    if (!result) throw lastFallbackError;
+    throw error;
   }
 
   if (!Array.isArray(result.images) || result.images.length === 0) {

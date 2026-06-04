@@ -123,7 +123,7 @@ test('image module: generate applies params/template, calls llm, converts images
 
 test('image module: edit passes image inputs, mask, model, size, quality and timeout', async () => {
   const llm = new FakeLlm();
-  const module = new ImageModule({ llm, imageModel: 'gpt-image-2', editModel: 'gpt-image-edit', editTimeoutMs: 222000, defaultQuality: 'auto' });
+  const module = new ImageModule({ llm, imageModel: 'gpt-image-2', editModel: 'gpt-image-edit', editTimeoutMs: 222000, defaultQuality: 'auto', imageEditRequestMode: 'json-images' });
   const result = await module.edit({ rawPrompt: '1024x1024! high! 把天空改成蓝色', images: ['base64://input'], mask: 'base64://mask' });
   assert.equal(llm.calls[0].method, 'editImage');
   assert.equal(llm.calls[0].request.model, 'gpt-image-edit');
@@ -132,6 +132,7 @@ test('image module: edit passes image inputs, mask, model, size, quality and tim
   assert.equal(llm.calls[0].request.mask, 'base64://mask');
   assert.equal(llm.calls[0].request.quality, 'high');
   assert.equal(llm.calls[0].request.timeoutMs, 222000);
+  assert.equal(llm.calls[0].request.requestMode, 'json-images');
   assert.deepEqual(result.images, ['https://example.test/edited.png']);
 });
 

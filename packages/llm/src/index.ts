@@ -9,6 +9,7 @@ export const LLM_PACKAGE: PackageDescriptor = {
 
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool' | string;
 export type ImageArtifactKind = 'base64' | 'url';
+export type ImageEditRequestMode = 'auto' | 'json-images' | 'json-image' | 'multipart';
 
 export interface ProviderNode {
   name?: string;
@@ -88,6 +89,7 @@ export interface ImageEditRequest {
   size?: string;
   quality?: string;
   timeoutMs?: number;
+  requestMode?: ImageEditRequestMode;
 }
 
 export interface TextCompletionResult {
@@ -190,15 +192,29 @@ export class OpenAICompatibleAdapter {
   }
 
   async editImage(request: ImageEditRequest): Promise<ImageResult> {
+    const requestMode = resolveImageEditRequestMode(request.requestMode);
+    const inputImages = request.images.map((image) => String(image || '').trim()).filter(Boolean);
+    if (!inputImages.length) {
+      throw new LlmProviderError('Image edit requires at least one input image', { category: 'validation', retryable: false, code: 'missing_input_image' });
+    }
     const payload: Record<string, unknown> = {
       model: request.model,
       prompt: request.prompt,
-      image: request.images.length === 1 ? request.images[0] : request.images,
       size: request.size || '1024x1024',
       response_format: 'b64_json',
     };
-    if (request.mask) payload.mask = request.mask;
     if (request.quality) payload.quality = request.quality;
+    if (requestMode === 'json-image') {
+      payload.image = inputImages.length === 1 ? inputImages[0] : inputImages;
+      if (request.mask) payload.mask = request.mask;
+    } else if (requestMode === 'multipart') {
+      const form = createImageEditMultipartForm(payload, inputImages, request.mask);
+      const response = await this.postMultipart('/images/edits', form, 'image-edit', request.model, request.timeoutMs);
+      return { ...this.parseImageResponseWithLog(response.data, 'image-edit', request.model, response.status), status: response.status };
+    } else {
+      payload.images = inputImages.map((image) => imageReferenceForJson(image));
+      if (request.mask) payload.mask = imageReferenceForJson(request.mask);
+    }
     const response = await this.postJson('/images/edits', payload, 'image-edit', request.model, request.timeoutMs);
     return { ...this.parseImageResponseWithLog(response.data, 'image-edit', request.model, response.status), status: response.status };
   }
@@ -222,12 +238,20 @@ export class OpenAICompatibleAdapter {
   }
 
   private async postJson(endpoint: string, body: unknown, operation: ProviderOperation, model: string, timeoutMs?: number): Promise<ProviderHttpResponse> {
+    return this.post(endpoint, body, operation, model, timeoutMs, { 'Content-Type': 'application/json' });
+  }
+
+  private async postMultipart(endpoint: string, body: FormData, operation: ProviderOperation, model: string, timeoutMs?: number): Promise<ProviderHttpResponse> {
+    return this.post(endpoint, body, operation, model, timeoutMs, {});
+  }
+
+  private async post(endpoint: string, body: unknown, operation: ProviderOperation, model: string, timeoutMs: number | undefined, contentHeaders: Record<string, string>): Promise<ProviderHttpResponse> {
     const requestId = this.requestIdFactory(operation);
     const resolvedTimeoutMs = Math.max(1, Math.trunc(timeoutMs ?? this.defaultTimeoutMs));
     const provider = this.node.provider || this.node.name || 'openai-compatible';
     const url = `${trimTrailingSlash(this.node.baseUrl)}${endpoint}`;
     const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
+      ...contentHeaders,
       ...(this.node.headers || {}),
     };
     const key = this.node.apiKey ?? this.node.key;
@@ -310,14 +334,89 @@ export function createOpenAICompatibleAdapter(options: LlmAdapterOptions): OpenA
 }
 
 export async function defaultFetchTransport(request: ProviderHttpRequest): Promise<ProviderHttpResponse> {
+  const isFormDataBody = typeof FormData !== 'undefined' && request.body instanceof FormData;
+  const body = isFormDataBody ? request.body as BodyInit : JSON.stringify(request.body);
   const response = await fetch(request.url, {
     method: request.method,
     headers: request.headers,
-    body: JSON.stringify(request.body),
+    body,
   });
   const contentType = response.headers.get('content-type') || '';
   const data = contentType.includes('application/json') ? await response.json() : await response.text();
   return { status: response.status, data, headers: Object.fromEntries(response.headers.entries()) };
+}
+
+function resolveImageEditRequestMode(value: unknown): Exclude<ImageEditRequestMode, 'auto'> {
+  if (value === 'json-image' || value === 'multipart') return value;
+  return 'json-images';
+}
+
+function imageReferenceForJson(value: string): { image_url: string } | { file_id: string } {
+  const text = String(value || '').trim();
+  const fileId = text.match(/^file_id:(.+)$/i)?.[1]?.trim() || (/^file-[A-Za-z0-9_-]+$/.test(text) ? text : '');
+  if (fileId) return { file_id: fileId };
+  if (/^base64:\/\//i.test(text)) return { image_url: `data:image/png;base64,${text.slice('base64://'.length)}` };
+  return { image_url: text };
+}
+
+function createImageEditMultipartForm(payload: Record<string, unknown>, images: string[], mask?: string): FormData {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(payload)) {
+    if (value !== undefined && value !== null) form.append(key, String(value));
+  }
+  const cleanedImages = images.map((image) => String(image || '').trim()).filter(Boolean);
+  cleanedImages.forEach((image, index) => {
+    const { blob, fileName } = imageStringToBlob(image, `image_${index + 1}`);
+    form.append(cleanedImages.length > 1 ? 'image[]' : 'image', blob, fileName);
+  });
+  if (mask) {
+    const { blob, fileName } = imageStringToBlob(mask, 'mask');
+    form.append('mask', blob, fileName);
+  }
+  return form;
+}
+
+function imageStringToBlob(value: string, baseName: string): { blob: Blob; fileName: string } {
+  const text = String(value || '').trim();
+  if (/^data:image\//i.test(text)) {
+    const parsed = parseImageDataUrl(text);
+    return { blob: blobFromBuffer(parsed.bytes, parsed.mimeType), fileName: `${baseName}.${extensionFromImageMime(parsed.mimeType)}` };
+  }
+  if (/^base64:\/\//i.test(text)) {
+    const bytes = Buffer.from(text.slice('base64://'.length), 'base64');
+    return { blob: blobFromBuffer(bytes, 'image/png'), fileName: `${baseName}.png` };
+  }
+  throw new LlmProviderError(
+    'multipart image edits require data:image/* or base64:// image inputs',
+    { category: 'validation', retryable: false, code: 'unsupported_multipart_image_reference' },
+  );
+}
+
+function blobFromBuffer(bytes: Buffer, type: string): Blob {
+  const arrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  return new Blob([arrayBuffer], { type });
+}
+
+function parseImageDataUrl(value: string): { mimeType: string; bytes: Buffer } {
+  const match = String(value || '').match(/^data:([^;,]+)(;base64)?,(.*)$/is);
+  if (!match) {
+    throw new LlmProviderError('Invalid image data URL', { category: 'validation', retryable: false, code: 'invalid_image_data_url' });
+  }
+  const mimeType = match[1] || 'image/png';
+  const raw = match[3] || '';
+  const bytes = match[2] ? Buffer.from(raw, 'base64') : Buffer.from(decodeURIComponent(raw), 'utf8');
+  if (!bytes.length) {
+    throw new LlmProviderError('Empty image data URL', { category: 'validation', retryable: false, code: 'empty_image_data_url' });
+  }
+  return { mimeType, bytes };
+}
+
+function extensionFromImageMime(value: string): string {
+  const mime = String(value || '').toLowerCase();
+  if (mime.includes('jpeg') || mime.includes('jpg')) return 'jpg';
+  if (mime.includes('webp')) return 'webp';
+  if (mime.includes('gif')) return 'gif';
+  return 'png';
 }
 
 function assertNoTopLevelError(data: unknown): void {

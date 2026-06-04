@@ -14,6 +14,7 @@ import {
   extractMessageText,
   isOnlyBotMentionMessage,
   looksLikeImageIntent,
+  normalizeBotEditImagesForProvider,
   parseOwnerCommand,
   parseRemotePromptInput,
   replyFailureTextWithoutTts,
@@ -121,6 +122,31 @@ test('bot runtime: QQ image segment and raw CQ image are deduped as one referenc
 
   assert.equal(context.images.length, 1);
   assert.deepEqual(context.images, [url]);
+});
+
+test('bot runtime: remote edit image URLs are inlined as data URLs before provider calls', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: (name) => name.toLowerCase() === 'content-type' ? 'image/jpeg; charset=binary' : '' },
+      arrayBuffer: async () => Uint8Array.from([1, 2, 3, 4]).buffer,
+    };
+  };
+
+  const images = await normalizeBotEditImagesForProvider([
+    'https://multimedia.nt.qq.com.cn/download?fileid=abc&rkey=def',
+    'data:image/png;base64,EXISTING',
+    'base64://RAW',
+  ], { fetchImpl, maxBytes: 1024 });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://multimedia.nt.qq.com.cn/download?fileid=abc&rkey=def');
+  assert.equal(images[0], 'data:image/jpeg;base64,AQIDBA==');
+  assert.equal(images[1], 'data:image/png;base64,EXISTING');
+  assert.equal(images[2], 'data:image/png;base64,RAW');
 });
 
 test('bot runtime: pure bot mention is detected only for a bare bot at', () => {
