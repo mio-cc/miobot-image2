@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createWebApi, derivePanelToken } from '../dist/packages/web-api/src/index.js';
 import { getDefaultPrompts } from '../dist/packages/config/src/index.js';
+import { normalizeError, TaskQueue } from '../dist/packages/core/src/index.js';
 import { createImageModule, renderPromptTemplate } from '../dist/packages/image/src/index.js';
 import { createOpenAICompatibleAdapter } from '../dist/packages/llm/src/index.js';
 import { NapcatAdapter } from '../dist/packages/napcat/src/index.js';
@@ -74,6 +75,46 @@ function envNumber(name, fallback) {
   const value = Number(process.env[name]);
   return Number.isFinite(value) ? value : fallback;
 }
+
+class CanvasJobQueue {
+  constructor(limit = 1) {
+    this.limit = Math.max(1, Math.trunc(Number(limit) || 1));
+    this.running = 0;
+    this.pending = [];
+  }
+
+  enqueue(task) {
+    return new Promise((resolve, reject) => {
+      const run = async () => {
+        this.running += 1;
+        try {
+          resolve(await task());
+        } catch (error) {
+          reject(error);
+        } finally {
+          this.running -= 1;
+          this.drain();
+        }
+      };
+      this.pending.push(run);
+      this.drain();
+    });
+  }
+
+  snapshot() {
+    return { running: this.running, queued: this.pending.length, limit: this.limit };
+  }
+
+  drain() {
+    while (this.running < this.limit && this.pending.length > 0) {
+      const run = this.pending.shift();
+      if (run) void run();
+    }
+  }
+}
+
+const canvasLlmQueue = new TaskQueue({ defaultConcurrency: Math.max(1, envNumber('MIOBOT_CANVAS_LLM_CONCURRENCY', 1)) });
+const canvasJobQueue = new CanvasJobQueue(Math.max(1, envNumber('MIOBOT_CANVAS_JOB_CONCURRENCY', 1)));
 
 async function loadPersistedConfig() {
   try {
@@ -721,6 +762,8 @@ function publicJob(job) {
 
 function startBackgroundJob(map, job, runner, logScope) {
   map.set(job.id, job);
+  const queuedSnapshot = canvasJobQueue.snapshot();
+  job.queue = { ...queuedSnapshot, position: queuedSnapshot.running + queuedSnapshot.queued + 1 };
   job.timer = setInterval(() => {
     if (job.status !== 'running') return;
     job.progress = Math.min(92, Math.max(job.progress || 12, Math.round((job.progress || 12) + 3 + Math.random() * 6)));
@@ -728,30 +771,33 @@ function startBackgroundJob(map, job, runner, logScope) {
   }, 1400);
   job.timer.unref?.();
 
-  queueMicrotask(async () => {
-    const startedAt = Date.now();
-    try {
-      job.status = 'running';
-      job.progress = Math.max(job.progress || 0, 12);
-      job.updatedAt = new Date().toISOString();
-      logCanvas('info', logScope, '后台任务开始', { jobId: job.id, mode: job.mode });
-      const result = await runner();
-      if (job.kind === 'interrogation') job.item = result;
-      else job.record = result;
-      job.status = 'succeeded';
-      job.progress = 100;
-      job.updatedAt = new Date().toISOString();
-      logCanvas('info', logScope, '后台任务完成', { jobId: job.id, durationMs: Date.now() - startedAt });
-    } catch (error) {
-      job.status = 'failed';
-      job.progress = 100;
-      job.error = asErrorMessage(error);
-      job.updatedAt = new Date().toISOString();
-      logCanvas('error', logScope, '后台任务失败', { jobId: job.id, durationMs: Date.now() - startedAt, error: job.error, errorDetails: errorLogDetails(error) });
-    } finally {
-      if (job.timer) clearInterval(job.timer);
-      setTimeout(() => map.delete(job.id), 30 * 60 * 1000).unref?.();
-    }
+  queueMicrotask(() => {
+    void canvasJobQueue.enqueue(async () => {
+      const startedAt = Date.now();
+      try {
+        job.status = 'running';
+        job.queue = { ...canvasJobQueue.snapshot(), position: 0 };
+        job.progress = Math.max(job.progress || 0, 12);
+        job.updatedAt = new Date().toISOString();
+        logCanvas('info', logScope, '后台任务开始', { jobId: job.id, mode: job.mode, queue: canvasJobQueue.snapshot() });
+        const result = await runner();
+        if (job.kind === 'interrogation') job.item = result;
+        else job.record = result;
+        job.status = 'succeeded';
+        job.progress = 100;
+        job.updatedAt = new Date().toISOString();
+        logCanvas('info', logScope, '后台任务完成', { jobId: job.id, durationMs: Date.now() - startedAt });
+      } catch (error) {
+        job.status = 'failed';
+        job.progress = 100;
+        job.error = asErrorMessage(error);
+        job.updatedAt = new Date().toISOString();
+        logCanvas('error', logScope, '后台任务失败', { jobId: job.id, durationMs: Date.now() - startedAt, error: job.error, errorDetails: errorLogDetails(error) });
+      } finally {
+        if (job.timer) clearInterval(job.timer);
+        setTimeout(() => map.delete(job.id), 30 * 60 * 1000).unref?.();
+      }
+    });
   });
   return publicJob(job);
 }
@@ -868,11 +914,21 @@ function buildEffectivePrompt(rawPrompt, presetId) {
   return [prompt, stylePrompt].filter(Boolean).join('\n');
 }
 
+function enabledNodeIndexAt(index) {
+  const cfg = currentConfig();
+  const nodes = Array.isArray(cfg.llm?.apiKeys) ? cfg.llm.apiKeys : [];
+  if (!nodes.length) return -1;
+  const requested = Math.max(0, Math.min(nodes.length - 1, Number(index) || 0));
+  const indexed = nodes[requested];
+  if (indexed?.enabled !== false && String(indexed?.baseUrl || '').trim()) return requested;
+  const fallback = nodes.findIndex(node => node?.enabled !== false && String(node?.baseUrl || '').trim());
+  return fallback >= 0 ? fallback : requested;
+}
+
 function enabledNodeAt(index) {
   const cfg = currentConfig();
   const nodes = Array.isArray(cfg.llm?.apiKeys) ? cfg.llm.apiKeys : [];
-  const indexed = nodes[Math.max(0, Math.min(nodes.length - 1, Number(index) || 0))];
-  return indexed?.enabled === false ? nodes.find(node => node?.enabled !== false) : indexed;
+  return nodes[enabledNodeIndexAt(index)];
 }
 
 function assertCanvasNode(index, capabilityLabel) {
@@ -903,6 +959,7 @@ function createNodeAdapter(node, timeoutMs) {
     },
     timeoutMs,
     retryPolicy: { retries: 0, delayMs: 0 },
+    queue: canvasLlmQueue,
     logger: createCanvasLlmLogger(node),
   });
 }
@@ -953,6 +1010,119 @@ function nodeSupportsModel(node, model) {
   return models.some((item) => normalizeModelName(item) === expected);
 }
 
+function selectCanvasFailoverNodeIndexes(config = {}, currentIndex = 0, model = '') {
+  const nodes = Array.isArray(config.llm?.apiKeys) ? config.llm.apiKeys : [];
+  const expected = normalizeModelName(model);
+  if (!expected) return [];
+  const current = Math.max(0, Number(currentIndex) || 0);
+  return nodes
+    .map((node, index) => ({ node, index }))
+    .filter(({ node, index }) => index !== current && node?.enabled !== false && String(node?.baseUrl || '').trim() && nodeSupportsModel(node, expected))
+    .map(({ index }) => index);
+}
+
+function shouldCanvasFailoverError(error) {
+  const normalized = error?.normalized || normalizeError(error);
+  const message = `${normalized.message || ''} ${normalized.code || ''} ${normalized.details || ''}`.toLowerCase();
+  if (/content\s*filter|content\s*policy|safety|moderation|invalid\s*prompt|prompt\s*blocked|bad\s*request.*prompt/.test(message)) return false;
+  if (['network', 'timeout', 'upstream'].includes(normalized.category)) return true;
+  if (normalized.retryable === true) return true;
+  const status = Number(normalized.status || normalized.httpStatus || 0);
+  if ([401, 403, 404, 408, 409, 429, 500, 502, 503, 504].includes(status)) return true;
+  return /model.*(?:not\s*found|not\s*exist|unavailable|disabled|invalid|unknown)|invalid\s*model|no\s*such\s*model|not\s*found|quota|rate\s*limit|too\s*many\s*requests|overload|timeout|timed\s*out|econn|fetch\s*failed|network|bad\s*gateway|service\s*unavailable|internal\s*server|upstream/.test(message);
+}
+
+function canvasFailoverConfigPatch(purpose, nodeIndex) {
+  const idx = Math.max(0, Math.trunc(Number(nodeIndex) || 0));
+  const patch = { llm: { activeNodeIndex: idx }, canvas: {} };
+  if (purpose === 'canvas-image') {
+    patch.llm.imageNodeIndex = idx;
+    patch.canvas.imageNodeIndex = idx;
+  } else if (purpose === 'canvas-edit') {
+    patch.llm.editNodeIndex = idx;
+    patch.canvas.editNodeIndex = idx;
+  } else if (purpose === 'canvas-interrogate') {
+    patch.llm.interrogateNodeIndex = idx;
+    patch.canvas.interrogateNodeIndex = idx;
+  } else if (purpose === 'canvas-interrogate-template') {
+    patch.canvas.interrogateTemplateNodeIndex = idx;
+  }
+  return patch;
+}
+
+async function persistCanvasFailoverSelection(config, purpose, fromIndex, toIndex, model, error) {
+  const nodes = Array.isArray(config.llm?.apiKeys) ? config.llm.apiKeys : [];
+  try {
+    const saved = await persistSavedConfig(api.repository.saveConfig(canvasFailoverConfigPatch(purpose, toIndex)));
+    logCanvas('warn', 'canvas.llm.failover', 'node failover succeeded and synced config', {
+      purpose,
+      model,
+      fromIndex,
+      toIndex,
+      fromNode: nodes[fromIndex]?.name || '',
+      toNode: nodes[toIndex]?.name || '',
+      reason: errorLogDetails(error),
+      revision: saved.revision,
+    });
+  } catch (persistError) {
+    logCanvas('error', 'canvas.llm.failover', 'node failover succeeded but config sync failed', {
+      purpose,
+      model,
+      fromIndex,
+      toIndex,
+      error: errorLogDetails(persistError),
+    });
+  }
+}
+
+function createCanvasFailoverAdapter(config, nodeIndex, timeoutMs, purpose, model) {
+  const nodes = Array.isArray(config.llm?.apiKeys) ? config.llm.apiKeys : [];
+  const activeIndex = Math.max(0, Number(nodeIndex) || 0);
+  const primary = createNodeAdapter(nodes[activeIndex], timeoutMs);
+  const methods = new Set(['createVision', 'generateImages', 'editImage', 'createText', 'createEditableFileTask']);
+  return new Proxy(primary, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== 'function' || !methods.has(String(prop))) return value;
+      return async (request = {}, ...args) => {
+        try {
+          return await value.call(target, request, ...args);
+        } catch (error) {
+          const requestModel = String(request?.model || model || (String(prop) === 'createEditableFileTask' ? 'gpt-5-5-thinking' : '')).trim();
+          if (!requestModel || !shouldCanvasFailoverError(error)) throw error;
+          const candidates = selectCanvasFailoverNodeIndexes(config, activeIndex, requestModel);
+          if (!candidates.length) throw error;
+          logCanvas('warn', 'canvas.llm.failover', 'current node/model failed; trying same-model nodes', {
+            purpose,
+            model: requestModel,
+            activeIndex,
+            candidates,
+            error: errorLogDetails(error),
+          });
+          let lastError = error;
+          for (const candidateIndex of candidates) {
+            try {
+              const candidate = createNodeAdapter(nodes[candidateIndex], timeoutMs);
+              const result = await candidate[prop].call(candidate, request, ...args);
+              await persistCanvasFailoverSelection(config, purpose, activeIndex, candidateIndex, requestModel, error);
+              return result;
+            } catch (candidateError) {
+              lastError = candidateError;
+              logCanvas('warn', 'canvas.llm.failover', 'fallback node failed; trying next same-model node', {
+                purpose,
+                model: requestModel,
+                candidateIndex,
+                error: errorLogDetails(candidateError),
+              });
+            }
+          }
+          throw lastError;
+        }
+      };
+    },
+  });
+}
+
 function canvasNodeLogDetails(node) {
   return {
     node: node?.name || '',
@@ -965,7 +1135,7 @@ function normalizeNodeConnectionInput(baseUrlInput = '', keyInput = '') {
   const rawBase = String(baseUrlInput || '').trim();
   const rawKey = String(keyInput || '').trim();
   const combined = `${rawBase} ${rawKey}`.trim();
-  const match = combined.match(/(https?:\/\/[^\s，,；;]+?)(?:\s*[-—–]\s*|\s+)?(?:密钥|key|api[_\s-]*key|token)[:：=\s-]*(sk-[A-Za-z0-9._-]+)/i);
+  const match = combined.match(/(https?:\/\/[^\s，,；;]+?)(?:\s*[-—–]\s*|\s+)?(?:密钥|key|api[_\s-]*key|token)[:：=\s-]*([^\s,;]+)/i);
   const parsedBaseUrl = match ? match[1] : rawBase;
   const parsedKey = rawKey || (match ? match[2] : '');
   const baseUrl = cleanupApiBaseUrl(parsedBaseUrl);
@@ -975,7 +1145,7 @@ function normalizeNodeConnectionInput(baseUrlInput = '', keyInput = '') {
     baseUrl,
     key,
     keyDetected: Boolean(match?.[2]),
-    providerHint: host.includes('anyrouter') ? 'anyrouter' : '',
+    providerHint: host.includes('anyrouter') ? 'anyrouter' : host.includes('chatgpt2api') ? 'chatgpt2api' : '',
   };
 }
 
@@ -1323,23 +1493,14 @@ async function runCanvasInterrogation(image) {
   logCanvas('info', 'canvas.interrogate', '开始图片反推', { fileName: image.fileName, hasImage: Boolean(image.dataUrl) });
   const cfg = currentConfig();
   const canvas = cfg.canvas || {};
+  const firstNodeIndex = enabledNodeIndexAt(canvas.interrogateNodeIndex);
   const firstNode = assertCanvasVisionNode(canvas.interrogateNodeIndex);
-  const firstAdapter = createOpenAICompatibleAdapter({
-    node: {
-      name: firstNode.name,
-      provider: firstNode.provider,
-      baseUrl: firstNode.baseUrl,
-      apiKey: firstNode.apiKey ?? firstNode.key,
-      key: firstNode.key,
-      headers: firstNode.headers,
-    },
-    timeoutMs: canvas.interrogateTimeoutMs || 300000,
-    retryPolicy: { retries: 0, delayMs: 0 },
-  });
+  const interrogateModel = canvas.interrogateModel || cfg.llm?.interrogateModel || cfg.llm?.chatModel || 'gpt-4o-mini';
+  const firstAdapter = createCanvasFailoverAdapter(cfg, firstNodeIndex, canvas.interrogateTimeoutMs || 300000, 'canvas-interrogate', interrogateModel);
   const module = createImageModule({
     llm: firstAdapter,
     imageModel: canvas.imageModel || cfg.llm?.imageModel || 'gpt-image-2',
-    interrogateModel: canvas.interrogateModel || cfg.llm?.interrogateModel || cfg.llm?.chatModel || 'gpt-4o-mini',
+    interrogateModel,
     interrogatePromptTemplate: canvas.interrogatePromptTemplate || getDefaultPrompts().interrogatePromptTemplate,
     interrogateTimeoutMs: canvas.interrogateTimeoutMs || 300000,
   });
@@ -1348,19 +1509,9 @@ async function runCanvasInterrogation(image) {
     timeoutMs: canvas.interrogateTimeoutMs || 300000,
   });
 
+  const templateNodeIndex = enabledNodeIndexAt(canvas.interrogateTemplateNodeIndex ?? canvas.interrogateNodeIndex);
   const templateNode = assertCanvasVisionNode(canvas.interrogateTemplateNodeIndex ?? canvas.interrogateNodeIndex);
-  const templateAdapter = createOpenAICompatibleAdapter({
-    node: {
-      name: templateNode.name,
-      provider: templateNode.provider,
-      baseUrl: templateNode.baseUrl,
-      apiKey: templateNode.apiKey ?? templateNode.key,
-      key: templateNode.key,
-      headers: templateNode.headers,
-    },
-    timeoutMs: canvas.interrogateTemplateTimeoutMs || canvas.interrogateTimeoutMs || 300000,
-    retryPolicy: { retries: 0, delayMs: 0 },
-  });
+  const templateAdapter = createCanvasFailoverAdapter(cfg, templateNodeIndex, canvas.interrogateTemplateTimeoutMs || canvas.interrogateTimeoutMs || 300000, 'canvas-interrogate-template', canvas.interrogateTemplateModel || interrogateModel);
   const templatePrompt = renderPromptTemplate(
     canvas.interrogateTemplatePromptTemplate || getDefaultPrompts().interrogateTemplatePromptTemplate,
     { rawPrompt: first.text, prompt: first.text, input: first.text }
@@ -1612,7 +1763,9 @@ async function runCanvasGeneration(mode, body = {}) {
   const count = Math.max(1, Math.min(16, Math.trunc(Number(body.count || canvas.defaultCount || 1) || 1)));
   const prompt = buildEffectivePrompt(rawPrompt, body.presetId) || rawPrompt;
   const timeoutMs = canvas.imageTimeoutMs || cfg.llm?.imageTimeoutMs || 300000;
-  const node = assertCanvasImageNode(isEdit ? canvas.editNodeIndex : canvas.imageNodeIndex, isEdit ? '改图' : '生图');
+  const configuredNodeIndex = isEdit ? canvas.editNodeIndex : canvas.imageNodeIndex;
+  const nodeIndex = enabledNodeIndexAt(configuredNodeIndex);
+  const node = assertCanvasImageNode(configuredNodeIndex, isEdit ? '??' : '??');
   const model = isEdit
     ? (canvas.editModel || cfg.llm?.editModel || canvas.imageModel || cfg.llm?.imageModel)
     : (canvas.imageModel || cfg.llm?.imageModel);
@@ -1669,7 +1822,9 @@ async function runCanvasGeneration(mode, body = {}) {
   };
 
   const invokeImageNode = async (targetNode) => {
-    const adapter = createNodeAdapter(targetNode, timeoutMs);
+    const adapter = targetNode === node
+      ? createCanvasFailoverAdapter(cfg, nodeIndex, timeoutMs, isEdit ? 'canvas-edit' : 'canvas-image', model)
+      : createNodeAdapter(targetNode, timeoutMs);
     if (isEdit) {
       return adapter.editImage({
         model,

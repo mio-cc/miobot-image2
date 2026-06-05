@@ -411,7 +411,7 @@ export function App() {
   const inputHoverAutoExpanded = mobileInputCollapsed && inputHoverExpanded && !inputHoverSuppressed;
   const isInputBarCollapsed = mobileInputCollapsed && !inputHoverAutoExpanded;
   const validationMessage = validateForm({ mode, prompt, size, sizePresetId, referenceImages, maskImage });
-  const canGenerate = !isGenerating && !validationMessage;
+  const canGenerate = !validationMessage;
   const galleryStatusText = isGalleryLoading
     ? "图库同步中"
     : galleryError
@@ -1835,7 +1835,7 @@ export function App() {
               <div className="playground-interrogate-actions">
                 <button
                   className="playground-mobile-submit playground-interrogate-submit"
-                  disabled={isInterrogating || !interrogateImage}
+                  disabled={!interrogateImage}
                   data-ui-tooltip={interrogateImage ? "开始反推" : "请先上传图片"}
                   type="button"
                   onClick={() => void submitInterrogation()}

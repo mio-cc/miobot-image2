@@ -36,6 +36,9 @@ export interface NapcatAdapterOptions {
   actionTimeoutMs?: number;
   textSendTimeoutMs?: number;
   imageSendTimeoutMs?: number;
+  fileSendTimeoutMs?: number;
+  fileSendRetryCount?: number;
+  fileSendRetryDelayMs?: number;
   forwardSendTimeoutMs?: number;
   getMessageTimeoutMs?: number;
   reconnectDelayMs?: number;
@@ -78,12 +81,23 @@ export interface NapcatSendResult {
   error?: string;
   timedOut?: boolean;
   uncertain?: boolean;
+  attempts?: Array<{ attempt: number; success: boolean; error?: string; timedOut?: boolean }>;
 }
 
 export interface NapcatMessageSegment {
   type: string;
   data: Record<string, unknown>;
 }
+
+export interface NapcatFilePayload {
+  file: string;
+  name?: string;
+}
+
+export type NapcatMixedForwardItem =
+  | { kind: 'text'; text: string; title?: string }
+  | { kind: 'image'; file: string; title?: string }
+  | { kind: 'file'; file: string; name?: string; title?: string };
 
 export interface NapcatForwardNode {
   type: 'node';
@@ -138,6 +152,9 @@ export class NapcatAdapter {
       actionTimeoutMs: positiveInt(options.actionTimeoutMs, 15000),
       textSendTimeoutMs: positiveInt(options.textSendTimeoutMs, 15000),
       imageSendTimeoutMs: positiveInt(options.imageSendTimeoutMs, 120000),
+      fileSendTimeoutMs: positiveInt(options.fileSendTimeoutMs, positiveInt(options.forwardSendTimeoutMs, 300000)),
+      fileSendRetryCount: Math.max(0, Math.trunc(Number(options.fileSendRetryCount ?? 1) || 0)),
+      fileSendRetryDelayMs: Math.max(0, Math.trunc(Number(options.fileSendRetryDelayMs ?? 1200) || 0)),
       forwardSendTimeoutMs: positiveInt(options.forwardSendTimeoutMs, 300000),
       getMessageTimeoutMs: positiveInt(options.getMessageTimeoutMs, 10000),
       reconnectDelayMs: Math.max(0, positiveInt(options.reconnectDelayMs, 5000)),
@@ -281,6 +298,24 @@ export class NapcatAdapter {
     }, this.options.imageSendTimeoutMs);
   }
 
+  async sendGroupFile(groupId: number | string, fileUrl: string, fileName?: string): Promise<NapcatSendResult> {
+    const segment = buildFileSegment(fileUrl, fileName);
+    if (!segment) return { success: false, error: 'no file to send' };
+    return this.sendAndReportResultWithRetry('send_group_msg', {
+      group_id: groupId,
+      message: [segment],
+    }, this.options.fileSendTimeoutMs, 'file');
+  }
+
+  async sendPrivateFile(userId: number | string, fileUrl: string, fileName?: string): Promise<NapcatSendResult> {
+    const segment = buildFileSegment(fileUrl, fileName);
+    if (!segment) return { success: false, error: 'no file to send' };
+    return this.sendAndReportResultWithRetry('send_private_msg', {
+      user_id: userId,
+      message: [segment],
+    }, this.options.fileSendTimeoutMs, 'file');
+  }
+
   async sendGroupTextAt(groupId: number | string, text: string, userId: number | string): Promise<NapcatSendResult> {
     return this.sendAndReportResult('send_group_msg', {
       group_id: groupId,
@@ -353,6 +388,30 @@ export class NapcatAdapter {
     return this.sendAndReportResult('send_group_forward_msg', { group_id: groupId, messages }, this.options.forwardSendTimeoutMs);
   }
 
+  async sendGroupFilesForward(groupId: number | string, files: Array<string | NapcatFilePayload>, botName = 'Miobot'): Promise<NapcatSendResult> {
+    const messages = buildFileForwardNodes(files, { botName, userId: this.getForwardUserId() });
+    if (!messages.length) return { success: false, error: 'no files to send' };
+    return this.sendAndReportResultWithRetry('send_group_forward_msg', { group_id: groupId, messages }, this.options.fileSendTimeoutMs, 'file-forward');
+  }
+
+  async sendPrivateFilesForward(userId: number | string, files: Array<string | NapcatFilePayload>, botName = 'Miobot'): Promise<NapcatSendResult> {
+    const messages = buildFileForwardNodes(files, { botName, userId: this.getForwardUserId() });
+    if (!messages.length) return { success: false, error: 'no files to send' };
+    return this.sendAndReportResultWithRetry('send_private_forward_msg', { user_id: userId, messages }, this.options.fileSendTimeoutMs, 'file-forward');
+  }
+
+  async sendGroupMixedForward(groupId: number | string, items: NapcatMixedForwardItem[], botName = 'Miobot'): Promise<NapcatSendResult> {
+    const messages = buildMixedForwardNodes(items, { botName, userId: this.getForwardUserId() });
+    if (!messages.length) return { success: false, error: 'no mixed forward items to send' };
+    return this.sendAndReportResultWithRetry('send_group_forward_msg', { group_id: groupId, messages }, this.options.fileSendTimeoutMs, 'mixed-forward');
+  }
+
+  async sendPrivateMixedForward(userId: number | string, items: NapcatMixedForwardItem[], botName = 'Miobot'): Promise<NapcatSendResult> {
+    const messages = buildMixedForwardNodes(items, { botName, userId: this.getForwardUserId() });
+    if (!messages.length) return { success: false, error: 'no mixed forward items to send' };
+    return this.sendAndReportResultWithRetry('send_private_forward_msg', { user_id: userId, messages }, this.options.fileSendTimeoutMs, 'mixed-forward');
+  }
+
   async deleteMessage(messageId: number | string, timeoutMs = this.options.actionTimeoutMs): Promise<boolean> {
     const result = await this.sendAndReportResult('delete_msg', { message_id: normalizeMessageId(messageId) }, timeoutMs);
     return result.success;
@@ -393,6 +452,19 @@ export class NapcatAdapter {
       this.logger?.error('napcat send failed', { action, error: normalizeError(error) });
       return { success: false, error: message, timedOut: /超时|timeout|timed out/i.test(message) };
     }
+  }
+
+  private async sendAndReportResultWithRetry(action: string, params: Record<string, unknown>, timeoutMs: number, label = action): Promise<NapcatSendResult> {
+    const maxAttempts = Math.max(1, Math.trunc(this.options.fileSendRetryCount || 0) + 1);
+    const attempts: Array<{ attempt: number; success: boolean; error?: string; timedOut?: boolean }> = [];
+    let last: NapcatSendResult = { success: false, error: `${label} not attempted` };
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      last = await this.sendAndReportResult(action, params, timeoutMs);
+      attempts.push({ attempt, success: last.success, error: last.error, timedOut: last.timedOut });
+      if (last.success) return { ...last, attempts };
+      if (attempt < maxAttempts) await sleep(this.options.fileSendRetryDelayMs);
+    }
+    return { ...last, attempts };
   }
 
   private handleOpen(): void {
@@ -528,6 +600,42 @@ export function buildTextForwardNodes(nodes: Array<{ title?: string; content: st
     .filter((node) => String((node.data.content as NapcatMessageSegment[])[0]?.data?.text ?? '').length > 0);
 }
 
+export function buildFileForwardNodes(files: Array<string | NapcatFilePayload>, options: { botName?: string; userId?: number | string } = {}): NapcatForwardNode[] {
+  const cleanFiles = dedupeFilePayloads(files);
+  const botName = options.botName || 'Miobot';
+  const userId = options.userId ?? 0;
+  return cleanFiles.map((item, idx) => ({
+    type: 'node',
+    data: {
+      user_id: userId,
+      nickname: `${botName} 文件 ${idx + 1}/${cleanFiles.length}`,
+      content: [buildFileSegment(item.file, item.name)!],
+    },
+  }));
+}
+
+export function buildMixedForwardNodes(items: NapcatMixedForwardItem[], options: { botName?: string; userId?: number | string } = {}): NapcatForwardNode[] {
+  const botName = options.botName || 'Miobot';
+  const userId = options.userId ?? 0;
+  const cleanItems = normalizeMixedForwardItems(items);
+  return cleanItems.map((item, idx) => {
+    const title = item.title || `${botName} ${idx + 1}/${cleanItems.length}`;
+    const content = item.kind === 'text'
+      ? [{ type: 'text', data: { text: item.text } }]
+      : item.kind === 'image'
+        ? [{ type: 'image', data: { file: item.file } }]
+        : [buildFileSegment(item.file, item.name)!];
+    return {
+      type: 'node',
+      data: {
+        user_id: userId,
+        nickname: title,
+        content,
+      },
+    };
+  });
+}
+
 export function dedupeImageUrls(fileUrls: string[]): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -538,6 +646,61 @@ export function dedupeImageUrls(fileUrls: string[]): string[] {
     result.push(value);
   }
   return result;
+}
+
+export function dedupeFilePayloads(files: Array<string | NapcatFilePayload>): NapcatFilePayload[] {
+  const seen = new Set<string>();
+  const result: NapcatFilePayload[] = [];
+  for (const item of files) {
+    const payload = normalizeFilePayload(item);
+    if (!payload || seen.has(payload.file)) continue;
+    seen.add(payload.file);
+    result.push(payload);
+  }
+
+  return result;
+}
+
+export function normalizeFilePayload(file: string | NapcatFilePayload | undefined | null, name?: string): NapcatFilePayload | undefined {
+  const source = typeof file === 'string' ? { file, name } : file;
+  const fileValue = String(source?.file || '').trim();
+  if (!fileValue) return undefined;
+  const fileName = String(source?.name || '').trim();
+  return fileName ? { file: fileValue, name: fileName } : { file: fileValue };
+}
+
+export function buildFileSegment(file: string, name?: string): NapcatMessageSegment | undefined {
+  const payload = normalizeFilePayload(file, name);
+  if (!payload) return undefined;
+  return { type: 'file', data: payload.name ? { file: payload.file, name: payload.name } : { file: payload.file } };
+}
+
+export function normalizeMixedForwardItems(items: NapcatMixedForwardItem[]): NapcatMixedForwardItem[] {
+  const output: NapcatMixedForwardItem[] = [];
+  const seenImages = new Set<string>();
+  const seenFiles = new Set<string>();
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item || typeof item !== 'object') continue;
+    if (item.kind === 'text') {
+      const text = String(item.text || '').trim();
+      if (text) output.push({ ...item, text });
+      continue;
+    }
+    if (item.kind === 'image') {
+      const file = String(item.file || '').trim();
+      if (!file || seenImages.has(file)) continue;
+      seenImages.add(file);
+      output.push({ ...item, file });
+      continue;
+    }
+    if (item.kind === 'file') {
+      const payload = normalizeFilePayload(item);
+      if (!payload || seenFiles.has(payload.file)) continue;
+      seenFiles.add(payload.file);
+      output.push({ ...item, ...payload });
+    }
+  }
+  return output;
 }
 
 export function isActionOk(data: NapcatActionResponse): boolean {
@@ -616,4 +779,8 @@ function reasonToString(reason: unknown): string {
   if (typeof reason === 'string') return reason;
   if (Buffer.isBuffer(reason)) return reason.toString('utf8');
   return reason === undefined || reason === null ? '' : String(reason);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }

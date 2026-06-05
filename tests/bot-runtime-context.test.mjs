@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   applyTtsVoiceSwitchDraft,
   applyModelSwitchDraft,
+  applyLlmFailoverDraft,
   buildSplitTextForwardNodes,
   buildModelCodeCatalog,
   buildBotGalleryPayload,
@@ -11,6 +12,7 @@ import {
   collectRecentUserStandaloneContext,
   createPolicyReply,
   extractStandaloneMessageContext,
+  extractFilePayloads,
   extractForwardIds,
   extractMentionedUserIds,
   extractMessageText,
@@ -24,6 +26,7 @@ import {
   buildTtsPreprocessMessages,
   renderTtsPreprocessPrompt,
   resolveReferencedMessage,
+  selectFailoverNodeIndexes,
   shouldRetryEditWithInlinedImages,
   splitReplyText,
   withReferenceContext,
@@ -601,4 +604,44 @@ test('bot runtime: long forward text is split into nodes inside one merged forwa
   assert.ok(adapterCalls[0].nodes.length > 1);
   assert.match(adapterCalls[0].nodes[0].content, /^\(1\/\d+\)/);
   assert.equal(buildSplitTextForwardNodes(['a', 'b'], { showPartPrefix: false }, 'Bot')[1].title, 'Bot 2/2');
+});
+
+
+test('bot runtime: quoted file payloads are collected and included in reference context', async () => {
+  const adapter = new FakeAdapter({
+    filemsg: {
+      sender: { user_id: '3000' },
+      message: [
+        { type: 'text', data: { text: '????' } },
+        { type: 'file', data: { file: 'https://example.test/report.pptx', name: 'report.pptx' } },
+      ],
+      raw_message: '[CQ:file,file=https%3A%2F%2Fexample.test%2Freport.pptx,name=report.pptx]',
+    },
+  });
+  const ref = await resolveReferencedMessage(adapter, 'filemsg', '10000');
+  assert.equal(ref.files.length, 1);
+  assert.deepEqual(ref.files[0], { file: 'https://example.test/report.pptx', name: 'report.pptx' });
+  const upstream = withReferenceContext('????', { referenceMessageId: 'filemsg', referenceText: ref.text, referenceFiles: ref.files });
+  assert.match(upstream, /report\.pptx/);
+  assert.match(upstream, /https:\/\/example\.test\/report\.pptx/);
+  assert.deepEqual(extractFilePayloads('[CQ:file,file=https%3A%2F%2Fexample.test%2Fa.zip,name=a.zip]'), [{ file: 'https://example.test/a.zip', name: 'a.zip' }]);
+});
+
+test('bot runtime: LLM failover candidates require same model and persist mapped settings', () => {
+  const config = {
+    llm: {
+      apiKeys: [
+        { name: 'A', baseUrl: 'https://a.test/v1', enabled: true, models: ['gpt-image-2'] },
+        { name: 'B', baseUrl: 'https://b.test/v1', enabled: true, models: ['gpt-image-2', 'gpt-4o-mini'] },
+        { name: 'C', baseUrl: 'https://c.test/v1', enabled: true, models: ['other-model'] },
+      ],
+    },
+  };
+  assert.deepEqual(selectFailoverNodeIndexes(config, 0, 'gpt-image-2'), [1]);
+  const draft = { llm: {}, canvas: {}, freeMode: {}, bot: { tts: { preprocess: {} } }, promptsChat: {} };
+  applyLlmFailoverDraft(draft, 'image-edit', 1);
+  assert.equal(draft.llm.editNodeIndex, 1);
+  assert.equal(draft.canvas.editNodeIndex, 1);
+  applyLlmFailoverDraft(draft, 'tts-preprocess', 2);
+  assert.equal(draft.bot.tts.preprocess.nodeIndex, 2);
 });

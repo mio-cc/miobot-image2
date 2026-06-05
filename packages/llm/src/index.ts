@@ -43,7 +43,7 @@ export interface ProviderHttpResponse<T = unknown> {
 }
 
 export type ProviderTransport = (request: ProviderHttpRequest) => Promise<ProviderHttpResponse>;
-export type ProviderOperation = 'text' | 'vision' | 'image-generation' | 'image-edit';
+export type ProviderOperation = 'text' | 'vision' | 'image-generation' | 'image-edit' | 'editable-file';
 
 export interface LlmAdapterOptions {
   node: ProviderNode;
@@ -92,6 +92,17 @@ export interface ImageEditRequest {
   requestMode?: ImageEditRequestMode;
 }
 
+export type EditableFileKind = 'ppt' | 'psd';
+
+export interface EditableFileTaskRequest {
+  kind: EditableFileKind;
+  prompt: string;
+  model?: string;
+  base64Images?: string[];
+  clientTaskId?: string;
+  timeoutMs?: number;
+}
+
 export interface TextCompletionResult {
   text: string;
   raw: unknown;
@@ -110,6 +121,17 @@ export interface ImageResult {
   images: ImageArtifact[];
   raw: unknown;
   status?: number;
+}
+
+export interface EditableFileTaskResult {
+  id?: string;
+  taskId?: string;
+  status?: string;
+  kind?: string;
+  result?: Record<string, unknown>;
+  error?: string;
+  raw: unknown;
+  statusCode?: number;
 }
 
 export class LlmProviderError extends Error {
@@ -219,6 +241,18 @@ export class OpenAICompatibleAdapter {
     return { ...this.parseImageResponseWithLog(response.data, 'image-edit', request.model, response.status), status: response.status };
   }
 
+  async createEditableFileTask(request: EditableFileTaskRequest): Promise<EditableFileTaskResult> {
+    const kind = request.kind === 'psd' ? 'psd' : 'ppt';
+    const model = request.model || 'gpt-5-5-thinking';
+    const payload: Record<string, unknown> = {
+      prompt: String(request.prompt || ''),
+      base64_images: Array.isArray(request.base64Images) ? request.base64Images : [],
+    };
+    if (request.clientTaskId) payload.client_task_id = request.clientTaskId;
+    const response = await this.postJson(`/${kind}/generations`, payload, 'editable-file', model, request.timeoutMs);
+    return { ...parseEditableFileTaskResponse(response.data), statusCode: response.status };
+  }
+
   private parseImageResponseWithLog(data: unknown, operation: ProviderOperation, model: string, status: number): ImageResult {
     try {
       return parseImageResponse(data);
@@ -306,6 +340,22 @@ export function parseImageResponse(data: unknown): ImageResult {
   if (items.length === 0) throw new LlmProviderError('Image response missing data[]', { category: 'validation', retryable: false }, data);
   const images = items.map((item, index) => parseImageItem(item, index, data));
   return { images, raw: data };
+}
+
+export function parseEditableFileTaskResponse(data: unknown): EditableFileTaskResult {
+  assertNoTopLevelError(data);
+  const root = asRecord(data);
+  const id = stringValue(root.id ?? root.taskId ?? root.task_id);
+  const taskId = stringValue(root.taskId ?? root.task_id ?? root.id);
+  return {
+    id,
+    taskId,
+    status: stringValue(root.status),
+    kind: stringValue(root.kind),
+    result: asRecord(root.result),
+    error: stringValue(root.error),
+    raw: data,
+  };
 }
 
 export function parseImageItem(item: unknown, index: number, root?: unknown): ImageArtifact {
@@ -468,6 +518,11 @@ function flattenTextContent(content: unknown): string {
 
 function asRecord(value: unknown): Record<string, any> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  const text = value === undefined || value === null ? '' : String(value).trim();
+  return text || undefined;
 }
 
 function trimTrailingSlash(value: string): string {

@@ -245,6 +245,9 @@ function ensureCanvasConfig() {
   config.value.napcat.actionTimeoutMs ??= 15000;
   config.value.napcat.textSendTimeoutMs ??= 15000;
   config.value.napcat.imageSendTimeoutMs ??= 120000;
+  config.value.napcat.fileSendTimeoutMs ??= 300000;
+  config.value.napcat.fileSendRetryCount ??= 1;
+  config.value.napcat.fileSendRetryDelayMs ??= 1200;
   config.value.napcat.forwardSendTimeoutMs ??= 300000;
   config.value.napcat.getMessageTimeoutMs ??= 10000;
   if (!config.value.bot) config.value.bot = {};
@@ -547,6 +550,7 @@ async function testImageApi() {
 function addNode() {
   config.value.llm.apiKeys.push({
     name: `节点 ${config.value.llm.apiKeys.length + 1}`,
+    provider: '',
     baseUrl: '',
     key: '',
     enabled: true,
@@ -582,7 +586,7 @@ function parseNodeConnectionInput(baseUrl = '', key = '') {
   const rawBase = String(baseUrl || '').trim();
   const rawKey = String(key || '').trim();
   const combined = `${rawBase} ${rawKey}`.trim();
-  const match = combined.match(/(https?:\/\/[^\s，,；;]+?)(?:\s*[-—–]\s*|\s+)?(?:密钥|key|api[_\s-]*key|token)[:：=\s-]*(sk-[A-Za-z0-9._-]+)/i);
+  const match = combined.match(/(https?:\/\/[^\s，,；;]+?)(?:\s*[-—–]\s*|\s+)?(?:密钥|key|api[_\s-]*key|token)[:：=\s-]*([^\s,;]+)/i);
   let nextBase = match ? match[1] : rawBase;
   let nextKey = rawKey || (match ? match[2] : '');
   nextBase = nextBase
@@ -597,8 +601,31 @@ function applyAnyRouterPreset(idx: number | string) {
   const node = config.value.llm.apiKeys[normalizeIndex(idx)];
   if (!node) return;
   node.name ||= 'Any Router';
+  node.provider = 'anyrouter';
   node.baseUrl = 'https://anyrouter.top/v1';
   showToast('已填入 Any Router Base URL，请补充接口密钥后获取模型', 'info');
+}
+
+function applyChatGpt2ApiPreset(idx: number | string) {
+  const node = config.value.llm.apiKeys[normalizeIndex(idx)];
+  if (!node) return;
+  node.name = node.name && node.name !== `节点 ${Number(idx) + 1}` ? node.name : 'ChatGPT Web (chatgpt2api)';
+  node.provider = 'chatgpt2api';
+  node.baseUrl ||= 'http://localhost:8000/v1';
+  node.models = Array.from(new Set([
+    ...(Array.isArray(node.models) ? node.models : []),
+    'gpt-image-2',
+    'codex-gpt-image-2',
+    'auto',
+    'gpt-5',
+    'gpt-5-1',
+    'gpt-5-2',
+    'gpt-5-3',
+    'gpt-5-3-mini',
+    'gpt-5-mini',
+    'gpt-5-5-thinking',
+  ]));
+  showToast('已填入 chatgpt2api 预设：按部署地址修正 Base URL，并填写 auth-key 后获取模型', 'info');
 }
 
 async function fetchModels(idx: number | string) {
@@ -626,6 +653,7 @@ async function fetchModels(idx: number | string) {
     }, { headers: authHeaders() });
     fetchedModels.value = res.data.models || [];
     if (res.data.normalized?.baseUrl) node.baseUrl = res.data.normalized.baseUrl;
+    if (res.data.normalized?.providerHint) node.provider = res.data.normalized.providerHint;
     node.models = fetchedModels.value;
     node.modelsFetchedAt = new Date().toISOString();
     showToast(`获取成功！共发现 ${fetchedModels.value.length} 个模型`, 'success');
@@ -1383,6 +1411,9 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                     <div class="flex gap-2">
                       <button @click="applyAnyRouterPreset(idx)" class="btn-outline text-xs py-1 px-3">
                         Any Router
+                      </button>
+                      <button @click="applyChatGpt2ApiPreset(idx)" class="btn-outline text-xs py-1 px-3">
+                        chatgpt2api
                       </button>
                       <button @click="fetchModels(idx)" :disabled="modelLoading" class="btn-outline text-xs py-1 px-3">
                         {{ modelLoading ? '⏳' : '🔄' }} 获取模型
@@ -3097,8 +3128,8 @@ async function generateTemplateTitle(tpl: any, idx: number) {
               </div>
               
               <div class="mt-5 pt-4 border-t border-white/5">
-                <div class="font-bold text-xs text-zinc-300 mb-3">各种行为超时时间设定 (毫秒)</div>
-                <div class="grid grid-cols-2 md:grid-cols-5 gap-3.5">
+                <div class="font-bold text-xs text-zinc-300 mb-3">各类行为超时时间设定（毫秒）</div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3.5">
                   <div>
                     <label class="label-sm text-[10px]">通用操作超时</label>
                     <input v-model.number="config.napcat.actionTimeoutMs" type="number" min="3000" step="1000" class="input-field font-mono text-center" />
@@ -3110,6 +3141,18 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                   <div>
                     <label class="label-sm text-[10px]">图片上传超时</label>
                     <input v-model.number="config.napcat.imageSendTimeoutMs" type="number" min="10000" step="5000" class="input-field font-mono text-center" />
+                  </div>
+                  <div>
+                    <label class="label-sm text-[10px]">文件发送超时</label>
+                    <input v-model.number="config.napcat.fileSendTimeoutMs" type="number" min="10000" step="5000" class="input-field font-mono text-center" />
+                  </div>
+                  <div>
+                    <label class="label-sm text-[10px]">文件重试次数</label>
+                    <input v-model.number="config.napcat.fileSendRetryCount" type="number" min="0" max="10" step="1" class="input-field font-mono text-center" />
+                  </div>
+                  <div>
+                    <label class="label-sm text-[10px]">文件重试间隔</label>
+                    <input v-model.number="config.napcat.fileSendRetryDelayMs" type="number" min="0" step="500" class="input-field font-mono text-center" />
                   </div>
                   <div>
                     <label class="label-sm text-[10px]">合并转发超时</label>

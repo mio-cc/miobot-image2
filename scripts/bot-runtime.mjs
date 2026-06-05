@@ -3,13 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createBotRouter } from '../dist/packages/bot-router/src/index.js';
-import { normalizeError } from '../dist/packages/core/src/index.js';
+import { normalizeError, TaskQueue } from '../dist/packages/core/src/index.js';
 import { createDefaultConfig, importConfig } from '../dist/packages/config/src/index.js';
 import { createFreeModeEngine } from '../dist/packages/free-mode/src/index.js';
 import { createImageModule } from '../dist/packages/image/src/index.js';
 import { createLogger, ConsoleLogSink, JsonFileLogSink } from '../dist/packages/logger/src/index.js';
 import { createOpenAICompatibleAdapter } from '../dist/packages/llm/src/index.js';
-import { NapcatAdapter } from '../dist/packages/napcat/src/index.js';
+import { NapcatAdapter, dedupeFilePayloads } from '../dist/packages/napcat/src/index.js';
 import { createReplyStrategyEngine } from '../dist/packages/reply/src/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -27,6 +27,7 @@ const logger = createLogger({
   level: process.env.MIOBOT_LOG_LEVEL || 'info',
   sinks: [new ConsoleLogSink(), new JsonFileLogSink(systemLogPath)],
 });
+const botLlmQueue = new TaskQueue({ defaultConcurrency: Math.max(1, Number(process.env.MIOBOT_BOT_LLM_CONCURRENCY || 1) || 1) });
 const DEFAULT_TTS_PREPROCESS_PROMPT = '你是文本转语音前置处理助手。请把机器人回复翻译/改写成适合语音合成的文本，并按需要穿插语音标签。要求：1. 保留原意，不额外扩写；2. 标签必须是语音模型可直接识别的文本；3. 只输出最终要送入语音 API 的文本，不要解释，不要 Markdown。待处理文本：{{text}}';
 
 const DIRECT_GROUP_COMMANDS = [
@@ -86,21 +87,35 @@ function loadConfig() {
 
 function nodeAt(config, index, purpose) {
   const nodes = Array.isArray(config.llm?.apiKeys) ? config.llm.apiKeys : [];
-  const preferred = nodes[normalizeIndex(index)];
-  const node = preferred && preferred.enabled !== false ? preferred : nodes.find((item) => item?.enabled !== false);
-  if (!node || !String(node.baseUrl || '').trim()) {
+  const resolvedIndex = resolveEnabledNodeIndex(config, index);
+  const node = nodes[resolvedIndex];
+  if (!node || node.enabled === false || !String(node.baseUrl || '').trim()) {
     throw new Error(`${purpose} 未配置可用模型节点，请在后台“模型与节点”里填写 Base URL 和 API Key 后保存配置。`);
   }
   return {
     name: node.name || purpose,
+    provider: String(node.provider || '').trim(),
     baseUrl: String(node.baseUrl || '').trim(),
     key: String(node.key || '').trim(),
+    apiKey: String(node.apiKey ?? node.key ?? '').trim(),
+    headers: normalizeHeaders(node.headers),
   };
 }
 
 function normalizeIndex(value) {
   const n = Number(value);
   return Number.isInteger(n) && n >= 0 ? n : 0;
+}
+
+function normalizeHeaders(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const headers = {};
+  for (const [key, item] of Object.entries(value)) {
+    const name = String(key || '').trim();
+    const text = String(item ?? '').trim();
+    if (name && text) headers[name] = text;
+  }
+  return Object.keys(headers).length ? headers : undefined;
 }
 
 function huggingFaceModelForRequest(hf = {}) {
@@ -126,6 +141,179 @@ function activeFreeModeModel(config, fallback = 'gpt-4o-mini') {
   return String(config.freeMode?.model || config.llm?.chatModel || fallback).trim() || fallback;
 }
 
+function resolveEnabledNodeIndex(config, index) {
+  const nodes = Array.isArray(config.llm?.apiKeys) ? config.llm.apiKeys : [];
+  if (!nodes.length) return -1;
+  const requested = normalizeIndex(index);
+  const preferred = nodes[requested];
+  if (preferred && preferred.enabled !== false && String(preferred.baseUrl || '').trim()) return requested;
+  const fallback = nodes.findIndex((item) => item?.enabled !== false && String(item?.baseUrl || '').trim());
+  return fallback >= 0 ? fallback : requested;
+}
+
+function normalizeModelName(value = '') {
+  return String(value || '').trim().toLowerCase();
+}
+
+function nodeSupportsModel(node, model) {
+  const expected = normalizeModelName(model);
+  if (!expected) return false;
+  const models = Array.isArray(node?.models) ? node.models : [];
+  return models.some((item) => normalizeModelName(item) === expected);
+}
+
+export function selectFailoverNodeIndexes(config = {}, currentIndex = 0, model = '') {
+  const nodes = Array.isArray(config.llm?.apiKeys) ? config.llm.apiKeys : [];
+  const expected = normalizeModelName(model);
+  if (!expected) return [];
+  const current = normalizeIndex(currentIndex);
+  return nodes
+    .map((node, index) => ({ node, index }))
+    .filter(({ node, index }) => index !== current && node?.enabled !== false && String(node?.baseUrl || '').trim() && nodeSupportsModel(node, expected))
+    .map(({ index }) => index);
+}
+
+function shouldFailoverLlmError(error) {
+  const normalized = error?.normalized || normalizeError(error);
+  const message = `${normalized.message || ''} ${normalized.code || ''} ${normalized.details || ''}`.toLowerCase();
+  if (/content\s*filter|content\s*policy|safety|moderation|invalid\s*prompt|prompt\s*blocked|bad\s*request.*prompt/.test(message)) return false;
+  if (['network', 'timeout', 'upstream'].includes(normalized.category)) return true;
+  if (normalized.retryable === true) return true;
+  const status = Number(normalized.status || normalized.httpStatus || 0);
+  if ([401, 403, 404, 408, 409, 429, 500, 502, 503, 504].includes(status)) return true;
+  return /model.*(?:not\s*found|not\s*exist|unavailable|disabled|invalid|unknown)|invalid\s*model|no\s*such\s*model|not\s*found|quota|rate\s*limit|too\s*many\s*requests|overload|timeout|timed\s*out|econn|fetch\s*failed|network|bad\s*gateway|service\s*unavailable|internal\s*server|upstream/.test(message);
+}
+
+function ensureDraftObject(parent, key) {
+  if (!parent[key] || typeof parent[key] !== 'object' || Array.isArray(parent[key])) parent[key] = {};
+  return parent[key];
+}
+
+export function applyLlmFailoverDraft(draft, purpose, nodeIndex) {
+  const idx = normalizeIndex(nodeIndex);
+  const llm = ensureDraftObject(draft, 'llm');
+  llm.activeNodeIndex = idx;
+  switch (String(purpose || '')) {
+    case 'chat':
+      llm.chatNodeIndex = idx;
+      break;
+    case 'free-mode':
+      ensureDraftObject(draft, 'freeMode').nodeIndex = idx;
+      break;
+    case 'mention-context':
+      if (draft.freeMode?.enabled) ensureDraftObject(draft, 'freeMode').nodeIndex = idx;
+      else llm.chatNodeIndex = idx;
+      break;
+    case 'image':
+      llm.imageNodeIndex = idx;
+      ensureDraftObject(draft, 'canvas').imageNodeIndex = idx;
+      break;
+    case 'image-edit':
+      llm.editNodeIndex = idx;
+      ensureDraftObject(draft, 'canvas').editNodeIndex = idx;
+      break;
+    case 'interrogate':
+      llm.interrogateNodeIndex = idx;
+      ensureDraftObject(draft, 'canvas').interrogateNodeIndex = idx;
+      break;
+    case 'enhance':
+      llm.enhanceNodeIndex = idx;
+      break;
+    case 'tts-preprocess':
+      ensureDraftObject(ensureDraftObject(ensureDraftObject(draft, 'bot'), 'tts'), 'preprocess').nodeIndex = idx;
+      break;
+    case 'prompts-chat-smart':
+    case 'prompts-chat-query':
+      ensureDraftObject(draft, 'promptsChat').smartNodeIndex = idx;
+      break;
+    default:
+      llm.activeNodeIndex = idx;
+  }
+  return draft;
+}
+
+function persistFailoverSelection(config, purpose, fromIndex, toIndex, model, error) {
+  try {
+    const fromNode = (config.llm?.apiKeys || [])[fromIndex];
+    const toNode = (config.llm?.apiKeys || [])[toIndex];
+    const next = saveRuntimeConfig((draft) => applyLlmFailoverDraft(draft, purpose, toIndex));
+    logger.warn('LLM failover selected a working node and synced runtime config', {
+      purpose,
+      model,
+      fromIndex,
+      toIndex,
+      fromNode: fromNode?.name || '',
+      toNode: toNode?.name || '',
+      reason: normalizeError(error),
+    });
+    return next;
+  } catch (persistError) {
+    logger.error('LLM failover succeeded but failed to sync runtime config', { purpose, model, fromIndex, toIndex, error: normalizeError(persistError) });
+    return config;
+  }
+}
+
+function createAdapterForNode(config, index, timeoutMs, purpose) {
+  return createOpenAICompatibleAdapter({
+    node: nodeAt(config, index, purpose),
+    timeoutMs: Math.max(1, Number(timeoutMs) || 60000),
+    queue: botLlmQueue,
+    logger: logger.child(`llm:${purpose}`),
+    retryPolicy: {
+      retries: Math.max(0, Number(config.llm?.imageRetryCount ?? 0)),
+      delayMs: Math.max(0, Number(config.llm?.imageRetryDelayMs ?? 0)),
+    },
+  });
+}
+
+function createFailoverLlmAdapter(config, index, timeoutMs, purpose) {
+  const activeIndex = resolveEnabledNodeIndex(config, index);
+  const primary = createAdapterForNode(config, activeIndex, timeoutMs, purpose);
+  const methods = new Set(['createText', 'createVision', 'generateImages', 'editImage', 'createEditableFileTask']);
+  return new Proxy(primary, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== 'function' || !methods.has(String(prop))) return value;
+      return async (request = {}, ...args) => {
+        try {
+          return await value.call(target, request, ...args);
+        } catch (error) {
+          const model = String(request?.model || (String(prop) === 'createEditableFileTask' ? 'gpt-5-5-thinking' : '')).trim();
+          if (!shouldFailoverLlmError(error) || !model) throw error;
+          const candidates = selectFailoverNodeIndexes(config, activeIndex, model);
+          if (!candidates.length) throw error;
+          logger.warn('LLM current node/model failed; trying other nodes with the same model', {
+            purpose,
+            model,
+            activeIndex,
+            candidates,
+            error: normalizeError(error),
+          });
+          let lastError = error;
+          for (const candidateIndex of candidates) {
+            try {
+              const candidate = createAdapterForNode(config, candidateIndex, timeoutMs, purpose);
+              const candidateMethod = candidate[prop];
+              const result = await candidateMethod.call(candidate, request, ...args);
+              persistFailoverSelection(config, purpose, activeIndex, candidateIndex, model, error);
+              return result;
+            } catch (candidateError) {
+              lastError = candidateError;
+              logger.warn('LLM fallback node failed; trying next same-model node', {
+                purpose,
+                model,
+                candidateIndex,
+                error: normalizeError(candidateError),
+              });
+            }
+          }
+          throw lastError;
+        }
+      };
+    },
+  });
+}
+
 function createLlm(config, index, timeoutMs, purpose) {
   if (shouldUseHuggingFaceChat(config, purpose)) {
     const hf = config.huggingFace || {};
@@ -138,6 +326,7 @@ function createLlm(config, index, timeoutMs, purpose) {
         apiKey: String(hf.token || '').trim(),
       },
       timeoutMs: Math.max(1, Number(hf.timeoutMs || timeoutMs) || 120000),
+      queue: botLlmQueue,
       logger: logger.child(`llm:huggingface:${purpose}`),
       retryPolicy: {
         retries: Math.max(0, Number(config.llm?.imageRetryCount ?? 0)),
@@ -145,15 +334,7 @@ function createLlm(config, index, timeoutMs, purpose) {
       },
     });
   }
-  return createOpenAICompatibleAdapter({
-    node: nodeAt(config, index, purpose),
-    timeoutMs: Math.max(1, Number(timeoutMs) || 60000),
-    logger: logger.child(`llm:${purpose}`),
-    retryPolicy: {
-      retries: Math.max(0, Number(config.llm?.imageRetryCount ?? 0)),
-      delayMs: Math.max(0, Number(config.llm?.imageRetryDelayMs ?? 0)),
-    },
-  });
+  return createFailoverLlmAdapter(config, index, timeoutMs, purpose);
 }
 
 function createReply(adapter, config) {
@@ -785,7 +966,20 @@ export function createPolicyReply(baseReply, adapter, config) {
   return {
     replyText: (context, text, strategy) => replyTextWithPolicies(baseReply, adapter, config, context, text, strategy),
     replyImages: (context, images, strategy) => baseReply.replyImages(context, images, strategy),
+    replyFiles: (context, files, strategy) => baseReply.replyFiles({ ...context, ttsAllowed: false, replyPayloadKind: 'file' }, files, strategy),
+    replyMixed: (context, payload, strategy) => replyMixedWithPolicies(baseReply, adapter, config, context, payload, strategy),
   };
+}
+
+async function replyMixedWithPolicies(baseReply, adapter, config, context, payload = {}, strategy) {
+  const files = Array.isArray(payload.files) ? payload.files : [];
+  const images = Array.isArray(payload.images) ? payload.images : [];
+  const text = String(payload.text || '').trim();
+  if (files.length) {
+    return baseReply.replyMixed({ ...context, ttsAllowed: false, replyPayloadKind: 'mixed' }, { ...payload, text, images, files }, strategy);
+  }
+  if (images.length) return baseReply.replyImages(context, images, strategy);
+  return replyTextWithPolicies(baseReply, adapter, config, { ...context, replyPayloadKind: 'text' }, text, strategy);
 }
 
 export function formatRuntimeFailureMessage(error) {
@@ -1072,7 +1266,7 @@ async function ensureNapcat() {
   const config = loadConfig();
   const wsUrl = String(config.napcat?.wsUrl || '').trim();
   const token = String(config.napcat?.token || '');
-  const nextKey = `${wsUrl}\n${token}`;
+  const nextKey = `${wsUrl}\n${token}\n${config.napcat?.actionTimeoutMs || ''}\n${config.napcat?.textSendTimeoutMs || ''}\n${config.napcat?.imageSendTimeoutMs || ''}\n${config.napcat?.forwardSendTimeoutMs || ''}\n${config.napcat?.fileSendTimeoutMs || ''}\n${config.napcat?.fileSendRetryCount || ''}\n${config.napcat?.fileSendRetryDelayMs || ''}`;
   if (!wsUrl) {
     logger.warn('Napcat WebSocket 地址为空，Bot 暂不连接。');
     return;
@@ -1092,6 +1286,9 @@ async function ensureNapcat() {
     actionTimeoutMs: config.napcat?.actionTimeoutMs,
     textSendTimeoutMs: config.napcat?.textSendTimeoutMs,
     imageSendTimeoutMs: config.napcat?.imageSendTimeoutMs,
+    fileSendTimeoutMs: config.napcat?.fileSendTimeoutMs,
+    fileSendRetryCount: config.napcat?.fileSendRetryCount,
+    fileSendRetryDelayMs: config.napcat?.fileSendRetryDelayMs,
     forwardSendTimeoutMs: config.napcat?.forwardSendTimeoutMs,
     getMessageTimeoutMs: config.napcat?.getMessageTimeoutMs,
     logger: logger.child('napcat'),
@@ -1142,8 +1339,10 @@ async function handleIncoming(adapter, event) {
     command: decision.command,
     commandText: decision.commandText,
     imageCount: message.images.length,
+    fileCount: message.files?.length || 0,
     referenceChars: String(message.referenceText || '').length,
     referenceImageCount: message.referenceImages?.length || 0,
+    referenceFileCount: message.referenceFiles?.length || 0,
   });
 
   if (decision.kind === 'ignored') return;
@@ -1909,13 +2108,15 @@ async function normalizeIncomingMessage(adapter, event) {
     ? await resolveReferencedMessage(adapter, replyToMessageId, event.self_id || adapter.selfQqId)
     : emptyReferenceContext();
   const currentImages = extractImageUrls(message, rawMessage);
+  const currentFiles = extractFilePayloads(message, rawMessage);
   const currentForwardContext = hasForwardPayload(message, rawMessage)
     ? await collectMessageContext(adapter, { message, raw_message: rawMessage })
     : emptyReferenceContext();
   const currentForwardText = currentForwardContext.text
-    ? `【当前消息合并转发】\n${currentForwardContext.text}`
+    ? `\u3010\u5f53\u524d\u6d88\u606f\u5408\u5e76\u8f6c\u53d1\u3011\n${currentForwardContext.text}`
     : '';
   const referenceText = [reference.text, currentForwardText].filter(Boolean).join('\n\n');
+  const referenceFiles = dedupeFilePayloads([...(reference.files || []), ...(currentForwardContext.files || [])]);
   return {
     chatType,
     segments: message,
@@ -1930,8 +2131,10 @@ async function normalizeIncomingMessage(adapter, event) {
     replyToBot: reference.replyToBot,
     referenceText,
     referenceImages: uniqueStrings([...reference.images, ...currentForwardContext.images]),
+    referenceFiles,
     referenceMessageId: replyToMessageId,
     images: uniqueStrings([...currentImages, ...reference.images, ...currentForwardContext.images]),
+    files: dedupeFilePayloads([...currentFiles, ...referenceFiles]),
   };
 }
 
@@ -1983,6 +2186,40 @@ function extractImageUrls(message, raw = '') {
     addCandidate(attrs.url || attrs.file || attrs.path);
   }
   return dedupeImageCandidates(candidates);
+}
+
+export function extractFilePayloads(message, raw = '') {
+  const files = [];
+  const addFile = (file, name) => {
+    const fileValue = normalizeCqValue(file).trim();
+    if (!fileValue) return;
+    const nameValue = normalizeCqValue(name).trim();
+    files.push(nameValue ? { file: fileValue, name: nameValue } : { file: fileValue });
+  };
+  const visit = (value, depth = 0) => {
+    if (value === undefined || value === null || depth > 6) return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    if (typeof value !== 'object') return;
+    const type = String(value.type || '').toLowerCase();
+    const data = value.data && typeof value.data === 'object' ? value.data : {};
+    if (type === 'file') {
+      addFile(data.url || data.file || data.path, data.name || data.file_name || data.filename);
+    }
+    if (value.message !== undefined) visit(value.message, depth + 1);
+    if (value.content !== undefined) visit(value.content, depth + 1);
+    if (data.message !== undefined) visit(data.message, depth + 1);
+    if (data.content !== undefined) visit(data.content, depth + 1);
+  };
+  visit(message);
+  const rawText = typeof raw === 'string' && raw ? raw : typeof message === 'string' ? message : '';
+  for (const match of rawText.matchAll(/\[CQ:file,([^\]]*)\]/gi)) {
+    const attrs = parseCqAttributes(match[1]);
+    addFile(attrs.url || attrs.file || attrs.path, attrs.name || attrs.file_name || attrs.filename);
+  }
+  return dedupeFilePayloads(files);
 }
 
 function parseCqAttributes(rawAttrs) {
@@ -2057,7 +2294,7 @@ async function isReplyToBot(adapter, messageId, botId) {
 }
 
 function emptyReferenceContext() {
-  return { text: '', images: [], replyToBot: false };
+  return { text: '', images: [], files: [], replyToBot: false };
 }
 
 export async function resolveReferencedMessage(adapter, messageId, botId) {
@@ -2076,6 +2313,7 @@ export async function resolveReferencedMessage(adapter, messageId, botId) {
 
 export async function collectMessageContext(adapter, payload, depth = 0, seenForwardIds = new Set()) {
   const images = [];
+  const files = [];
   const textParts = [];
   const forwardItems = extractForwardMessageItems(payload);
 
@@ -2083,31 +2321,35 @@ export async function collectMessageContext(adapter, payload, depth = 0, seenFor
     for (const item of forwardItems.slice(0, 80)) {
       const child = await collectMessageContext(adapter, item, depth, seenForwardIds);
       if (child.text) textParts.push(formatForwardTextItem(item, child.text));
-      images.push(...child.images);
+      images.push(...(child.images || []));
+      files.push(...(child.files || []));
     }
     return {
       text: truncateReferenceText(textParts.filter(Boolean).join('\n')),
       images: uniqueStrings(images),
+      files: dedupeFilePayloads(files),
     };
   }
 
   const baseText = extractMessageText(payload);
   if (baseText) textParts.push(baseText);
   images.push(...extractImageUrls(messageBodyOf(payload), rawMessageOf(payload)));
+  files.push(...extractFilePayloads(messageBodyOf(payload), rawMessageOf(payload)));
 
   if (depth < MAX_FORWARD_DEPTH && adapter?.getForwardMessage) {
     for (const forwardId of extractForwardIds(messageBodyOf(payload), rawMessageOf(payload))) {
-      await collectForwardContext(adapter, forwardId, depth, seenForwardIds, textParts, images);
+      await collectForwardContext(adapter, forwardId, depth, seenForwardIds, textParts, images, files);
     }
   }
 
   return {
     text: truncateReferenceText(textParts.filter(Boolean).join('\n')),
     images: uniqueStrings(images),
+    files: dedupeFilePayloads(files),
   };
 }
 
-async function collectForwardContext(adapter, forwardId, depth, seenForwardIds, textParts, images) {
+async function collectForwardContext(adapter, forwardId, depth, seenForwardIds, textParts, images, files = []) {
   const id = String(forwardId || '').trim();
   if (!id || seenForwardIds.has(id) || depth >= MAX_FORWARD_DEPTH) return;
   seenForwardIds.add(id);
@@ -2116,27 +2358,36 @@ async function collectForwardContext(adapter, forwardId, depth, seenForwardIds, 
     ? uniqueStrings(adapter.getForwardBridgeTargets(id) || [])
     : [];
   for (const target of bridgedTargets) {
-    await collectForwardContext(adapter, target, depth + 1, seenForwardIds, textParts, images);
+    await collectForwardContext(adapter, target, depth + 1, seenForwardIds, textParts, images, files);
   }
 
   if (!adapter?.getForwardMessage) return;
   try {
     const forwardPayload = await adapter.getForwardMessage(id);
     const child = await collectMessageContext(adapter, forwardPayload, depth + 1, seenForwardIds);
-    if (child.text) textParts.push(`【合并聊天记录 ${id}】\n${child.text}`);
-    images.push(...child.images);
+    if (child.text) textParts.push(`\u3010\u5408\u5e76\u804a\u5929\u8bb0\u5f55 ${id}\u3011\n${child.text}`);
+    images.push(...(child.images || []));
+    files.push(...(child.files || []));
   } catch (error) {
-    logger.warn('读取合并聊天记录失败', { forwardId: id, error: normalizeError(error) });
-    textParts.push(`【合并聊天记录 ${id} 读取失败】`);
+    logger.warn('\u8bfb\u53d6\u5408\u5e76\u804a\u5929\u8bb0\u5f55\u5931\u8d25', { forwardId: id, error: normalizeError(error) });
+    textParts.push(`\u3010\u5408\u5e76\u804a\u5929\u8bb0\u5f55 ${id} \u8bfb\u53d6\u5931\u8d25\u3011`);
   }
 }
 
 export function withReferenceContext(text, message) {
   const reference = truncateReferenceText(message?.referenceText || '');
-  if (!reference) return String(text || '').trim();
-  const body = String(text || '').trim() || '请根据引用内容处理。';
-  const label = message?.referenceMessageId ? `【引用内容 #${message.referenceMessageId}】` : '【引用内容】';
-  return truncateReferenceText(`${body}\n\n${label}\n${reference}`, Math.max(MAX_REFERENCE_TEXT_CHARS + body.length + label.length + 8, MAX_REFERENCE_TEXT_CHARS));
+  const fileText = formatReferenceFiles(message?.referenceFiles || []);
+  const mergedReference = [reference, fileText].filter(Boolean).join('\n\n');
+  if (!mergedReference) return String(text || '').trim();
+  const body = String(text || '').trim() || '\u8bf7\u6839\u636e\u5f15\u7528\u5185\u5bb9\u5904\u7406\u3002';
+  const label = message?.referenceMessageId ? `\u3010\u5f15\u7528\u5185\u5bb9 #${message.referenceMessageId}\u3011` : '\u3010\u5f15\u7528\u5185\u5bb9\u3011';
+  return truncateReferenceText(`${body}\n\n${label}\n${mergedReference}`, Math.max(MAX_REFERENCE_TEXT_CHARS + body.length + label.length + 8, MAX_REFERENCE_TEXT_CHARS));
+}
+
+function formatReferenceFiles(files = []) {
+  const clean = dedupeFilePayloads(files).slice(0, 20);
+  if (!clean.length) return '';
+  return ['\u3010\u5f15\u7528\u6587\u4ef6\u3011', ...clean.map((file, index) => `${index + 1}. ${file.name || '\u672a\u547d\u540d\u6587\u4ef6'} ${file.file}`)].join('\n');
 }
 
 export function extractMessageText(payload) {

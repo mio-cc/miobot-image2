@@ -161,6 +161,41 @@ test('llm adapter: editImage supports multipart request mode for inline images',
   assert.ok(entries.some(([key]) => key === 'mask'));
 });
 
+test('llm adapter: chatgpt2api editable file task uses ppt/psd endpoints', async () => {
+  let captured;
+  const adapter = new OpenAICompatibleAdapter({
+    node: { ...node, provider: 'chatgpt2api' },
+    transport: async (request) => {
+      captured = request;
+      return {
+        status: 200,
+        data: {
+          id: 'task-1',
+          taskId: 'task-1',
+          status: 'queued',
+          kind: 'ppt',
+          result: { primary_url: 'http://localhost:8000/files/ppt/task-1/out.pptx' },
+        },
+      };
+    },
+  });
+  const result = await adapter.createEditableFileTask({
+    kind: 'ppt',
+    prompt: 'make a deck',
+    base64Images: ['data:image/png;base64,abc'],
+    clientTaskId: 'task-1',
+  });
+  assert.equal(captured.url, 'http://localhost:8317/v1/ppt/generations');
+  assert.equal(captured.operation, 'editable-file');
+  assert.deepEqual(captured.body, {
+    prompt: 'make a deck',
+    base64_images: ['data:image/png;base64,abc'],
+    client_task_id: 'task-1',
+  });
+  assert.equal(result.taskId, 'task-1');
+  assert.equal(result.result.primary_url, 'http://localhost:8000/files/ppt/task-1/out.pptx');
+});
+
 test('llm adapter: retries retryable transport failures', async () => {
   let calls = 0;
   const adapter = new OpenAICompatibleAdapter({

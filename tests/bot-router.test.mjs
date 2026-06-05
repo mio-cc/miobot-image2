@@ -88,6 +88,16 @@ test('bot router: reply-to-bot ownership can trigger chat without mention', () =
   assert.equal(decision.trigger.mentionTriggered, false);
 });
 
+test('bot router: reply-to-bot with only non-bot at/image/file payload is ignored', () => {
+  const decision = routeBotMessage(
+    group('[CQ:reply,id=abc123][CQ:image,file=quoted.png][CQ:at,qq=23333]', { replyToBot: true }),
+    config({ freeModeEnabled: true, chatEnabled: true }),
+  );
+  assert.equal(decision.kind, 'ignored');
+  assert.equal(decision.reason, 'group-not-triggered');
+  assert.equal(decision.trigger.replyTriggered, false);
+});
+
 test('bot router: explicit image command wins over free mode in group mention flow', () => {
   const decision = routeBotMessage(group('[CQ:at,qq=10000] 生图 润色 一只猫'), config({ freeModeEnabled: true }));
   assert.equal(decision.kind, 'command');

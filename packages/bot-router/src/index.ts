@@ -229,9 +229,12 @@ export function resolveGroupTrigger(message: BotMessageContext, config: BotRoute
   const replyId = extractReplyId(message.rawMessage) ?? stringifyId(message.replyToMessageId);
   const textWithoutReply = stripReplySegments(message.rawMessage).trim();
   const mentioned = hasBotMention(textWithoutReply, config.botId, config.botAliases);
-  const mentionTriggered = triggerModes.mention !== false && mentioned;
-  const replyTriggered = triggerModes.replyToBot !== false && Boolean(replyId) && message.replyToBot === true;
   const commandText = cleanupCommandText(textWithoutReply, config.botId, config.botAliases);
+  const mentionTriggered = triggerModes.mention !== false && mentioned;
+  const replyTriggered = triggerModes.replyToBot !== false
+    && Boolean(replyId)
+    && message.replyToBot === true
+    && hasMeaningfulReplyContent(commandText);
   const commandTriggered = isDirectGroupCommand(commandText, config.commands, {
     directGroupCommands: config.directGroupCommands,
     replyId,
@@ -348,6 +351,17 @@ export function stripLeadingCqAtSegments(text: string): string {
 
 export function cleanupCommandText(text: string, botId?: string | number, aliases?: string[]): string {
   return stripLeadingCqAtSegments(stripBotMentions(text, botId, aliases)).trim();
+}
+
+export function stripNonTextCqSegments(text: string): string {
+  return String(text || '')
+    .replace(/\[CQ:(?:reply|at|image|file|record|video|forward|json|xml|face|mface|marketface|dice|rps|poke|music|share|location),[^\]]*\]/gi, '')
+    .replace(/\[CQ:(?:reply|at|image|file|record|video|forward|json|xml|face|mface|marketface|dice|rps|poke|music|share|location)\]/gi, '')
+    .trim();
+}
+
+export function hasMeaningfulReplyContent(commandText: string): boolean {
+  return stripNonTextCqSegments(commandText).trim().length > 0;
 }
 
 export function isGroupUserBlacklisted(groupId: string | number, userId: string | number, entries: string[] = []): boolean {

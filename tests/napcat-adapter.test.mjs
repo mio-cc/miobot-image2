@@ -2,7 +2,9 @@
 import assert from 'node:assert/strict';
 
 import {
+  buildFileForwardNodes,
   buildImageForwardNodes,
+  buildMixedForwardNodes,
   dedupeImageUrls,
   formatReadyState,
   NapcatAdapter,
@@ -182,6 +184,80 @@ test('napcat adapter: sendGroupImagesForward sends merged forward nodes with de-
   assert.equal(result.success, true);
   assert.equal(result.forwardId, 'fwd-1');
   assert.deepEqual(result.messageIds, [321]);
+});
+
+test('napcat adapter: file messages are standalone or forward-only payloads', async () => {
+  const nodes = buildFileForwardNodes([
+    { file: 'https://example.test/a.pptx', name: 'a.pptx' },
+    { file: 'https://example.test/a.pptx', name: 'dupe.pptx' },
+    'https://example.test/b.zip',
+  ], { botName: 'Miobot', userId: 42 });
+  assert.equal(nodes.length, 2);
+  assert.deepEqual(nodes[0].data.content, [
+    { type: 'file', data: { file: 'https://example.test/a.pptx', name: 'a.pptx' } },
+  ]);
+  assert.deepEqual(nodes[1].data.content, [
+    { type: 'file', data: { file: 'https://example.test/b.zip' } },
+  ]);
+
+  const { adapter, sockets } = createHarness({ forwardUserId: 999 });
+  adapter.connect();
+  sockets[0].open();
+  const filePending = adapter.sendGroupFile(1000, 'https://example.test/report.pptx', 'report.pptx');
+  const fileAction = sockets[0].sent[0];
+  assert.equal(fileAction.action, 'send_group_msg');
+  assert.deepEqual(fileAction.params.message, [
+    { type: 'file', data: { file: 'https://example.test/report.pptx', name: 'report.pptx' } },
+  ]);
+  sockets[0].message({ echo: fileAction.echo, status: 'ok', retcode: 0, data: { message_id: 401 } });
+  assert.equal((await filePending).messageId, 401);
+
+  const forwardPending = adapter.sendGroupFilesForward(1000, [
+    { file: 'https://example.test/one.pptx', name: 'one.pptx' },
+    { file: 'https://example.test/two.zip', name: 'two.zip' },
+  ], 'Miobot');
+  const forwardAction = sockets[0].sent[1];
+  assert.equal(forwardAction.action, 'send_group_forward_msg');
+  assert.equal(forwardAction.params.messages.length, 2);
+  assert.deepEqual(forwardAction.params.messages[0].data.content, [
+    { type: 'file', data: { file: 'https://example.test/one.pptx', name: 'one.pptx' } },
+  ]);
+  sockets[0].message({ echo: forwardAction.echo, status: 'ok', retcode: 0, data: { forward_id: 'file-fwd-1' } });
+  assert.equal((await forwardPending).forwardId, 'file-fwd-1');
+});
+
+
+test('napcat adapter: mixed forward keeps text images and files as separate nodes', () => {
+  const nodes = buildMixedForwardNodes([
+    { kind: 'text', text: '??' },
+    { kind: 'image', file: 'base64://img-a' },
+    { kind: 'file', file: 'https://example.test/a.pptx', name: 'a.pptx' },
+  ], { botName: 'Miobot', userId: 42 });
+  assert.equal(nodes.length, 3);
+  assert.deepEqual(nodes.map((node) => node.data.content[0].type), ['text', 'image', 'file']);
+  assert.deepEqual(nodes[2].data.content, [{ type: 'file', data: { file: 'https://example.test/a.pptx', name: 'a.pptx' } }]);
+});
+
+test('napcat adapter: file send retries after failed action without changing payload shape', async () => {
+  const { adapter, sockets } = createHarness({ fileSendRetryCount: 1, fileSendRetryDelayMs: 0, fileSendTimeoutMs: 50 });
+  adapter.connect();
+  sockets[0].open();
+  const pending = adapter.sendGroupFile(1000, 'https://example.test/report.pptx', 'report.pptx');
+  const first = sockets[0].sent[0];
+  assert.equal(first.action, 'send_group_msg');
+  assert.deepEqual(first.params.message, [{ type: 'file', data: { file: 'https://example.test/report.pptx', name: 'report.pptx' } }]);
+  sockets[0].message({ echo: first.echo, status: 'failed', retcode: 1400, wording: 'temporary fail' });
+  for (let i = 0; i < 20 && sockets[0].sent.length < 2; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  const second = sockets[0].sent[1];
+  assert.equal(second.action, 'send_group_msg');
+  assert.deepEqual(second.params.message, first.params.message);
+  sockets[0].message({ echo: second.echo, status: 'ok', retcode: 0, data: { message_id: 402 } });
+  const result = await pending;
+  assert.equal(result.success, true);
+  assert.equal(result.messageId, 402);
+  assert.deepEqual(result.attempts.map((attempt) => attempt.success), [false, true]);
 });
 
 test('napcat adapter: sendGroupImage uses image timeout and reports timeout result', async () => {

@@ -23,6 +23,12 @@ class FakeReplyClient {
   sendGroupImageQuote(groupId, fileUrl, messageId) { return this.record('sendGroupImageQuote', { groupId, fileUrl, messageId }); }
   sendGroupImageForward(groupId, fileUrl, botName) { return this.record('sendGroupImageForward', { groupId, fileUrl, botName }, { success: true, forwardId: 'single-fwd', forwardIds: ['single-fwd'] }); }
   sendGroupImagesForward(groupId, fileUrls, botName) { return this.record('sendGroupImagesForward', { groupId, fileUrls, botName }, this.forwardResult); }
+  sendGroupFile(groupId, fileUrl, fileName) { return this.record('sendGroupFile', { groupId, fileUrl, fileName }); }
+  sendPrivateFile(userId, fileUrl, fileName) { return this.record('sendPrivateFile', { userId, fileUrl, fileName }); }
+  sendGroupFilesForward(groupId, files, botName) { return this.record('sendGroupFilesForward', { groupId, files, botName }, this.forwardResult); }
+  sendPrivateFilesForward(userId, files, botName) { return this.record('sendPrivateFilesForward', { userId, files, botName }, this.forwardResult); }
+  sendGroupMixedForward(groupId, items, botName) { return this.record('sendGroupMixedForward', { groupId, items, botName }, { success: true, forwardId: 'mixed-fwd', forwardIds: ['mixed-fwd'] }); }
+  sendPrivateMixedForward(userId, items, botName) { return this.record('sendPrivateMixedForward', { userId, items, botName }, { success: true, forwardId: 'private-mixed-fwd', forwardIds: ['private-mixed-fwd'] }); }
 }
 
 const groupContext = { chatType: 'group', groupId: 1000, senderId: 2000, replyToMessageId: 3000, botName: 'Bot' };
@@ -126,4 +132,51 @@ test('reply strategy: private multi-image sends sequential private images', asyn
   assert.deepEqual(client.calls.map((call) => call.method), ['sendPrivateImage', 'sendPrivateImage']);
   assert.deepEqual(client.calls.map((call) => call.args.fileUrl), ['p1', 'p2']);
   assert.deepEqual(result.sentImages, ['p1', 'p2']);
+});
+
+
+test('reply strategy: single file ignores quote and at strategies to avoid unsupported QQ file payloads', async () => {
+  const client = new FakeReplyClient();
+  const engine = new ReplyStrategyEngine(client, { file: 'quote' });
+  const result = await engine.replyFiles(groupContext, [{ file: 'https://example.test/a.pptx', name: 'a.pptx' }], 'quote');
+  assert.equal(result.success, true);
+  assert.equal(result.kind, 'file');
+  assert.deepEqual(client.calls.map((call) => call.method), ['sendGroupFile']);
+  assert.deepEqual(client.calls[0].args, { groupId: 1000, fileUrl: 'https://example.test/a.pptx', fileName: 'a.pptx' });
+});
+
+test('reply strategy: file plus text sends only files and never sends text', async () => {
+  const client = new FakeReplyClient();
+  const engine = new ReplyStrategyEngine(client, { mixed: 'quote' });
+  const result = await engine.replyMixed(groupContext, {
+    text: '?????????????+??????',
+    files: [{ file: 'https://example.test/a.pptx', name: 'a.pptx' }],
+  }, 'quote');
+  assert.equal(result.success, true);
+  assert.deepEqual(client.calls.map((call) => call.method), ['sendGroupFile']);
+});
+
+test('reply strategy: file plus image forces group mixed forward nodes', async () => {
+  const client = new FakeReplyClient();
+  const engine = new ReplyStrategyEngine(client, { mixed: 'plain' });
+  const result = await engine.replyMixed(groupContext, {
+    text: '????',
+    images: ['base64://img-a'],
+    files: [{ file: 'https://example.test/a.pptx', name: 'a.pptx' }],
+  }, 'quote');
+  assert.equal(result.success, true);
+  assert.equal(result.kind, 'mixed');
+  assert.deepEqual(client.calls.map((call) => call.method), ['sendGroupMixedForward']);
+  assert.deepEqual(client.calls[0].args.items.map((item) => item.kind), ['text', 'image', 'file']);
+});
+
+test('reply strategy: private files use private file and private forward methods', async () => {
+  const client = new FakeReplyClient();
+  const engine = new ReplyStrategyEngine(client, { multiFile: 'forward' });
+  await engine.replyFiles(privateContext, [{ file: 'https://example.test/one.zip', name: 'one.zip' }]);
+  await engine.replyFiles(privateContext, [
+    { file: 'https://example.test/two.zip', name: 'two.zip' },
+    { file: 'https://example.test/three.zip', name: 'three.zip' },
+  ]);
+  assert.deepEqual(client.calls.map((call) => call.method), ['sendPrivateFile', 'sendPrivateFilesForward']);
 });
