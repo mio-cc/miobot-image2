@@ -200,7 +200,8 @@ export class WebApi {
         return ok({ success: true, config: this.repository.getConfig(), revision: this.repository.revision, auth: this.repository.getAuthSnapshot(false) });
       }
       if (method === 'POST' && path === '/api/config') {
-        return ok(this.repository.saveConfig(request.body));
+        const saved = this.repository.saveConfig(request.body);
+        return ok(isCompactRequest(request.path) ? compactConfigSaveResult(saved) : saved);
       }
       if (method === 'POST' && path === '/api/config/import') {
         return ok(this.repository.importAndSave(request.body));
@@ -269,6 +270,16 @@ function json<T>(status: WebApiStatus, body: T): WebApiResponse<T> {
 function normalizePath(path: string): string {
   const raw = String(path || '/').split('?')[0] || '/';
   return raw.endsWith('/') && raw.length > 1 ? raw.slice(0, -1) : raw;
+}
+
+function isCompactRequest(path: string): boolean {
+  const query = String(path || '').split('?')[1] || '';
+  return new URLSearchParams(query).get('compact') === '1';
+}
+
+function compactConfigSaveResult(result: ConfigSaveResult): Omit<ConfigSaveResult, 'config'> {
+  const { config: _config, ...rest } = result;
+  return rest;
 }
 
 function getAuthorization(headers?: WebApiHeaders): string | undefined {

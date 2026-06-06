@@ -88,6 +88,23 @@ test('web api: save emits hot reload event without restarting process', () => {
   assert.equal(saved.hotReload.napcatReconnectRequired, false);
 });
 
+test('web api: compact save response omits full config payload', async () => {
+  const api = createWebApi();
+  const client = clientFromApi(api);
+  const login = await client.login('change-me-on-first-login');
+  const response = await api.handle({
+    method: 'POST',
+    path: '/api/config?compact=1',
+    headers: { authorization: `Bearer ${login.auth.token}` },
+    body: { llm: { chatEnabled: false } },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.success, true);
+  assert.equal('config' in response.body, false);
+  assert.ok(response.body.hotReload.changedPaths.includes('llm.chatEnabled'));
+  assert.equal(response.body.auth.token, login.auth.token);
+});
+
 test('web api: napcat websocket/token changes are marked for hot reconnect', () => {
   const repo = new ConfigRepository();
   const saved = repo.saveConfig({ napcat: { wsUrl: 'ws://localhost:4000', token: 'redacted-new-token' } });

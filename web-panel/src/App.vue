@@ -31,6 +31,27 @@ type CanvasManagedCard = {
   };
 };
 
+type ModelRouteItem = {
+  id: string;
+  title: string;
+  description: string;
+  badge?: string;
+  nodePath: string[];
+  modelPath: string[];
+  placeholder?: string;
+  extraModels?: string[];
+  enabledPath?: string[];
+};
+
+type ModelRouteGroup = {
+  id: string;
+  title: string;
+  subtitle: string;
+  items: ModelRouteItem[];
+};
+
+type ModelRoutePathTarget = 'node' | 'model';
+
 // ─── Toasts 通知系统 ───
 type Toast = {
   id: number;
@@ -61,6 +82,8 @@ const password = ref('');
 const loginError = ref('');
 const token = ref(localStorage.getItem('np_token') || '');
 const config = ref<any>(null);
+const savedConfigSnapshot = ref<any>(null);
+const savingConfig = ref(false);
 const saveStatus = ref('');
 const currentPage = ref('about');
 const fetchedModels = ref<string[]>([]);
@@ -109,6 +132,7 @@ const collapsedTemplates = ref<Record<string, boolean>>({});
 const menuItems = [
   { id: 'about', icon: '总', label: '控制台概览' },
   { id: 'llm', icon: '模', label: '模型与节点' },
+  { id: 'modelRoutes', icon: '路', label: '模型路由' },
   { id: 'huggingFace', icon: 'HF', label: 'Hugging Face 接口' },
   { id: 'bot', icon: '复', label: '回复策略' },
   { id: 'freeMode', icon: '自', label: '自由模式' },
@@ -176,8 +200,7 @@ async function login() {
 async function fetchConfig() {
   try {
     const res = await axios.get(`${API_BASE}/config`, { headers: authHeaders() });
-    config.value = res.data;
-    ensureCanvasConfig();
+    applyServerConfig(res.data?.config || res.data);
     isAuthenticated.value = true;
     await fetchDefaultPrompts();
   } catch (e: any) {
@@ -415,11 +438,18 @@ function handleLogout() {
 }
 
 async function saveConfig() {
+  if (savingConfig.value) return;
   ensureCanvasConfig();
+  const payload = buildConfigSavePayload(config.value, savedConfigSnapshot.value);
+  if (isEmptyPatch(payload)) {
+    saveStatus.value = '✅ 没有检测到配置变更';
+    showToast('没有需要保存的变更', 'info');
+    return;
+  }
+  savingConfig.value = true;
   saveStatus.value = '⏳ 保存中...';
-  showToast('正在向服务器提交配置...', 'info');
+  showToast(`正在提交 ${countPatchChanges(payload)} 项配置变更...`, 'info');
   try {
-    const payload = buildConfigSavePayload(config.value);
     const res = await axios.post(`${API_BASE}/config?compact=1`, payload, { headers: authHeaders() });
     const nextToken = res.data?.token || res.data?.auth?.token || config.value?.panel?.passwordSeed;
     if (nextToken && token.value !== nextToken) {
@@ -427,19 +457,38 @@ async function saveConfig() {
       localStorage.setItem('np_token', token.value);
     }
     if (res.data?.config) {
-      config.value = res.data.config;
-      ensureCanvasConfig();
+      applyServerConfig(res.data.config);
+    } else {
+      rememberSavedConfigSnapshot();
     }
     saveStatus.value = '✅ 配置已热重载生效！';
     showToast('配置保存并热重载成功！', 'success');
   } catch (e: any) { 
     saveStatus.value = `❌ 失败: ${e.message}`; 
     showToast(`保存失败: ${e.message}`, 'error');
+  } finally {
+    savingConfig.value = false;
   }
 }
 
-function buildConfigSavePayload(source: any) {
-  const payload = JSON.parse(JSON.stringify(source || {}));
+function applyServerConfig(nextConfig: any) {
+  config.value = nextConfig;
+  ensureCanvasConfig();
+  rememberSavedConfigSnapshot();
+}
+
+function rememberSavedConfigSnapshot() {
+  savedConfigSnapshot.value = sanitizeConfigForSave(config.value);
+}
+
+function buildConfigSavePayload(source: any, previous?: any) {
+  const current = sanitizeConfigForSave(source);
+  const baseline = previous ? sanitizeConfigForSave(previous) : {};
+  return diffConfigPatch(baseline, current) || {};
+}
+
+function sanitizeConfigForSave(source: any) {
+  const payload = clonePlain(source || {});
   // Do not echo large Hugging Face cache fields on ordinary settings save.
   // The backend merges this as a patch, so omitted cache fields stay unchanged.
   if (payload.huggingFace && typeof payload.huggingFace === 'object') {
@@ -448,6 +497,51 @@ function buildConfigSavePayload(source: any) {
     delete payload.huggingFace.cacheQueryHash;
   }
   return payload;
+}
+
+function diffConfigPatch(previous: any, current: any): any {
+  if (stableJson(previous) === stableJson(current)) return undefined;
+  if (Array.isArray(previous) || Array.isArray(current)) return clonePlain(current);
+  if (!isPlainObject(previous) || !isPlainObject(current)) return clonePlain(current);
+  const patch: Record<string, any> = {};
+  const keys = new Set([...Object.keys(previous), ...Object.keys(current)]);
+  for (const key of keys) {
+    if (!(key in current)) {
+      patch[key] = null;
+      continue;
+    }
+    const child = diffConfigPatch(previous[key], current[key]);
+    if (child !== undefined) patch[key] = child;
+  }
+  return Object.keys(patch).length ? patch : undefined;
+}
+
+function isEmptyPatch(value: any) {
+  return !value || (isPlainObject(value) && Object.keys(value).length === 0);
+}
+
+function countPatchChanges(value: any): number {
+  if (isEmptyPatch(value)) return 0;
+  if (!isPlainObject(value) || Array.isArray(value)) return 1;
+  return Object.values(value).reduce((sum, item) => sum + countPatchChanges(item), 0);
+}
+
+function clonePlain<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value ?? null));
+}
+
+function isPlainObject(value: any): value is Record<string, any> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stableJson(value: any): string {
+  return JSON.stringify(value, (_key, item) => {
+    if (!isPlainObject(item)) return item;
+    return Object.keys(item).sort().reduce((acc: Record<string, any>, key) => {
+      acc[key] = item[key];
+      return acc;
+    }, {});
+  });
 }
 
 async function exportConfig() {
@@ -485,8 +579,7 @@ async function importConfigFromFile(event: Event) {
     const text = await file.text();
     const parsed = JSON.parse(text);
     const res = await axios.post(`${API_BASE}/config/import`, parsed, { headers: authHeaders() });
-    config.value = res.data.config || parsed.config || parsed;
-    ensureCanvasConfig();
+    applyServerConfig(res.data.config || parsed.config || parsed);
     if (config.value?.panel?.passwordSeed && token.value !== config.value.panel.passwordSeed) {
       token.value = config.value.panel.passwordSeed;
       localStorage.setItem('np_token', token.value);
@@ -732,8 +825,7 @@ async function fetchHuggingFaceModels(force = false) {
       huggingFace: hf,
       filters: hf.filters,
     }, { headers: authHeaders() });
-    config.value = res.data.config || config.value;
-    ensureCanvasConfig();
+    if (res.data.config) applyServerConfig(res.data.config);
     hfFetchStatus.value = `${res.data.fromCache ? '已使用缓存' : '已刷新'}：共 ${res.data.models?.length || 0} 个模型，缓存时间 ${res.data.cachedAt || '-'}`;
     showToast(`Hugging Face 模型查询完成：${res.data.models?.length || 0} 个`, 'success');
   } catch (e: any) {
@@ -1026,22 +1118,132 @@ function modelsForNode(idx: number | string, currentVal = '', extra: string[] = 
   return list;
 }
 
+function modelRouteGroups(): ModelRouteGroup[] {
+  return [
+    {
+      id: 'core',
+      title: '核心对话',
+      subtitle: 'Bot 文本回复、自由模式规划和语音前置处理都在这里指定模型。',
+      items: [
+        { id: 'chat', title: '日常对话', badge: 'Bot', description: '群聊 @机器人 / 私聊的普通文本回复。', nodePath: ['llm', 'chatNodeIndex'], modelPath: ['llm', 'chatModel'], placeholder: 'gpt-4o-mini', enabledPath: ['llm', 'chatEnabled'] },
+        { id: 'free-mode', title: '自由模式规划', badge: 'Bot', description: '判断未命中指令的 @ 消息应该文本回复、生图还是改图。', nodePath: ['freeMode', 'nodeIndex'], modelPath: ['freeMode', 'model'], placeholder: 'gpt-4o-mini', enabledPath: ['freeMode', 'enabled'] },
+        { id: 'tts-preprocess', title: '语音前置处理', badge: 'TTS', description: '把文本回复翻译/改写成适合语音合成的文本。', nodePath: ['bot', 'tts', 'preprocess', 'nodeIndex'], modelPath: ['bot', 'tts', 'preprocess', 'model'], placeholder: 'gpt-4o-mini', enabledPath: ['bot', 'tts', 'preprocess', 'enabled'] },
+      ],
+    },
+    {
+      id: 'image',
+      title: '图像与多模态',
+      subtitle: '区分 Bot 与前台画布的生图、改图、反推模型，避免互相影响。',
+      items: [
+        { id: 'bot-image', title: 'Bot 文生图', badge: 'Bot', description: 'QQ群/私聊生图命令使用的图像生成模型。', nodePath: ['llm', 'imageNodeIndex'], modelPath: ['llm', 'imageModel'], placeholder: 'gpt-image-2', enabledPath: ['llm', 'imageEnabled'] },
+        { id: 'bot-edit', title: 'Bot 图生图 / 改图', badge: 'Bot', description: '回复图片后执行图生图、改图命令。', nodePath: ['llm', 'editNodeIndex'], modelPath: ['llm', 'editModel'], placeholder: 'gpt-image-2' },
+        { id: 'bot-interrogate', title: 'Bot 图片反推', badge: 'Bot', description: '机器人收到图片后执行反推、看图、描述命令。', nodePath: ['llm', 'interrogateNodeIndex'], modelPath: ['llm', 'interrogateModel'], placeholder: 'gpt-4o-mini' },
+        { id: 'canvas-image', title: '画布文生图', badge: 'Canvas', description: '前台画布提交文生图任务时使用，独立于 Bot 生图。', nodePath: ['canvas', 'imageNodeIndex'], modelPath: ['canvas', 'imageModel'], placeholder: 'gpt-image-2', enabledPath: ['canvas', 'enabled'] },
+        { id: 'canvas-edit', title: '画布图生图 / 改图', badge: 'Canvas', description: '前台画布上传参考图或编辑图片时使用。', nodePath: ['canvas', 'editNodeIndex'], modelPath: ['canvas', 'editModel'], placeholder: 'gpt-image-2', enabledPath: ['canvas', 'enabled'] },
+        { id: 'canvas-interrogate', title: '画布原图反推', badge: 'Canvas', description: '画布反推库第一阶段：分析原图并生成描述。', nodePath: ['canvas', 'interrogateNodeIndex'], modelPath: ['canvas', 'interrogateModel'], placeholder: 'gpt-4o-mini', enabledPath: ['canvas', 'enabled'] },
+        { id: 'canvas-interrogate-template', title: '画布模板化反推', badge: 'Canvas', description: '画布反推库第二阶段：把原图描述抽象成可复用模板。', nodePath: ['canvas', 'interrogateTemplateNodeIndex'], modelPath: ['canvas', 'interrogateTemplateModel'], placeholder: 'gpt-4o-mini', enabledPath: ['canvas', 'enabled'] },
+      ],
+    },
+    {
+      id: 'prompting',
+      title: '提示词与模板',
+      subtitle: '润色、模板填充、远程模板搜索和转模板都集中在同一处调度。',
+      items: [
+        { id: 'enhance', title: '提示词润色', badge: 'Prompt', description: '用户在生图命令后加“润色”时调用；模型填 none 表示关闭。', nodePath: ['llm', 'enhanceNodeIndex'], modelPath: ['llm', 'enhanceModel'], placeholder: 'claude-3-5-sonnet', extraModels: ['none'] },
+        { id: 'template-fill', title: '本地模板填充', badge: 'Template', description: '把用户主体填入 mb_1 这类本地模板；none 表示直接替换。', nodePath: ['llm', 'templateNodeIndex'], modelPath: ['llm', 'templateModel'], placeholder: 'gpt-4o-mini', extraModels: ['none'] },
+        { id: 'referenced-template', title: '引用模板填充', badge: 'Template', description: '引用文件/消息作为模板时单独使用的填充模型；none 表示不调用。', nodePath: ['llm', 'referencedTemplateNodeIndex'], modelPath: ['llm', 'referencedTemplateModel'], placeholder: 'gpt-4o-mini', extraModels: ['none'] },
+        { id: 'prompts-chat', title: '远程模板智能匹配', badge: 'Remote', description: '从远程提示词库取候选后，选择并融合模板。', nodePath: ['promptsChat', 'smartNodeIndex'], modelPath: ['promptsChat', 'smartModel'], placeholder: 'gpt-4o-mini', extraModels: ['none'], enabledPath: ['promptsChat', 'enabled'] },
+        { id: 'translation', title: '远程库翻译 / 本地化', badge: 'Remote', description: '把中文检索词转英文，并把远程结果说明翻译回中文；none 表示关闭。', nodePath: ['llm', 'translationNodeIndex'], modelPath: ['llm', 'translationModel'], placeholder: 'gpt-4o-mini', extraModels: ['none'] },
+        { id: 'template-convert', title: '智能提示词转模板', badge: 'Template', description: '把现成提示词抽象成可复用模板并自动命名。', nodePath: ['llm', 'templateConvertNodeIndex'], modelPath: ['llm', 'templateConvertModel'], placeholder: 'gpt-4o-mini' },
+      ],
+    },
+  ];
+}
+
+function getConfigPath(path: string[]) {
+  return path.reduce((target: any, key) => target?.[key], config.value);
+}
+
+function setConfigPath(path: string[], value: unknown) {
+  if (!config.value || !path.length) return;
+  let target = config.value;
+  for (const key of path.slice(0, -1)) {
+    if (!isPlainObject(target[key])) target[key] = {};
+    target = target[key];
+  }
+  target[path[path.length - 1]] = value;
+}
+
+function updateModelRoute(item: ModelRouteItem, target: ModelRoutePathTarget, event: Event) {
+  const el = event.target as HTMLInputElement | HTMLSelectElement | null;
+  if (!el) return;
+  if (target === 'node') {
+    setConfigPath(item.nodePath, Number(el.value));
+  } else {
+    setConfigPath(item.modelPath, el.value);
+  }
+}
+
+function routeNodeIndex(item: ModelRouteItem) {
+  const idx = normalizeIndex(getConfigPath(item.nodePath) ?? 0);
+  return Number.isFinite(idx) ? idx : 0;
+}
+
+function routeNodeOptions(item: ModelRouteItem) {
+  const current = routeNodeIndex(item);
+  return (config.value?.llm?.apiKeys || [])
+    .map((node: any, idx: number) => ({ node, idx }))
+    .filter((entry: any) => entry.node.enabled !== false || entry.idx === current);
+}
+
+function routeModelValue(item: ModelRouteItem) {
+  return String(getConfigPath(item.modelPath) ?? '');
+}
+
+function routeModelOptions(item: ModelRouteItem) {
+  return modelsForNode(routeNodeIndex(item), routeModelValue(item), item.extraModels || []);
+}
+
+function routeDatalistId(item: ModelRouteItem) {
+  return `dl-route-${item.id}`;
+}
+
+function nodeDisplayName(idx: number | string) {
+  const index = normalizeIndex(idx);
+  const node = config.value?.llm?.apiKeys?.[index];
+  const suffix = node?.enabled === false ? '（已禁用）' : '';
+  return `${node?.name || `节点 ${index + 1}`}${suffix}`;
+}
+
+function routeEnabled(item: ModelRouteItem) {
+  if (!item.enabledPath) return true;
+  return getConfigPath(item.enabledPath) !== false;
+}
+
+function routeSummary(nodePath: string[], modelPath: string[]) {
+  const idx = normalizeIndex(getConfigPath(nodePath) ?? 0);
+  const model = String(getConfigPath(modelPath) || '未设置');
+  return `${nodeDisplayName(idx)} / ${model}`;
+}
+
+function routeFailoverCount(item: ModelRouteItem) {
+  const model = routeModelValue(item).trim();
+  if (!model || model === 'none') return 0;
+  const current = routeNodeIndex(item);
+  return (config.value?.llm?.apiKeys || []).filter((node: any, idx: number) =>
+    idx !== current && node.enabled !== false && Array.isArray(node.models) && node.models.includes(model)
+  ).length;
+}
+
 function modelLimitRows() {
   const llm = config.value?.llm;
+  const routedModels = modelRouteGroups()
+    .flatMap((group) => group.items)
+    .map((item) => [getConfigPath(item.nodePath), getConfigPath(item.modelPath)]);
   return (llm?.apiKeys || []).flatMap((node: any, idx: number) => {
     const models = new Set<string>(node.models || []);
-    [
-      [llm.chatNodeIndex, llm.chatModel],
-      [llm.enhanceNodeIndex, llm.enhanceModel],
-      [llm.templateNodeIndex, llm.templateModel],
-      [llm.referencedTemplateNodeIndex, llm.referencedTemplateModel],
-      [llm.templateConvertNodeIndex, llm.templateConvertModel],
-      [llm.translationNodeIndex, llm.translationModel],
-      [llm.imageNodeIndex, llm.imageModel],
-      [llm.editNodeIndex, llm.editModel],
-      [llm.interrogateNodeIndex, llm.interrogateModel],
-    ].forEach(([nodeIndex, model]: any[]) => {
-      if (normalizeIndex(nodeIndex) === idx && model) models.add(model);
+    routedModels.forEach(([nodeIndex, model]: any[]) => {
+      if (normalizeIndex(nodeIndex) === idx && model && model !== 'none') models.add(model);
     });
     return [...models].map((model: string) => ({ node, idx, model }));
   });
@@ -1262,7 +1464,7 @@ async function convertPromptToTemplate() {
   templateConvertStatus.value = 'AI 正在转化模板...';
   try {
     const res = await axios.post(`${API_BASE}/templates/convert`, { rawPrompt }, { headers: authHeaders() });
-    config.value = res.data.config || config.value;
+    if (res.data.config) applyServerConfig(res.data.config);
     templateConvertSource.value = '';
     const tpl = res.data.template;
     templateConvertStatus.value = `已新增模板 ${tpl?.id || ''} ${tpl?.title || ''}`.trim();
@@ -1375,7 +1577,7 @@ async function generateTemplateTitle(tpl: any, idx: number) {
             <input ref="configImportInput" type="file" accept="application/json,.json" class="hidden" @change="importConfigFromFile" />
             <button @click="exportConfig" class="btn-outline text-sm">导出</button>
             <button @click="triggerImportConfig" class="btn-outline text-sm">导入</button>
-            <button @click="saveConfig" class="btn-primary text-sm">保存配置</button>
+            <button @click="saveConfig" :disabled="savingConfig" class="btn-primary text-sm disabled:opacity-60 disabled:cursor-not-allowed">{{ savingConfig ? '保存中...' : '保存配置' }}</button>
           </div>
         </div>
 
@@ -1455,7 +1657,7 @@ async function generateTemplateTitle(tpl: any, idx: number) {
 
             <!-- 模型分工 -->
             <div class="card p-5">
-              <h2 class="section-title mb-4">📋 模型分工调度</h2>
+              <h2 class="section-title mb-4">📋 能力开关与参数</h2>
               <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
 
                 <!-- Chat -->
@@ -1464,13 +1666,10 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                     <span class="text-sm font-semibold">🤖 日常对话</span>
                     <label class="toggle"><input type="checkbox" v-model="config.llm.chatEnabled"><span class="toggle-slider"></span></label>
                   </div>
-                  <label class="label-sm">节点</label>
-                  <select v-model.number="config.llm.chatNodeIndex" class="input-field mb-2" :disabled="!config.llm.chatEnabled">
-                    <option v-for="item in nodeOptions()" :key="`chat-node-${item.idx}`" :value="item.idx">{{ item.node.name || `节点 ${item.idx + 1}` }}</option>
-                  </select>
-                  <label class="label-sm">模型</label>
-                  <input v-model="config.llm.chatModel" list="dl-chat" class="input-field" placeholder="gpt-4o-mini" :disabled="!config.llm.chatEnabled" />
-                  <datalist id="dl-chat"><option v-for="m in modelsForNode(config.llm.chatNodeIndex, config.llm.chatModel)" :key="m" :value="m" /></datalist>
+                  <div class="rounded-lg border border-emerald-100 bg-white/70 px-3 py-2 text-xs text-slate-500">
+                    当前路由：<span class="font-mono text-slate-700">{{ routeSummary(['llm', 'chatNodeIndex'], ['llm', 'chatModel']) }}</span>
+                    <button @click="currentPage = 'modelRoutes'" class="ml-2 text-indigo-600 hover:underline">去模型路由修改</button>
+                  </div>
                   <div class="mt-3">
                     <label class="label-sm">智能推理等级</label>
                     <select v-model="config.llm.reasoningEffort" class="input-field" :disabled="!config.llm.chatEnabled">
@@ -1490,13 +1689,10 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                     <span class="text-sm font-semibold">🧠 提示词润色</span>
                     <span class="tag text-amber-700 bg-amber-50 border-amber-200">关键词触发</span>
                   </div>
-                  <label class="label-sm">节点</label>
-                  <select v-model.number="config.llm.enhanceNodeIndex" class="input-field mb-2">
-                    <option v-for="item in nodeOptions()" :key="`enhance-node-${item.idx}`" :value="item.idx">{{ item.node.name || `节点 ${item.idx + 1}` }}</option>
-                  </select>
-                  <label class="label-sm">模型</label>
-                  <input v-model="config.llm.enhanceModel" list="dl-enhance" class="input-field" placeholder="claude-3-5-sonnet" />
-                  <datalist id="dl-enhance"><option v-for="m in modelsForNode(config.llm.enhanceNodeIndex, config.llm.enhanceModel, ['none'])" :key="m" :value="m" /></datalist>
+                  <div class="rounded-lg border border-amber-100 bg-white/70 px-3 py-2 text-xs text-slate-500">
+                    当前路由：<span class="font-mono text-slate-700">{{ routeSummary(['llm', 'enhanceNodeIndex'], ['llm', 'enhanceModel']) }}</span>
+                    <button @click="currentPage = 'modelRoutes'" class="ml-2 text-indigo-600 hover:underline">去模型路由修改</button>
+                  </div>
                   <span class="text-slate-400 text-xs mt-1 block">用户在生图命令后加“润色”才会调用</span>
                 </div>
 
@@ -1506,13 +1702,10 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                     <span class="text-sm font-semibold">🌐 翻译 / 本地化</span>
                     <span class="tag text-teal-700 bg-teal-50 border-teal-200">远程库搜索</span>
                   </div>
-                  <label class="label-sm">节点</label>
-                  <select v-model.number="config.llm.translationNodeIndex" class="input-field mb-2">
-                    <option v-for="item in nodeOptions()" :key="`translation-node-${item.idx}`" :value="item.idx">{{ item.node.name || `节点 ${item.idx + 1}` }}</option>
-                  </select>
-                  <label class="label-sm">模型</label>
-                  <input v-model="config.llm.translationModel" list="dl-translation" class="input-field" placeholder="gpt-4o-mini" />
-                  <datalist id="dl-translation"><option v-for="m in modelsForNode(config.llm.translationNodeIndex, config.llm.translationModel, ['none'])" :key="m" :value="m" /></datalist>
+                  <div class="rounded-lg border border-teal-100 bg-white/70 px-3 py-2 text-xs text-slate-500">
+                    当前路由：<span class="font-mono text-slate-700">{{ routeSummary(['llm', 'translationNodeIndex'], ['llm', 'translationModel']) }}</span>
+                    <button @click="currentPage = 'modelRoutes'" class="ml-2 text-indigo-600 hover:underline">去模型路由修改</button>
+                  </div>
                   <span class="text-slate-400 text-xs mt-1 block">将中文关键词转为英文检索，并把结果标题、简介等说明翻译成中文；填空值则关闭模型翻译。</span>
                 </div>
 
@@ -1522,13 +1715,10 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                     <span class="text-sm font-semibold">🎨 图像生成</span>
                     <label class="toggle"><input type="checkbox" v-model="config.llm.imageEnabled"><span class="toggle-slider"></span></label>
                   </div>
-                  <label class="label-sm">节点</label>
-                  <select v-model.number="config.llm.imageNodeIndex" class="input-field mb-2" :disabled="!config.llm.imageEnabled">
-                    <option v-for="item in nodeOptions()" :key="`image-node-${item.idx}`" :value="item.idx">{{ item.node.name || `节点 ${item.idx + 1}` }}</option>
-                  </select>
-                  <label class="label-sm">模型</label>
-                  <input v-model="config.llm.imageModel" list="dl-image" class="input-field" placeholder="gpt-image-2" :disabled="!config.llm.imageEnabled" />
-                  <datalist id="dl-image"><option v-for="m in modelsForNode(config.llm.imageNodeIndex, config.llm.imageModel)" :key="m" :value="m" /></datalist>
+                  <div class="rounded-lg border border-purple-100 bg-white/70 px-3 py-2 text-xs text-slate-500">
+                    当前路由：<span class="font-mono text-slate-700">{{ routeSummary(['llm', 'imageNodeIndex'], ['llm', 'imageModel']) }}</span>
+                    <button @click="currentPage = 'modelRoutes'" class="ml-2 text-indigo-600 hover:underline">去模型路由修改</button>
+                  </div>
                   <span class="text-slate-400 text-xs mt-1 block">各类图像生成模型</span>
                   <div class="mt-3">
                     <label class="label-sm">一次生成张数</label>
@@ -1580,13 +1770,10 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                   <div class="flex items-center justify-between mb-3">
                     <span class="text-sm font-semibold">🖼️ 图生图 / 改图</span>
                   </div>
-                  <label class="label-sm">节点</label>
-                  <select v-model.number="config.llm.editNodeIndex" class="input-field mb-2">
-                    <option v-for="item in nodeOptions()" :key="`edit-node-${item.idx}`" :value="item.idx">{{ item.node.name || `节点 ${item.idx + 1}` }}</option>
-                  </select>
-                  <label class="label-sm">模型</label>
-                  <input v-model="config.llm.editModel" list="dl-edit" class="input-field" placeholder="gpt-image-2" />
-                  <datalist id="dl-edit"><option v-for="m in modelsForNode(config.llm.editNodeIndex, config.llm.editModel)" :key="m" :value="m" /></datalist>
+                  <div class="rounded-lg border border-cyan-100 bg-white/70 px-3 py-2 text-xs text-slate-500">
+                    当前路由：<span class="font-mono text-slate-700">{{ routeSummary(['llm', 'editNodeIndex'], ['llm', 'editModel']) }}</span>
+                    <button @click="currentPage = 'modelRoutes'" class="ml-2 text-indigo-600 hover:underline">去模型路由修改</button>
+                  </div>
                   <span class="text-slate-400 text-xs mt-1 block">回复图片后使用图生图/改图命令</span>
                 </div>
 
@@ -1595,13 +1782,10 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                   <div class="flex items-center justify-between mb-3">
                     <span class="text-sm font-semibold">🔍 机器人图片反推</span>
                   </div>
-                  <label class="label-sm">节点</label>
-                  <select v-model.number="config.llm.interrogateNodeIndex" class="input-field mb-2">
-                    <option v-for="item in nodeOptions()" :key="`interrogate-node-${item.idx}`" :value="item.idx">{{ item.node.name || `节点 ${item.idx + 1}` }}</option>
-                  </select>
-                  <label class="label-sm">模型</label>
-                  <input v-model="config.llm.interrogateModel" list="dl-interrogate" class="input-field" placeholder="gpt-4o-mini" />
-                  <datalist id="dl-interrogate"><option v-for="m in modelsForNode(config.llm.interrogateNodeIndex, config.llm.interrogateModel)" :key="m" :value="m" /></datalist>
+                  <div class="rounded-lg border border-rose-100 bg-white/70 px-3 py-2 text-xs text-slate-500">
+                    当前路由：<span class="font-mono text-slate-700">{{ routeSummary(['llm', 'interrogateNodeIndex'], ['llm', 'interrogateModel']) }}</span>
+                    <button @click="currentPage = 'modelRoutes'" class="ml-2 text-indigo-600 hover:underline">去模型路由修改</button>
+                  </div>
                   <label class="label-sm mt-3">机器人反推超时（毫秒）</label>
                   <input v-model.number="config.llm.interrogateTimeoutMs" type="number" min="30000" step="30000" class="input-field" />
                   <span class="text-slate-400 text-xs mt-1 block">仅用于机器人回复图片后的反推命令；前台反推库在画布管理中单独配置。</span>
@@ -1703,6 +1887,88 @@ async function generateTemplateTitle(tpl: any, idx: number) {
               <h2 class="section-title mb-3">📦 已探测模型 ({{ fetchedModels.length }})</h2>
               <div class="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto">
                 <span v-for="m in fetchedModels" :key="m" class="tag">{{ m }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- PAGE: 模型路由中心 -->
+          <div v-show="currentPage === 'modelRoutes'" class="space-y-4 animate-fadein">
+            <div class="card p-5 overflow-hidden">
+              <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <span class="eyebrow">MODEL ROUTING</span>
+                  <h2 class="section-title mt-1">模型路由中心</h2>
+                  <p class="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+                    所有“选择节点 / 选择模型”的后台入口统一移动到这里。Bot、前台画布、模板、反推、自由模式互不混用；当某节点的某模型失效时，运行时会按同名模型自动轮询其它可用节点，这里会显示当前保存的可见路由状态。
+                  </p>
+                </div>
+                <div class="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+                  <div class="rounded-2xl border border-indigo-500/20 bg-indigo-500/10 px-4 py-3">
+                    <div class="text-slate-400">可用节点</div>
+                    <div class="mt-1 text-xl font-black text-white">{{ nodeOptions().length }}</div>
+                  </div>
+                  <div class="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3">
+                    <div class="text-slate-400">路由场景</div>
+                    <div class="mt-1 text-xl font-black text-white">{{ modelRouteGroups().reduce((sum, group) => sum + group.items.length, 0) }}</div>
+                  </div>
+                  <div class="rounded-2xl border border-violet-500/20 bg-violet-500/10 px-4 py-3 col-span-2 sm:col-span-1">
+                    <div class="text-slate-400">保存方式</div>
+                    <div class="mt-1 text-sm font-bold text-white">仅提交变更</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div v-for="group in modelRouteGroups()" :key="group.id" class="card p-5">
+              <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <h3 class="text-base font-black text-slate-100">{{ group.title }}</h3>
+                  <p class="text-xs text-slate-400 mt-1">{{ group.subtitle }}</p>
+                </div>
+                <span class="tag text-indigo-200 bg-indigo-500/10 border-indigo-500/20">{{ group.items.length }} 条路由</span>
+              </div>
+
+              <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                <div v-for="route in group.items" :key="route.id"
+                  class="rounded-2xl border border-slate-800 bg-slate-950/45 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                  <div class="flex items-start justify-between gap-3">
+                    <div>
+                      <div class="flex flex-wrap items-center gap-2">
+                        <span class="text-sm font-bold text-slate-100">{{ route.title }}</span>
+                        <span class="tag">{{ route.badge || 'Model' }}</span>
+                        <span :class="['tag', routeEnabled(route) ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20' : 'text-zinc-400 bg-zinc-500/10 border-zinc-500/20']">
+                          {{ routeEnabled(route) ? '启用中' : '未启用' }}
+                        </span>
+                      </div>
+                      <p class="mt-2 text-xs leading-5 text-slate-400">{{ route.description }}</p>
+                    </div>
+                    <span v-if="routeFailoverCount(route)" class="shrink-0 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1 text-[10px] font-bold text-cyan-200">
+                      备援 {{ routeFailoverCount(route) }}
+                    </span>
+                  </div>
+
+                  <div class="mt-3 rounded-xl border border-slate-800 bg-black/20 px-3 py-2 text-[11px] text-slate-400">
+                    当前：<span class="font-mono text-slate-200">{{ routeSummary(route.nodePath, route.modelPath) }}</span>
+                  </div>
+
+                  <div class="mt-3 grid grid-cols-1 md:grid-cols-[220px_1fr] gap-3">
+                    <div>
+                      <label class="label-sm">节点</label>
+                      <select :value="routeNodeIndex(route)" @change="updateModelRoute(route, 'node', $event)" class="input-field font-mono">
+                        <option v-for="item in routeNodeOptions(route)" :key="`${route.id}-node-${item.idx}`" :value="item.idx">
+                          {{ item.node.name || `节点 ${item.idx + 1}` }}{{ item.node.enabled === false ? '（已禁用）' : '' }}
+                        </option>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="label-sm">模型</label>
+                      <input :value="routeModelValue(route)" :list="routeDatalistId(route)" @input="updateModelRoute(route, 'model', $event)" class="input-field font-mono" :placeholder="route.placeholder || 'gpt-4o-mini'" />
+                      <datalist :id="routeDatalistId(route)">
+                        <option v-for="m in routeModelOptions(route)" :key="`${route.id}-${m}`" :value="m" />
+                      </datalist>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -1979,14 +2245,11 @@ async function generateTemplateTitle(tpl: any, idx: number) {
 
               <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
                 <div class="p-4 rounded-xl border border-indigo-100 bg-indigo-50/30">
-                  <div class="text-sm font-semibold text-slate-700 mb-3">规划模型</div>
-                  <label class="label-sm">节点</label>
-                  <select v-model.number="config.freeMode.nodeIndex" class="input-field mb-3" :disabled="!config.freeMode.enabled">
-                    <option v-for="item in nodeOptions()" :key="`free-node-${item.idx}`" :value="item.idx">{{ item.node.name || `节点 ${item.idx + 1}` }}</option>
-                  </select>
-                  <label class="label-sm">节点</label>
-                  <input v-model="config.freeMode.model" list="dl-free-mode" class="input-field" placeholder="gpt-4o-mini" :disabled="!config.freeMode.enabled" />
-                  <datalist id="dl-free-mode"><option v-for="m in modelsForNode(config.freeMode.nodeIndex, config.freeMode.model)" :key="m" :value="m" /></datalist>
+                  <div class="text-sm font-semibold text-slate-700 mb-3">规划路由</div>
+                  <div class="rounded-lg border border-indigo-100 bg-white/70 px-3 py-2 text-xs text-slate-500">
+                    当前路由：<span class="font-mono text-slate-700">{{ routeSummary(['freeMode', 'nodeIndex'], ['freeMode', 'model']) }}</span>
+                    <button @click="currentPage = 'modelRoutes'" class="ml-2 text-indigo-600 hover:underline">去模型路由修改</button>
+                  </div>
                   <div class="mt-3">
                     <label class="label-sm">规划超时（毫秒）</label>
                     <input v-model.number="config.freeMode.timeoutMs" type="number" min="30000" step="30000" class="input-field" :disabled="!config.freeMode.enabled" />
@@ -1994,7 +2257,7 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                 </div>
 
                 <div class="p-4 rounded-xl border border-emerald-100 bg-emerald-50/30">
-                  <div class="text-sm font-semibold text-slate-700 mb-3">规划模型</div>
+                  <div class="text-sm font-semibold text-slate-700 mb-3">规划选项</div>
                   <label class="flex items-center justify-between gap-4 p-3 rounded-lg bg-white/70 border border-emerald-100">
                     <div>
                       <div class="font-semibold text-sm text-slate-700">读取引用消息</div>
@@ -2347,17 +2610,13 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                   </label>
                 </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
-                  <div>
-                    <label class="label-sm">模型节点</label>
-                    <select v-model.number="config.bot.tts.preprocess.nodeIndex" :disabled="!config.bot.tts.preprocess.enabled" class="input-field disabled:opacity-50 disabled:cursor-not-allowed">
-                      <option v-for="item in nodeOptions()" :key="`tts-pre-node-${item.idx}`" :value="item.idx">{{ item.node.name || `节点 ${item.idx + 1}` }}</option>
-                    </select>
-                    <span class="text-slate-400 text-xs mt-1 block">使用模型与节点页里的普通 OpenAI 兼容节点。</span>
-                  </div>
-                  <div>
-                    <label class="label-sm">前置模型 ID</label>
-                    <input v-model="config.bot.tts.preprocess.model" list="dl-tts-preprocess" :disabled="!config.bot.tts.preprocess.enabled" class="input-field disabled:opacity-50 disabled:cursor-not-allowed" placeholder="gpt-4o-mini / deepseek-v4-flash" />
-                    <datalist id="dl-tts-preprocess"><option v-for="m in modelsForNode(config.bot.tts.preprocess.nodeIndex, config.bot.tts.preprocess.model)" :key="m" :value="m" /></datalist>
+                  <div class="md:col-span-2">
+                    <label class="label-sm">前置模型路由</label>
+                    <div class="rounded-lg border border-violet-400/20 bg-slate-950/60 px-3 py-2 text-xs text-slate-400">
+                      当前路由：<span class="font-mono text-slate-100">{{ routeSummary(['bot', 'tts', 'preprocess', 'nodeIndex'], ['bot', 'tts', 'preprocess', 'model']) }}</span>
+                      <button @click="currentPage = 'modelRoutes'" class="ml-2 text-indigo-300 hover:underline">去模型路由修改</button>
+                    </div>
+                    <span class="text-slate-400 text-xs mt-1 block">回复进入语音模式前的 LLM 前置处理，节点/模型集中到模型路由页维护。</span>
                   </div>
                   <div>
                     <label class="label-sm">前置超时（毫秒）</label>
@@ -2485,13 +2744,11 @@ async function generateTemplateTitle(tpl: any, idx: number) {
               </div>
               <div class="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-4">
                 <div>
-                  <label class="label-sm">模板填充节点</label>
-                  <select v-model.number="config.llm.templateNodeIndex" class="input-field mb-3">
-                    <option v-for="item in nodeOptions()" :key="`template-node-${item.idx}`" :value="item.idx">{{ item.node.name || `节点 ${item.idx + 1}` }}</option>
-                  </select>
-                  <label class="label-sm">模板填充模型</label>
-                  <input v-model="config.llm.templateModel" list="dl-template" class="input-field" placeholder="gpt-4o-mini" />
-                  <datalist id="dl-template"><option v-for="m in modelsForNode(config.llm.templateNodeIndex, config.llm.templateModel, ['none'])" :key="m" :value="m" /></datalist>
+                  <label class="label-sm">模板填充路由</label>
+                  <div class="rounded-lg border border-slate-200 bg-white/70 px-3 py-2 text-xs text-slate-500">
+                    当前路由：<span class="font-mono text-slate-700">{{ routeSummary(['llm', 'templateNodeIndex'], ['llm', 'templateModel']) }}</span>
+                    <button @click="currentPage = 'modelRoutes'" class="mt-2 block text-indigo-600 hover:underline">去模型路由修改</button>
+                  </div>
                   <span class="text-slate-400 text-xs mt-1 block">填空值时不调用模型，直接替换 {{ '{' }}{{ '{' }}prompt{{ '}' }}{{ '}' }}。</span>
                 </div>
                 <div>
@@ -2512,13 +2769,11 @@ async function generateTemplateTitle(tpl: any, idx: number) {
               </div>
               <div class="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-4">
                 <div>
-                  <label class="label-sm">引用模板填充节点</label>
-                  <select v-model.number="config.llm.referencedTemplateNodeIndex" class="input-field mb-3">
-                    <option v-for="item in nodeOptions()" :key="`referenced-template-node-${item.idx}`" :value="item.idx">{{ item.node.name || `节点 ${item.idx + 1}` }}</option>
-                  </select>
-                  <label class="label-sm">引用模板填充模型</label>
-                  <input v-model="config.llm.referencedTemplateModel" list="dl-referenced-template" class="input-field" placeholder="gpt-4o-mini" />
-                  <datalist id="dl-referenced-template"><option v-for="m in modelsForNode(config.llm.referencedTemplateNodeIndex, config.llm.referencedTemplateModel, ['none'])" :key="m" :value="m" /></datalist>
+                  <label class="label-sm">引用模板填充路由</label>
+                  <div class="rounded-lg border border-slate-200 bg-white/70 px-3 py-2 text-xs text-slate-500">
+                    当前路由：<span class="font-mono text-slate-700">{{ routeSummary(['llm', 'referencedTemplateNodeIndex'], ['llm', 'referencedTemplateModel']) }}</span>
+                    <button @click="currentPage = 'modelRoutes'" class="mt-2 block text-indigo-600 hover:underline">去模型路由修改</button>
+                  </div>
                   <label class="label-sm mt-3">超时（毫秒）</label>
                   <input v-model.number="config.llm.referencedTemplateTimeoutMs" type="number" min="30000" step="30000" class="input-field" />
                   <span class="text-slate-400 text-xs mt-1 block">填空值时引用模板生图会提示未配置填充模型。</span>
@@ -2551,16 +2806,12 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                   <label class="label-sm">接口密钥</label>
                   <input v-model="config.promptsChat.apiKey" type="password" class="input-field" placeholder="可留空，或使用环境变量" />
                 </div>
-                <div>
-                  <label class="label-sm">智能匹配节点</label>
-                  <select v-model.number="config.promptsChat.smartNodeIndex" class="input-field">
-                    <option v-for="item in nodeOptions()" :key="`pchat-node-${item.idx}`" :value="item.idx">{{ item.node.name || `节点 ${item.idx + 1}` }}</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="label-sm">智能匹配模型</label>
-                  <input v-model="config.promptsChat.smartModel" list="dl-prompts-chat" class="input-field" placeholder="gpt-4o-mini" />
-                  <datalist id="dl-prompts-chat"><option v-for="m in modelsForNode(config.promptsChat.smartNodeIndex, config.promptsChat.smartModel, ['none'])" :key="m" :value="m" /></datalist>
+                <div class="md:col-span-2">
+                  <label class="label-sm">智能匹配路由</label>
+                  <div class="rounded-lg border border-slate-200 bg-white/70 px-3 py-2 text-xs text-slate-500">
+                    当前路由：<span class="font-mono text-slate-700">{{ routeSummary(['promptsChat', 'smartNodeIndex'], ['promptsChat', 'smartModel']) }}</span>
+                    <button @click="currentPage = 'modelRoutes'" class="ml-2 text-indigo-600 hover:underline">去模型路由修改</button>
+                  </div>
                 </div>
                 <div>
                   <label class="label-sm">搜索类型</label>
@@ -2629,16 +2880,12 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                 </button>
               </div>
               <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                <div>
-                  <label class="label-sm">转模板节点</label>
-                  <select v-model.number="config.llm.templateConvertNodeIndex" class="input-field">
-                    <option v-for="item in nodeOptions()" :key="`template-convert-node-${item.idx}`" :value="item.idx">{{ item.node.name || `节点 ${item.idx + 1}` }}</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="label-sm">转模板模型</label>
-                  <input v-model="config.llm.templateConvertModel" list="dl-template-convert" class="input-field" placeholder="gpt-4o-mini" />
-                  <datalist id="dl-template-convert"><option v-for="m in modelsForNode(config.llm.templateConvertNodeIndex, config.llm.templateConvertModel)" :key="m" :value="m" /></datalist>
+                <div class="md:col-span-2">
+                  <label class="label-sm">转模板路由</label>
+                  <div class="rounded-lg border border-slate-200 bg-white/70 px-3 py-2 text-xs text-slate-500">
+                    当前路由：<span class="font-mono text-slate-700">{{ routeSummary(['llm', 'templateConvertNodeIndex'], ['llm', 'templateConvertModel']) }}</span>
+                    <button @click="currentPage = 'modelRoutes'" class="ml-2 text-indigo-600 hover:underline">去模型路由修改</button>
+                  </div>
                 </div>
               </div>
               <textarea v-model="templateConvertSource" rows="5" class="input-field font-mono text-xs mb-4"
@@ -2754,17 +3001,12 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                   <input type="checkbox" v-model="config.canvas.enabled" class="rounded border-white/10 bg-zinc-900 text-indigo-600 focus:ring-0 w-4 h-4 cursor-pointer" />
                 </label>
                 
-                <div>
-                  <label class="label-sm">文生图节点</label>
-                  <select v-model.number="config.canvas.imageNodeIndex" class="input-field font-mono">
-                    <option v-for="item in nodeOptions()" :key="'canvas-image-node-' + item.idx" :value="item.idx">{{ item.node.name || ('节点 ' + (item.idx + 1)) }}</option>
-                  </select>
-                </div>
-                
-                <div>
-                  <label class="label-sm">文生图模型</label>
-                  <input v-model="config.canvas.imageModel" list="dl-canvas-image" class="input-field font-mono" placeholder="gpt-image-2" />
-                  <datalist id="dl-canvas-image"><option v-for="m in modelsForNode(config.canvas.imageNodeIndex, config.canvas.imageModel)" :key="m" :value="m" /></datalist>
+                <div class="md:col-span-2">
+                  <label class="label-sm">文生图模型路由</label>
+                  <div class="rounded-xl border border-indigo-500/10 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-400">
+                    当前路由：<span class="font-mono text-zinc-100">{{ routeSummary(['canvas', 'imageNodeIndex'], ['canvas', 'imageModel']) }}</span>
+                    <button @click="currentPage = 'modelRoutes'" class="ml-2 text-indigo-300 hover:underline">去模型路由修改</button>
+                  </div>
                 </div>
                 
                 <div>
@@ -2772,17 +3014,12 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                   <input v-model.number="config.canvas.imageTimeoutMs" type="number" min="30000" step="30000" class="input-field font-mono" />
                 </div>
                 
-                <div>
-                  <label class="label-sm">图生图节点</label>
-                  <select v-model.number="config.canvas.editNodeIndex" class="input-field font-mono">
-                    <option v-for="item in nodeOptions()" :key="'canvas-edit-node-' + item.idx" :value="item.idx">{{ item.node.name || ('节点 ' + (item.idx + 1)) }}</option>
-                  </select>
-                </div>
-                
-                <div>
-                  <label class="label-sm">图生图模型</label>
-                  <input v-model="config.canvas.editModel" list="dl-canvas-edit" class="input-field font-mono" placeholder="gpt-image-2" />
-                  <datalist id="dl-canvas-edit"><option v-for="m in modelsForNode(config.canvas.editNodeIndex, config.canvas.editModel)" :key="m" :value="m" /></datalist>
+                <div class="md:col-span-2">
+                  <label class="label-sm">图生图 / 改图模型路由</label>
+                  <div class="rounded-xl border border-cyan-500/10 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-400">
+                    当前路由：<span class="font-mono text-zinc-100">{{ routeSummary(['canvas', 'editNodeIndex'], ['canvas', 'editModel']) }}</span>
+                    <button @click="currentPage = 'modelRoutes'" class="ml-2 text-indigo-300 hover:underline">去模型路由修改</button>
+                  </div>
                 </div>
                 
                 <div>
@@ -2880,7 +3117,7 @@ async function generateTemplateTitle(tpl: any, idx: number) {
             <div class="card p-5">
               <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-4">
                 <div>
-                  <h3 class="text-base font-bold text-white">🔍 画布多模态反推模型配置</h3>
+                  <h3 class="text-base font-bold text-white">🔍 画布多模态反推参数</h3>
                   <p class="text-zinc-500 text-xs mt-0.5">专门供画布前端上传图片后分析并反推提取出提示词的规则设定</p>
                 </div>
                 <div class="flex flex-wrap gap-2">
@@ -2894,17 +3131,11 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                 <div class="p-4 rounded-xl border border-amber-500/20 bg-amber-950/5">
                   <span class="text-sm font-semibold text-white block mb-3">① 原图反推分析 (第一阶段)</span>
                   
-                  <div class="grid grid-cols-2 gap-3 mb-3">
-                    <div>
-                      <label class="label-sm">调度节点</label>
-                      <select v-model.number="config.canvas.interrogateNodeIndex" class="input-field">
-                        <option v-for="item in nodeOptions()" :key="'canvas-interrogate-node-' + item.idx" :value="item.idx">{{ item.node.name || ('节点 ' + (item.idx + 1)) }}</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label class="label-sm">目标模型</label>
-                      <input v-model="config.canvas.interrogateModel" list="dl-canvas-interrogate" class="input-field font-mono" placeholder="gpt-4o-mini" />
-                      <datalist id="dl-canvas-interrogate"><option v-for="m in modelsForNode(config.canvas.interrogateNodeIndex, config.canvas.interrogateModel)" :key="m" :value="m" /></datalist>
+                  <div class="mb-3">
+                    <label class="label-sm">反推模型路由</label>
+                    <div class="rounded-xl border border-amber-500/20 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-400">
+                      当前路由：<span class="font-mono text-zinc-100">{{ routeSummary(['canvas', 'interrogateNodeIndex'], ['canvas', 'interrogateModel']) }}</span>
+                      <button @click="currentPage = 'modelRoutes'" class="ml-2 text-indigo-300 hover:underline">去模型路由修改</button>
                     </div>
                   </div>
                   <div class="mb-3">
@@ -2919,17 +3150,11 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                 <div class="p-4 rounded-xl border border-emerald-500/20 bg-emerald-950/5">
                   <span class="text-sm font-semibold text-white block mb-3">② 模板抽象生成 (第二阶段)</span>
                   
-                  <div class="grid grid-cols-2 gap-3 mb-3">
-                    <div>
-                      <label class="label-sm">调度节点</label>
-                      <select v-model.number="config.canvas.interrogateTemplateNodeIndex" class="input-field">
-                        <option v-for="item in nodeOptions()" :key="'canvas-interrogate-template-node-' + item.idx" :value="item.idx">{{ item.node.name || ('节点 ' + (item.idx + 1)) }}</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label class="label-sm">目标模型</label>
-                      <input v-model="config.canvas.interrogateTemplateModel" list="dl-canvas-interrogate-template" class="input-field font-mono" placeholder="gpt-4o-mini" />
-                      <datalist id="dl-canvas-interrogate-template"><option v-for="m in modelsForNode(config.canvas.interrogateTemplateNodeIndex, config.canvas.interrogateTemplateModel)" :key="m" :value="m" /></datalist>
+                  <div class="mb-3">
+                    <label class="label-sm">模板化反推模型路由</label>
+                    <div class="rounded-xl border border-emerald-500/20 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-400">
+                      当前路由：<span class="font-mono text-zinc-100">{{ routeSummary(['canvas', 'interrogateTemplateNodeIndex'], ['canvas', 'interrogateTemplateModel']) }}</span>
+                      <button @click="currentPage = 'modelRoutes'" class="ml-2 text-indigo-300 hover:underline">去模型路由修改</button>
                     </div>
                   </div>
                   <div class="mb-3">
