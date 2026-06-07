@@ -1,11 +1,14 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import sharp from "sharp";
-import { readStoredAsset } from "./image-generation.js";
+import { getStoredAssetFile, readStoredAsset } from "./image-generation.js";
 import { runtimePaths } from "./runtime.js";
 
 const PREVIEW_WIDTHS = [256, 512, 1024, 2048] as const;
 const MAX_PREVIEW_WIDTH = PREVIEW_WIDTHS[PREVIEW_WIDTHS.length - 1];
+const PREVIEW_WEBP_EFFORT = 2;
+const PREVIEW_WEBP_QUALITY = 76;
+const previewBuilds = new Map<string, Promise<Buffer>>();
 
 export type PreviewWidthResult =
   | {
@@ -57,12 +60,12 @@ export function parsePreviewWidth(value: string | undefined): PreviewWidthResult
 }
 
 export async function readStoredAssetPreview(assetId: string, width: number): Promise<StoredAssetPreview | undefined> {
-  const asset = await readStoredAsset(assetId);
-  if (!asset) {
+  const assetFile = getStoredAssetFile(assetId);
+  if (!assetFile) {
     return undefined;
   }
 
-  const previewPath = resolvePreviewPath(asset.file.id, width);
+  const previewPath = resolvePreviewPath(assetFile.id, width);
   const cached = await readCachedPreview(previewPath);
   if (cached) {
     return {
@@ -71,24 +74,47 @@ export async function readStoredAssetPreview(assetId: string, width: number): Pr
     };
   }
 
-  const bytes = await sharp(asset.bytes)
+  const inFlight = previewBuilds.get(previewPath);
+  if (inFlight) {
+    return {
+      bytes: await inFlight,
+      width
+    };
+  }
+
+  const asset = await readStoredAsset(assetId);
+  if (!asset) {
+    return undefined;
+  }
+
+  const build = buildStoredAssetPreview(asset.bytes, previewPath, width);
+  previewBuilds.set(previewPath, build);
+
+  try {
+    return {
+      bytes: await build,
+      width
+    };
+  } finally {
+    previewBuilds.delete(previewPath);
+  }
+}
+
+async function buildStoredAssetPreview(assetBytes: Buffer, previewPath: string, width: number): Promise<Buffer> {
+  const bytes = await sharp(assetBytes)
     .rotate()
     .resize({
       width,
       withoutEnlargement: true
     })
     .webp({
-      effort: 4,
-      quality: 78
+      effort: PREVIEW_WEBP_EFFORT,
+      quality: PREVIEW_WEBP_QUALITY
     })
     .toBuffer();
 
   await writeFile(previewPath, bytes);
-
-  return {
-    bytes,
-    width
-  };
+  return bytes;
 }
 
 async function readCachedPreview(filePath: string): Promise<Buffer | undefined> {

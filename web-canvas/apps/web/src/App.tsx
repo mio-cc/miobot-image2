@@ -187,7 +187,8 @@ const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const SUPPORTED_UPLOAD_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
 const GENERATION_JOB_POLL_INTERVAL_MS = 2000;
 const GENERATION_JOB_MAX_POLLS = 600;
-const MASONRY_PREVIEW_WIDTHS = [256, 512, 1024] as const;
+const MASONRY_CARD_PREVIEW_WIDTH = 512;
+const MASONRY_PREVIEW_WIDTHS = [MASONRY_CARD_PREVIEW_WIDTH] as const;
 const LIGHTBOX_PREVIEW_WIDTHS = [512, 1024, 2048] as const;
 const MASONRY_IMAGE_SIZES = "(max-width: 640px) 46vw, (max-width: 1180px) 30vw, 240px";
 const LIGHTBOX_IMAGE_SIZES = "100vw";
@@ -195,9 +196,11 @@ const LIGHTBOX_MIN_ZOOM = 0.25;
 const LIGHTBOX_MAX_ZOOM = 6;
 const COLLECTION_FETCH_LIMIT = 120;
 const CARD_PROMPT_PREVIEW_CHARS = 180;
-const INITIAL_COLLECTION_RENDER_LIMIT = 24;
-const COLLECTION_RENDER_BATCH_SIZE = 24;
-const COLLECTION_SCROLL_PRELOAD_PX = 900;
+const INITIAL_COLLECTION_RENDER_LIMIT = 48;
+const COLLECTION_RENDER_BATCH_SIZE = 36;
+const COLLECTION_SCROLL_PRELOAD_PX = 2600;
+const MASONRY_EAGER_IMAGE_COUNT = 12;
+const MASONRY_PRELOAD_CONCURRENCY = 4;
 const SEARCH_DEBOUNCE_MS = 180;
 const PENDING_GENERATION_STORAGE_KEY = "miobot.canvas.pending.generations.v1";
 const PENDING_INTERROGATION_STORAGE_KEY = "miobot.canvas.pending.interrogations.v1";
@@ -408,6 +411,13 @@ export function App() {
     interrogateRenderResetKey
   );
   const renderedInterrogateItems = useMemo(() => visibleInterrogateItems.slice(0, interrogateRenderLimit), [interrogateRenderLimit, visibleInterrogateItems]);
+  const masonryWarmupAssets = useMemo<LazyMasonryAsset[]>(() => {
+    const items = activeTab === "gallery" ? renderedGalleryItems : renderedInterrogateItems;
+    return items
+      .filter((item) => !item.clientStatus)
+      .map((item) => item.asset);
+  }, [activeTab, renderedGalleryItems, renderedInterrogateItems]);
+  useMasonryPreviewPreloader(masonryWarmupAssets, masonryWarmupAssets.length > 0);
   const masonryLayoutKey = useMemo(
     () => activeTab === "gallery"
       ? `gallery:${renderedGalleryItems.map((item) => item.outputId).join("|")}`
@@ -1603,7 +1613,7 @@ export function App() {
                       <LazyMasonryImage
                         asset={item.asset}
                         alt={item.prompt}
-                        eager={index < 4}
+                        eager={index < MASONRY_EAGER_IMAGE_COUNT}
                         rootRef={galleryPaneRef}
                       />
                       <span className="zoom-pill">
@@ -1699,7 +1709,7 @@ export function App() {
                         <LazyMasonryImage
                           asset={item.asset}
                           alt={item.prompt}
-                          eager={index < 4}
+                          eager={index < MASONRY_EAGER_IMAGE_COUNT}
                           rootRef={galleryPaneRef}
                         />
                         <span className="zoom-pill">
@@ -3048,6 +3058,72 @@ interface LazyMasonryImageProps {
   rootRef: RefObject<HTMLElement | null>;
 }
 
+const warmedMasonryPreviewUrls = new Set<string>();
+const inflightMasonryPreviewImages = new Set<HTMLImageElement>();
+
+function useMasonryPreviewPreloader(assets: readonly LazyMasonryAsset[], enabled: boolean) {
+  const warmupKey = useMemo(() => assets.map((asset) => asset.id).join("|"), [assets]);
+
+  useEffect(() => {
+    if (!enabled || assets.length === 0 || typeof Image === "undefined") return;
+
+    const urls = assets
+      .map((asset) => assetPreviewUrl(asset.id, MASONRY_CARD_PREVIEW_WIDTH, asset.url))
+      .filter((url) => {
+        if (warmedMasonryPreviewUrls.has(url)) return false;
+        warmedMasonryPreviewUrls.add(url);
+        return true;
+      });
+
+    if (urls.length === 0) return;
+
+    let cancelled = false;
+    let cursor = 0;
+    let active = 0;
+    let idleHandle: number | null = null;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+    const pump = () => {
+      if (cancelled) return;
+
+      while (active < MASONRY_PRELOAD_CONCURRENCY && cursor < urls.length) {
+        const url = urls[cursor++];
+        active += 1;
+        const image = new Image();
+        inflightMasonryPreviewImages.add(image);
+        image.decoding = "async";
+        image.onload = image.onerror = () => {
+          inflightMasonryPreviewImages.delete(image);
+          active -= 1;
+          pump();
+        };
+        image.src = url;
+      }
+    };
+
+    const idleWindow = window as unknown as {
+      requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+
+    if (idleWindow.requestIdleCallback && idleWindow.cancelIdleCallback) {
+      idleHandle = idleWindow.requestIdleCallback(() => pump(), { timeout: 300 });
+    } else {
+      timeoutHandle = globalThis.setTimeout(pump, 48);
+    }
+
+    return () => {
+      cancelled = true;
+      if (idleHandle !== null && idleWindow.cancelIdleCallback) {
+        idleWindow.cancelIdleCallback(idleHandle);
+      }
+      if (timeoutHandle !== null) {
+        globalThis.clearTimeout(timeoutHandle);
+      }
+    };
+  }, [assets, enabled, warmupKey]);
+}
+
 function LazyMasonryImage({ asset, alt, eager, rootRef }: LazyMasonryImageProps) {
   const slotRef = useRef<HTMLSpanElement | null>(null);
   const [shouldLoad, setShouldLoad] = useState(eager);
@@ -3087,14 +3163,14 @@ function LazyMasonryImage({ asset, alt, eager, rootRef }: LazyMasonryImageProps)
     <span ref={slotRef} className="masonry-card__image-lazy-slot">
       {shouldLoad ? (
         <img
-          src={assetPreviewUrl(asset.id, 256, asset.url)}
+          src={assetPreviewUrl(asset.id, MASONRY_CARD_PREVIEW_WIDTH, asset.url)}
           srcSet={assetPreviewSrcSet(asset.id, asset.url, MASONRY_PREVIEW_WIDTHS)}
           sizes={MASONRY_IMAGE_SIZES}
           alt={alt}
           width={asset.width}
           height={asset.height}
           decoding="async"
-          loading={eager ? "eager" : "lazy"}
+          loading="eager"
         />
       ) : (
         <span className="masonry-card__image-placeholder" aria-hidden="true" />
