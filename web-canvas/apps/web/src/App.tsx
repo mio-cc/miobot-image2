@@ -24,7 +24,7 @@ import {
   ZoomIn,
   ZoomOut
 } from "lucide-react";
-import { startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type PointerEvent, type RefObject } from "react";
+import { startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent, type DragEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent, type RefObject } from "react";
 import {
   AUTO_SIZE_PRESET_ID,
   GENERATION_COUNTS,
@@ -1731,6 +1731,12 @@ export function App() {
         )}
       </section>
 
+      <GalleryScrollPilot
+        rootRef={galleryPaneRef}
+        enabled={mobileView === "gallery"}
+        updateKey={`${activeTab}:${galleryRenderLimit}:${interrogateRenderLimit}:${visibleGalleryItems.length}:${visibleInterrogateItems.length}`}
+      />
+
       <aside
         className="control-pane playground-input-bar"
         data-dragging={dragTarget === "panel"}
@@ -3100,6 +3106,210 @@ function useMasonryPreviewPreloader(assets: readonly LazyMasonryAsset[], enabled
       }
     };
   }, [assets, enabled, warmupKey]);
+}
+
+interface GalleryScrollPilotProps {
+  rootRef: RefObject<HTMLElement | null>;
+  enabled: boolean;
+  updateKey: string;
+}
+
+interface GalleryScrollPilotMetrics {
+  canScroll: boolean;
+  progress: number;
+  thumbSize: number;
+}
+
+function GalleryScrollPilot({ rootRef, enabled, updateKey }: GalleryScrollPilotProps) {
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [metrics, setMetrics] = useState<GalleryScrollPilotMetrics>({
+    canScroll: false,
+    progress: 0,
+    thumbSize: 1
+  });
+
+  const syncMetrics = useCallback(() => {
+    const root = rootRef.current;
+    if (!enabled || !root) {
+      setMetrics((current) => current.canScroll ? { canScroll: false, progress: 0, thumbSize: 1 } : current);
+      return;
+    }
+
+    const maxScrollTop = Math.max(0, root.scrollHeight - root.clientHeight);
+    const canScroll = maxScrollTop > 12;
+    const progress = canScroll ? clamp(root.scrollTop / maxScrollTop, 0, 1) : 0;
+    const thumbSize = canScroll ? clamp(root.clientHeight / Math.max(root.scrollHeight, 1), 0.14, 0.46) : 1;
+
+    setMetrics((current) => {
+      if (
+        current.canScroll === canScroll &&
+        Math.abs(current.progress - progress) < 0.002 &&
+        Math.abs(current.thumbSize - thumbSize) < 0.002
+      ) {
+        return current;
+      }
+      return { canScroll, progress, thumbSize };
+    });
+  }, [enabled, rootRef]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    let frame = 0;
+    const scheduleSync = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        syncMetrics();
+      });
+    };
+
+    syncMetrics();
+    if (!enabled || !root) {
+      return () => {
+        if (frame) window.cancelAnimationFrame(frame);
+      };
+    }
+
+    let resizeObserver: ResizeObserver | null = null;
+    let mutationObserver: MutationObserver | null = null;
+    root.addEventListener("scroll", scheduleSync, { passive: true });
+    window.addEventListener("resize", scheduleSync);
+
+    if ("ResizeObserver" in window) {
+      resizeObserver = new ResizeObserver(scheduleSync);
+      resizeObserver.observe(root);
+      for (const child of Array.from(root.children)) {
+        resizeObserver.observe(child);
+      }
+    }
+
+    if ("MutationObserver" in window) {
+      mutationObserver = new MutationObserver(scheduleSync);
+      mutationObserver.observe(root, { childList: true, subtree: true });
+    }
+
+    return () => {
+      root.removeEventListener("scroll", scheduleSync);
+      window.removeEventListener("resize", scheduleSync);
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [enabled, rootRef, syncMetrics, updateKey]);
+
+  const progressFromClientY = useCallback((clientY: number) => {
+    const track = trackRef.current;
+    if (!track) return metrics.progress;
+    const rect = track.getBoundingClientRect();
+    const thumbPixels = clamp(metrics.thumbSize * rect.height, 18, Math.max(18, rect.height * 0.64));
+    const travel = Math.max(1, rect.height - thumbPixels);
+    return clamp((clientY - rect.top - thumbPixels / 2) / travel, 0, 1);
+  }, [metrics.progress, metrics.thumbSize]);
+
+  const scrollToProgress = useCallback((nextProgress: number) => {
+    const root = rootRef.current;
+    if (!root) return;
+    const maxScrollTop = Math.max(0, root.scrollHeight - root.clientHeight);
+    root.scrollTop = clamp(nextProgress, 0, 1) * maxScrollTop;
+    syncMetrics();
+  }, [rootRef, syncMetrics]);
+
+  const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if (!metrics.canScroll) return;
+    event.preventDefault();
+    setIsDragging(true);
+    scrollToProgress(progressFromClientY(event.clientY));
+  };
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handlePointerMove = (event: globalThis.PointerEvent) => {
+      event.preventDefault();
+      scrollToProgress(progressFromClientY(event.clientY));
+    };
+    const handlePointerUp = () => setIsDragging(false);
+
+    window.addEventListener("pointermove", handlePointerMove, { passive: false });
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+    };
+  }, [isDragging, progressFromClientY, scrollToProgress]);
+
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    const root = rootRef.current;
+    if (!root || !metrics.canScroll) return;
+
+    const maxScrollTop = Math.max(0, root.scrollHeight - root.clientHeight);
+    const lineStep = Math.max(120, root.clientHeight * 0.42);
+    const pageStep = Math.max(180, root.clientHeight * 0.86);
+    let nextTop = root.scrollTop;
+
+    switch (event.key) {
+      case "ArrowDown":
+      case "ArrowRight":
+        nextTop += lineStep;
+        break;
+      case "ArrowUp":
+      case "ArrowLeft":
+        nextTop -= lineStep;
+        break;
+      case "PageDown":
+        nextTop += pageStep;
+        break;
+      case "PageUp":
+        nextTop -= pageStep;
+        break;
+      case "Home":
+        nextTop = 0;
+        break;
+      case "End":
+        nextTop = maxScrollTop;
+        break;
+      default:
+        return;
+    }
+
+    event.preventDefault();
+    root.scrollTop = clamp(nextTop, 0, maxScrollTop);
+    syncMetrics();
+  };
+
+  const style = {
+    "--scroll-pilot-progress": `${metrics.progress * 100}%`
+  } as CSSProperties;
+
+  return (
+    <div
+      className="gallery-scroll-pilot"
+      data-visible={enabled && metrics.canScroll}
+      data-dragging={isDragging}
+      aria-hidden={!enabled || !metrics.canScroll}
+      style={style}
+    >
+      <div className="gallery-scroll-pilot__rail" ref={trackRef} onPointerDown={handlePointerDown}>
+        <button
+          type="button"
+          className="gallery-scroll-pilot__thumb"
+          role="slider"
+          aria-label="Quick scroll gallery"
+          aria-orientation="vertical"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(metrics.progress * 100)}
+          tabIndex={enabled && metrics.canScroll ? 0 : -1}
+          onKeyDown={handleKeyDown}
+        >
+          <span aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function LazyMasonryImage({ asset, alt, eager, rootRef }: LazyMasonryImageProps) {
