@@ -2,6 +2,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import fssync from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createWebApi, derivePanelToken } from '../dist/packages/web-api/src/index.js';
@@ -20,6 +21,7 @@ const runtimeDir = process.env.MIOBOT_RUNTIME_DIR ? path.resolve(process.env.MIO
 const configPath = process.env.MIOBOT_CONFIG_PATH ? path.resolve(process.env.MIOBOT_CONFIG_PATH) : path.join(runtimeDir, 'config.json');
 const canvasStatePath = process.env.MIOBOT_CANVAS_STATE_PATH ? path.resolve(process.env.MIOBOT_CANVAS_STATE_PATH) : path.join(runtimeDir, 'canvas-state.json');
 const canvasAssetDir = process.env.MIOBOT_CANVAS_ASSET_DIR ? path.resolve(process.env.MIOBOT_CANVAS_ASSET_DIR) : path.join(runtimeDir, 'canvas-assets');
+const canvasPreviewCacheDir = path.join(canvasAssetDir, '.previews');
 const logDir = process.env.MIOBOT_LOG_DIR ? path.resolve(process.env.MIOBOT_LOG_DIR) : path.join(runtimeDir, 'logs');
 const systemLogPath = process.env.MIOBOT_SYSTEM_LOG_PATH ? path.resolve(process.env.MIOBOT_SYSTEM_LOG_PATH) : path.join(logDir, 'system.ndjson');
 const canvasLogPath = process.env.MIOBOT_CANVAS_LOG_PATH ? path.resolve(process.env.MIOBOT_CANVAS_LOG_PATH) : path.join(logDir, 'canvas.ndjson');
@@ -42,6 +44,7 @@ let logSequence = 0;
 let modelRefreshInFlight = null;
 let dailyModelRefreshTimer = null;
 let startupModelRefreshTimer = null;
+let sharpLoader = null;
 
 const LOG_LEVEL_ORDER = { debug: 10, info: 20, warn: 30, error: 40 };
 const DEFAULT_LOG_LIMIT = 300;
@@ -599,8 +602,82 @@ function staticCanvasPreviewPath(asset, width) {
   return undefined;
 }
 
+async function loadSharp() {
+  if (!sharpLoader) {
+    sharpLoader = Promise.resolve().then(() => {
+      const apiRequire = createRequire(path.join(projectRoot, 'web-canvas', 'apps', 'api', 'package.json'));
+      const sharp = apiRequire('sharp');
+      return sharp.default || sharp;
+    }).catch((error) => {
+      console.warn(`[miobot] Failed to load sharp for canvas previews: ${error?.message || error}`);
+      return null;
+    });
+  }
+  return sharpLoader;
+}
+
+function dynamicPreviewCachePath(asset, sourceFile, sourceStat, width) {
+  const hash = crypto.createHash('sha1')
+    .update(String(asset?.id || 'asset'))
+    .update('\0')
+    .update(sourceFile)
+    .update('\0')
+    .update(String(sourceStat.size))
+    .update('\0')
+    .update(String(Math.round(sourceStat.mtimeMs)))
+    .update('\0')
+    .update(String(width))
+    .digest('hex')
+    .slice(0, 28);
+  return path.join(canvasPreviewCacheDir, `${hash}-${width}.webp`);
+}
+
+async function dynamicCanvasPreviewPath(asset, width) {
+  if (!asset?.storagePath) return undefined;
+
+  const sourceFile = path.resolve(asset.storagePath);
+  let sourceStat;
+  try {
+    sourceStat = await fs.stat(sourceFile);
+  } catch {
+    return undefined;
+  }
+  if (!sourceStat.isFile()) return undefined;
+
+  const cachePath = dynamicPreviewCachePath(asset, sourceFile, sourceStat, width);
+  try {
+    const cachedStat = await fs.stat(cachePath);
+    if (cachedStat.isFile() && cachedStat.size > 0) return cachePath;
+  } catch {}
+
+  const sharp = await loadSharp();
+  if (!sharp) return undefined;
+
+  await fs.mkdir(canvasPreviewCacheDir, { recursive: true });
+  const tmpPath = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await sharp(sourceFile, { animated: false, limitInputPixels: 80_000_000 })
+      .rotate()
+      .resize({
+        width,
+        height: width,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .webp({ quality: 78, effort: 4 })
+      .toFile(tmpPath);
+    await fs.rename(tmpPath, cachePath);
+    return cachePath;
+  } catch (error) {
+    await fs.rm(tmpPath, { force: true }).catch(() => {});
+    console.warn(`[miobot] Failed to generate canvas preview for ${asset.id || sourceFile}: ${error?.message || error}`);
+    return undefined;
+  }
+}
+
 async function sendAssetPreviewResponse(res, asset, url) {
-  const file = staticCanvasPreviewPath(asset, requestedPreviewWidth(url));
+  const width = requestedPreviewWidth(url);
+  const file = staticCanvasPreviewPath(asset, width) || await dynamicCanvasPreviewPath(asset, width);
   if (!file) return sendAssetResponse(res, asset);
 
   try {

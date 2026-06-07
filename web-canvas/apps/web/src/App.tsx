@@ -3262,11 +3262,13 @@ function useRowOrderedMasonry<T extends HTMLElement>(layoutKey: string) {
       pendingCards.clear();
       if (cards.length === 0) return;
 
-      for (const card of cards) card.style.gridRowEnd = "auto";
       for (const card of cards) {
-        const height = card.getBoundingClientRect().height;
+        const height = card.scrollHeight || card.getBoundingClientRect().height;
         const span = Math.max(1, Math.ceil((height + rowGap) / (rowSize + rowGap)));
-        card.style.gridRowEnd = `span ${span}`;
+        const nextGridRowEnd = `span ${span}`;
+        if (card.style.gridRowEnd !== nextGridRowEnd) {
+          card.style.gridRowEnd = nextGridRowEnd;
+        }
       }
     };
 
