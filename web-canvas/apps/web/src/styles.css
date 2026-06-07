@@ -7117,10 +7117,15 @@ body {
 }
 
 .gallery-pane {
-  --masonry-card-min: clamp(220px, 14vw, 270px);
-  --masonry-gap: clamp(20px, 1.65vw, 30px);
-  padding-left: max(clamp(18px, 3vw, 46px), env(safe-area-inset-left, 0px)) !important;
-  padding-right: max(clamp(18px, 3vw, 46px), env(safe-area-inset-right, 0px)) !important;
+  --masonry-card-min: clamp(260px, 14vw, 286px);
+  --masonry-gap: clamp(24px, 1.6vw, 32px);
+  width: min(108rem, calc(100% - clamp(48px, 5vw, 112px))) !important;
+  padding-left: max(clamp(22px, 2.4vw, 36px), env(safe-area-inset-left, 0px)) !important;
+  padding-right: max(clamp(22px, 2.4vw, 36px), env(safe-area-inset-right, 0px)) !important;
+}
+
+.reference-search-bar {
+  width: 100% !important;
 }
 
 .masonry-card {
@@ -7198,8 +7203,9 @@ body {
 
 @media (max-width: 1180px) {
   .gallery-pane {
-    --masonry-card-min: clamp(188px, 29vw, 240px);
-    --masonry-gap: 16px;
+    --masonry-card-min: clamp(206px, 30vw, 252px);
+    --masonry-gap: 18px;
+    width: min(100%, calc(100% - 28px)) !important;
     padding-left: max(14px, env(safe-area-inset-left, 0px)) !important;
     padding-right: max(14px, env(safe-area-inset-right, 0px)) !important;
   }
