@@ -24,7 +24,7 @@ import {
   ZoomIn,
   ZoomOut
 } from "lucide-react";
-import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type PointerEvent } from "react";
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type PointerEvent, type RefObject } from "react";
 import {
   AUTO_SIZE_PRESET_ID,
   GENERATION_COUNTS,
@@ -195,8 +195,9 @@ const LIGHTBOX_MIN_ZOOM = 0.25;
 const LIGHTBOX_MAX_ZOOM = 6;
 const COLLECTION_FETCH_LIMIT = 120;
 const CARD_PROMPT_PREVIEW_CHARS = 180;
-const INITIAL_COLLECTION_RENDER_LIMIT = 72;
+const INITIAL_COLLECTION_RENDER_LIMIT = 24;
 const COLLECTION_RENDER_BATCH_SIZE = 24;
+const COLLECTION_SCROLL_PRELOAD_PX = 900;
 const SEARCH_DEBOUNCE_MS = 180;
 const PENDING_GENERATION_STORAGE_KEY = "miobot.canvas.pending.generations.v1";
 const PENDING_INTERROGATION_STORAGE_KEY = "miobot.canvas.pending.interrogations.v1";
@@ -339,7 +340,6 @@ export function App() {
   const [maskImage, setMaskImage] = useState<UploadedImage | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [toast, setToast] = useState<Notice | null>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
   const [isInterrogating, setIsInterrogating] = useState(false);
   const [interrogateImage, setInterrogateImage] = useState<UploadedImage | null>(null);
   const [latestRecord, setLatestRecord] = useState<GenerationRecord | null>(null);
@@ -383,14 +383,30 @@ export function App() {
     if (galleryItems.length) return filteredGalleryItems;
     return [];
   }, [filteredGalleryItems, galleryItems.length]);
-  const galleryRenderLimit = useProgressiveRenderLimit(visibleGalleryItems.length, INITIAL_COLLECTION_RENDER_LIMIT, COLLECTION_RENDER_BATCH_SIZE);
+  const galleryRenderResetKey = `gallery:${deferredGalleryQuery}:${favoritesOnly ? 1 : 0}:${statusFilter}`;
+  const galleryRenderLimit = useScrollRenderLimit(
+    visibleGalleryItems.length,
+    INITIAL_COLLECTION_RENDER_LIMIT,
+    COLLECTION_RENDER_BATCH_SIZE,
+    galleryPaneRef,
+    activeTab === "gallery",
+    galleryRenderResetKey
+  );
   const renderedGalleryItems = useMemo(() => visibleGalleryItems.slice(0, galleryRenderLimit), [galleryRenderLimit, visibleGalleryItems]);
 
   const visibleInterrogateItems = useMemo(() => {
     if (interrogateItems.length) return filteredInterrogateItems;
     return [];
   }, [filteredInterrogateItems, interrogateItems.length]);
-  const interrogateRenderLimit = useProgressiveRenderLimit(visibleInterrogateItems.length, INITIAL_COLLECTION_RENDER_LIMIT, COLLECTION_RENDER_BATCH_SIZE);
+  const interrogateRenderResetKey = `interrogate:${deferredInterrogateQuery}:${favoritesOnly ? 1 : 0}:${statusFilter}`;
+  const interrogateRenderLimit = useScrollRenderLimit(
+    visibleInterrogateItems.length,
+    INITIAL_COLLECTION_RENDER_LIMIT,
+    COLLECTION_RENDER_BATCH_SIZE,
+    galleryPaneRef,
+    activeTab === "interrogate",
+    interrogateRenderResetKey
+  );
   const renderedInterrogateItems = useMemo(() => visibleInterrogateItems.slice(0, interrogateRenderLimit), [interrogateRenderLimit, visibleInterrogateItems]);
   const masonryLayoutKey = useMemo(
     () => activeTab === "gallery"
@@ -629,7 +645,7 @@ export function App() {
   useEffect(() => {
     if (galleryPaneRef.current) galleryPaneRef.current.scrollTop = 0;
     stopScrollMomentum(scrollMomentumRef.current);
-  }, [activeTab, deferredGalleryQuery, deferredInterrogateQuery, favoritesOnly, galleryItems.length, interrogateItems.length, statusFilter]);
+  }, [activeTab, deferredGalleryQuery, deferredInterrogateQuery, favoritesOnly, statusFilter]);
 
   useEffect(() => {
     if (!lightboxState) return;
@@ -1127,7 +1143,6 @@ export function App() {
       pendingItem,
       snapshot
     });
-    setIsGenerating(true);
     setNotice(null);
     setLatestRecord(null);
     setActiveTab("gallery");
@@ -1208,20 +1223,28 @@ export function App() {
         });
         scheduleRemovePendingGalleryItem(pendingItem.outputId);
       }
-    } finally {
-      setIsGenerating(false);
     }
   }
 
   function reuseGalleryItem(item: GalleryImageItem) {
-    setPrompt(item.prompt);
+    setPrompt(item.prompt || item.effectivePrompt || "");
     setQuality(item.quality);
     setOutputFormat(item.outputFormat);
     setSize(item.size);
     setSizePresetId(sizePresetIdForSize(runtimeConfig.sizePresets, item.size));
     setCount(1);
-    setMode(item.mode === "edit" ? "edit" : "text");
-    setNotice({ tone: "success", message: "已把这张图的参数填回右侧面板。" });
+    setMode("text");
+    setReferenceImages([]);
+    setMaskImage(null);
+    setActiveTab("gallery");
+    setMobileView("generate");
+    setIsGenerationOpen(true);
+    setMobileInputCollapsed(false);
+    setInputHoverExpanded(false);
+    setInputHoverSuppressed(false);
+    setLightboxState(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    setNotice({ tone: "success", message: "已复用提示词和参数，可直接重新提交；参考图不会自动复用。" });
   }
 
   async function copyPrompt(value: string, label = "提示词") {
@@ -1577,15 +1600,11 @@ export function App() {
                       style={{ aspectRatio: `${Math.max(item.asset.width, 1)} / ${Math.max(item.asset.height, 1)}` }}
                       onClick={() => openLightbox(item)}
                     >
-                      <img
-                        src={assetPreviewUrl(item.asset.id, 256, item.asset.url)}
-                        srcSet={assetPreviewSrcSet(item.asset.id, item.asset.url, MASONRY_PREVIEW_WIDTHS)}
-                        sizes={MASONRY_IMAGE_SIZES}
+                      <LazyMasonryImage
+                        asset={item.asset}
                         alt={item.prompt}
-                        width={item.asset.width}
-                        height={item.asset.height}
-                        decoding="async"
-                        loading={index < 4 ? "eager" : "lazy"}
+                        eager={index < 4}
+                        rootRef={galleryPaneRef}
                       />
                       <span className="zoom-pill">
                         <Maximize2 className="icon" aria-hidden="true" />
@@ -1677,15 +1696,11 @@ export function App() {
                         style={{ aspectRatio: `${Math.max(item.asset.width, 1)} / ${Math.max(item.asset.height, 1)}` }}
                         onClick={() => openInterrogateLightbox(item)}
                       >
-                        <img
-                          src={assetPreviewUrl(item.asset.id, 256, item.asset.url)}
-                          srcSet={assetPreviewSrcSet(item.asset.id, item.asset.url, MASONRY_PREVIEW_WIDTHS)}
-                          sizes={MASONRY_IMAGE_SIZES}
+                        <LazyMasonryImage
+                          asset={item.asset}
                           alt={item.prompt}
-                          width={item.asset.width}
-                          height={item.asset.height}
-                          decoding="async"
-                          loading={index < 4 ? "eager" : "lazy"}
+                          eager={index < 4}
+                          rootRef={galleryPaneRef}
                         />
                         <span className="zoom-pill">
                           <Maximize2 className="icon" aria-hidden="true" />
@@ -1898,7 +1913,7 @@ export function App() {
                     onClick={() => void submitGeneration()}
                     aria-label="生成图像"
                   >
-                    {isGenerating ? <Loader2 className="icon spin" aria-hidden="true" /> : <ArrowRight className="icon" aria-hidden="true" />}
+                    <ArrowRight className="icon" aria-hidden="true" />
                   </button>
                 </div>
               </div>
@@ -3024,6 +3039,70 @@ function cardPromptPreview(value: string): string {
   return `${compact.slice(0, CARD_PROMPT_PREVIEW_CHARS).trim()}…`;
 }
 
+type LazyMasonryAsset = GalleryImageItem["asset"] | InterrogationItem["asset"];
+
+interface LazyMasonryImageProps {
+  asset: LazyMasonryAsset;
+  alt: string;
+  eager: boolean;
+  rootRef: RefObject<HTMLElement | null>;
+}
+
+function LazyMasonryImage({ asset, alt, eager, rootRef }: LazyMasonryImageProps) {
+  const slotRef = useRef<HTMLSpanElement | null>(null);
+  const [shouldLoad, setShouldLoad] = useState(eager);
+
+  useEffect(() => {
+    if (eager) {
+      setShouldLoad(true);
+      return;
+    }
+    if (shouldLoad) return;
+
+    const node = slotRef.current;
+    if (!node || typeof IntersectionObserver === "undefined") {
+      setShouldLoad(true);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting || entry.intersectionRatio > 0)) {
+          setShouldLoad(true);
+          observer.disconnect();
+        }
+      },
+      {
+        root: rootRef.current,
+        rootMargin: `${COLLECTION_SCROLL_PRELOAD_PX}px 0px`,
+        threshold: 0.01
+      }
+    );
+
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [asset.id, eager, rootRef, shouldLoad]);
+
+  return (
+    <span ref={slotRef} className="masonry-card__image-lazy-slot">
+      {shouldLoad ? (
+        <img
+          src={assetPreviewUrl(asset.id, 256, asset.url)}
+          srcSet={assetPreviewSrcSet(asset.id, asset.url, MASONRY_PREVIEW_WIDTHS)}
+          sizes={MASONRY_IMAGE_SIZES}
+          alt={alt}
+          width={asset.width}
+          height={asset.height}
+          decoding="async"
+          loading={eager ? "eager" : "lazy"}
+        />
+      ) : (
+        <span className="masonry-card__image-placeholder" aria-hidden="true" />
+      )}
+    </span>
+  );
+}
+
 function normalizeSearch(value: string): string {
   return value.replace(/\s+/gu, " ").trim().toLocaleLowerCase();
 }
@@ -3039,22 +3118,56 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   return debounced;
 }
 
-function useProgressiveRenderLimit(total: number, initialLimit: number, batchSize: number): number {
+function useScrollRenderLimit(
+  total: number,
+  initialLimit: number,
+  batchSize: number,
+  rootRef: RefObject<HTMLElement | null>,
+  enabled: boolean,
+  resetKey: string
+): number {
   const normalizedInitial = Math.max(1, initialLimit);
   const normalizedBatch = Math.max(1, batchSize);
   const [limit, setLimit] = useState(() => Math.min(total, normalizedInitial));
 
   useEffect(() => {
     setLimit(Math.min(total, normalizedInitial));
+  }, [normalizedInitial, resetKey]);
+
+  useEffect(() => {
+    setLimit((current) => {
+      const minimum = Math.min(total, normalizedInitial);
+      return Math.min(total, Math.max(current, minimum));
+    });
   }, [normalizedInitial, total]);
 
   useEffect(() => {
-    if (limit >= total) return;
-    const timer = window.setTimeout(() => {
-      setLimit((current) => Math.min(total, current + normalizedBatch));
-    }, 48);
-    return () => window.clearTimeout(timer);
-  }, [limit, normalizedBatch, total]);
+    if (!enabled || limit >= total) return;
+    const root = rootRef.current;
+    if (!root) return;
+
+    let frame = 0;
+    const growIfNearEnd = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        const remaining = root.scrollHeight - root.scrollTop - root.clientHeight;
+        if (remaining < COLLECTION_SCROLL_PRELOAD_PX) {
+          setLimit((current) => Math.min(total, current + normalizedBatch));
+        }
+      });
+    };
+
+    growIfNearEnd();
+    root.addEventListener("scroll", growIfNearEnd, { passive: true });
+    window.addEventListener("resize", growIfNearEnd);
+
+    return () => {
+      root.removeEventListener("scroll", growIfNearEnd);
+      window.removeEventListener("resize", growIfNearEnd);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [enabled, limit, normalizedBatch, rootRef, total]);
 
   return Math.min(limit, total);
 }
