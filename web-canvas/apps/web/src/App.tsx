@@ -24,7 +24,7 @@ import {
   ZoomIn,
   ZoomOut
 } from "lucide-react";
-import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type PointerEvent, type RefObject } from "react";
+import { startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type PointerEvent, type RefObject } from "react";
 import {
   AUTO_SIZE_PRESET_ID,
   GENERATION_COUNTS,
@@ -196,11 +196,12 @@ const LIGHTBOX_MIN_ZOOM = 0.25;
 const LIGHTBOX_MAX_ZOOM = 6;
 const COLLECTION_FETCH_LIMIT = 120;
 const CARD_PROMPT_PREVIEW_CHARS = 180;
-const INITIAL_COLLECTION_RENDER_LIMIT = 48;
-const COLLECTION_RENDER_BATCH_SIZE = 36;
-const COLLECTION_SCROLL_PRELOAD_PX = 2600;
-const MASONRY_EAGER_IMAGE_COUNT = 12;
-const MASONRY_PRELOAD_CONCURRENCY = 4;
+const INITIAL_COLLECTION_RENDER_LIMIT = 32;
+const COLLECTION_RENDER_BATCH_SIZE = 8;
+const COLLECTION_SCROLL_PRELOAD_PX = 480;
+const MASONRY_EAGER_IMAGE_COUNT = 6;
+const MASONRY_IDLE_PRELOAD_COUNT = 4;
+const MASONRY_PRELOAD_CONCURRENCY = 1;
 const SEARCH_DEBOUNCE_MS = 180;
 const PENDING_GENERATION_STORAGE_KEY = "miobot.canvas.pending.generations.v1";
 const PENDING_INTERROGATION_STORAGE_KEY = "miobot.canvas.pending.interrogations.v1";
@@ -415,6 +416,7 @@ export function App() {
     const items = activeTab === "gallery" ? renderedGalleryItems : renderedInterrogateItems;
     return items
       .filter((item) => !item.clientStatus)
+      .slice(MASONRY_EAGER_IMAGE_COUNT, MASONRY_EAGER_IMAGE_COUNT + MASONRY_IDLE_PRELOAD_COUNT)
       .map((item) => item.asset);
   }, [activeTab, renderedGalleryItems, renderedInterrogateItems]);
   useMasonryPreviewPreloader(masonryWarmupAssets, masonryWarmupAssets.length > 0);
@@ -701,59 +703,27 @@ export function App() {
 
   useEffect(() => {
     const pane = galleryPaneRef.current;
-    if (!pane || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const momentum = scrollMomentumRef.current;
-
-    const step = () => {
-      if (!pane.isConnected || Math.abs(momentum.velocity) < 0.35) {
-        stopScrollMomentum(momentum);
-        return;
-      }
-
-      const previousTop = pane.scrollTop;
-      pane.scrollTop += momentum.velocity;
-      if (pane.scrollTop === previousTop) {
-        stopScrollMomentum(momentum);
-        return;
-      }
-
-      momentum.velocity *= 0.91;
-      momentum.frame = window.requestAnimationFrame(step);
-    };
-
-    const start = () => {
-      if (momentum.frame === null) {
-        momentum.frame = window.requestAnimationFrame(step);
-      }
-    };
-
-    const handleWheel = (event: WheelEvent) => {
-      if (!event.deltaY || event.ctrlKey) return;
-      event.preventDefault();
-      momentum.velocity = clamp(momentum.velocity + normalizeWheelDelta(event) * 0.17, -76, 76);
-      start();
-    };
-
-    const stop = () => stopScrollMomentum(momentum);
-    pane.addEventListener("wheel", handleWheel, { passive: false });
-    pane.addEventListener("pointerdown", stop);
-    pane.addEventListener("click", stop);
-
-    return () => {
-      pane.removeEventListener("wheel", handleWheel);
-      pane.removeEventListener("pointerdown", stop);
-      pane.removeEventListener("click", stop);
-      stop();
-    };
-  }, [activeTab]);
-
-  useEffect(() => {
-    const pane = galleryPaneRef.current;
     if (!pane) return;
-    const update = () => setShowBackToTop(pane.scrollTop > 520);
-    update();
+    let frame = 0;
+    let visible = pane.scrollTop > 520;
+    setShowBackToTop(visible);
+
+    const update = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        const nextVisible = pane.scrollTop > 520;
+        if (nextVisible === visible) return;
+        visible = nextVisible;
+        setShowBackToTop(nextVisible);
+      });
+    };
+
     pane.addEventListener("scroll", update, { passive: true });
-    return () => pane.removeEventListener("scroll", update);
+    return () => {
+      pane.removeEventListener("scroll", update);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
   }, [activeTab]);
 
   function selectMode(nextMode: GenerationMode) {
@@ -2853,13 +2823,13 @@ function generationFailureText(record: GenerationRecord): string {
 
 function assetPreviewUrl(assetId: string, width: number, fallbackUrl?: string): string {
   if (assetId.startsWith("data:image/")) return assetId;
-  if (fallbackUrl && !isServerStoredAssetId(assetId)) return staticAssetPreviewUrl(fallbackUrl, width) ?? fallbackUrl;
+  if (usesStaticAssetFallback(assetId, fallbackUrl)) return staticAssetPreviewUrl(fallbackUrl, width) ?? fallbackUrl;
   return apiPath(`/assets/${encodeURIComponent(assetId)}/preview?width=${width}`);
 }
 
 function assetPreviewSrcSet(assetId: string, fallbackUrl?: string, widths: readonly number[] = MASONRY_PREVIEW_WIDTHS): string | undefined {
   if (assetId.startsWith("data:image/")) return undefined;
-  if (fallbackUrl && !isServerStoredAssetId(assetId)) {
+  if (usesStaticAssetFallback(assetId, fallbackUrl)) {
     const previews = widths
       .map((width) => {
         const preview = staticAssetPreviewUrl(fallbackUrl, width);
@@ -2891,6 +2861,14 @@ function staticAssetPreviewUrl(fallbackUrl: string, width: number): string | und
 
 function isServerStoredAssetId(assetId: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(assetId);
+}
+
+function isCanvasApiAssetUrl(url: string): boolean {
+  return /(?:^|\/)canvas-api\/assets\/[^?#]+\/(?:download|preview)(?:[?#].*)?$/iu.test(url);
+}
+
+function usesStaticAssetFallback(assetId: string, fallbackUrl?: string): fallbackUrl is string {
+  return Boolean(fallbackUrl && !isServerStoredAssetId(assetId) && !isCanvasApiAssetUrl(fallbackUrl));
 }
 
 
@@ -3170,7 +3148,7 @@ function LazyMasonryImage({ asset, alt, eager, rootRef }: LazyMasonryImageProps)
           width={asset.width}
           height={asset.height}
           decoding="async"
-          loading="eager"
+          loading={eager ? "eager" : "lazy"}
         />
       ) : (
         <span className="masonry-card__image-placeholder" aria-hidden="true" />
@@ -3229,7 +3207,9 @@ function useScrollRenderLimit(
         frame = 0;
         const remaining = root.scrollHeight - root.scrollTop - root.clientHeight;
         if (remaining < COLLECTION_SCROLL_PRELOAD_PX) {
-          setLimit((current) => Math.min(total, current + normalizedBatch));
+          startTransition(() => {
+            setLimit((current) => Math.min(total, current + normalizedBatch));
+          });
         }
       });
     };
@@ -3257,15 +3237,30 @@ function useRowOrderedMasonry<T extends HTMLElement>(layoutKey: string) {
 
     let frame = 0;
     let resizeObserver: ResizeObserver | null = null;
+    let measureAllCards = true;
+    const pendingCards = new Set<HTMLElement>();
     const cardSelector = ".masonry-card, .gallery-skeleton__card";
     const getCards = () => Array.from(root.querySelectorAll<HTMLElement>(cardSelector));
+    const collectCards = (node: Node): HTMLElement[] => {
+      if (!(node instanceof HTMLElement)) return [];
+      const cards: HTMLElement[] = [];
+      if (node.matches(cardSelector)) cards.push(node);
+      cards.push(...Array.from(node.querySelectorAll<HTMLElement>(cardSelector)));
+      return cards;
+    };
 
     const measure = () => {
       frame = 0;
       const styles = window.getComputedStyle(root);
       const rowSize = Number.parseFloat(styles.getPropertyValue("--masonry-row-size")) || 8;
       const rowGap = Number.parseFloat(styles.rowGap) || 0;
-      const cards = getCards();
+      const cards = measureAllCards
+        ? getCards()
+        : Array.from(pendingCards).filter((card) => root.contains(card));
+
+      measureAllCards = false;
+      pendingCards.clear();
+      if (cards.length === 0) return;
 
       for (const card of cards) card.style.gridRowEnd = "auto";
       for (const card of cards) {
@@ -3275,34 +3270,61 @@ function useRowOrderedMasonry<T extends HTMLElement>(layoutKey: string) {
       }
     };
 
-    const scheduleMeasure = () => {
+    const scheduleMeasure = (cards: HTMLElement[] = [], allCards = false) => {
+      if (allCards) {
+        measureAllCards = true;
+      } else {
+        for (const card of cards) pendingCards.add(card);
+      }
       if (frame) return;
       frame = window.requestAnimationFrame(measure);
     };
 
-    const observeCards = () => {
-      resizeObserver?.disconnect();
-      if (!("ResizeObserver" in window)) return;
-      resizeObserver = new ResizeObserver(scheduleMeasure);
+    if ("ResizeObserver" in window) {
+      resizeObserver = new ResizeObserver((entries) => {
+        const changedCards: HTMLElement[] = [];
+        let rootChanged = false;
+        for (const entry of entries) {
+          if (entry.target === root) {
+            rootChanged = true;
+          } else if (entry.target instanceof HTMLElement) {
+            changedCards.push(entry.target);
+          }
+        }
+        scheduleMeasure(changedCards, rootChanged);
+      });
       resizeObserver.observe(root);
       for (const card of getCards()) resizeObserver.observe(card);
-    };
+    }
+    scheduleMeasure([], true);
 
-    observeCards();
-    scheduleMeasure();
-
-    const mutationObserver = new MutationObserver(() => {
-      observeCards();
-      scheduleMeasure();
+    const mutationObserver = new MutationObserver((mutations) => {
+      const addedCards: HTMLElement[] = [];
+      for (const mutation of mutations) {
+        for (const node of Array.from(mutation.removedNodes)) {
+          for (const card of collectCards(node)) {
+            pendingCards.delete(card);
+            resizeObserver?.unobserve(card);
+          }
+        }
+        for (const node of Array.from(mutation.addedNodes)) {
+          for (const card of collectCards(node)) {
+            addedCards.push(card);
+            resizeObserver?.observe(card);
+          }
+        }
+      }
+      if (addedCards.length) scheduleMeasure(addedCards);
     });
-    mutationObserver.observe(root, { childList: true, subtree: true });
-    window.addEventListener("resize", scheduleMeasure);
+    mutationObserver.observe(root, { childList: true });
+    const scheduleFullMeasure = () => scheduleMeasure([], true);
+    window.addEventListener("resize", scheduleFullMeasure);
 
     return () => {
       if (frame) window.cancelAnimationFrame(frame);
       resizeObserver?.disconnect();
       mutationObserver.disconnect();
-      window.removeEventListener("resize", scheduleMeasure);
+      window.removeEventListener("resize", scheduleFullMeasure);
     };
   }, [layoutKey]);
 

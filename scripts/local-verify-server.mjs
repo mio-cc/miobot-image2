@@ -15,6 +15,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const adminRoot = path.join(projectRoot, 'apps', 'panel', 'static', 'admin');
 const canvasRoot = path.join(projectRoot, 'apps', 'panel', 'static', 'canvas');
+const canvasThumbRoot = path.join(canvasRoot, 'thumbs');
 const runtimeDir = process.env.MIOBOT_RUNTIME_DIR ? path.resolve(process.env.MIOBOT_RUNTIME_DIR) : path.join(projectRoot, '.runtime');
 const configPath = process.env.MIOBOT_CONFIG_PATH ? path.resolve(process.env.MIOBOT_CONFIG_PATH) : path.join(runtimeDir, 'config.json');
 const canvasStatePath = process.env.MIOBOT_CANVAS_STATE_PATH ? path.resolve(process.env.MIOBOT_CANVAS_STATE_PATH) : path.join(runtimeDir, 'canvas-state.json');
@@ -49,6 +50,7 @@ const MODEL_REFRESH_TIMEOUT_MS = Math.max(5000, envNumber('MIOBOT_MODEL_REFRESH_
 const MODEL_REFRESH_STARTUP_DELAY_MS = Math.max(1000, envNumber('MIOBOT_MODEL_REFRESH_STARTUP_DELAY_MS', 45000));
 const MODEL_REFRESH_DAILY_HOUR = Math.max(0, Math.min(23, envNumber('MIOBOT_MODEL_REFRESH_DAILY_HOUR', 3)));
 const MODEL_REFRESH_DAILY_MINUTE = Math.max(0, Math.min(59, envNumber('MIOBOT_MODEL_REFRESH_DAILY_MINUTE', 20)));
+const CANVAS_PREVIEW_WIDTHS = [256, 512, 1024, 2048];
 
 const sizePresets = [
   { id: 'square-1k', label: '1:1', width: 1024, height: 1024, description: 'Square composition' },
@@ -528,7 +530,7 @@ function landing() {
 }
 function mime(file) {
   const ext = path.extname(file).toLowerCase();
-  return ext === '.html' ? 'text/html; charset=utf-8' : ext === '.js' ? 'text/javascript; charset=utf-8' : ext === '.css' ? 'text/css; charset=utf-8' : ext === '.svg' ? 'image/svg+xml' : ext === '.ico' ? 'image/x-icon' : ext === '.png' ? 'image/png' : ext === '.json' ? 'application/json; charset=utf-8' : 'application/octet-stream';
+  return ext === '.html' ? 'text/html; charset=utf-8' : ext === '.js' ? 'text/javascript; charset=utf-8' : ext === '.css' ? 'text/css; charset=utf-8' : ext === '.svg' ? 'image/svg+xml' : ext === '.ico' ? 'image/x-icon' : ext === '.png' ? 'image/png' : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : ext === '.json' ? 'application/json; charset=utf-8' : 'application/octet-stream';
 }
 async function serveFile(res, root, requestPath, prefix, rewriteHtml = false) {
   let rel = decodeURIComponent(requestPath.slice(prefix.length)).replace(/^\/+/, '');
@@ -555,6 +557,64 @@ async function serveFile(res, root, requestPath, prefix, rewriteHtml = false) {
   }
 }
 
+function safeInlineFileName(value) {
+  return String(value || 'asset')
+    .replace(/"/g, '')
+    .replace(/[^\x20-\x7E]/g, '_');
+}
+
+function requestedPreviewWidth(url) {
+  const width = Number(url?.searchParams?.get('width'));
+  if (!Number.isFinite(width) || width <= 0) return 512;
+  return Math.max(128, Math.min(2048, Math.round(width)));
+}
+
+function previewCandidateNames(asset) {
+  const names = new Set();
+  for (const value of [asset?.fileName, asset?.storagePath, asset?.id]) {
+    const raw = String(value || '').trim();
+    if (!raw) continue;
+    const base = path.basename(raw, path.extname(raw));
+    if (base) names.add(`${base}.webp`);
+  }
+  return Array.from(names);
+}
+
+function staticCanvasPreviewPath(asset, width) {
+  const names = previewCandidateNames(asset);
+  if (!names.length) return undefined;
+
+  const root = path.resolve(canvasThumbRoot);
+  const larger = CANVAS_PREVIEW_WIDTHS.filter((candidate) => candidate >= width).sort((left, right) => left - right);
+  const smaller = CANVAS_PREVIEW_WIDTHS.filter((candidate) => candidate < width).sort((left, right) => right - left);
+
+  for (const previewWidth of [...larger, ...smaller]) {
+    for (const name of names) {
+      const file = path.resolve(canvasThumbRoot, String(previewWidth), name);
+      if (!file.startsWith(`${root}${path.sep}`)) continue;
+      if (fssync.existsSync(file)) return file;
+    }
+  }
+
+  return undefined;
+}
+
+async function sendAssetPreviewResponse(res, asset, url) {
+  const file = staticCanvasPreviewPath(asset, requestedPreviewWidth(url));
+  if (!file) return sendAssetResponse(res, asset);
+
+  try {
+    const data = await fs.readFile(file);
+    return send(res, 200, data, {
+      'content-type': 'image/webp',
+      'cache-control': 'public, max-age=31536000, immutable',
+      'content-disposition': `inline; filename="${safeInlineFileName(path.basename(file))}"`,
+    });
+  } catch {
+    return sendAssetResponse(res, asset);
+  }
+}
+
 async function sendAssetResponse(res, asset) {
   if (asset?.storagePath) {
     const file = path.resolve(asset.storagePath);
@@ -563,7 +623,7 @@ async function sendAssetResponse(res, asset) {
       return send(res, 200, data, {
         'content-type': asset.mimeType || mime(file),
         'cache-control': 'public, max-age=31536000, immutable',
-        'content-disposition': `inline; filename="${String(asset.fileName || path.basename(file)).replace(/"/g, '').replace(/[^\x20-\x7E]/g, '_')}"`,
+        'content-disposition': `inline; filename="${safeInlineFileName(asset.fileName || path.basename(file))}"`,
       });
     } catch {
       return sendJson(res, 404, { error: { code: 'not_found', message: 'Asset file not found' } });
@@ -2207,8 +2267,10 @@ async function handleCanvasApi(req, res, url) {
   const assetMatch = p.match(/^\/assets\/([^/]+)\/(download|preview)$/);
   if (assetMatch) {
     const assetId = decodeURIComponent(assetMatch[1]);
+    const mode = assetMatch[2];
     const asset = assets.get(assetId);
     if (!asset) return sendJson(res, 404, { error: { code: 'not_found', message: 'Asset not found' } });
+    if (mode === 'preview') return sendAssetPreviewResponse(res, asset, url);
     return sendAssetResponse(res, asset);
   }
   return sendJson(res, 404, { error: { code: 'not_found', message: 'Canvas API route not found' } });
