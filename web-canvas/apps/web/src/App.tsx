@@ -352,7 +352,6 @@ export function App() {
   const [lightboxPan, setLightboxPan] = useState({ x: 0, y: 0 });
   const [dragTarget, setDragTarget] = useState<UploadTarget | "panel" | null>(null);
   const [interrogateDragActive, setInterrogateDragActive] = useState(false);
-  const [showBackToTop, setShowBackToTop] = useState(false);
   const lightboxPanStartRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
   const lightboxPointersRef = useRef(new Map<number, { x: number; y: number }>());
   const lightboxPinchRef = useRef<{ distance: number; centerX: number; centerY: number; startZoom: number; originX: number; originY: number } | null>(null);
@@ -700,31 +699,6 @@ export function App() {
   useEffect(() => {
     setMaskImage(null);
   }, [primaryReferenceImage?.id]);
-
-  useEffect(() => {
-    const pane = galleryPaneRef.current;
-    if (!pane) return;
-    let frame = 0;
-    let visible = pane.scrollTop > 520;
-    setShowBackToTop(visible);
-
-    const update = () => {
-      if (frame) return;
-      frame = window.requestAnimationFrame(() => {
-        frame = 0;
-        const nextVisible = pane.scrollTop > 520;
-        if (nextVisible === visible) return;
-        visible = nextVisible;
-        setShowBackToTop(nextVisible);
-      });
-    };
-
-    pane.addEventListener("scroll", update, { passive: true });
-    return () => {
-      pane.removeEventListener("scroll", update);
-      if (frame) window.cancelAnimationFrame(frame);
-    };
-  }, [activeTab]);
 
   function selectMode(nextMode: GenerationMode) {
     setMode(nextMode);
@@ -1735,6 +1709,7 @@ export function App() {
         rootRef={galleryPaneRef}
         enabled={mobileView === "gallery"}
         updateKey={`${activeTab}:${galleryRenderLimit}:${interrogateRenderLimit}:${visibleGalleryItems.length}:${visibleInterrogateItems.length}`}
+        onBackToTop={() => stopScrollMomentum(scrollMomentumRef.current)}
       />
 
       <aside
@@ -2003,20 +1978,6 @@ export function App() {
         </div>
       </aside>
 
-      <button
-        type="button"
-        className="canvas-back-top"
-        data-visible={showBackToTop}
-        data-input-expanded={!isInputBarCollapsed}
-        aria-label="返回最顶部"
-        data-ui-tooltip="返回顶部"
-        onClick={() => {
-          galleryPaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-          stopScrollMomentum(scrollMomentumRef.current);
-        }}
-      >
-        <ChevronDown className="icon" aria-hidden="true" />
-      </button>
 
       {toast ? (
         <div className="copy-toast" data-tone={toast.tone} role={toast.tone === "error" ? "alert" : "status"}>
@@ -3113,6 +3074,7 @@ interface GalleryScrollPilotProps {
   rootRef: RefObject<HTMLElement | null>;
   enabled: boolean;
   updateKey: string;
+  onBackToTop?: () => void;
 }
 
 interface GalleryScrollPilotMetrics {
@@ -3121,7 +3083,7 @@ interface GalleryScrollPilotMetrics {
   thumbSize: number;
 }
 
-function GalleryScrollPilot({ rootRef, enabled, updateKey }: GalleryScrollPilotProps) {
+function GalleryScrollPilot({ rootRef, enabled, updateKey, onBackToTop }: GalleryScrollPilotProps) {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [metrics, setMetrics] = useState<GalleryScrollPilotMetrics>({
@@ -3281,6 +3243,18 @@ function GalleryScrollPilot({ rootRef, enabled, updateKey }: GalleryScrollPilotP
     syncMetrics();
   };
 
+  const handleBackToTop = useCallback(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    onBackToTop?.();
+    root.scrollTo({ top: 0, behavior: "smooth" });
+    window.setTimeout(syncMetrics, 180);
+  }, [onBackToTop, rootRef, syncMetrics]);
+
+  const handleBackToTopPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+  };
+
   const style = {
     "--scroll-pilot-progress": `${metrics.progress * 100}%`
   } as CSSProperties;
@@ -3305,6 +3279,16 @@ function GalleryScrollPilot({ rootRef, enabled, updateKey }: GalleryScrollPilotP
           aria-valuenow={Math.round(metrics.progress * 100)}
           tabIndex={enabled && metrics.canScroll ? 0 : -1}
           onKeyDown={handleKeyDown}
+        >
+          <span aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="gallery-scroll-pilot__top"
+          aria-label="Back to top"
+          tabIndex={enabled && metrics.canScroll ? 0 : -1}
+          onPointerDown={handleBackToTopPointerDown}
+          onClick={handleBackToTop}
         >
           <span aria-hidden="true" />
         </button>
