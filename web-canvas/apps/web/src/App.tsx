@@ -2007,6 +2007,7 @@ export function App() {
         type="button"
         className="canvas-back-top"
         data-visible={showBackToTop}
+        data-input-expanded={!isInputBarCollapsed}
         aria-label="返回最顶部"
         data-ui-tooltip="返回顶部"
         onClick={() => {
