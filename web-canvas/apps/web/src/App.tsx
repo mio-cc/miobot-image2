@@ -208,6 +208,20 @@ const PENDING_INTERROGATION_STORAGE_KEY = "miobot.canvas.pending.interrogations.
 const PENDING_JOB_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 type ReferenceStatusFilter = "all" | "done" | "failed";
 
+const CANVAS_THEME_STORAGE_KEY = "miobot.canvas.theme.v1";
+const CANVAS_THEME_OPTIONS = [
+  { id: "tianshui-bi", swatch: "A", source: "中国色", name: "天水碧", roman: "Tianshui Green", color: "#5AA4AE", strong: "#3F919D", rgb: "90 164 174" },
+  { id: "piaobi", swatch: "B", source: "中国色", name: "缥碧", roman: "Pale Azure", color: "#80A492", strong: "#6B907D", rgb: "128 164 146" },
+  { id: "songlan", swatch: "C", source: "中国色", name: "菘蓝", roman: "Woad Blue", color: "#6B798E", strong: "#56657A", rgb: "107 121 142" },
+  { id: "qingdai", swatch: "D", source: "中国色", name: "青黛", roman: "Indigo", color: "#45465E", strong: "#34374D", rgb: "69 70 94" },
+  { id: "mizuasagi", swatch: "E", source: "日本色", name: "水浅葱", roman: "MIZUASAGI", color: "#66BAB7", strong: "#4CA9A6", rgb: "102 186 183" },
+  { id: "seiji", swatch: "F", source: "日本色", name: "青磁", roman: "SEIJI", color: "#69B0AC", strong: "#4D9D99", rgb: "105 176 172" },
+  { id: "wasure-nagusa", swatch: "G", source: "日本色", name: "勿忘草", roman: "WASURENAGUSA", color: "#7DB9DE", strong: "#5FA8D2", rgb: "125 185 222" },
+  { id: "fuji", swatch: "H", source: "日本色", name: "藤", roman: "FUJI", color: "#8B81C3", strong: "#7468B5", rgb: "139 129 195" }
+] as const;
+type CanvasThemeId = (typeof CANVAS_THEME_OPTIONS)[number]["id"];
+const DEFAULT_CANVAS_THEME_ID: CanvasThemeId = "wasure-nagusa";
+
 const fallbackRuntimeConfig: CanvasRuntimeConfig = {
   model: "gpt-image-2",
   models: ["gpt-image-2"],
@@ -227,6 +241,64 @@ const fallbackRuntimeConfig: CanvasRuntimeConfig = {
     sizePresetId: AUTO_SIZE_PRESET_ID
   }
 };
+
+function readStoredCanvasThemeId(): CanvasThemeId {
+  try {
+    const stored = window.localStorage.getItem(CANVAS_THEME_STORAGE_KEY);
+    if (CANVAS_THEME_OPTIONS.some((theme) => theme.id === stored)) {
+      return stored as CanvasThemeId;
+    }
+  } catch {
+    // Ignore private-mode storage errors and use the product default.
+  }
+  return DEFAULT_CANVAS_THEME_ID;
+}
+
+function canvasThemeVariables(theme: (typeof CANVAS_THEME_OPTIONS)[number]): CSSProperties {
+  return {
+    "--accent": theme.color,
+    "--accent-strong": theme.strong,
+    "--accent-soft": `rgb(${theme.rgb} / 0.16)`,
+    "--accent-warm": theme.color,
+    "--accent-warm-soft": `rgb(${theme.rgb} / 0.16)`,
+    "--accent-cool": theme.color,
+    "--focus-ring": `rgb(${theme.rgb} / 0.24)`,
+    "--canvas-theme": theme.color,
+    "--canvas-theme-strong": theme.strong,
+    "--canvas-theme-rgb": theme.rgb,
+    "--canvas-theme-soft": `rgb(${theme.rgb} / 0.16)`,
+    "--canvas-theme-rail": `rgb(${theme.rgb} / 0.40)`
+  } as CSSProperties;
+}
+
+function CanvasThemeSwitcher({ value, onChange, compact = false }: {
+  value: CanvasThemeId;
+  onChange: (themeId: CanvasThemeId) => void;
+  compact?: boolean;
+}) {
+  return (
+    <div className="canvas-theme-switcher" data-compact={compact} role="group" aria-label="画布主题色">
+      {CANVAS_THEME_OPTIONS.map((theme) => (
+        <button
+          key={theme.id}
+          type="button"
+          className="canvas-theme-dot"
+          data-active={theme.id === value}
+          aria-label={`切换主题色：${theme.source} ${theme.name}`}
+          title={`${theme.swatch}. ${theme.source} · ${theme.name} / ${theme.roman} ${theme.color}`}
+          style={{
+            "--theme-dot": theme.color,
+            "--theme-dot-strong": theme.strong,
+            "--theme-dot-rgb": theme.rgb
+          } as CSSProperties}
+          onClick={() => onChange(theme.id)}
+        >
+          <span aria-hidden="true" />
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function PrettySelect({ value, options, onChange, ariaLabel, className = "", disabled = false }: PrettySelectProps) {
   const [open, setOpen] = useState(false);
@@ -307,6 +379,7 @@ const modeOptions: Array<{
 
 export function App() {
   const [runtimeConfig, setRuntimeConfig] = useState<CanvasRuntimeConfig>(fallbackRuntimeConfig);
+  const [canvasThemeId, setCanvasThemeId] = useState<CanvasThemeId>(readStoredCanvasThemeId);
   const [lightboxZoom, setLightboxZoom] = useState(1);
   const [highResLoaded, setHighResLoaded] = useState(false);
   const [lightboxRevealReady, setLightboxRevealReady] = useState(false);
@@ -360,6 +433,12 @@ export function App() {
   const galleryPaneRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const interrogateInputRef = useRef<HTMLInputElement | null>(null);
+
+  const activeCanvasTheme = useMemo(
+    () => CANVAS_THEME_OPTIONS.find((theme) => theme.id === canvasThemeId) ?? CANVAS_THEME_OPTIONS.find((theme) => theme.id === DEFAULT_CANVAS_THEME_ID)!,
+    [canvasThemeId]
+  );
+  const canvasWorkspaceStyle = useMemo(() => canvasThemeVariables(activeCanvasTheme), [activeCanvasTheme]);
 
   const filteredGalleryItems = useMemo(() => {
     const query = normalizeSearch(deferredGalleryQuery);
@@ -454,6 +533,15 @@ export function App() {
         ? `${interrogateItems.length} 张反推`
         : `${filteredInterrogateItems.length}/${interrogateItems.length} 张反推`;
   const activeSearchValue = galleryQuery || interrogateQuery;
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CANVAS_THEME_STORAGE_KEY, canvasThemeId);
+    } catch {
+      // Storage can be blocked in private contexts; the live theme still works.
+    }
+  }, [canvasThemeId]);
+
   const statusFilterOptions = useMemo<PrettySelectOption[]>(
     () => [
       { value: "all", label: "全部状态" },
@@ -1430,7 +1518,14 @@ export function App() {
   }
 
   return (
-    <main className="canvas-workspace" data-active-tab={activeTab} data-mobile-view={mobileView} data-panel-open={isGenerationOpen}>
+    <main
+      className="canvas-workspace"
+      data-active-tab={activeTab}
+      data-mobile-view={mobileView}
+      data-panel-open={isGenerationOpen}
+      data-theme-id={activeCanvasTheme.id}
+      style={canvasWorkspaceStyle}
+    >
       <header
         data-no-drag-select
         className="safe-area-top fixed top-0 left-0 right-0 z-40 bg-white/80 backdrop-blur border-b border-gray-200 transition-transform duration-300 ease-in-out"
@@ -1444,37 +1539,47 @@ export function App() {
             </h1>
           </div>
 
-          <div className="hidden sm:flex items-center gap-1 rounded-xl border border-gray-200 bg-gray-100/70 p-1">
-            <button
-              type="button"
-              onClick={() => { setActiveTab("gallery"); showGalleryView(); }}
-              className={`px-4 py-1.5 rounded-lg text-sm transition-colors ${activeTab === "gallery" ? "bg-white text-gray-900 shadow-sm font-medium" : "text-gray-500 hover:text-gray-800"}`}
-            >
-              画廊
-            </button>
-            <button
-              type="button"
-              onClick={() => { setActiveTab("interrogate"); showGalleryView(); }}
-              className={`px-4 py-1.5 rounded-lg text-sm transition-colors ${activeTab === "interrogate" ? "bg-white text-gray-900 shadow-sm font-medium" : "text-gray-500 hover:text-gray-800"}`}
-            >
-              模板库
-            </button>
+          <div className="canvas-header-center hidden sm:grid" data-no-drag-select>
+            <CanvasThemeSwitcher value={canvasThemeId} onChange={setCanvasThemeId} />
+            <div className="canvas-header-tabs flex items-center gap-1 rounded-xl border border-gray-200 bg-gray-100/70 p-1">
+              <button
+                type="button"
+                data-active={activeTab === "gallery"}
+                onClick={() => { setActiveTab("gallery"); showGalleryView(); }}
+                className={`canvas-tab-button px-4 py-1.5 rounded-lg text-sm transition-colors ${activeTab === "gallery" ? "bg-white text-gray-900 shadow-sm font-medium" : "text-gray-500 hover:text-gray-800"}`}
+              >
+                画廊
+              </button>
+              <button
+                type="button"
+                data-active={activeTab === "interrogate"}
+                onClick={() => { setActiveTab("interrogate"); showGalleryView(); }}
+                className={`canvas-tab-button px-4 py-1.5 rounded-lg text-sm transition-colors ${activeTab === "interrogate" ? "bg-white text-gray-900 shadow-sm font-medium" : "text-gray-500 hover:text-gray-800"}`}
+              >
+                模板库
+              </button>
+            </div>
           </div>
         </div>
 
-        <div className="safe-area-x sm:hidden overflow-hidden transition-all duration-300 ease-in-out max-h-20 opacity-100 pb-2">
+        <div className="safe-area-x sm:hidden canvas-mobile-tabs-wrap">
+          <div className="canvas-mobile-theme-row" data-no-drag-select>
+            <CanvasThemeSwitcher value={canvasThemeId} onChange={setCanvasThemeId} compact />
+          </div>
           <div className="grid grid-cols-2 gap-1 rounded-xl border border-gray-200 bg-gray-100/70 p-1 mx-2">
             <button
               type="button"
+              data-active={activeTab === "gallery"}
               onClick={() => { setActiveTab("gallery"); showGalleryView(); }}
-              className={`px-4 py-1.5 rounded-lg text-sm transition-colors ${activeTab === "gallery" ? "bg-white text-gray-900 shadow-sm font-medium" : "text-gray-500 hover:text-gray-800"}`}
+              className={`canvas-tab-button px-4 py-1.5 rounded-lg text-sm transition-colors ${activeTab === "gallery" ? "bg-white text-gray-900 shadow-sm font-medium" : "text-gray-500 hover:text-gray-800"}`}
             >
               画廊
             </button>
             <button
               type="button"
+              data-active={activeTab === "interrogate"}
               onClick={() => { setActiveTab("interrogate"); showGalleryView(); }}
-              className={`px-4 py-1.5 rounded-lg text-sm transition-colors ${activeTab === "interrogate" ? "bg-white text-gray-900 shadow-sm font-medium" : "text-gray-500 hover:text-gray-800"}`}
+              className={`canvas-tab-button px-4 py-1.5 rounded-lg text-sm transition-colors ${activeTab === "interrogate" ? "bg-white text-gray-900 shadow-sm font-medium" : "text-gray-500 hover:text-gray-800"}`}
             >
               模板库
             </button>
