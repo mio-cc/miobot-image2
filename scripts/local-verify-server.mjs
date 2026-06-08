@@ -62,8 +62,7 @@ const codexLoginState = {
   startedAt: null,
   completedAt: null,
   loginId: '',
-  verificationUrl: '',
-  userCode: '',
+  authUrl: '',
   error: '',
   account: null,
   process: null,
@@ -672,8 +671,7 @@ function publicCodexLoginState() {
     startedAt: codexLoginState.startedAt,
     completedAt: codexLoginState.completedAt,
     loginId: codexLoginState.loginId,
-    verificationUrl: codexLoginState.verificationUrl,
-    userCode: codexLoginState.userCode,
+    authUrl: codexLoginState.authUrl,
     error: codexLoginState.error,
     account: codexLoginState.account,
   };
@@ -715,7 +713,7 @@ async function codexStatusPayload() {
   };
 }
 
-async function handleCodexDeviceLoginStart(res) {
+async function handleCodexWebLoginStart(res) {
   if (!envFlag('MIOBOT_CODEX_REMOTE_ENABLED', true)) {
     return sendJson(res, 403, { success: false, error: 'Codex 远程助手已被服务端关闭。' });
   }
@@ -736,12 +734,11 @@ async function handleCodexDeviceLoginStart(res) {
   codexLoginState.startedAt = new Date().toISOString();
   codexLoginState.completedAt = null;
   codexLoginState.loginId = '';
-  codexLoginState.verificationUrl = '';
-  codexLoginState.userCode = '';
+  codexLoginState.authUrl = '';
   codexLoginState.error = '';
   codexLoginState.account = null;
 
-  const child = spawn(codexPythonBin, [codexRunnerPath, '--login-device'], {
+  const child = spawn(codexPythonBin, [codexRunnerPath, '--login-web'], {
     cwd: projectRoot,
     env: process.env,
     windowsHide: true,
@@ -755,14 +752,14 @@ async function handleCodexDeviceLoginStart(res) {
   const initial = new Promise((resolve) => { initialResolve = resolve; });
   const initialTimer = setTimeout(() => {
     if (initialResolved) return;
-    codexLoginState.error = 'Codex device login did not return a verification code in time.';
+    codexLoginState.error = 'Codex web login did not return an auth URL in time.';
     child.kill('SIGTERM');
     resolveInitial({ success: false, error: codexLoginState.error, login: publicCodexLoginState() });
   }, 30000);
   initialTimer.unref?.();
   const timeout = setTimeout(() => {
     if (codexLoginState.running) {
-      codexLoginState.error = 'Codex device login timed out.';
+      codexLoginState.error = 'Codex web login timed out.';
       child.kill('SIGTERM');
     }
   }, Math.max(60000, Math.min(15 * 60 * 1000, codexTimeoutMs)));
@@ -782,10 +779,9 @@ async function handleCodexDeviceLoginStart(res) {
     for (const line of lines) {
       if (!line.trim()) continue;
       const parsed = parseRunnerJson(line);
-      if (parsed.event === 'device_code') {
+      if (parsed.event === 'web_login') {
         codexLoginState.loginId = parsed.loginId || '';
-        codexLoginState.verificationUrl = parsed.verificationUrl || '';
-        codexLoginState.userCode = parsed.userCode || '';
+        codexLoginState.authUrl = parsed.authUrl || '';
         resolveInitial({ success: true, login: publicCodexLoginState() });
       } else if (parsed.event === 'completed') {
         codexLoginState.running = false;
@@ -793,7 +789,7 @@ async function handleCodexDeviceLoginStart(res) {
         codexLoginState.account = parsed.account || null;
         codexLoginState.error = '';
       } else if (parsed.success === false) {
-        codexLoginState.error = parsed.error || 'Codex device login failed.';
+        codexLoginState.error = parsed.error || 'Codex web login failed.';
       }
     }
   });
@@ -812,19 +808,19 @@ async function handleCodexDeviceLoginStart(res) {
       codexLoginState.error = codexLoginState.error || (code === 0 ? '' : stderr.trim() || `Codex login exited with code ${code}`);
     }
     if (!initialResolved) {
-      resolveInitial({ success: false, error: codexLoginState.error || stderr.trim() || 'Codex login did not return a device code.', login: publicCodexLoginState() });
+      resolveInitial({ success: false, error: codexLoginState.error || stderr.trim() || 'Codex login did not return an auth URL.', login: publicCodexLoginState() });
     }
   });
 
   const payload = await initial;
-  logSystem(payload.success ? 'info' : 'error', 'admin.codex.login', payload.success ? 'Codex device login started' : 'Codex device login failed to start', {
+  logSystem(payload.success ? 'info' : 'error', 'admin.codex.login', payload.success ? 'Codex web login started' : 'Codex web login failed to start', {
     loginId: codexLoginState.loginId,
     error: payload.error || '',
   });
   return sendJson(res, payload.success ? 200 : 502, payload);
 }
 
-function handleCodexDeviceLoginCancel(res) {
+function handleCodexWebLoginCancel(res) {
   if (codexLoginState.process && codexLoginState.running) {
     codexLoginState.process.kill('SIGTERM');
   }
@@ -912,7 +908,7 @@ async function handleCodexChat(body, res) {
   if (!account.signedIn) {
     return sendJson(res, 401, {
       success: false,
-      error: '服务器 Codex 尚未登录。请先在后台 Codex 助手里点击“网页登录服务器 Codex”，完成设备码授权后再调用。',
+      error: '服务器 Codex 尚未登录。请先在后台 Codex 助手里点击“网页登录服务器 Codex”，打开授权链接并完成网页登录后再调用。',
       account,
       login: publicCodexLoginState(),
     });
@@ -2696,8 +2692,10 @@ async function handleCompatApi(req, res, url) {
   if (req.method === 'GET' && p === '/api/default-prompts') return sendJson(res, 200, getDefaultPrompts());
   if (req.method === 'GET' && p === '/api/codex/status') return sendJson(res, 200, await codexStatusPayload());
   if (req.method === 'GET' && p === '/api/codex/login/status') return sendJson(res, 200, { success: true, login: publicCodexLoginState(), account: await getCodexAccountStatus() });
-  if (req.method === 'POST' && p === '/api/codex/login/device/start') return handleCodexDeviceLoginStart(res);
-  if (req.method === 'POST' && p === '/api/codex/login/device/cancel') return handleCodexDeviceLoginCancel(res);
+  if (req.method === 'POST' && p === '/api/codex/login/web/start') return handleCodexWebLoginStart(res);
+  if (req.method === 'POST' && p === '/api/codex/login/web/cancel') return handleCodexWebLoginCancel(res);
+  if (req.method === 'POST' && p === '/api/codex/login/device/start') return handleCodexWebLoginStart(res);
+  if (req.method === 'POST' && p === '/api/codex/login/device/cancel') return handleCodexWebLoginCancel(res);
   if (req.method === 'POST' && p === '/api/codex/chat') return handleCodexChat(body, res);
   if (req.method === 'GET' && p === '/api/codex/git/status') return sendJson(res, 200, await codexGitStatusPayload());
   if (req.method === 'POST' && p === '/api/codex/git/push') return handleCodexGitPush(body, res);

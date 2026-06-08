@@ -1258,15 +1258,15 @@ async function pollCodexLoginStatus() {
   }
 }
 
-async function startCodexDeviceLogin() {
+async function startCodexWebLogin() {
   if (codexLoginLoading.value) return;
   codexLoginLoading.value = true;
   try {
-    const res = await axios.post(`${API_BASE}/codex/login/device/start`, {}, { headers: authHeaders() });
+    const res = await axios.post(`${API_BASE}/codex/login/web/start`, {}, { headers: authHeaders() });
     if (!codexStatus.value) codexStatus.value = {};
     codexStatus.value.login = res.data.login;
-    addCodexMessage('system', `Codex 登录已开始，请打开 ${res.data.login.verificationUrl} 并输入验证码 ${res.data.login.userCode}。`);
-    showToast('Codex 登录验证码已生成', 'success');
+    addCodexMessage('system', `Codex 网页登录已开始，请打开 ${res.data.login.authUrl} 完成授权。`);
+    showToast('Codex 网页登录链接已生成', 'success');
     startCodexLoginTimer();
   } catch (e: any) {
     const error = e.response?.data?.error || e.message || 'Codex 登录启动失败';
@@ -1278,9 +1278,9 @@ async function startCodexDeviceLogin() {
   }
 }
 
-async function cancelCodexDeviceLogin() {
+async function cancelCodexWebLogin() {
   try {
-    const res = await axios.post(`${API_BASE}/codex/login/device/cancel`, {}, { headers: authHeaders() });
+    const res = await axios.post(`${API_BASE}/codex/login/web/cancel`, {}, { headers: authHeaders() });
     if (!codexStatus.value) codexStatus.value = {};
     codexStatus.value.login = res.data.login;
     stopCodexLoginTimer();
@@ -3678,15 +3678,15 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                       服务器 Codex 已登录，可以直接通过上方对话修改项目。
                     </div>
                     <div v-else-if="codexStatus?.login?.running" class="codex-login-code">
-                      <span>网页登录验证码</span>
-                      <strong>{{ codexStatus.login.userCode }}</strong>
-                      <a :href="codexStatus.login.verificationUrl" target="_blank" rel="noreferrer" class="btn-primary text-xs">打开验证页面</a>
-                      <button @click="cancelCodexDeviceLogin" class="btn-outline text-xs">取消登录</button>
+                      <span>网页登录授权</span>
+                      <p class="codex-login-code__hint">请在浏览器打开 OpenAI 授权链接，完成后这里会自动刷新登录态。</p>
+                      <a :href="codexStatus.login.authUrl" target="_blank" rel="noreferrer" class="btn-primary text-xs">打开网页登录</a>
+                      <button @click="cancelCodexWebLogin" class="btn-outline text-xs">取消登录</button>
                     </div>
-                    <button v-else @click="startCodexDeviceLogin" :disabled="codexLoginLoading" class="btn-primary w-full text-sm">
-                      {{ codexLoginLoading ? '生成验证码中...' : '网页登录服务器 Codex' }}
+                    <button v-else @click="startCodexWebLogin" :disabled="codexLoginLoading" class="btn-primary w-full text-sm">
+                      {{ codexLoginLoading ? '生成登录链接中...' : '网页登录服务器 Codex' }}
                     </button>
-                    <p class="codex-git-note">流程：后台生成设备码，你在 OpenAI 页面确认，登录态保存在服务器 Codex 本地环境。</p>
+                    <p class="codex-git-note">流程：后台生成 OpenAI 授权链接，你在浏览器完成网页登录，登录态保存在服务器 Codex 本地环境。</p>
                   </div>
                   <div v-if="codexStatus && !codexStatus.python?.sdkAvailable" class="codex-alert">
                     服务器需安装 SDK：<code>{{ codexStatus.installCommand }}</code>
@@ -4343,12 +4343,11 @@ async function generateTemplateTitle(tpl: any, idx: number) {
   font-weight: 900;
 }
 
-.codex-login-code strong {
-  color: #0f172a;
-  font-size: clamp(1.6rem, 4vw, 2.3rem);
-  line-height: 1;
-  letter-spacing: 0.12em;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+.codex-login-code__hint {
+  margin: 0;
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .codex-git-files {

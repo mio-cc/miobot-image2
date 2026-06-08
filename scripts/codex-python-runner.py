@@ -116,18 +116,17 @@ def account_status() -> None:
             )
 
 
-def device_login() -> None:
+def web_login() -> None:
     Codex, CodexConfig, _Sandbox, sdk_version, _ = import_sdk()
     with Codex(CodexConfig()) as codex:
-        handle = codex.login_chatgpt_device_code()
+        handle = codex.login_chatgpt()
         emit_json(
             {
-                "event": "device_code",
+                "event": "web_login",
                 "success": True,
                 "sdkVersion": sdk_version,
                 "loginId": handle.login_id,
-                "verificationUrl": handle.verification_url,
-                "userCode": handle.user_code,
+                "authUrl": handle.auth_url,
             }
         )
         completed = handle.wait()
@@ -211,15 +210,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Miobot Codex Python SDK bridge")
     parser.add_argument("--status", action="store_true", help="print SDK availability JSON")
     parser.add_argument("--account", action="store_true", help="print current Codex account JSON")
-    parser.add_argument("--login-device", action="store_true", help="start ChatGPT device-code login")
+    parser.add_argument("--login-web", action="store_true", help="start ChatGPT browser login")
     args = parser.parse_args()
 
     if args.status:
         sdk_status()
     if args.account:
         account_status()
-    if args.login_device:
-        device_login()
+    if args.login_web:
+        web_login()
     run_turn()
 
 
