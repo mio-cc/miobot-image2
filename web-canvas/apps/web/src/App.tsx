@@ -3116,7 +3116,10 @@ function GalleryScrollPilot({ rootRef, enabled, updateKey, onBackToTop }: Galler
     }, 0);
     const galleryRect = root.querySelector<HTMLElement>(".masonry-gallery, .gallery-skeleton")?.getBoundingClientRect();
     const rightmostCardRight = measuredCardRight || galleryRect?.right || root.getBoundingClientRect().right;
-    const pilotX = canScroll ? (rightmostCardRight + viewportWidth) / 2 : 0;
+    const centeredPilotX = (rightmostCardRight + viewportWidth) / 2;
+    const minimumVisualGap = viewportWidth <= 640 ? 34 : viewportWidth <= 1180 ? 30 : 18;
+    const rightEdgeInset = viewportWidth <= 760 ? 14 : 18;
+    const pilotX = canScroll ? clamp(centeredPilotX, rightmostCardRight + minimumVisualGap, viewportWidth - rightEdgeInset) : 0;
 
     setMetrics((current) => {
       if (
