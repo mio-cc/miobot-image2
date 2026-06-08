@@ -7212,7 +7212,7 @@ body {
     --masonry-gap: 18px;
     width: min(100%, calc(100% - 28px)) !important;
     padding-left: max(14px, env(safe-area-inset-left, 0px)) !important;
-    padding-right: max(72px, env(safe-area-inset-right, 0px)) !important;
+    padding-right: max(14px, env(safe-area-inset-right, 0px)) !important;
   }
 
   .masonry-gallery {
@@ -7224,7 +7224,7 @@ body {
   .gallery-pane {
     --masonry-gap: 10px;
     padding-left: max(10px, env(safe-area-inset-left, 0px)) !important;
-    padding-right: max(64px, env(safe-area-inset-right, 0px)) !important;
+    padding-right: max(10px, env(safe-area-inset-right, 0px)) !important;
   }
 
   .masonry-gallery {

@@ -1430,6 +1430,7 @@ export function App() {
   }
 
   return (
+    <>
     <main className="canvas-workspace" data-active-tab={activeTab} data-mobile-view={mobileView} data-panel-open={isGenerationOpen}>
       <header
         data-no-drag-select
@@ -1704,13 +1705,6 @@ export function App() {
           </div>
         )}
       </section>
-
-      <GalleryScrollPilot
-        rootRef={galleryPaneRef}
-        enabled={mobileView === "gallery"}
-        updateKey={`${activeTab}:${galleryRenderLimit}:${interrogateRenderLimit}:${visibleGalleryItems.length}:${visibleInterrogateItems.length}`}
-        onBackToTop={() => stopScrollMomentum(scrollMomentumRef.current)}
-      />
 
       <aside
         className="control-pane playground-input-bar"
@@ -2226,6 +2220,13 @@ export function App() {
         </div>
       ) : null}
     </main>
+    <GalleryScrollPilot
+      rootRef={galleryPaneRef}
+      enabled={mobileView === "gallery"}
+      updateKey={`${activeTab}:${galleryRenderLimit}:${interrogateRenderLimit}:${visibleGalleryItems.length}:${visibleInterrogateItems.length}`}
+      onBackToTop={() => stopScrollMomentum(scrollMomentumRef.current)}
+    />
+    </>
   );
 
 }
@@ -3105,7 +3106,19 @@ function GalleryScrollPilot({ rootRef, enabled, updateKey, onBackToTop }: Galler
     const canScroll = maxScrollTop > 12;
     const progress = canScroll ? clamp(root.scrollTop / maxScrollTop, 0, 1) : 0;
     const thumbSize = canScroll ? clamp(root.clientHeight / Math.max(root.scrollHeight, 1), 0.14, 0.46) : 1;
-    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || root.clientWidth;
+    const rootRect = root.getBoundingClientRect();
+    const documentRight = document.documentElement.getBoundingClientRect().right;
+    const bodyRight = document.body?.getBoundingClientRect().right ?? 0;
+    const visualViewportRight = window.visualViewport ? window.visualViewport.offsetLeft + window.visualViewport.width : 0;
+    const viewportWidth = Math.max(
+      window.innerWidth || 0,
+      document.documentElement.clientWidth || 0,
+      visualViewportRight,
+      documentRight,
+      bodyRight,
+      rootRect.right,
+      root.clientWidth
+    );
     const cards = Array.from(root.querySelectorAll<HTMLElement>(".masonry-card, .gallery-skeleton__card"));
     const measuredCardRight = cards.reduce((maxRight, card) => {
       const rect = card.getBoundingClientRect();
@@ -3115,7 +3128,7 @@ function GalleryScrollPilot({ rootRef, enabled, updateKey, onBackToTop }: Galler
       return Math.max(maxRight, rect.right);
     }, 0);
     const galleryRect = root.querySelector<HTMLElement>(".masonry-gallery, .gallery-skeleton")?.getBoundingClientRect();
-    const rightmostCardRight = measuredCardRight || galleryRect?.right || root.getBoundingClientRect().right;
+    const rightmostCardRight = measuredCardRight || galleryRect?.right || rootRect.right;
     const centeredPilotX = (rightmostCardRight + viewportWidth) / 2;
     const minimumVisualGap = viewportWidth <= 640 ? 34 : viewportWidth <= 1180 ? 30 : 18;
     const rightEdgeInset = viewportWidth <= 760 ? 14 : 18;
