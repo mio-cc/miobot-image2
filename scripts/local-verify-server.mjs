@@ -908,6 +908,15 @@ async function handleCodexChat(body, res) {
       installCommand: `${codexPythonBin} -m pip install openai-codex`,
     });
   }
+  const account = await getCodexAccountStatus();
+  if (!account.signedIn) {
+    return sendJson(res, 401, {
+      success: false,
+      error: '服务器 Codex 尚未登录。请先在后台 Codex 助手里点击“网页登录服务器 Codex”，完成设备码授权后再调用。',
+      account,
+      login: publicCodexLoginState(),
+    });
+  }
 
   const startedAt = Date.now();
   codexBridgeState.running = true;

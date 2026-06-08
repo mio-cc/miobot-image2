@@ -93,13 +93,16 @@ def account_status() -> None:
     Codex, CodexConfig, _Sandbox, sdk_version, _ = import_sdk()
     with Codex(CodexConfig()) as codex:
         try:
-            account = codex.account(refresh_token=True)
+            response = codex.account(refresh_token=True)
+            data = redacted_jsonable(response)
+            account = data.get("account") if isinstance(data, dict) else None
             write_json(
                 {
                     "success": True,
                     "sdkVersion": sdk_version,
-                    "signedIn": True,
-                    "account": redacted_jsonable(account),
+                    "signedIn": account is not None,
+                    "account": data,
+                    "requiresOpenaiAuth": bool(data.get("requiresOpenaiAuth")) if isinstance(data, dict) else False,
                 }
             )
         except Exception as exc:  # noqa: BLE001 - unauthenticated state is diagnostic.
