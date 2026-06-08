@@ -52,11 +52,13 @@
 * {
   box-sizing: border-box;
   scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 *::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 *::-webkit-scrollbar-track {
@@ -64,12 +66,12 @@
 }
 
 *::-webkit-scrollbar-thumb {
-  background: #2b3037;
-  border-radius: 10px;
+  background: transparent;
+  border-radius: 0;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: #3a4049;
+  background: transparent;
 }
 
 ::selection {
@@ -5482,7 +5484,7 @@ body {
   overflow-x: hidden !important;
   overflow-y: auto !important;
   resize: none !important;
-  scrollbar-width: thin !important;
+  scrollbar-width: none !important;
 }
 
 .playground-prompt-input::placeholder {
@@ -5649,7 +5651,7 @@ body {
   overscroll-behavior: contain !important;
   resize: none !important;
   box-shadow: inset 0 1px 2px rgba(15, 23, 42, .04) !important;
-  scrollbar-gutter: stable both-edges !important;
+  scrollbar-gutter: auto !important;
 }
 
 .playground-prompt-input::placeholder {
@@ -5665,13 +5667,15 @@ body {
 }
 
 .playground-prompt-input::-webkit-scrollbar {
-  width: 10px !important;
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 
 .playground-prompt-input::-webkit-scrollbar-thumb {
-  background: rgba(100, 116, 139, .42) !important;
-  border: 3px solid rgba(255, 255, 255, .92) !important;
-  border-radius: 999px !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
 }
 
 @media (max-width: 900px) {
@@ -7220,7 +7224,7 @@ body {
   .gallery-pane {
     --masonry-gap: 10px;
     padding-left: max(10px, env(safe-area-inset-left, 0px)) !important;
-    padding-right: max(10px, env(safe-area-inset-right, 0px)) !important;
+    padding-right: max(38px, env(safe-area-inset-right, 0px)) !important;
   }
 
   .masonry-gallery {
@@ -7234,7 +7238,8 @@ body {
 .gallery-scroll-pilot {
   position: fixed;
   top: 50%;
-  right: max(18px, env(safe-area-inset-right));
+  left: var(--scroll-pilot-x, calc(100vw - max(18px, env(safe-area-inset-right)) - 12px));
+  right: auto;
   z-index: 34;
   display: grid;
   width: 24px;
@@ -7242,14 +7247,14 @@ body {
   place-items: center;
   opacity: 0;
   pointer-events: none;
-  transform: translate3d(8px, -50%, 0) scale(.98);
+  transform: translate3d(-50%, -50%, 0) scale(.98);
   transition: opacity 180ms ease, transform 220ms cubic-bezier(.22, 1, .36, 1);
 }
 
 .gallery-scroll-pilot[data-visible="true"] {
   opacity: .88;
   pointer-events: auto;
-  transform: translate3d(0, -50%, 0) scale(1);
+  transform: translate3d(-50%, -50%, 0) scale(1);
 }
 
 .gallery-scroll-pilot__rail {
@@ -7352,7 +7357,6 @@ body {
 @media (max-width: 760px) {
   .gallery-scroll-pilot {
     top: 50%;
-    right: max(14px, env(safe-area-inset-right));
     width: 22px;
     height: clamp(132px, 32dvh, 210px);
   }

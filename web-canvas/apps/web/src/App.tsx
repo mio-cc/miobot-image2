@@ -3080,6 +3080,7 @@ interface GalleryScrollPilotProps {
 interface GalleryScrollPilotMetrics {
   canScroll: boolean;
   progress: number;
+  pilotX: number;
   thumbSize: number;
 }
 
@@ -3089,13 +3090,14 @@ function GalleryScrollPilot({ rootRef, enabled, updateKey, onBackToTop }: Galler
   const [metrics, setMetrics] = useState<GalleryScrollPilotMetrics>({
     canScroll: false,
     progress: 0,
+    pilotX: 0,
     thumbSize: 1
   });
 
   const syncMetrics = useCallback(() => {
     const root = rootRef.current;
     if (!enabled || !root) {
-      setMetrics((current) => current.canScroll ? { canScroll: false, progress: 0, thumbSize: 1 } : current);
+      setMetrics((current) => current.canScroll ? { canScroll: false, progress: 0, pilotX: 0, thumbSize: 1 } : current);
       return;
     }
 
@@ -3103,16 +3105,29 @@ function GalleryScrollPilot({ rootRef, enabled, updateKey, onBackToTop }: Galler
     const canScroll = maxScrollTop > 12;
     const progress = canScroll ? clamp(root.scrollTop / maxScrollTop, 0, 1) : 0;
     const thumbSize = canScroll ? clamp(root.clientHeight / Math.max(root.scrollHeight, 1), 0.14, 0.46) : 1;
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || root.clientWidth;
+    const cards = Array.from(root.querySelectorAll<HTMLElement>(".masonry-card, .gallery-skeleton__card"));
+    const measuredCardRight = cards.reduce((maxRight, card) => {
+      const rect = card.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1 || rect.right <= 0 || rect.left >= viewportWidth) {
+        return maxRight;
+      }
+      return Math.max(maxRight, rect.right);
+    }, 0);
+    const galleryRect = root.querySelector<HTMLElement>(".masonry-gallery, .gallery-skeleton")?.getBoundingClientRect();
+    const rightmostCardRight = measuredCardRight || galleryRect?.right || root.getBoundingClientRect().right;
+    const pilotX = canScroll ? (rightmostCardRight + viewportWidth) / 2 : 0;
 
     setMetrics((current) => {
       if (
         current.canScroll === canScroll &&
         Math.abs(current.progress - progress) < 0.002 &&
+        Math.abs(current.pilotX - pilotX) < 0.5 &&
         Math.abs(current.thumbSize - thumbSize) < 0.002
       ) {
         return current;
       }
-      return { canScroll, progress, thumbSize };
+      return { canScroll, progress, pilotX, thumbSize };
     });
   }, [enabled, rootRef]);
 
@@ -3256,7 +3271,8 @@ function GalleryScrollPilot({ rootRef, enabled, updateKey, onBackToTop }: Galler
   };
 
   const style = {
-    "--scroll-pilot-progress": `${metrics.progress * 100}%`
+    "--scroll-pilot-progress": `${metrics.progress * 100}%`,
+    "--scroll-pilot-x": metrics.pilotX > 0 ? `${metrics.pilotX}px` : undefined
   } as CSSProperties;
 
   return (
