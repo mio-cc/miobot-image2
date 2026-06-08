@@ -61,6 +61,7 @@ const codexLoginState = {
   running: false,
   startedAt: null,
   completedAt: null,
+  callbackSubmittedAt: null,
   loginId: '',
   authUrl: '',
   error: '',
@@ -670,6 +671,7 @@ function publicCodexLoginState() {
     running: codexLoginState.running,
     startedAt: codexLoginState.startedAt,
     completedAt: codexLoginState.completedAt,
+    callbackSubmittedAt: codexLoginState.callbackSubmittedAt,
     loginId: codexLoginState.loginId,
     authUrl: codexLoginState.authUrl,
     error: codexLoginState.error,
@@ -733,6 +735,7 @@ async function handleCodexWebLoginStart(res) {
   codexLoginState.running = true;
   codexLoginState.startedAt = new Date().toISOString();
   codexLoginState.completedAt = null;
+  codexLoginState.callbackSubmittedAt = null;
   codexLoginState.loginId = '';
   codexLoginState.authUrl = '';
   codexLoginState.error = '';
@@ -820,11 +823,159 @@ async function handleCodexWebLoginStart(res) {
   return sendJson(res, payload.success ? 200 : 502, payload);
 }
 
+function expectedCodexCallbackPort() {
+  try {
+    const authUrl = new URL(codexLoginState.authUrl);
+    const redirectUri = authUrl.searchParams.get('redirect_uri') || '';
+    if (!redirectUri) return 0;
+    const redirect = new URL(redirectUri);
+    return Number(redirect.port || (redirect.protocol === 'http:' ? 80 : 443)) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function normalizeCodexCallbackUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) throw new Error('请粘贴 OpenAI 登录后跳转到的 localhost 回调地址。');
+  if (raw.length > 8192) throw new Error('回调地址太长，请确认粘贴的是浏览器地址栏里的完整 callback URL。');
+
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error('回调地址格式不正确，请粘贴完整的 http://localhost:1457/auth/callback?... 地址。');
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+  const localHosts = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+  if (parsed.protocol !== 'http:' || !localHosts.has(hostname)) {
+    throw new Error('只允许提交 Codex 本地登录回调地址，例如 http://localhost:1457/auth/callback?...。');
+  }
+  if (parsed.pathname !== '/auth/callback') {
+    throw new Error('回调地址路径必须是 /auth/callback。');
+  }
+  if (!parsed.searchParams.has('state')) {
+    throw new Error('回调地址缺少 state 参数，请复制浏览器地址栏里的完整地址。');
+  }
+  if (!parsed.searchParams.has('code') && !parsed.searchParams.has('error')) {
+    throw new Error('回调地址缺少 code 参数，请完成 OpenAI 网页登录后再复制地址。');
+  }
+
+  const port = Number(parsed.port || 80);
+  const allowedPorts = new Set([1455, 1457]);
+  const expectedPort = expectedCodexCallbackPort();
+  if (expectedPort) allowedPorts.add(expectedPort);
+  if (!allowedPorts.has(port)) {
+    throw new Error(`回调端口不匹配。当前 Codex 登录监听端口应为 ${expectedPort || '1455/1457'}。`);
+  }
+
+  return {
+    port,
+    localUrl: `http://127.0.0.1:${port}${parsed.pathname}${parsed.search}`,
+    hasError: parsed.searchParams.has('error'),
+  };
+}
+
+async function relayCodexCallbackUrl(callbackUrl) {
+  const normalized = normalizeCodexCallbackUrl(callbackUrl);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(normalized.localUrl, {
+      method: 'GET',
+      redirect: 'manual',
+      signal: controller.signal,
+      headers: { 'user-agent': 'Miobot-Codex-Callback-Relay' },
+    });
+    const body = response.status >= 400 ? await response.text().catch(() => '') : '';
+    return {
+      success: response.status >= 200 && response.status < 400,
+      status: response.status,
+      port: normalized.port,
+      hasError: normalized.hasError,
+      error: response.status >= 400 ? redactCodexCallbackRelayError(body) : '',
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function redactCodexCallbackRelayError(body) {
+  return String(body || '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\b(code|state|access_token|id_token|refresh_token)=([^&\s"'<>]+)/gi, '$1=[redacted]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300);
+}
+
+async function handleCodexWebLoginCallback(body, res) {
+  if (!envFlag('MIOBOT_CODEX_REMOTE_ENABLED', true)) {
+    return sendJson(res, 403, { success: false, error: 'Codex 远程助手已被服务端关闭。' });
+  }
+  if (!codexLoginState.running) {
+    return sendJson(res, 409, {
+      success: false,
+      error: '当前没有正在进行的 Codex 网页登录。请先点击“网页登录服务器 Codex”，再提交回调地址。',
+      login: publicCodexLoginState(),
+    });
+  }
+
+  let relay;
+  try {
+    relay = await relayCodexCallbackUrl(body?.callbackUrl || body?.url);
+  } catch (error) {
+    return sendJson(res, 400, { success: false, error: error?.message || String(error), login: publicCodexLoginState() });
+  }
+
+  codexLoginState.callbackSubmittedAt = new Date().toISOString();
+  if (!relay.success) {
+    const message = relay.error || `Codex 本地回调端口返回 HTTP ${relay.status}`;
+    codexLoginState.error = message;
+    logSystem('warn', 'admin.codex.login', 'Codex web login callback relay failed', {
+      status: relay.status,
+      port: relay.port,
+      hasOAuthError: relay.hasError,
+    });
+    return sendJson(res, 502, {
+      success: false,
+      error: message,
+      callback: { status: relay.status, port: relay.port, submittedAt: codexLoginState.callbackSubmittedAt },
+      login: publicCodexLoginState(),
+    });
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const account = await getCodexAccountStatus().catch((error) => ({
+    success: false,
+    signedIn: false,
+    error: error?.message || String(error),
+  }));
+  if (account.signedIn) {
+    codexLoginState.error = '';
+    codexLoginState.completedAt = codexLoginState.completedAt || new Date().toISOString();
+    codexLoginState.account = account.account || null;
+  }
+  logSystem('info', 'admin.codex.login', 'Codex web login callback relayed', {
+    status: relay.status,
+    port: relay.port,
+    signedIn: Boolean(account.signedIn),
+  });
+  return sendJson(res, 200, {
+    success: true,
+    account,
+    login: publicCodexLoginState(),
+    callback: { status: relay.status, port: relay.port, submittedAt: codexLoginState.callbackSubmittedAt },
+  });
+}
+
 function handleCodexWebLoginCancel(res) {
   if (codexLoginState.process && codexLoginState.running) {
     codexLoginState.process.kill('SIGTERM');
   }
   codexLoginState.running = false;
+  codexLoginState.callbackSubmittedAt = null;
   codexLoginState.error = '登录流程已取消。';
   return sendJson(res, 200, { success: true, login: publicCodexLoginState() });
 }
@@ -2694,6 +2845,7 @@ async function handleCompatApi(req, res, url) {
   if (req.method === 'GET' && p === '/api/codex/login/status') return sendJson(res, 200, { success: true, login: publicCodexLoginState(), account: await getCodexAccountStatus() });
   if (req.method === 'POST' && p === '/api/codex/login/web/start') return handleCodexWebLoginStart(res);
   if (req.method === 'POST' && p === '/api/codex/login/web/cancel') return handleCodexWebLoginCancel(res);
+  if (req.method === 'POST' && p === '/api/codex/login/web/callback') return handleCodexWebLoginCallback(body, res);
   if (req.method === 'POST' && p === '/api/codex/login/device/start') return handleCodexWebLoginStart(res);
   if (req.method === 'POST' && p === '/api/codex/login/device/cancel') return handleCodexWebLoginCancel(res);
   if (req.method === 'POST' && p === '/api/codex/chat') return handleCodexChat(body, res);

@@ -134,6 +134,8 @@ const codexStatus = ref<any>(null);
 const codexStatusLoading = ref(false);
 const codexStatusError = ref('');
 const codexLoginLoading = ref(false);
+const codexCallbackUrl = ref('');
+const codexCallbackSubmitting = ref(false);
 const codexMessages = ref<CodexChatMessage[]>([]);
 const codexInput = ref('');
 const codexThreadId = ref(localStorage.getItem('np_codex_thread_id') || '');
@@ -1283,11 +1285,43 @@ async function cancelCodexWebLogin() {
     const res = await axios.post(`${API_BASE}/codex/login/web/cancel`, {}, { headers: authHeaders() });
     if (!codexStatus.value) codexStatus.value = {};
     codexStatus.value.login = res.data.login;
+    codexCallbackUrl.value = '';
     stopCodexLoginTimer();
     showToast('已取消 Codex 登录流程', 'info');
   } catch (e: any) {
     showToast(e.response?.data?.error || e.message || '取消失败', 'error');
   } finally {
+    await fetchCodexStatus();
+  }
+}
+
+async function submitCodexCallbackUrl() {
+  const callbackUrl = codexCallbackUrl.value.trim();
+  if (!callbackUrl || codexCallbackSubmitting.value) {
+    if (!callbackUrl) showToast('请先粘贴浏览器跳转后的完整 callback 地址', 'error');
+    return;
+  }
+  codexCallbackSubmitting.value = true;
+  try {
+    const res = await axios.post(`${API_BASE}/codex/login/web/callback`, { callbackUrl }, { headers: authHeaders() });
+    if (!codexStatus.value) codexStatus.value = {};
+    codexStatus.value.login = res.data.login;
+    codexStatus.value.account = res.data.account;
+    codexCallbackUrl.value = '';
+    addCodexMessage('system', '已把网页登录回调提交给服务器 Codex，正在刷新登录状态。');
+    if (res.data.account?.signedIn) {
+      stopCodexLoginTimer();
+      showToast('服务器 Codex 已登录', 'success');
+    } else {
+      startCodexLoginTimer();
+      showToast('回调已提交，等待 Codex 确认登录', 'success');
+    }
+  } catch (e: any) {
+    const error = e.response?.data?.error || e.message || '回调提交失败';
+    addCodexMessage('error', error);
+    showToast(error, 'error');
+  } finally {
+    codexCallbackSubmitting.value = false;
     await fetchCodexStatus();
   }
 }
@@ -3681,6 +3715,17 @@ async function generateTemplateTitle(tpl: any, idx: number) {
                       <span>网页登录授权</span>
                       <p class="codex-login-code__hint">请在浏览器打开 OpenAI 授权链接，完成后这里会自动刷新登录态。</p>
                       <a :href="codexStatus.login.authUrl" target="_blank" rel="noreferrer" class="btn-primary text-xs">打开网页登录</a>
+                      <div class="codex-callback-submit">
+                        <textarea
+                          v-model="codexCallbackUrl"
+                          rows="2"
+                          placeholder="如果浏览器停在 http://localhost:1457/auth/callback?...，把地址栏完整链接粘贴到这里"
+                        ></textarea>
+                        <button @click="submitCodexCallbackUrl" :disabled="codexCallbackSubmitting || !codexCallbackUrl.trim()" class="btn-primary text-xs">
+                          {{ codexCallbackSubmitting ? '提交中...' : '提交回调地址' }}
+                        </button>
+                      </div>
+                      <p class="codex-login-code__hint">远程服务器登录时，localhost 回调可能会停在你的电脑浏览器里；复制完整地址提交即可让服务器完成登录。</p>
                       <button @click="cancelCodexWebLogin" class="btn-outline text-xs">取消登录</button>
                     </div>
                     <button v-else @click="startCodexWebLogin" :disabled="codexLoginLoading" class="btn-primary w-full text-sm">
@@ -4348,6 +4393,30 @@ async function generateTemplateTitle(tpl: any, idx: number) {
   color: #334155;
   font-size: 12px;
   line-height: 1.6;
+}
+
+.codex-callback-submit {
+  display: grid;
+  gap: 8px;
+}
+
+.codex-callback-submit textarea {
+  width: 100%;
+  min-height: 58px;
+  resize: vertical;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 13px;
+  padding: 10px 11px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.45;
+  outline: none;
+}
+
+.codex-callback-submit textarea:focus {
+  border-color: rgba(14, 165, 233, 0.58);
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.12);
 }
 
 .codex-git-files {
