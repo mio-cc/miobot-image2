@@ -7171,7 +7171,8 @@ body {
   gap: var(--masonry-gap) !important;
   column-count: initial !important;
   column-width: initial !important;
-  column-gap: initial !important;
+  column-gap: var(--masonry-gap) !important;
+  row-gap: var(--masonry-gap) !important;
 }
 
 .masonry-card {
