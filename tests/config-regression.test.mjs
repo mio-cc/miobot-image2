@@ -60,6 +60,14 @@ test('config regression: package marker and migration table include P12 image ba
   assert.ok(ids.has('bot.replyFormat-to-replyStrategies'));
 });
 
+test('config regression: prompt rewrite defaults preserve the user language', () => {
+  const defaults = createDefaultConfig();
+  assert.match(defaults.llm.enhancePromptTemplate, /保留用户原始语言/);
+  assert.match(defaults.llm.enhancePromptTemplate, /不要翻译成英文/);
+  assert.match(defaults.promptsChat.smartPromptTemplate, /must not be translated into English/);
+  assert.match(defaults.freeMode.plannerPromptTemplate, /must not be translated into English/);
+});
+
 test('config regression: old example-like export imports with all required v2 sections', () => {
   const result = importConfig(legacyConfigExampleLike());
   assert.equal(result.sourceFormat, 'export-wrapper-v1');

@@ -14,6 +14,14 @@ type LogEntry = {
   details?: unknown;
 };
 
+type CodexChatMessage = {
+  id: number;
+  role: 'user' | 'assistant' | 'system' | 'error';
+  text: string;
+  timestamp: string;
+  meta?: string;
+};
+
 type CanvasManagedCard = {
   kind: 'gallery' | 'interrogation';
   id: string;
@@ -122,6 +130,23 @@ const canvasLogCopyStatus = ref('');
 const canvasCards = ref<CanvasManagedCard[]>([]);
 const canvasCardsLoading = ref(false);
 const canvasCardsError = ref('');
+const codexStatus = ref<any>(null);
+const codexStatusLoading = ref(false);
+const codexStatusError = ref('');
+const codexLoginLoading = ref(false);
+const codexMessages = ref<CodexChatMessage[]>([]);
+const codexInput = ref('');
+const codexThreadId = ref(localStorage.getItem('np_codex_thread_id') || '');
+const codexSandbox = ref('workspace_write');
+const codexModel = ref('');
+const codexSending = ref(false);
+const codexGitStatus = ref<any>(null);
+const codexGitLoading = ref(false);
+const codexGitPushLoading = ref(false);
+const codexGitError = ref('');
+const codexCommitMessage = ref('Codex remote update');
+let codexMessageId = 0;
+let codexLoginTimer: number | null = null;
 const configImportInput = ref<HTMLInputElement | null>(null);
 const templateConvertSource = ref('');
 const templateConvertLoading = ref(false);
@@ -138,6 +163,7 @@ const menuItems = [
   { id: 'freeMode', icon: '自', label: '自由模式' },
   { id: 'templates', icon: '词', label: '提示词模板' },
   { id: 'canvas', icon: '画', label: '画布配置' },
+  { id: 'codex', icon: '码', label: 'Codex 助手' },
   { id: 'napcat', icon: '连', label: '客户端连接' },
   { id: 'logs', icon: '志', label: '运行日志' },
 ];
@@ -157,7 +183,10 @@ function closeMobileSidebar() {
 onMounted(async () => { 
   if (token.value) await fetchConfig(); 
 });
-onBeforeUnmount(stopLogTimer);
+onBeforeUnmount(() => {
+  stopLogTimer();
+  stopCodexLoginTimer();
+});
 
 watch([currentPage, logAutoRefresh], async ([page]) => {
   if (page === 'logs') {
@@ -168,6 +197,9 @@ watch([currentPage, logAutoRefresh], async ([page]) => {
     ensureCanvasConfig();
     await fetchCanvasCards();
     await fetchCanvasLogs();
+  } else if (page === 'codex') {
+    stopLogTimer();
+    await refreshCodexPanel();
   } else {
     stopLogTimer();
   }
@@ -1105,6 +1137,227 @@ function logLevelText(level: string) {
   if (level === 'debug') return '调试';
   if (level === 'info') return '信息';
   return level;
+}
+
+function addCodexMessage(role: CodexChatMessage['role'], text: string, meta = '') {
+  codexMessages.value.push({
+    id: codexMessageId++,
+    role,
+    text,
+    meta,
+    timestamp: new Date().toLocaleString(),
+  });
+}
+
+function codexReady() {
+  return Boolean(
+    codexStatus.value?.enabled &&
+    codexStatus.value?.python?.sdkAvailable &&
+    codexStatus.value?.account?.signedIn &&
+    codexStatus.value?.workspace?.ok &&
+    !codexStatus.value?.busy
+  );
+}
+
+function codexStatusText() {
+  if (codexStatusLoading.value) return '检测中';
+  if (codexStatusError.value) return '状态异常';
+  if (!codexStatus.value) return '未检测';
+  if (!codexStatus.value.enabled) return '已关闭';
+  if (!codexStatus.value.workspace?.ok) return '工作区异常';
+  if (!codexStatus.value.python?.sdkAvailable) return 'SDK 未安装';
+  if (!codexStatus.value.account?.signedIn) return codexStatus.value.login?.running ? '等待登录' : '未登录';
+  if (codexStatus.value.busy) return '处理中';
+  return '可用';
+}
+
+function codexStatusTone() {
+  if (codexReady()) return 'success';
+  if (codexStatus.value?.busy) return 'info';
+  return 'error';
+}
+
+function codexMessageClass(role: CodexChatMessage['role']) {
+  if (role === 'user') return 'codex-message codex-message--user';
+  if (role === 'error') return 'codex-message codex-message--error';
+  if (role === 'system') return 'codex-message codex-message--system';
+  return 'codex-message codex-message--assistant';
+}
+
+async function fetchCodexStatus() {
+  codexStatusLoading.value = true;
+  codexStatusError.value = '';
+  try {
+    const res = await axios.get(`${API_BASE}/codex/status`, { headers: authHeaders() });
+    codexStatus.value = res.data;
+    const presets = res.data?.sandboxPresets || [];
+    if (presets.length && !presets.includes(codexSandbox.value)) codexSandbox.value = presets[0];
+    if (!codexModel.value && res.data?.model) codexModel.value = res.data.model;
+  } catch (e: any) {
+    codexStatusError.value = e.response?.data?.error || e.message || 'Codex 状态读取失败';
+  } finally {
+    codexStatusLoading.value = false;
+  }
+}
+
+async function fetchCodexGitStatus() {
+  codexGitLoading.value = true;
+  codexGitError.value = '';
+  try {
+    const res = await axios.get(`${API_BASE}/codex/git/status`, { headers: authHeaders() });
+    codexGitStatus.value = res.data;
+  } catch (e: any) {
+    codexGitError.value = e.response?.data?.error || e.message || 'Git 状态读取失败';
+  } finally {
+    codexGitLoading.value = false;
+  }
+}
+
+async function refreshCodexPanel() {
+  await Promise.all([fetchCodexStatus(), fetchCodexGitStatus()]);
+  if (codexStatus.value?.login?.running) startCodexLoginTimer();
+}
+
+function resetCodexThread() {
+  codexThreadId.value = '';
+  localStorage.removeItem('np_codex_thread_id');
+  addCodexMessage('system', '已切换为新 Codex 线程。下一条消息会创建新的远程修改会话。');
+}
+
+function startCodexLoginTimer() {
+  stopCodexLoginTimer();
+  codexLoginTimer = window.setInterval(() => pollCodexLoginStatus(), 2500);
+}
+
+function stopCodexLoginTimer() {
+  if (codexLoginTimer !== null) {
+    window.clearInterval(codexLoginTimer);
+    codexLoginTimer = null;
+  }
+}
+
+async function pollCodexLoginStatus() {
+  if (currentPage.value !== 'codex') {
+    stopCodexLoginTimer();
+    return;
+  }
+  try {
+    const res = await axios.get(`${API_BASE}/codex/login/status`, { headers: authHeaders() });
+    if (!codexStatus.value) codexStatus.value = {};
+    codexStatus.value.login = res.data.login;
+    codexStatus.value.account = res.data.account;
+    if (res.data.account?.signedIn || !res.data.login?.running) {
+      stopCodexLoginTimer();
+      await fetchCodexStatus();
+      if (res.data.account?.signedIn) {
+        showToast('服务器 Codex 已登录', 'success');
+      }
+    }
+  } catch {
+    stopCodexLoginTimer();
+  }
+}
+
+async function startCodexDeviceLogin() {
+  if (codexLoginLoading.value) return;
+  codexLoginLoading.value = true;
+  try {
+    const res = await axios.post(`${API_BASE}/codex/login/device/start`, {}, { headers: authHeaders() });
+    if (!codexStatus.value) codexStatus.value = {};
+    codexStatus.value.login = res.data.login;
+    addCodexMessage('system', `Codex 登录已开始，请打开 ${res.data.login.verificationUrl} 并输入验证码 ${res.data.login.userCode}。`);
+    showToast('Codex 登录验证码已生成', 'success');
+    startCodexLoginTimer();
+  } catch (e: any) {
+    const error = e.response?.data?.error || e.message || 'Codex 登录启动失败';
+    addCodexMessage('error', error);
+    showToast(error, 'error');
+  } finally {
+    codexLoginLoading.value = false;
+    await fetchCodexStatus();
+  }
+}
+
+async function cancelCodexDeviceLogin() {
+  try {
+    const res = await axios.post(`${API_BASE}/codex/login/device/cancel`, {}, { headers: authHeaders() });
+    if (!codexStatus.value) codexStatus.value = {};
+    codexStatus.value.login = res.data.login;
+    stopCodexLoginTimer();
+    showToast('已取消 Codex 登录流程', 'info');
+  } catch (e: any) {
+    showToast(e.response?.data?.error || e.message || '取消失败', 'error');
+  } finally {
+    await fetchCodexStatus();
+  }
+}
+
+async function sendCodexMessage() {
+  const message = codexInput.value.trim();
+  if (!message || codexSending.value) return;
+  if (!codexReady()) {
+    showToast(`Codex 当前不可用：${codexStatusText()}`, 'error');
+    await fetchCodexStatus();
+    return;
+  }
+  codexInput.value = '';
+  codexSending.value = true;
+  addCodexMessage('user', message, codexSandbox.value);
+  try {
+    const res = await axios.post(`${API_BASE}/codex/chat`, {
+      message,
+      threadId: codexThreadId.value,
+      sandbox: codexSandbox.value,
+      model: codexModel.value.trim(),
+    }, { headers: authHeaders() });
+    if (res.data.threadId) {
+      codexThreadId.value = res.data.threadId;
+      localStorage.setItem('np_codex_thread_id', res.data.threadId);
+    }
+    const answer = res.data.finalResponse || `Codex 已完成，状态：${res.data.status || 'unknown'}`;
+    addCodexMessage('assistant', answer, `thread ${res.data.threadId || codexThreadId.value || '-'} · ${Math.round((res.data.durationMs || 0) / 1000)}s`);
+    showToast('Codex 已完成本轮任务', 'success');
+    await fetchCodexGitStatus();
+  } catch (e: any) {
+    const error = e.response?.data?.error || e.message || 'Codex 调用失败';
+    addCodexMessage('error', error);
+    showToast(`Codex 调用失败: ${error}`, 'error');
+  } finally {
+    codexSending.value = false;
+    await fetchCodexStatus();
+  }
+}
+
+function codexGitFilesSummary() {
+  const files = codexGitStatus.value?.files || [];
+  if (!files.length) return '服务器工作区干净';
+  return `${files.length} 个文件有变更`;
+}
+
+async function pushCodexGitChanges() {
+  if (codexGitPushLoading.value) return;
+  if (!codexGitStatus.value?.dirty) {
+    showToast('服务器当前没有可推送的变更', 'info');
+    return;
+  }
+  if (!window.confirm('确认把服务器当前 git 变更提交并推送到远端仓库吗？')) return;
+  codexGitPushLoading.value = true;
+  codexGitError.value = '';
+  try {
+    const res = await axios.post(`${API_BASE}/codex/git/push`, {
+      confirm: true,
+      message: codexCommitMessage.value,
+    }, { headers: authHeaders() });
+    codexGitStatus.value = res.data.status;
+    addCodexMessage('system', `Git 已提交并推送：${res.data.message}`, res.data.status?.branch || '');
+    showToast('服务器变更已推送到 Git', 'success');
+  } catch (e: any) {
+    codexGitError.value = e.response?.data?.error || e.message || 'Git 推送失败';
+    showToast(`Git 推送失败: ${codexGitError.value}`, 'error');
+  } finally {
+    codexGitPushLoading.value = false;
+    await fetchCodexGitStatus();
+  }
 }
 
 function nodeOptions() {
@@ -3328,6 +3581,171 @@ async function generateTemplateTitle(tpl: any, idx: number) {
             </div>
           </div>
 
+          <!-- ═══ Tab: Codex Assistant (远程改项目) ═══ -->
+          <div v-show="currentPage === 'codex'" class="space-y-6 animate-fadein">
+            <div class="codex-hero card p-5">
+              <div class="codex-hero__copy">
+                <span class="codex-eyebrow">Codex Remote Workspace</span>
+                <h3>通过后台对话修改服务器项目</h3>
+                <p>
+                  默认已启用，服务端可用 <code>MIOBOT_CODEX_REMOTE_ENABLED=0</code> 临时关闭。
+                  每次 Git 推送都是普通 commit，不使用 force；远端领先时会拒绝推送，避免覆盖仓库历史。
+                </p>
+              </div>
+              <div class="codex-status-stack">
+                <span class="status-pill" :data-tone="codexStatusTone()">{{ codexStatusText() }}</span>
+                <button @click="refreshCodexPanel" :disabled="codexStatusLoading || codexGitLoading" class="btn-outline text-xs">
+                  {{ codexStatusLoading || codexGitLoading ? '刷新中...' : '刷新状态' }}
+                </button>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 xl:grid-cols-[1.45fr_0.9fr] gap-5">
+              <section class="card p-0 overflow-hidden codex-console">
+                <div class="codex-console__bar">
+                  <div>
+                    <span>Codex 对话控制台</span>
+                    <small>{{ codexThreadId ? `线程 ${codexThreadId}` : '下一条消息将创建新线程' }}</small>
+                  </div>
+                  <button @click="resetCodexThread" class="btn-outline text-[11px] py-1 px-2">新线程</button>
+                </div>
+
+                <div class="codex-chat-list">
+                  <div v-if="!codexMessages.length" class="codex-empty">
+                    <strong>把要改的内容说清楚就行。</strong>
+                    <span>例如：检查画布移动端滑动条问题并修复，然后运行相关测试。</span>
+                  </div>
+                  <article v-for="message in codexMessages" :key="message.id" :class="codexMessageClass(message.role)">
+                    <div class="codex-message__meta">
+                      <span>{{ message.role === 'user' ? '你' : message.role === 'assistant' ? 'Codex' : message.role === 'error' ? '错误' : '系统' }}</span>
+                      <time>{{ message.timestamp }}</time>
+                      <em v-if="message.meta">{{ message.meta }}</em>
+                    </div>
+                    <pre>{{ message.text }}</pre>
+                  </article>
+                </div>
+
+                <div class="codex-compose">
+                  <textarea
+                    v-model="codexInput"
+                    rows="5"
+                    class="input-field codex-compose__textarea"
+                    placeholder="输入要让 Codex 在服务器项目里执行的任务..."
+                    :disabled="codexSending"
+                    @keydown.enter.exact.prevent="sendCodexMessage"
+                  ></textarea>
+                  <div class="codex-compose__footer">
+                    <div class="codex-compose__controls">
+                      <label>
+                        <span>权限</span>
+                        <select v-model="codexSandbox" class="input-field font-mono">
+                          <option v-for="preset in (codexStatus?.sandboxPresets || ['read_only','workspace_write'])" :key="preset" :value="preset">
+                            {{ preset }}
+                          </option>
+                        </select>
+                      </label>
+                      <label>
+                        <span>模型</span>
+                        <input v-model="codexModel" class="input-field font-mono" placeholder="留空使用 Codex 默认" />
+                      </label>
+                    </div>
+                    <button @click="sendCodexMessage" :disabled="codexSending || !codexInput.trim() || !codexReady()" class="btn-primary codex-send-button">
+                      {{ codexSending ? '执行中...' : '发送给 Codex' }}
+                    </button>
+                  </div>
+                </div>
+              </section>
+
+              <aside class="space-y-5">
+                <section class="card p-5 codex-side-card">
+                  <div class="codex-side-card__head">
+                    <div>
+                      <h3>运行环境</h3>
+                      <p>SDK、工作区和安全状态</p>
+                    </div>
+                    <span class="status-pill" :data-tone="codexStatusTone()">{{ codexStatusText() }}</span>
+                  </div>
+                  <div v-if="codexStatusError" class="codex-alert codex-alert--error">{{ codexStatusError }}</div>
+                  <div class="codex-kv">
+                    <span>工作区</span><code>{{ codexStatus?.workspace?.path || '-' }}</code>
+                    <span>Python</span><code>{{ codexStatus?.python?.pythonVersion || '-' }}</code>
+                    <span>SDK</span><code>{{ codexStatus?.python?.sdkVersion || (codexStatus?.python?.sdkAvailable ? 'available' : '未安装') }}</code>
+                    <span>登录态</span><code>{{ codexStatus?.account?.signedIn ? '已登录' : (codexStatus?.login?.running ? '等待网页登录' : '未登录') }}</code>
+                    <span>超时</span><code>{{ Math.round((codexStatus?.timeoutMs || 0) / 1000) || '-' }}s</code>
+                  </div>
+                  <div v-if="codexStatus?.python?.sdkAvailable" class="codex-login-box">
+                    <div v-if="codexStatus?.account?.signedIn" class="codex-alert">
+                      服务器 Codex 已登录，可以直接通过上方对话修改项目。
+                    </div>
+                    <div v-else-if="codexStatus?.login?.running" class="codex-login-code">
+                      <span>网页登录验证码</span>
+                      <strong>{{ codexStatus.login.userCode }}</strong>
+                      <a :href="codexStatus.login.verificationUrl" target="_blank" rel="noreferrer" class="btn-primary text-xs">打开验证页面</a>
+                      <button @click="cancelCodexDeviceLogin" class="btn-outline text-xs">取消登录</button>
+                    </div>
+                    <button v-else @click="startCodexDeviceLogin" :disabled="codexLoginLoading" class="btn-primary w-full text-sm">
+                      {{ codexLoginLoading ? '生成验证码中...' : '网页登录服务器 Codex' }}
+                    </button>
+                    <p class="codex-git-note">流程：后台生成设备码，你在 OpenAI 页面确认，登录态保存在服务器 Codex 本地环境。</p>
+                  </div>
+                  <div v-if="codexStatus && !codexStatus.python?.sdkAvailable" class="codex-alert">
+                    服务器需安装 SDK：<code>{{ codexStatus.installCommand }}</code>
+                  </div>
+                  <div v-if="codexStatus && !codexStatus.workspace?.ok" class="codex-alert codex-alert--error">
+                    {{ codexStatus.workspace?.error }}
+                  </div>
+                </section>
+
+                <section class="card p-5 codex-side-card">
+                  <div class="codex-side-card__head">
+                    <div>
+                      <h3>Git 版本同步</h3>
+                      <p>{{ codexGitFilesSummary() }}</p>
+                    </div>
+                    <button @click="fetchCodexGitStatus" :disabled="codexGitLoading" class="btn-outline text-xs">
+                      {{ codexGitLoading ? '读取中' : '刷新' }}
+                    </button>
+                  </div>
+
+                  <div v-if="codexGitError" class="codex-alert codex-alert--error">{{ codexGitError }}</div>
+                  <div class="codex-kv">
+                    <span>分支</span><code>{{ codexGitStatus?.branch || '-' }}</code>
+                    <span>上游</span><code>{{ codexGitStatus?.upstream?.upstream || '未设置' }}</code>
+                    <span>领先/落后</span><code>ahead {{ codexGitStatus?.upstream?.ahead || 0 }} / behind {{ codexGitStatus?.upstream?.behind || 0 }}</code>
+                    <span>远端</span><code>{{ codexGitStatus?.remote ? '已配置' : '未读取' }}</code>
+                  </div>
+
+                  <div v-if="codexGitStatus?.upstream?.behind" class="codex-alert codex-alert--error">
+                    远端领先 {{ codexGitStatus.upstream.behind }} 个 commit。请先拉取/合并，后台不会强推覆盖。
+                  </div>
+
+                  <div class="codex-git-files">
+                    <div v-if="!codexGitStatus?.files?.length" class="codex-empty codex-empty--mini">服务器工作区没有可提交变更。</div>
+                    <div v-for="file in (codexGitStatus?.files || [])" :key="file.raw" class="codex-git-file">
+                      <span>{{ file.status }}</span>
+                      <code>{{ file.path }}</code>
+                    </div>
+                  </div>
+
+                  <pre v-if="codexGitStatus?.diffStat" class="codex-diffstat">{{ codexGitStatus.diffStat }}</pre>
+
+                  <label class="codex-commit-label">
+                    <span>提交信息</span>
+                    <input v-model="codexCommitMessage" class="input-field" placeholder="Codex remote update" />
+                  </label>
+                  <button
+                    @click="pushCodexGitChanges"
+                    :disabled="codexGitPushLoading || !codexGitStatus?.dirty || codexGitStatus?.upstream?.behind"
+                    class="btn-primary w-full"
+                  >
+                    {{ codexGitPushLoading ? '提交并推送中...' : '提交并推送到 Git' }}
+                  </button>
+                  <p class="codex-git-note">使用普通 <code>git push</code>，不使用 <code>--force</code>；每次推送都会产生可回滚的 commit。</p>
+                </section>
+              </aside>
+            </div>
+          </div>
+
           <!-- ═══ Tab: Napcat (Napcat 连接) ═══ -->
           <div v-show="currentPage === 'napcat'" class="space-y-6 animate-fadein">
             <div class="card p-5">
@@ -3615,6 +4033,391 @@ async function generateTemplateTitle(tpl: any, idx: number) {
   font-size: 11px;
   line-height: 1;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.status-pill[data-tone="info"] {
+  border-color: #bae6fd;
+  background: #f0f9ff;
+  color: #0284c7;
+}
+
+.codex-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  background:
+    radial-gradient(circle at 12% 15%, rgba(14, 165, 233, 0.16), transparent 34%),
+    linear-gradient(135deg, rgba(15, 23, 42, 0.98), rgba(24, 24, 27, 0.96));
+  color: #f8fafc;
+  border-color: rgba(148, 163, 184, 0.22);
+}
+
+.codex-hero__copy h3 {
+  margin: 5px 0 6px;
+  font-size: clamp(1.35rem, 2.2vw, 2rem);
+  font-weight: 900;
+  letter-spacing: -0.04em;
+}
+
+.codex-hero__copy p {
+  margin: 0;
+  max-width: 760px;
+  color: rgba(226, 232, 240, 0.78);
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.codex-hero code,
+.codex-git-note code,
+.codex-alert code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #67e8f9;
+}
+
+.codex-eyebrow {
+  display: inline-flex;
+  color: #7dd3fc;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.codex-status-stack {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.codex-console {
+  min-height: 620px;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  border-color: rgba(15, 23, 42, 0.12);
+}
+
+.codex-console__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  background: linear-gradient(180deg, #f8fafc, #eef6ff);
+}
+
+.codex-console__bar span,
+.codex-side-card__head h3 {
+  display: block;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.codex-console__bar small,
+.codex-side-card__head p {
+  display: block;
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.codex-chat-list {
+  min-height: 360px;
+  max-height: min(58vh, 620px);
+  overflow: auto;
+  padding: 16px;
+  background:
+    linear-gradient(rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+    #f8fafc;
+  background-size: 22px 22px;
+}
+
+.codex-empty {
+  display: grid;
+  place-items: center;
+  min-height: 170px;
+  padding: 20px;
+  text-align: center;
+  color: #64748b;
+  border: 1px dashed rgba(100, 116, 139, 0.28);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.codex-empty strong {
+  color: #0f172a;
+  font-size: 15px;
+}
+
+.codex-empty span {
+  max-width: 420px;
+  font-size: 12px;
+}
+
+.codex-empty--mini {
+  min-height: auto;
+  padding: 12px;
+  font-size: 12px;
+}
+
+.codex-message {
+  width: min(92%, 760px);
+  margin: 0 0 12px;
+  padding: 13px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+}
+
+.codex-message--user {
+  margin-left: auto;
+  background: linear-gradient(135deg, #dbeafe, #eff6ff);
+  border-color: rgba(59, 130, 246, 0.24);
+}
+
+.codex-message--assistant {
+  background: #ffffff;
+}
+
+.codex-message--system {
+  background: #f0fdf4;
+  border-color: rgba(34, 197, 94, 0.22);
+}
+
+.codex-message--error {
+  background: #fff1f2;
+  border-color: rgba(244, 63, 94, 0.22);
+}
+
+.codex-message__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: #64748b;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.codex-message__meta span {
+  color: #0f172a;
+  font-weight: 900;
+}
+
+.codex-message__meta em {
+  font-style: normal;
+  color: #0284c7;
+}
+
+.codex-message pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: transparent;
+  color: #1e293b;
+  font-size: 13px;
+  line-height: 1.75;
+  font-family: ui-sans-serif, system-ui, "Microsoft YaHei", sans-serif;
+}
+
+.codex-compose {
+  padding: 14px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.codex-compose__textarea {
+  resize: vertical;
+  min-height: 124px;
+}
+
+.codex-compose__footer {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.codex-compose__controls {
+  display: grid;
+  grid-template-columns: minmax(140px, 180px) minmax(180px, 260px);
+  gap: 10px;
+  flex: 1;
+}
+
+.codex-compose__controls label,
+.codex-commit-label {
+  display: grid;
+  gap: 6px;
+}
+
+.codex-compose__controls span,
+.codex-commit-label span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.codex-send-button {
+  min-height: 42px;
+  white-space: nowrap;
+}
+
+.codex-side-card {
+  display: grid;
+  gap: 14px;
+}
+
+.codex-side-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.codex-kv {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 8px 10px;
+  align-items: start;
+  font-size: 12px;
+}
+
+.codex-kv span {
+  color: #64748b;
+  font-weight: 800;
+}
+
+.codex-kv code,
+.codex-git-file code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #0f172a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.codex-alert {
+  padding: 10px 12px;
+  border: 1px solid rgba(14, 165, 233, 0.2);
+  border-radius: 14px;
+  background: rgba(240, 249, 255, 0.78);
+  color: #0369a1;
+  font-size: 12px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.codex-alert--error {
+  border-color: rgba(244, 63, 94, 0.24);
+  background: rgba(255, 241, 242, 0.9);
+  color: #be123c;
+}
+
+.codex-login-box {
+  display: grid;
+  gap: 10px;
+}
+
+.codex-login-code {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(14, 165, 233, 0.24);
+  background: linear-gradient(135deg, rgba(240, 249, 255, 0.9), rgba(255, 255, 255, 0.92));
+}
+
+.codex-login-code span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.codex-login-code strong {
+  color: #0f172a;
+  font-size: clamp(1.6rem, 4vw, 2.3rem);
+  line-height: 1;
+  letter-spacing: 0.12em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.codex-git-files {
+  display: grid;
+  gap: 7px;
+  max-height: 190px;
+  overflow: auto;
+}
+
+.codex-git-file {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  font-size: 12px;
+}
+
+.codex-git-file span {
+  color: #0ea5e9;
+  font-weight: 900;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.codex-diffstat {
+  max-height: 160px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border-radius: 14px;
+  background: #0f172a !important;
+  color: #dbeafe !important;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.codex-git-note {
+  margin: -2px 0 0;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+@media (max-width: 900px) {
+  .codex-hero,
+  .codex-compose__footer,
+  .codex-side-card__head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .codex-status-stack {
+    justify-content: flex-start;
+  }
+
+  .codex-compose__controls {
+    grid-template-columns: 1fr;
+  }
+
+  .codex-send-button {
+    width: 100%;
+  }
+
+  .codex-message {
+    width: 100%;
+  }
 }
 </style>
 // @END [TASK-001]

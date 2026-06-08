@@ -6,6 +6,7 @@ import {
   buildRawPromptWithOverrides,
   extractFreeModeDirectives,
   parsePlannerResult,
+  preservePromptLanguage,
   renderPlannerPrompt,
 } from '../dist/packages/free-mode/src/index.js';
 
@@ -68,6 +69,11 @@ test('free mode: buildRawPromptWithOverrides lets user bang params override plan
   assert.equal(raw, '1536x1024! 3! high! planner cat');
 });
 
+test('free mode: prompt language guard keeps Chinese prompt unless English is requested', () => {
+  assert.equal(preservePromptLanguage('画三只猫', 'three cats in a garden'), '画三只猫');
+  assert.equal(preservePromptLanguage('请转成英文 prompt：画三只猫', 'three cats in a garden'), 'three cats in a garden');
+});
+
 test('free mode: text planner sends text reply', async () => {
   const planner = new FakePlanner('{"action":"text","text":"这是一段回复"}');
   const image = new FakeImageModule();
@@ -97,6 +103,14 @@ test('free mode: image generate planner calls ImageModule.generate and replies w
   assert.deepEqual(reply.calls[0].images, result.images);
 });
 
+test('free mode: image planner does not silently translate Chinese prompts to English', async () => {
+  const planner = new FakePlanner('{"action":"image","mode":"generate","prompt":"a white kitten sitting by the window","size":"1024x1024","count":1}');
+  const image = new FakeImageModule();
+  const engine = new FreeModeEngine({ planner, image, model: 'gpt-4o-mini' });
+  await engine.handle({ userContent: '画一只白色小猫，坐在窗边' });
+  assert.equal(image.calls[0].input.rawPrompt, '1024x1024! 1! 画一只白色小猫，坐在窗边');
+});
+
 test('free mode: mixed image input planner edit calls ImageModule.edit with input images', async () => {
   const planner = new FakePlanner('{"action":"image","mode":"edit","prompt":"把图片改成赛博朋克","size":"1024x1024"}');
   const image = new FakeImageModule();
@@ -115,17 +129,17 @@ test('free mode: user bang params override planner image size/count/quality', as
   const image = new FakeImageModule();
   const engine = new FreeModeEngine({ planner, image, model: 'gpt-4o-mini' });
   const result = await engine.handle({ userContent: '16:9! 3! high! 画三只猫' });
-  assert.equal(image.calls[0].input.rawPrompt, '1536x1024! 3! high! planner cat');
+  assert.equal(image.calls[0].input.rawPrompt, '1536x1024! 3! high! 画三只猫');
   assert.equal(result.images.length, 3);
 });
 
 test('free mode: multi-image planner executes several image plan items and caps output', async () => {
-  const planner = new FakePlanner('{"action":"image","mode":"generate","images":[{"prompt":"cat","count":1},{"prompt":"dog","count":1},{"prompt":"bird","count":1}]}');
+  const planner = new FakePlanner('{"action":"image","mode":"generate","images":[{"prompt":"猫","count":1},{"prompt":"狗","count":1},{"prompt":"鸟","count":1}]}');
   const image = new FakeImageModule();
   const reply = new FakeReply();
   const engine = new FreeModeEngine({ planner, image, reply, model: 'gpt-4o-mini', maxOutputImages: 2 });
   const result = await engine.handle({ userContent: '生成三张不同图片', context });
-  assert.deepEqual(image.calls.map((call) => call.input.rawPrompt), ['1! cat', '1! dog']);
+  assert.deepEqual(image.calls.map((call) => call.input.rawPrompt), ['1! 猫', '1! 狗']);
   assert.equal(result.images.length, 2);
   assert.deepEqual(reply.calls[0].images, result.images);
 });

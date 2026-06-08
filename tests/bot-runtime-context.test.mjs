@@ -27,6 +27,7 @@ import {
   renderTtsPreprocessPrompt,
   resolveReferencedMessage,
   selectFailoverNodeIndexes,
+  shouldRejectPromptLanguageFlip,
   shouldRetryEditWithInlinedImages,
   splitReplyText,
   withReferenceContext,
@@ -102,6 +103,13 @@ test('bot runtime: referenced merged forward content is collected for upstream c
   assert.match(upstream, /【引用内容 #quote-1】/);
   assert.match(upstream, /第一条：需求是保留引用内容/);
   assert.deepEqual(adapter.calls.map((call) => call[0]), ['getMessage', 'getForwardBridgeTargets', 'getForwardMessage']);
+});
+
+test('bot runtime: prompt language guard rejects unrequested Chinese-to-English rewrites', () => {
+  assert.equal(shouldRejectPromptLanguageFlip('画一只白色小猫，坐在窗边', 'a white kitten sitting by the window'), true);
+  assert.equal(shouldRejectPromptLanguageFlip('请翻译成英文：画一只白色小猫', 'a white kitten sitting by the window'), false);
+  assert.equal(shouldRejectPromptLanguageFlip('英文提示词：画一只白色小猫', 'a white kitten sitting by the window'), false);
+  assert.equal(shouldRejectPromptLanguageFlip('draw a white kitten', 'a white kitten sitting by the window'), false);
 });
 
 test('bot runtime: nested merged forward content is collected from inner forwards', async () => {

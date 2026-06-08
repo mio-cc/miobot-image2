@@ -36,19 +36,19 @@ export interface ExportConfigOptions { exportedAt?: string | Date }
 type R = Record<string, any>;
 
 const P = {
-  enhance: '请把用户原始提示词改写为适合图像生成模型的结构化 JSON。用户原始提示词：{{rawPrompt}}',
-  fill: '请把用户提示词自然填入选中的模板，只输出最终提示词。模板：{{templatePrompt}} 用户提示词：{{rawPrompt}}',
+  enhance: '请把用户原始提示词改写为适合图像生成模型的结构化 JSON。必须保留用户原始语言；如果原始提示词是中文，最终提示词必须包含中文，不要翻译成英文，除非用户明确要求英文。用户原始提示词：{{rawPrompt}}',
+  fill: '请把用户提示词自然填入选中的模板，只输出最终提示词。必须保留用户原始语言；如果用户提示词是中文，最终提示词必须包含中文，不要翻译成英文，除非用户明确要求英文。模板：{{templatePrompt}} 用户提示词：{{rawPrompt}}',
   convert: '请把用户粘贴的一段普通提示词转化为可复用模板，并只输出 JSON。用户原始提示词：{{rawPrompt}}',
   title: '请根据下面的提示词模板生成一个简短中文模板名称，只输出名称。模板：{{templatePrompt}}',
-  refFill: '请根据用户主体把引用的通用模板填充成最终图像生成提示词，只输出纯文本。用户主体：{{rawPrompt}} 引用模板：{{templatePrompt}}',
+  refFill: '请根据用户主体把引用的通用模板填充成最终图像生成提示词，只输出纯文本。必须保留用户主体的原始语言；如果用户主体是中文，最终提示词必须包含中文，不要翻译成英文，除非用户明确要求英文。用户主体：{{rawPrompt}} 引用模板：{{templatePrompt}}',
   translate: 'Return JSON only. Mode: {{mode}} Input: {{input}}.',
   interrogate: '请分析这张图片，并反推一段适合图像生成模型复现它的提示词。',
   interrogateTpl: '请分析这张图片，并把它反推成可复用的图像生成提示词模板，至少包含一次 {{prompt}}。',
-  safe: '请把用户提示词改写为合规、温和、可生成的图片提示词，只输出最终提示词。用户提示词：{{rawPrompt}}',
+  safe: '请把用户提示词改写为合规、温和、可生成的图片提示词，只输出最终提示词。必须保留用户原始语言；如果用户提示词是中文，最终提示词必须包含中文，不要翻译成英文，除非用户明确要求英文。用户提示词：{{rawPrompt}}',
   pcQuery: 'Return JSON only: {"queries":["query 1","query 2"]}. User request: {{rawPrompt}}',
-  pcSmart: 'Return JSON only: {"selectedId":"id or none","selectedTitle":"title or none","reason":"brief Chinese reason","finalPrompt":"ready-to-use image prompt"}. User request: {{rawPrompt}}\n\nCandidate prompts:\n{{candidates}}',
-  free: 'Return JSON only. Use {"action":"text","text":"..."} or {"action":"image","mode":"generate|edit","prompt":"...","size":"1024x1024","count":1}. User content: {{userContent}}',
-  ttsPreprocess: '你是文本转语音前置处理助手。请把机器人回复翻译/改写成适合语音合成的文本，并按需要穿插语音标签。要求：1. 保留原意，不额外扩写；2. 标签必须是语音模型可直接识别的文本；3. 只输出最终要送入语音 API 的文本，不要解释，不要 Markdown。待处理文本：{{text}}',
+  pcSmart: 'Return JSON only: {"selectedId":"id or none","selectedTitle":"title or none","reason":"brief Chinese reason","finalPrompt":"ready-to-use image prompt"}. Preserve the user request language in finalPrompt; if the request is Chinese, finalPrompt must contain Chinese and must not be translated into English unless the user explicitly asks for English. User request: {{rawPrompt}}\n\nCandidate prompts:\n{{candidates}}',
+  free: 'Return JSON only. Use {"action":"text","text":"..."} or {"action":"image","mode":"generate|edit","prompt":"...","size":"1024x1024","count":1}. Preserve the user content language in image prompt; if the user content is Chinese, prompt must contain Chinese and must not be translated into English unless the user explicitly asks for English. User content: {{userContent}}',
+  ttsPreprocess: '你是文本转语音前置处理助手。请把机器人回复改写成适合语音合成的文本，并按需要穿插语音标签。要求：1. 保留原意和主要语言，不额外扩写，不要无故翻译成英文；2. 标签必须是语音模型可直接识别的文本；3. 只输出最终要送入语音 API 的文本，不要解释，不要 Markdown。待处理文本：{{text}}',
 };
 
 const DEFAULT_CONFIG: AppConfig = {

@@ -135,6 +135,7 @@ test('local verify server restores legacy template library from project.interrog
       MIOBOT_RUNTIME_DIR: runtime,
       MIOBOT_PORT: String(port),
       MIOBOT_HOST: '127.0.0.1',
+      MIOBOT_CODEX_PYTHON: process.execPath,
     },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -159,6 +160,26 @@ test('local verify server restores legacy template library from project.interrog
   assert.ok(logs.entries.some((entry) => entry.scope === 'server'));
   const systemLogRaw = await fs.readFile(path.join(runtime, 'logs', 'system.ndjson'), 'utf8');
   assert.match(systemLogRaw, /"scope":"server"/);
+
+  const codexStatusResponse = await fetch(`http://127.0.0.1:${port}/api/codex/status`, {
+    headers: { authorization: 'Bearer change-me-on-first-login' },
+  });
+  assert.equal(codexStatusResponse.status, 200);
+  const codexStatus = await codexStatusResponse.json();
+  assert.equal(codexStatus.success, true);
+  assert.equal(codexStatus.enabled, true);
+  assert.equal(codexStatus.workspace.ok, true);
+  assert.ok(Array.isArray(codexStatus.sandboxPresets));
+
+  const codexChatResponse = await fetch(`http://127.0.0.1:${port}/api/codex/chat`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer change-me-on-first-login', 'content-type': 'application/json' },
+    body: JSON.stringify({ message: 'status only', sandbox: 'read_only' }),
+  });
+  assert.equal(codexChatResponse.status, 503);
+  const codexChat = await codexChatResponse.json();
+  assert.equal(codexChat.success, false);
+  assert.match(codexChat.installCommand, /openai-codex/);
 
   const modelResponse = await fetch(`http://127.0.0.1:${port}/api/fetch-models`, {
     method: 'POST',

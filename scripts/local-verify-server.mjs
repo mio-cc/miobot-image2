@@ -1,5 +1,6 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import fssync from 'node:fs';
 import { createRequire } from 'node:module';
@@ -26,6 +27,10 @@ const logDir = process.env.MIOBOT_LOG_DIR ? path.resolve(process.env.MIOBOT_LOG_
 const systemLogPath = process.env.MIOBOT_SYSTEM_LOG_PATH ? path.resolve(process.env.MIOBOT_SYSTEM_LOG_PATH) : path.join(logDir, 'system.ndjson');
 const canvasLogPath = process.env.MIOBOT_CANVAS_LOG_PATH ? path.resolve(process.env.MIOBOT_CANVAS_LOG_PATH) : path.join(logDir, 'canvas.ndjson');
 const LOG_FILE_MAX_BYTES = Math.max(128 * 1024, Number(process.env.MIOBOT_LOG_MAX_BYTES || 5 * 1024 * 1024) || 5 * 1024 * 1024);
+const codexRunnerPath = path.join(projectRoot, 'scripts', 'codex-python-runner.py');
+const codexPythonBin = process.env.MIOBOT_CODEX_PYTHON || process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+const codexTimeoutMs = Math.max(30000, envNumber('MIOBOT_CODEX_TIMEOUT_MS', 10 * 60 * 1000));
+const codexMaxPromptChars = Math.max(1000, Math.min(64000, envNumber('MIOBOT_CODEX_MAX_PROMPT_CHARS', 12000)));
 const api = createWebApi({ initialConfig: await loadPersistedConfig() });
 const port = Number(process.env.MIOBOT_PORT || process.env.MIOBOT_VERIFY_PORT || process.env.PORT || 3018);
 const host = process.env.MIOBOT_HOST || process.env.HOST || 'localhost';
@@ -45,6 +50,24 @@ let modelRefreshInFlight = null;
 let dailyModelRefreshTimer = null;
 let startupModelRefreshTimer = null;
 let sharpLoader = null;
+const codexBridgeState = {
+  running: false,
+  gitRunning: false,
+  activeSince: null,
+  lastThreadId: '',
+  lastDurationMs: 0,
+};
+const codexLoginState = {
+  running: false,
+  startedAt: null,
+  completedAt: null,
+  loginId: '',
+  verificationUrl: '',
+  userCode: '',
+  error: '',
+  account: null,
+  process: null,
+};
 
 const LOG_LEVEL_ORDER = { debug: 10, info: 20, warn: 30, error: 40 };
 const DEFAULT_LOG_LIMIT = 300;
@@ -79,6 +102,12 @@ const stylePresets = [
 function envNumber(name, fallback) {
   const value = Number(process.env[name]);
   return Number.isFinite(value) ? value : fallback;
+}
+
+function envFlag(name, fallback = false) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(raw).trim().toLowerCase());
 }
 
 class CanvasJobQueue {
@@ -526,6 +555,597 @@ async function readBody(req) {
   const raw = Buffer.concat(chunks).toString('utf8');
   if (!raw) return undefined;
   try { return JSON.parse(raw); } catch { return raw; }
+}
+
+function isSubPath(child, parent) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveCodexWorkspace() {
+  const workspace = process.env.MIOBOT_CODEX_WORKSPACE
+    ? path.resolve(process.env.MIOBOT_CODEX_WORKSPACE)
+    : projectRoot;
+  const allowOutside = envFlag('MIOBOT_CODEX_ALLOW_OUTSIDE_WORKSPACE', false);
+  if (!allowOutside && !isSubPath(workspace, projectRoot)) {
+    return {
+      ok: false,
+      workspace,
+      error: 'MIOBOT_CODEX_WORKSPACE must stay inside the project root unless MIOBOT_CODEX_ALLOW_OUTSIDE_WORKSPACE=1.',
+    };
+  }
+  return { ok: true, workspace };
+}
+
+function runProcess(command, args, { input = '', timeoutMs = 10000 } = {}) {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let closed = false;
+    const child = spawn(command, args, {
+      cwd: projectRoot,
+      env: process.env,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      setTimeout(() => {
+        if (!closed) child.kill('SIGKILL');
+      }, 1500).unref?.();
+    }, timeoutMs);
+    timer.unref?.();
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      resolve({ ok: false, code: -1, signal: '', stdout, stderr, error: error?.message || String(error), timedOut, durationMs: Date.now() - startedAt });
+    });
+    child.on('close', (code, signal) => {
+      closed = true;
+      clearTimeout(timer);
+      resolve({ ok: code === 0 && !timedOut, code, signal, stdout, stderr, error: '', timedOut, durationMs: Date.now() - startedAt });
+    });
+    if (input) child.stdin.end(input);
+    else child.stdin.end();
+  });
+}
+
+function parseRunnerJson(output) {
+  const lines = String(output || '').trim().split(/\r?\n/).filter(Boolean);
+  const last = lines.at(-1) || '{}';
+  try {
+    return JSON.parse(last);
+  } catch {
+    return { success: false, error: `Codex runner returned non-JSON output: ${last.slice(0, 500)}` };
+  }
+}
+
+function safeCodexText(value, max = 240) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+async function getCodexPythonStatus() {
+  const result = await runProcess(codexPythonBin, [codexRunnerPath, '--status'], { timeoutMs: 7000 });
+  const parsed = parseRunnerJson(result.stdout);
+  return {
+    ok: result.ok && parsed.ok !== false,
+    command: codexPythonBin,
+    runner: codexRunnerPath,
+    python: parsed.python || '',
+    pythonVersion: parsed.pythonVersion || '',
+    sdkAvailable: Boolean(parsed.sdkAvailable),
+    sdkVersion: parsed.sdkVersion || '',
+    error: parsed.error || result.error || (result.timedOut ? 'Codex status check timed out.' : result.stderr.trim()),
+    durationMs: result.durationMs,
+  };
+}
+
+async function getCodexAccountStatus() {
+  const python = await getCodexPythonStatus();
+  if (!python.sdkAvailable) {
+    return {
+      success: false,
+      signedIn: false,
+      error: python.error || 'openai-codex is not installed.',
+    };
+  }
+  const result = await runProcess(codexPythonBin, [codexRunnerPath, '--account'], { timeoutMs: 12000 });
+  const parsed = parseRunnerJson(result.stdout);
+  return {
+    success: result.ok && parsed.success !== false,
+    signedIn: Boolean(parsed.signedIn && result.ok),
+    sdkVersion: parsed.sdkVersion || python.sdkVersion,
+    account: parsed.account || null,
+    error: parsed.error || result.error || (result.timedOut ? 'Codex account check timed out.' : result.stderr.trim()),
+    durationMs: result.durationMs,
+  };
+}
+
+function publicCodexLoginState() {
+  return {
+    running: codexLoginState.running,
+    startedAt: codexLoginState.startedAt,
+    completedAt: codexLoginState.completedAt,
+    loginId: codexLoginState.loginId,
+    verificationUrl: codexLoginState.verificationUrl,
+    userCode: codexLoginState.userCode,
+    error: codexLoginState.error,
+    account: codexLoginState.account,
+  };
+}
+
+async function codexStatusPayload() {
+  const workspace = resolveCodexWorkspace();
+  const [python, account] = await Promise.all([getCodexPythonStatus(), getCodexAccountStatus().catch((error) => ({
+    success: false,
+    signedIn: false,
+    error: error?.message || String(error),
+  }))]);
+  const allowFullAccess = envFlag('MIOBOT_CODEX_ALLOW_FULL_ACCESS', false);
+  return {
+    success: true,
+    enabled: envFlag('MIOBOT_CODEX_REMOTE_ENABLED', true),
+    busy: codexBridgeState.running,
+    gitBusy: codexBridgeState.gitRunning,
+    activeSince: codexBridgeState.activeSince,
+    lastThreadId: codexBridgeState.lastThreadId,
+    lastDurationMs: codexBridgeState.lastDurationMs,
+    sandboxPresets: allowFullAccess ? ['read_only', 'workspace_write', 'full_access'] : ['read_only', 'workspace_write'],
+    defaultSandbox: 'workspace_write',
+    allowFullAccess,
+    timeoutMs: codexTimeoutMs,
+    maxPromptChars: codexMaxPromptChars,
+    model: process.env.MIOBOT_CODEX_MODEL || '',
+    workspace: {
+      ok: Boolean(workspace.ok),
+      path: workspace.workspace,
+      projectRoot,
+      error: workspace.error || '',
+    },
+    python,
+    account,
+    login: publicCodexLoginState(),
+    installCommand: `${codexPythonBin} -m pip install openai-codex`,
+    disableEnv: 'MIOBOT_CODEX_REMOTE_ENABLED=0',
+  };
+}
+
+async function handleCodexDeviceLoginStart(res) {
+  if (!envFlag('MIOBOT_CODEX_REMOTE_ENABLED', true)) {
+    return sendJson(res, 403, { success: false, error: 'Codex 远程助手已被服务端关闭。' });
+  }
+  if (codexLoginState.running) {
+    return sendJson(res, 409, { success: false, error: 'Codex 登录流程已经在进行中。', login: publicCodexLoginState() });
+  }
+  const python = await getCodexPythonStatus();
+  if (!python.sdkAvailable) {
+    return sendJson(res, 503, {
+      success: false,
+      error: '服务器 Python 环境尚未安装 openai-codex。',
+      python,
+      installCommand: `${codexPythonBin} -m pip install openai-codex`,
+    });
+  }
+
+  codexLoginState.running = true;
+  codexLoginState.startedAt = new Date().toISOString();
+  codexLoginState.completedAt = null;
+  codexLoginState.loginId = '';
+  codexLoginState.verificationUrl = '';
+  codexLoginState.userCode = '';
+  codexLoginState.error = '';
+  codexLoginState.account = null;
+
+  const child = spawn(codexPythonBin, [codexRunnerPath, '--login-device'], {
+    cwd: projectRoot,
+    env: process.env,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  codexLoginState.process = child;
+  let buffer = '';
+  let stderr = '';
+  let initialResolved = false;
+  let initialResolve;
+  const initial = new Promise((resolve) => { initialResolve = resolve; });
+  const initialTimer = setTimeout(() => {
+    if (initialResolved) return;
+    codexLoginState.error = 'Codex device login did not return a verification code in time.';
+    child.kill('SIGTERM');
+    resolveInitial({ success: false, error: codexLoginState.error, login: publicCodexLoginState() });
+  }, 30000);
+  initialTimer.unref?.();
+  const timeout = setTimeout(() => {
+    if (codexLoginState.running) {
+      codexLoginState.error = 'Codex device login timed out.';
+      child.kill('SIGTERM');
+    }
+  }, Math.max(60000, Math.min(15 * 60 * 1000, codexTimeoutMs)));
+  timeout.unref?.();
+
+  function resolveInitial(payload) {
+    if (initialResolved) return;
+    initialResolved = true;
+    clearTimeout(initialTimer);
+    initialResolve(payload);
+  }
+
+  child.stdout.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const parsed = parseRunnerJson(line);
+      if (parsed.event === 'device_code') {
+        codexLoginState.loginId = parsed.loginId || '';
+        codexLoginState.verificationUrl = parsed.verificationUrl || '';
+        codexLoginState.userCode = parsed.userCode || '';
+        resolveInitial({ success: true, login: publicCodexLoginState() });
+      } else if (parsed.event === 'completed') {
+        codexLoginState.running = false;
+        codexLoginState.completedAt = new Date().toISOString();
+        codexLoginState.account = parsed.account || null;
+        codexLoginState.error = '';
+      } else if (parsed.success === false) {
+        codexLoginState.error = parsed.error || 'Codex device login failed.';
+      }
+    }
+  });
+  child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+  child.on('error', (error) => {
+    clearTimeout(timeout);
+    codexLoginState.running = false;
+    codexLoginState.error = error?.message || String(error);
+    resolveInitial({ success: false, error: codexLoginState.error, login: publicCodexLoginState() });
+  });
+  child.on('close', (code) => {
+    clearTimeout(timeout);
+    if (codexLoginState.process === child) codexLoginState.process = null;
+    if (codexLoginState.running) {
+      codexLoginState.running = false;
+      codexLoginState.error = codexLoginState.error || (code === 0 ? '' : stderr.trim() || `Codex login exited with code ${code}`);
+    }
+    if (!initialResolved) {
+      resolveInitial({ success: false, error: codexLoginState.error || stderr.trim() || 'Codex login did not return a device code.', login: publicCodexLoginState() });
+    }
+  });
+
+  const payload = await initial;
+  logSystem(payload.success ? 'info' : 'error', 'admin.codex.login', payload.success ? 'Codex device login started' : 'Codex device login failed to start', {
+    loginId: codexLoginState.loginId,
+    error: payload.error || '',
+  });
+  return sendJson(res, payload.success ? 200 : 502, payload);
+}
+
+function handleCodexDeviceLoginCancel(res) {
+  if (codexLoginState.process && codexLoginState.running) {
+    codexLoginState.process.kill('SIGTERM');
+  }
+  codexLoginState.running = false;
+  codexLoginState.error = '登录流程已取消。';
+  return sendJson(res, 200, { success: true, login: publicCodexLoginState() });
+}
+
+function normalizeCodexSandbox(value) {
+  const sandbox = String(value || 'workspace_write').trim();
+  const allowed = new Set(['read_only', 'workspace_write']);
+  if (envFlag('MIOBOT_CODEX_ALLOW_FULL_ACCESS', false)) allowed.add('full_access');
+  return allowed.has(sandbox) ? sandbox : '';
+}
+
+function normalizeCodexThreadId(value) {
+  const threadId = String(value || '').trim();
+  if (!threadId) return '';
+  if (threadId.length > 200 || !/^[A-Za-z0-9._:-]+$/.test(threadId)) {
+    throw new Error('threadId format is invalid.');
+  }
+  return threadId;
+}
+
+function normalizeCodexModel(value) {
+  const model = String(value || process.env.MIOBOT_CODEX_MODEL || '').trim();
+  if (!model) return '';
+  if (model.length > 120 || !/^[A-Za-z0-9._:/-]+$/.test(model)) {
+    throw new Error('model format is invalid.');
+  }
+  return model;
+}
+
+async function handleCodexChat(body, res) {
+  if (!envFlag('MIOBOT_CODEX_REMOTE_ENABLED', true)) {
+    return sendJson(res, 403, {
+      success: false,
+      error: 'Codex 远程助手已被服务端关闭。移除 MIOBOT_CODEX_REMOTE_ENABLED=0 或设置为 1 后重启服务。',
+      disableEnv: 'MIOBOT_CODEX_REMOTE_ENABLED=0',
+    });
+  }
+  if (codexBridgeState.running) {
+    return sendJson(res, 409, {
+      success: false,
+      error: 'Codex 正在处理上一条指令，请等待当前任务结束。',
+      activeSince: codexBridgeState.activeSince,
+    });
+  }
+  const workspace = resolveCodexWorkspace();
+  if (!workspace.ok) {
+    return sendJson(res, 500, { success: false, error: workspace.error, workspace: workspace.workspace });
+  }
+  const message = String(body?.message || '').trim();
+  if (!message) return sendJson(res, 400, { success: false, error: '请输入要交给 Codex 的指令。' });
+  if (message.length > codexMaxPromptChars) {
+    return sendJson(res, 400, { success: false, error: `指令太长，最多 ${codexMaxPromptChars} 个字符。` });
+  }
+  let sandbox;
+  let threadId;
+  let model;
+  try {
+    sandbox = normalizeCodexSandbox(body?.sandbox);
+    threadId = normalizeCodexThreadId(body?.threadId);
+    model = normalizeCodexModel(body?.model);
+  } catch (error) {
+    return sendJson(res, 400, { success: false, error: error?.message || String(error) });
+  }
+  if (!sandbox) {
+    return sendJson(res, 400, {
+      success: false,
+      error: '不支持的 sandbox。默认仅允许 read_only 或 workspace_write；full_access 需服务端显式开启。',
+    });
+  }
+
+  const python = await getCodexPythonStatus();
+  if (!python.sdkAvailable) {
+    return sendJson(res, 503, {
+      success: false,
+      error: '服务器 Python 环境尚未安装 openai-codex。',
+      python,
+      installCommand: `${codexPythonBin} -m pip install openai-codex`,
+    });
+  }
+
+  const startedAt = Date.now();
+  codexBridgeState.running = true;
+  codexBridgeState.activeSince = new Date(startedAt).toISOString();
+  logSystem('info', 'admin.codex', 'Codex remote turn started', {
+    sandbox,
+    hasThreadId: Boolean(threadId),
+    model: model || '(default)',
+    promptChars: message.length,
+    promptPreview: safeCodexText(message),
+  });
+
+  try {
+    const developerInstructions = [
+      'You are running inside the Miobot admin Codex bridge.',
+      'Stay within the configured workspace and keep changes scoped to the user request.',
+      'Do not print secrets, tokens, or private credentials.',
+      'Prefer explaining risky operations before making irreversible changes.',
+      'After edits, summarize changed files and verification steps.',
+    ].join('\n');
+    const payload = {
+      message,
+      threadId,
+      cwd: workspace.workspace,
+      sandbox,
+      model,
+      developerInstructions,
+    };
+    const result = await runProcess(codexPythonBin, [codexRunnerPath], {
+      input: JSON.stringify(payload),
+      timeoutMs: codexTimeoutMs,
+    });
+    const parsed = parseRunnerJson(result.stdout);
+    const durationMs = Date.now() - startedAt;
+    codexBridgeState.lastDurationMs = durationMs;
+    if (!result.ok || parsed.success === false) {
+      const errorMessage = parsed.error || result.error || (result.timedOut ? 'Codex run timed out.' : result.stderr.trim()) || 'Codex run failed.';
+      logSystem('error', 'admin.codex', 'Codex remote turn failed', {
+        sandbox,
+        durationMs,
+        timedOut: result.timedOut,
+        error: safeCodexText(errorMessage, 600),
+      });
+      return sendJson(res, result.timedOut ? 504 : 502, {
+        success: false,
+        error: errorMessage,
+        timedOut: result.timedOut,
+        durationMs,
+      });
+    }
+    codexBridgeState.lastThreadId = parsed.threadId || threadId || codexBridgeState.lastThreadId;
+    logSystem('info', 'admin.codex', 'Codex remote turn completed', {
+      sandbox,
+      threadId: codexBridgeState.lastThreadId,
+      turnId: parsed.turnId,
+      durationMs,
+      itemsCount: parsed.itemsCount,
+    });
+    return sendJson(res, 200, {
+      success: true,
+      ...parsed,
+      durationMs,
+      sandbox,
+      workspace: workspace.workspace,
+    });
+  } finally {
+    codexBridgeState.running = false;
+    codexBridgeState.activeSince = null;
+  }
+}
+
+function parseGitStatusShort(output) {
+  const lines = String(output || '').split(/\r?\n/).filter(Boolean);
+  const branchLine = lines.find((line) => line.startsWith('##')) || '';
+  const files = lines
+    .filter((line) => !line.startsWith('##'))
+    .map((line) => ({
+      status: line.slice(0, 2).trim() || line.slice(0, 2),
+      path: line.slice(3).trim(),
+      raw: line,
+    }));
+  return { branchLine, files, dirty: files.length > 0 };
+}
+
+async function gitUpstreamInfo() {
+  const upstream = await runProcess('git', ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], { timeoutMs: 10000 });
+  if (!upstream.ok) {
+    return { exists: false, upstream: '', ahead: 0, behind: 0, diverged: false };
+  }
+  const counts = await runProcess('git', ['rev-list', '--left-right', '--count', 'HEAD...@{u}'], { timeoutMs: 10000 });
+  const [aheadRaw, behindRaw] = counts.stdout.trim().split(/\s+/);
+  const ahead = Math.max(0, Number(aheadRaw) || 0);
+  const behind = Math.max(0, Number(behindRaw) || 0);
+  return {
+    exists: true,
+    upstream: upstream.stdout.trim(),
+    ahead,
+    behind,
+    diverged: ahead > 0 && behind > 0,
+  };
+}
+
+async function codexGitStatusPayload() {
+  const [statusResult, diffStatResult, stagedStatResult, branchResult, remoteResult, upstreamInfo] = await Promise.all([
+    runProcess('git', ['status', '--short', '--branch'], { timeoutMs: 10000 }),
+    runProcess('git', ['diff', '--stat'], { timeoutMs: 10000 }),
+    runProcess('git', ['diff', '--cached', '--stat'], { timeoutMs: 10000 }),
+    runProcess('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { timeoutMs: 10000 }),
+    runProcess('git', ['remote', '-v'], { timeoutMs: 10000 }),
+    gitUpstreamInfo(),
+  ]);
+  if (!statusResult.ok) {
+    return {
+      success: false,
+      error: statusResult.error || statusResult.stderr.trim() || 'git status failed',
+    };
+  }
+  const parsed = parseGitStatusShort(statusResult.stdout);
+  return {
+    success: true,
+    busy: codexBridgeState.gitRunning,
+    dirty: parsed.dirty,
+    branch: branchResult.stdout.trim(),
+    branchLine: parsed.branchLine,
+    files: parsed.files,
+    diffStat: diffStatResult.stdout.trim(),
+    stagedDiffStat: stagedStatResult.stdout.trim(),
+    remote: remoteResult.stdout.trim(),
+    upstream: upstreamInfo,
+    statusText: statusResult.stdout.trim(),
+  };
+}
+
+function normalizeCommitMessage(value) {
+  const message = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!message) return `Codex remote update ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`;
+  if (message.length > 160) throw new Error('提交信息最多 160 个字符。');
+  return message;
+}
+
+async function handleCodexGitPush(body, res) {
+  if (codexBridgeState.gitRunning) {
+    return sendJson(res, 409, { success: false, error: 'Git 推送正在执行，请稍后再试。' });
+  }
+  if (body?.confirm !== true) {
+    return sendJson(res, 400, { success: false, error: '需要 confirm=true 才会提交并推送。' });
+  }
+  let message;
+  try {
+    message = normalizeCommitMessage(body?.message);
+  } catch (error) {
+    return sendJson(res, 400, { success: false, error: error?.message || String(error) });
+  }
+
+  codexBridgeState.gitRunning = true;
+  const startedAt = Date.now();
+  logSystem('info', 'admin.codex.git', 'Codex Git sync started', { message });
+  try {
+    const fetchRemote = await runProcess('git', ['fetch', '--prune'], { timeoutMs: 60000 });
+    if (!fetchRemote.ok) {
+      return sendJson(res, 502, {
+        success: false,
+        error: fetchRemote.stderr.trim() || fetchRemote.stdout.trim() || fetchRemote.error || 'git fetch failed',
+        fetch: fetchRemote,
+      });
+    }
+    const upstream = await gitUpstreamInfo();
+    if (upstream.behind > 0) {
+      return sendJson(res, 409, {
+        success: false,
+        error: `远端 ${upstream.upstream || 'upstream'} 比服务器领先 ${upstream.behind} 个 commit。为避免覆盖/分叉，已拒绝推送，请先拉取并处理后再提交。`,
+        upstream,
+        status: await codexGitStatusPayload(),
+      });
+    }
+
+    const before = await codexGitStatusPayload();
+    if (!before.success) return sendJson(res, 500, before);
+    if (!before.dirty) {
+      return sendJson(res, 409, { success: false, error: '当前服务器工作区没有可提交的变更。', status: before });
+    }
+
+    const add = await runProcess('git', ['add', '-A'], { timeoutMs: 30000 });
+    if (!add.ok) {
+      return sendJson(res, 500, { success: false, error: add.error || add.stderr.trim() || 'git add failed', add });
+    }
+
+    const stagedCheck = await runProcess('git', ['diff', '--cached', '--quiet'], { timeoutMs: 10000 });
+    if (stagedCheck.code === 0) {
+      return sendJson(res, 409, { success: false, error: 'git add 后没有可提交的变更，可能都被 .gitignore 忽略。', status: await codexGitStatusPayload() });
+    }
+
+    const commit = await runProcess('git', ['commit', '-m', message], { timeoutMs: 60000 });
+    if (!commit.ok) {
+      logSystem('error', 'admin.codex.git', 'Codex Git commit failed', {
+        durationMs: Date.now() - startedAt,
+        error: safeCodexText(commit.stderr || commit.stdout || commit.error, 800),
+      });
+      return sendJson(res, 500, {
+        success: false,
+        error: commit.stderr.trim() || commit.stdout.trim() || commit.error || 'git commit failed',
+        commit,
+        status: await codexGitStatusPayload(),
+      });
+    }
+
+    const push = await runProcess('git', ['push'], { timeoutMs: Math.max(60000, Math.min(300000, codexTimeoutMs)) });
+    if (!push.ok) {
+      logSystem('error', 'admin.codex.git', 'Codex Git push failed', {
+        durationMs: Date.now() - startedAt,
+        error: safeCodexText(push.stderr || push.stdout || push.error, 800),
+      });
+      return sendJson(res, 502, {
+        success: false,
+        error: push.stderr.trim() || push.stdout.trim() || push.error || 'git push failed',
+        commit: commit.stdout.trim(),
+        push,
+        status: await codexGitStatusPayload(),
+      });
+    }
+
+    const status = await codexGitStatusPayload();
+    logSystem('info', 'admin.codex.git', 'Codex Git sync completed', {
+      durationMs: Date.now() - startedAt,
+      message,
+      branch: status.branch,
+    });
+    return sendJson(res, 200, {
+      success: true,
+      message,
+      durationMs: Date.now() - startedAt,
+      commit: commit.stdout.trim(),
+      push: push.stdout.trim() || push.stderr.trim(),
+      status,
+    });
+  } finally {
+    codexBridgeState.gitRunning = false;
+  }
 }
 function landing() {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Miobot v2</title><style>
@@ -2065,6 +2685,13 @@ async function handleCompatApi(req, res, url) {
   if (req.method === 'POST' && p === '/api/config/import') { const saved = await persistSavedConfig(api.repository.importAndSave(body)); logSystem('info', 'admin.config', '配置已导入', { migrations: saved.importResult?.migrations, warnings: saved.importResult?.warnings }); return sendJson(res, 200, { success: true, message: saved.message, config: saved.config, importResult: saved.importResult, hotReload: saved.hotReload, auth: authBody(saved.hotReload.passwordSeedChanged), token: saved.config.panel.passwordSeed }); }
   if (req.method === 'GET' && p === '/api/config/export') return sendJson(res, 200, api.repository.exportConfig());
   if (req.method === 'GET' && p === '/api/default-prompts') return sendJson(res, 200, getDefaultPrompts());
+  if (req.method === 'GET' && p === '/api/codex/status') return sendJson(res, 200, await codexStatusPayload());
+  if (req.method === 'GET' && p === '/api/codex/login/status') return sendJson(res, 200, { success: true, login: publicCodexLoginState(), account: await getCodexAccountStatus() });
+  if (req.method === 'POST' && p === '/api/codex/login/device/start') return handleCodexDeviceLoginStart(res);
+  if (req.method === 'POST' && p === '/api/codex/login/device/cancel') return handleCodexDeviceLoginCancel(res);
+  if (req.method === 'POST' && p === '/api/codex/chat') return handleCodexChat(body, res);
+  if (req.method === 'GET' && p === '/api/codex/git/status') return sendJson(res, 200, await codexGitStatusPayload());
+  if (req.method === 'POST' && p === '/api/codex/git/push') return handleCodexGitPush(body, res);
   if (req.method === 'POST' && p === '/api/fetch-models') {
     const normalized = normalizeNodeConnectionInput(body?.baseUrl, body?.key);
     if (!normalized.baseUrl) return sendJson(res, 400, { success: false, error: '请填写 OpenAI 兼容 Base URL，例如 https://anyrouter.top/v1' });

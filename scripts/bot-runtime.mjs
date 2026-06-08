@@ -28,7 +28,7 @@ const logger = createLogger({
   sinks: [new ConsoleLogSink(), new JsonFileLogSink(systemLogPath)],
 });
 const botLlmQueue = new TaskQueue({ defaultConcurrency: Math.max(1, Number(process.env.MIOBOT_BOT_LLM_CONCURRENCY || 1) || 1) });
-const DEFAULT_TTS_PREPROCESS_PROMPT = '你是文本转语音前置处理助手。请把机器人回复翻译/改写成适合语音合成的文本，并按需要穿插语音标签。要求：1. 保留原意，不额外扩写；2. 标签必须是语音模型可直接识别的文本；3. 只输出最终要送入语音 API 的文本，不要解释，不要 Markdown。待处理文本：{{text}}';
+const DEFAULT_TTS_PREPROCESS_PROMPT = '你是文本转语音前置处理助手。请把机器人回复改写成适合语音合成的文本，并按需要穿插语音标签。要求：1. 保留原意和主要语言，不额外扩写，不要无故翻译成英文；2. 标签必须是语音模型可直接识别的文本；3. 只输出最终要送入语音 API 的文本，不要解释，不要 Markdown。待处理文本：{{text}}';
 
 const DIRECT_GROUP_COMMANDS = [
   'help',
@@ -467,7 +467,7 @@ async function maybeEnhancePrompt(config, rawPrompt, enhance = {}) {
   const model = String(config.llm?.enhanceModel || '').trim();
   if (!shouldEnhance || !model || model === 'none') return prompt;
   try {
-    const template = config.llm?.enhancePromptTemplate || '请把用户原始提示词改写为适合图像生成模型的提示词：{{rawPrompt}}';
+    const template = config.llm?.enhancePromptTemplate || '请把用户原始提示词改写为适合图像生成模型的提示词。必须保留用户原始语言；如果原始提示词是中文，最终提示词必须包含中文，不要翻译成英文，除非用户明确要求英文。用户原始提示词：{{rawPrompt}}';
     const instruction = renderRuntimeTemplate(template, { rawPrompt: prompt, prompt });
     const adapter = createLlm(config, config.llm?.enhanceNodeIndex, config.llm?.imageTimeoutMs || 120000, 'enhance');
     const result = await adapter.createText({
@@ -480,6 +480,14 @@ async function maybeEnhancePrompt(config, rawPrompt, enhance = {}) {
     });
     const enhanced = extractPromptFromModelText(result.text);
     if (enhanced) {
+      if (shouldRejectPromptLanguageFlip(prompt, enhanced)) {
+        logger.warn('提示词润色触发语言保护，已保留原始中文提示词', {
+          mode,
+          beforeLength: prompt.length,
+          afterLength: enhanced.length,
+        });
+        return prompt;
+      }
       logger.info('提示词润色完成', { mode, beforeLength: prompt.length, afterLength: enhanced.length });
       return enhanced;
     }
@@ -487,6 +495,26 @@ async function maybeEnhancePrompt(config, rawPrompt, enhance = {}) {
     logger.warn('提示词润色失败，降级使用原始提示词', { error: normalizeError(error) });
   }
   return prompt;
+}
+
+export function containsCjkText(value) {
+  return /[\u3400-\u9fff\uf900-\ufaff]/u.test(String(value || ''));
+}
+
+export function explicitlyRequestsEnglish(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  if (/(?:不要|别|禁止|无需|不需要|不许).{0,10}(?:英文|英语|english)/i.test(text)) return false;
+  return /(?:翻译|译成|转成|转换成|改成|写成|输出|使用|用).{0,16}(?:英文|英语|english)/i.test(text)
+    || /(?:英文|英语).{0,8}(?:prompt|提示词|版|版本|输出)/i.test(text)
+    || /(?:english).{0,12}(?:prompt|version|translation|output)/i.test(text)
+    || /(?:translate|convert|rewrite|write).{0,24}(?:to|into|in)\s+english/i.test(text);
+}
+
+export function shouldRejectPromptLanguageFlip(rawPrompt, nextPrompt) {
+  const raw = String(rawPrompt || '').trim();
+  const next = String(nextPrompt || '').trim();
+  return Boolean(raw && next && containsCjkText(raw) && !containsCjkText(next) && !explicitlyRequestsEnglish(raw));
 }
 
 function extractPromptFromModelText(value) {
@@ -1748,6 +1776,13 @@ function normalizePureMentionIntentResult(raw, recent, fallback) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fallback;
   let action = String(parsed.action || parsed.kind || '').toLowerCase().trim();
   let userContent = String(parsed.userContent || parsed.content || parsed.text || parsed.prompt || '').trim();
+  if (shouldRejectPromptLanguageFlip(fallback?.userContent, userContent)) {
+    logger.warn('纯 @ 上下文提取触发语言保护，已保留原始中文需求', {
+      beforeLength: String(fallback?.userContent || '').length,
+      afterLength: userContent.length,
+    });
+    userContent = fallback.userContent;
+  }
   if (!['text', 'image', 'none'].includes(action)) action = userContent ? 'text' : 'none';
   if (!userContent && action === 'image' && recent.images.length) userContent = '请根据最近发送的图片处理。';
   if (looksLikeImageIntent(userContent)) action = 'image';
@@ -2767,7 +2802,7 @@ async function buildSmartPromptsChatPrompt(config, rawPrompt) {
   }
   try {
     const candidatesText = formatRemoteCandidatesForModel(config, candidates);
-    const template = pc.smartPromptTemplate || 'Return JSON only: {"selectedId":"id or none","finalPrompt":"ready-to-use image prompt"}. User request: {{rawPrompt}}\n\nCandidate prompts:\n{{candidates}}';
+    const template = pc.smartPromptTemplate || 'Return JSON only: {"selectedId":"id or none","finalPrompt":"ready-to-use image prompt"}. Preserve the user request language in finalPrompt; if the request is Chinese, finalPrompt must contain Chinese and must not be translated into English unless the user explicitly asks for English. User request: {{rawPrompt}}\n\nCandidate prompts:\n{{candidates}}';
     const instruction = renderRuntimeTemplate(template, { rawPrompt, candidates: candidatesText });
     const adapter = createLlm(config, pc.smartNodeIndex, 120000, 'prompts-chat-smart');
     const result = await adapter.createText({
@@ -2850,11 +2885,12 @@ function parseSmartRemotePromptResult(raw, candidates, rawPrompt) {
   const matched = ids.has(selectedId) ? candidates.find((item) => item.id === selectedId) : undefined;
   const finalPrompt = String(parsed.finalPrompt || parsed.prompt || '').trim()
     || (matched ? renderRemotePromptContent(matched, rawPrompt) : cleaned || rawPrompt);
+  const safeFinalPrompt = shouldRejectPromptLanguageFlip(rawPrompt, finalPrompt) ? rawPrompt : finalPrompt;
   return {
     selectedId: matched?.id || 'none',
     selectedTitle: matched?.title || String(parsed.selectedTitle || parsed.title || 'none').trim() || 'none',
     reason: String(parsed.reason || '').trim(),
-    finalPrompt,
+    finalPrompt: safeFinalPrompt,
   };
 }
 
@@ -3081,7 +3117,7 @@ function renderRemotePromptContent(prompt, query) {
       .replace(/\{\{\s*subject\s*\}\}/gi, query)
       .trim();
   }
-  return `${content}\n\nUser request: ${query}`.trim();
+  return `${content}\n\n用户原始描述：${query}`.trim();
 }
 
 function firstAlias(value) {

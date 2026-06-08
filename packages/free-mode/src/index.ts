@@ -69,7 +69,7 @@ export interface FreeModeDirectives {
   templateId?: string;
 }
 
-const DEFAULT_PLANNER_TEMPLATE = 'You are the Napcat Bot Free Mode planner. Return JSON only. Use {"action":"text","text":"..."} or {"action":"image","mode":"generate|edit","prompt":"...","size":"1024x1024","count":1}. User content: {{userContent}}';
+const DEFAULT_PLANNER_TEMPLATE = 'You are the Napcat Bot Free Mode planner. Return JSON only. Use {"action":"text","text":"..."} or {"action":"image","mode":"generate|edit","prompt":"...","size":"1024x1024","count":1}. Preserve the user content language in image prompt; if the user content is Chinese, prompt must contain Chinese and must not be translated into English unless the user explicitly asks for English. User content: {{userContent}}';
 
 export class FreeModeEngine {
   private readonly options: Required<Omit<FreeModeOptions, 'reply' | 'plannerPromptTemplate'>> & Pick<FreeModeOptions, 'reply' | 'plannerPromptTemplate'>;
@@ -114,7 +114,7 @@ export class FreeModeEngine {
         { role: 'user', content: userContent },
       ],
     });
-    return normalizePlannerResult(parsePlannerResult(result.text), input.userContent);
+    return normalizePlannerResult(parsePlannerResult(result.text), directives.rawPrompt || input.userContent);
   }
 
   private async executeImagePlan(planner: FreeModePlannerResult, mode: FreeModeImageMode, input: FreeModeInput, directives: FreeModeDirectives): Promise<ImageOperationResult[]> {
@@ -195,7 +195,7 @@ export function buildRawPromptWithOverrides(item: FreeModeImagePlanItem, directi
   if (directives.size || item.size) tokens.push(`${directives.size || item.size}!`);
   if (directives.count ?? item.count) tokens.push(`${directives.count ?? item.count}!`);
   if (directives.quality || item.quality) tokens.push(`${directives.quality || item.quality}!`);
-  const prompt = String(item.prompt || directives.rawPrompt || '').trim();
+  const prompt = preservePromptLanguage(directives.rawPrompt, item.prompt || directives.rawPrompt);
   return [...tokens, prompt].filter(Boolean).join(' ').trim();
 }
 
@@ -214,8 +214,39 @@ function renderUserContent(input: FreeModeInput, directives: FreeModeDirectives)
 
 function normalizePlannerResult(result: FreeModePlannerResult, fallbackPrompt: string): FreeModePlannerResult {
   if (result.action === 'text') return { action: 'text', text: result.text || '' };
-  const prompt = result.prompt || result.images?.[0]?.prompt || fallbackPrompt;
-  return { ...result, prompt };
+  const prompt = preservePromptLanguage(fallbackPrompt, result.prompt || result.images?.[0]?.prompt || fallbackPrompt);
+  const images = result.images?.map((item) => ({
+    ...item,
+    prompt: preservePromptLanguage(fallbackPrompt, item.prompt),
+  }));
+  return { ...result, prompt, images };
+}
+
+export function containsCjkText(value: unknown): boolean {
+  return /[\u3400-\u9fff\uf900-\ufaff]/u.test(String(value || ''));
+}
+
+export function explicitlyRequestsEnglish(value: unknown): boolean {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  if (/(?:不要|别|禁止|无需|不需要|不许).{0,10}(?:英文|英语|english)/i.test(text)) return false;
+  return /(?:翻译|译成|转成|转换成|改成|写成|输出|使用|用).{0,16}(?:英文|英语|english)/i.test(text)
+    || /(?:英文|英语).{0,8}(?:prompt|提示词|版|版本|输出)/i.test(text)
+    || /(?:english).{0,12}(?:prompt|version|translation|output)/i.test(text)
+    || /(?:translate|convert|rewrite|write).{0,24}(?:to|into|in)\s+english/i.test(text);
+}
+
+export function shouldRejectPromptLanguageFlip(rawPrompt: unknown, nextPrompt: unknown): boolean {
+  const raw = String(rawPrompt || '').trim();
+  const next = String(nextPrompt || '').trim();
+  return Boolean(raw && next && containsCjkText(raw) && !containsCjkText(next) && !explicitlyRequestsEnglish(raw));
+}
+
+export function preservePromptLanguage(rawPrompt: unknown, nextPrompt: unknown): string {
+  const raw = String(rawPrompt || '').trim();
+  const next = String(nextPrompt || '').trim();
+  if (!next) return raw;
+  return shouldRejectPromptLanguageFlip(raw, next) ? raw : next;
 }
 
 function normalizeImagePlanItems(planner: FreeModePlannerResult): FreeModeImagePlanItem[] {
