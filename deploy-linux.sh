@@ -31,6 +31,9 @@ CANVAS_ASSET_DIR="${MIOBOT_CANVAS_ASSET_DIR:-${RUNTIME_DIR}/canvas-assets}"
 LOG_DIR="${LOG_DIR:-/var/log/${APP_NAME}}"
 ENV_FILE="${ENV_FILE:-/etc/${APP_NAME}.env}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-30}"
+INSTALL_CODEX_SDK="${INSTALL_CODEX_SDK:-1}"
+CODEX_VENV_DIR="${MIOBOT_CODEX_VENV_DIR:-${APP_DIR}/.venv-codex}"
+CODEX_PYTHON_BIN="${MIOBOT_CODEX_PYTHON:-${CODEX_VENV_DIR}/bin/python}"
 GIT_REMOTE="${GIT_REMOTE:-origin}"
 GIT_BRANCH="${GIT_BRANCH:-}"
 GIT_ALLOW_DIRTY="${GIT_ALLOW_DIRTY:-0}"
@@ -91,19 +94,19 @@ ensure_os_packages() {
     apt)
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
-      apt-get install -y ca-certificates curl git rsync bash tar gzip xz-utils build-essential python3 make g++
+      apt-get install -y ca-certificates curl git rsync bash tar gzip xz-utils build-essential python3 python3-venv python3-pip make g++
       ;;
     dnf)
-      dnf install -y ca-certificates curl git rsync bash tar gzip xz gcc gcc-c++ make python3
+      dnf install -y ca-certificates curl git rsync bash tar gzip xz gcc gcc-c++ make python3 python3-pip
       ;;
     yum)
-      yum install -y ca-certificates curl git rsync bash tar gzip xz gcc gcc-c++ make python3
+      yum install -y ca-certificates curl git rsync bash tar gzip xz gcc gcc-c++ make python3 python3-pip
       ;;
     pacman)
-      pacman -Sy --noconfirm --needed ca-certificates curl git rsync bash tar gzip xz base-devel python
+      pacman -Sy --noconfirm --needed ca-certificates curl git rsync bash tar gzip xz base-devel python python-pip
       ;;
     apk)
-      apk add --no-cache ca-certificates curl git rsync bash tar gzip xz build-base python3 nodejs npm
+      apk add --no-cache ca-certificates curl git rsync bash tar gzip xz build-base python3 py3-pip py3-virtualenv nodejs npm
       ;;
     *)
       fail "不支持的包管理器，请先安装 curl/git/rsync/bash/nodejs/npm/python3/make/g++。"
@@ -162,6 +165,39 @@ ensure_pnpm() {
 ensure_dirs() {
   log "准备目录"
   install -d -m 0755 "$APP_DIR" "$DATA_DIR" "$RUNTIME_DIR" "$CANVAS_ASSET_DIR" "$LOG_DIR"
+}
+
+ensure_codex_python() {
+  if [ "$INSTALL_CODEX_SDK" = "0" ] || [ "$INSTALL_CODEX_SDK" = "false" ] || [ "$INSTALL_CODEX_SDK" = "no" ]; then
+    warn "INSTALL_CODEX_SDK=0，跳过 Codex Python SDK 安装。"
+    CODEX_PYTHON_BIN="${MIOBOT_CODEX_PYTHON:-$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo python3)}"
+    return
+  fi
+
+  local base_python
+  base_python="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+  [ -n "$base_python" ] || fail "找不到 Python。请先安装 python3。"
+
+  if [ -n "${MIOBOT_CODEX_PYTHON:-}" ]; then
+    CODEX_PYTHON_BIN="$MIOBOT_CODEX_PYTHON"
+    [ -x "$CODEX_PYTHON_BIN" ] || fail "MIOBOT_CODEX_PYTHON 不可执行：$CODEX_PYTHON_BIN"
+    log "使用自定义 Codex Python：$CODEX_PYTHON_BIN"
+  else
+    log "准备 Codex Python 虚拟环境：$CODEX_VENV_DIR"
+    if [ ! -x "${CODEX_VENV_DIR}/bin/python" ]; then
+      "$base_python" -m venv "$CODEX_VENV_DIR" || fail "创建 Python venv 失败。Debian/Ubuntu 可手动执行：apt-get update && apt-get install -y python3-venv python3-pip"
+    fi
+    CODEX_PYTHON_BIN="${CODEX_VENV_DIR}/bin/python"
+  fi
+
+  log "安装/更新 Codex Python SDK：openai-codex"
+  "$CODEX_PYTHON_BIN" -m ensurepip --upgrade >/dev/null 2>&1 || true
+  "$CODEX_PYTHON_BIN" -m pip install --upgrade pip setuptools wheel
+  "$CODEX_PYTHON_BIN" -m pip install --upgrade openai-codex
+  "$CODEX_PYTHON_BIN" - <<'PY'
+import openai_codex
+print(f"openai-codex {openai_codex.__version__} ready")
+PY
 }
 
 backup_config() {
@@ -331,6 +367,7 @@ sync_source() {
     --exclude '.git/' \
     --exclude '.runtime/' \
     --exclude '.codex-run/' \
+    --exclude '.venv-codex/' \
     --exclude 'node_modules/' \
     --exclude 'web-panel/node_modules/' \
     --exclude 'web-canvas/node_modules/' \
@@ -468,6 +505,8 @@ MIOBOT_LOG_DIR=${LOG_DIR}
 MIOBOT_SYSTEM_LOG_PATH=${LOG_DIR}/system.ndjson
 MIOBOT_CANVAS_LOG_PATH=${LOG_DIR}/canvas.ndjson
 MIOBOT_BOT_LOG_PATH=${LOG_DIR}/system.ndjson
+MIOBOT_CODEX_PYTHON=${CODEX_PYTHON_BIN}
+MIOBOT_CODEX_REMOTE_ENABLED=${MIOBOT_CODEX_REMOTE_ENABLED:-1}
 DATA_DIR=${DATA_DIR}
 LOG_DIR=${LOG_DIR}
 PATH=$(managed_path)
@@ -583,6 +622,9 @@ System log:       ${LOG_DIR}/system.ndjson
 Canvas log:       ${LOG_DIR}/canvas.ndjson
 Env file:         ${ENV_FILE}
 Host/Port:        ${HOST}:${PORT}
+Codex venv:       ${CODEX_VENV_DIR}
+Codex Python:     ${CODEX_PYTHON_BIN}
+Codex SDK:        $("$CODEX_PYTHON_BIN" -c 'import openai_codex; print(openai_codex.__version__)' 2>/dev/null || echo not-installed)
 Node:             ${NODE_BIN:-not-found} $(node -v 2>/dev/null || true)
 npm:              ${NPM_BIN:-not-found} $(npm -v 2>/dev/null || true)
 pnpm:             ${PNPM_BIN:-not-found} $(pnpm -v 2>/dev/null || true)
@@ -612,6 +654,7 @@ install_all() {
   ensure_dirs
   backup_runtime_data
   sync_source
+  ensure_codex_python
   migrate_legacy_runtime_config
   migrate_legacy_canvas_runtime
   install_dependencies
@@ -630,6 +673,7 @@ rebuild_all() {
   ensure_dirs
   backup_runtime_data
   sync_source
+  ensure_codex_python
   migrate_legacy_runtime_config
   migrate_legacy_canvas_runtime
   install_dependencies
@@ -652,6 +696,7 @@ env_only() {
   ensure_node
   ensure_pnpm
   ensure_dirs
+  ensure_codex_python
   migrate_legacy_runtime_config
   migrate_legacy_canvas_runtime
   write_env_file
@@ -752,6 +797,10 @@ Miobot v2 Linux 运维脚本（root-only）
   MIOBOT_CANVAS_ASSET_DIR=${CANVAS_ASSET_DIR}
   RUN_TESTS=1
   STRICT_LOCKFILE=1
+  INSTALL_CODEX_SDK=1
+  MIOBOT_CODEX_VENV_DIR=${CODEX_VENV_DIR}
+  MIOBOT_CODEX_PYTHON=${CODEX_PYTHON_BIN}
+  MIOBOT_CODEX_REMOTE_ENABLED=1
   GIT_REMOTE=${GIT_REMOTE}
   GIT_BRANCH=main
   GIT_ALLOW_DIRTY=stash
