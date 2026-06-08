@@ -366,6 +366,7 @@ sync_source() {
   rsync -a --delete \
     --exclude '.git/' \
     --exclude '.runtime/' \
+    --exclude '.codex/' \
     --exclude '.codex-run/' \
     --exclude '.venv-codex/' \
     --exclude 'node_modules/' \

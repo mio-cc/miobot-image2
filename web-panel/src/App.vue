@@ -136,6 +136,7 @@ const codexStatusError = ref('');
 const codexLoginLoading = ref(false);
 const codexCallbackUrl = ref('');
 const codexCallbackSubmitting = ref(false);
+const codexLoginSuccessNotified = ref(false);
 const codexMessages = ref<CodexChatMessage[]>([]);
 const codexInput = ref('');
 const codexThreadId = ref(localStorage.getItem('np_codex_thread_id') || '');
@@ -1238,6 +1239,12 @@ function stopCodexLoginTimer() {
   }
 }
 
+function notifyCodexLoginSuccessOnce() {
+  if (codexLoginSuccessNotified.value) return;
+  codexLoginSuccessNotified.value = true;
+  showToast('服务器 Codex 已登录', 'success');
+}
+
 async function pollCodexLoginStatus() {
   if (currentPage.value !== 'codex') {
     stopCodexLoginTimer();
@@ -1252,7 +1259,7 @@ async function pollCodexLoginStatus() {
       stopCodexLoginTimer();
       await fetchCodexStatus();
       if (res.data.account?.signedIn) {
-        showToast('服务器 Codex 已登录', 'success');
+        notifyCodexLoginSuccessOnce();
       }
     }
   } catch {
@@ -1263,6 +1270,7 @@ async function pollCodexLoginStatus() {
 async function startCodexWebLogin() {
   if (codexLoginLoading.value) return;
   codexLoginLoading.value = true;
+  codexLoginSuccessNotified.value = false;
   try {
     const res = await axios.post(`${API_BASE}/codex/login/web/start`, {}, { headers: authHeaders() });
     if (!codexStatus.value) codexStatus.value = {};
@@ -1286,6 +1294,7 @@ async function cancelCodexWebLogin() {
     if (!codexStatus.value) codexStatus.value = {};
     codexStatus.value.login = res.data.login;
     codexCallbackUrl.value = '';
+    codexLoginSuccessNotified.value = false;
     stopCodexLoginTimer();
     showToast('已取消 Codex 登录流程', 'info');
   } catch (e: any) {
@@ -1311,7 +1320,7 @@ async function submitCodexCallbackUrl() {
     addCodexMessage('system', '已把网页登录回调提交给服务器 Codex，正在刷新登录状态。');
     if (res.data.account?.signedIn) {
       stopCodexLoginTimer();
-      showToast('服务器 Codex 已登录', 'success');
+      notifyCodexLoginSuccessOnce();
     } else {
       startCodexLoginTimer();
       showToast('回调已提交，等待 Codex 确认登录', 'success');

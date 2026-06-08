@@ -31,6 +31,8 @@ const codexRunnerPath = path.join(projectRoot, 'scripts', 'codex-python-runner.p
 const codexPythonBin = process.env.MIOBOT_CODEX_PYTHON || process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
 const codexTimeoutMs = Math.max(30000, envNumber('MIOBOT_CODEX_TIMEOUT_MS', 10 * 60 * 1000));
 const codexMaxPromptChars = Math.max(1000, Math.min(64000, envNumber('MIOBOT_CODEX_MAX_PROMPT_CHARS', 12000)));
+const CODEX_PYTHON_STATUS_CACHE_MS = 5000;
+const CODEX_PYTHON_STATUS_STALE_OK_MS = 60000;
 const api = createWebApi({ initialConfig: await loadPersistedConfig() });
 const port = Number(process.env.MIOBOT_PORT || process.env.MIOBOT_VERIFY_PORT || process.env.PORT || 3018);
 const host = process.env.MIOBOT_HOST || process.env.HOST || 'localhost';
@@ -50,6 +52,8 @@ let modelRefreshInFlight = null;
 let dailyModelRefreshTimer = null;
 let startupModelRefreshTimer = null;
 let sharpLoader = null;
+let codexPythonStatusCache = null;
+let codexPythonStatusInFlight = null;
 const codexBridgeState = {
   running: false,
   gitRunning: false,
@@ -629,24 +633,54 @@ function safeCodexText(value, max = 240) {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-async function getCodexPythonStatus() {
-  const result = await runProcess(codexPythonBin, [codexRunnerPath, '--status'], { timeoutMs: 7000 });
-  const parsed = parseRunnerJson(result.stdout);
-  return {
-    ok: result.ok && parsed.ok !== false,
-    command: codexPythonBin,
-    runner: codexRunnerPath,
-    python: parsed.python || '',
-    pythonVersion: parsed.pythonVersion || '',
-    sdkAvailable: Boolean(parsed.sdkAvailable),
-    sdkVersion: parsed.sdkVersion || '',
-    error: parsed.error || result.error || (result.timedOut ? 'Codex status check timed out.' : result.stderr.trim()),
-    durationMs: result.durationMs,
-  };
+async function getCodexPythonStatus({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && codexPythonStatusCache && now - codexPythonStatusCache.fetchedAt < CODEX_PYTHON_STATUS_CACHE_MS) {
+    return { ...codexPythonStatusCache, cached: true };
+  }
+  if (!force && codexPythonStatusInFlight) return codexPythonStatusInFlight;
+
+  codexPythonStatusInFlight = (async () => {
+    const result = await runProcess(codexPythonBin, [codexRunnerPath, '--status'], { timeoutMs: 12000 });
+    const parsed = parseRunnerJson(result.stdout);
+    const status = {
+      fetchedAt: Date.now(),
+      cached: false,
+      stale: false,
+      transientError: '',
+      ok: result.ok && parsed.ok !== false,
+      command: codexPythonBin,
+      runner: codexRunnerPath,
+      python: parsed.python || '',
+      pythonVersion: parsed.pythonVersion || '',
+      sdkAvailable: Boolean(parsed.sdkAvailable),
+      sdkVersion: parsed.sdkVersion || '',
+      error: parsed.error || result.error || (result.timedOut ? 'Codex status check timed out.' : result.stderr.trim()),
+      durationMs: result.durationMs,
+    };
+
+    if (!status.sdkAvailable && codexPythonStatusCache?.sdkAvailable && now - codexPythonStatusCache.fetchedAt < CODEX_PYTHON_STATUS_STALE_OK_MS) {
+      return {
+        ...codexPythonStatusCache,
+        cached: true,
+        stale: true,
+        transientError: status.error,
+      };
+    }
+
+    codexPythonStatusCache = status;
+    return status;
+  })();
+
+  try {
+    return await codexPythonStatusInFlight;
+  } finally {
+    codexPythonStatusInFlight = null;
+  }
 }
 
-async function getCodexAccountStatus() {
-  const python = await getCodexPythonStatus();
+async function getCodexAccountStatus(pythonStatus = null) {
+  const python = pythonStatus || await getCodexPythonStatus();
   if (!python.sdkAvailable) {
     return {
       success: false,
@@ -681,11 +715,12 @@ function publicCodexLoginState() {
 
 async function codexStatusPayload() {
   const workspace = resolveCodexWorkspace();
-  const [python, account] = await Promise.all([getCodexPythonStatus(), getCodexAccountStatus().catch((error) => ({
+  const python = await getCodexPythonStatus();
+  const account = await getCodexAccountStatus(python).catch((error) => ({
     success: false,
     signedIn: false,
     error: error?.message || String(error),
-  }))]);
+  }));
   const allowFullAccess = envFlag('MIOBOT_CODEX_ALLOW_FULL_ACCESS', false);
   return {
     success: true,
@@ -947,7 +982,8 @@ async function handleCodexWebLoginCallback(body, res) {
   }
 
   await new Promise((resolve) => setTimeout(resolve, 500));
-  const account = await getCodexAccountStatus().catch((error) => ({
+  const python = await getCodexPythonStatus({ force: true }).catch(() => null);
+  const account = await getCodexAccountStatus(python).catch((error) => ({
     success: false,
     signedIn: false,
     error: error?.message || String(error),
@@ -1055,7 +1091,7 @@ async function handleCodexChat(body, res) {
       installCommand: `${codexPythonBin} -m pip install openai-codex`,
     });
   }
-  const account = await getCodexAccountStatus();
+  const account = await getCodexAccountStatus(python);
   if (!account.signedIn) {
     return sendJson(res, 401, {
       success: false,
