@@ -205,6 +205,64 @@ export function createModelQueueKey(provider: string, model: string): string {
   return `${provider.trim().toLowerCase()}::${model.trim().toLowerCase()}`;
 }
 
+export interface SessionMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: unknown;
+}
+
+export interface SessionStoreOptions {
+  /** 保留的最大对话轮数(1 轮 = user+assistant)。 */
+  maxRounds?: number;
+  /** 历史 JSON 序列化后的最大字符数,超出则从最旧丢弃。 */
+  maxChars?: number;
+}
+
+/**
+ * 会话记忆:按会话键保存对话历史,按轮数 + 字符数双上限裁剪。
+ * 取代旧 bot-runtime 里的全局 `sessions` Map + `pruneHistory`,做成可注入、可测的内核组件。
+ */
+export class SessionStore {
+  private readonly maxRounds: number;
+  private readonly maxChars: number;
+  private readonly store = new Map<string, SessionMessage[]>();
+
+  constructor(options: SessionStoreOptions = {}) {
+    this.maxRounds = Math.max(1, Math.trunc(options.maxRounds ?? 8));
+    this.maxChars = Math.max(1000, Math.trunc(options.maxChars ?? 12000));
+  }
+
+  /** 取某会话的历史副本(不含 system)。 */
+  get(key: string): SessionMessage[] {
+    return [...(this.store.get(key) || [])];
+  }
+
+  /** 追加一轮(user + assistant)并裁剪,返回裁剪后的历史。 */
+  append(key: string, user: SessionMessage, assistant: SessionMessage): SessionMessage[] {
+    const next = this.prune([...(this.store.get(key) || []), user, assistant]);
+    this.store.set(key, next);
+    return next;
+  }
+
+  /** 清空某会话(新开对话)。 */
+  clear(key: string): boolean {
+    return this.store.delete(key);
+  }
+
+  clearAll(): void {
+    this.store.clear();
+  }
+
+  private prune(messages: SessionMessage[]): SessionMessage[] {
+    let items = messages.slice(-this.maxRounds * 2);
+    while (JSON.stringify(items).length > this.maxChars && items.length > 2) items = items.slice(2);
+    return items;
+  }
+}
+
+export function createSessionStore(options: SessionStoreOptions = {}): SessionStore {
+  return new SessionStore(options);
+}
+
 function isRecord(value: unknown): value is Record<string, any> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }

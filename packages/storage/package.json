@@ -1,0 +1,10 @@
+{
+  "name": "@miobot-v2/storage",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Injectable persistence repositories: atomic config store, debounced canvas-state store, JSONL log store.",
+  "main": "../../dist/packages/storage/src/index.js",
+  "types": "../../dist/packages/storage/src/index.d.ts",
+  "exports": { ".": { "types": "../../dist/packages/storage/src/index.d.ts", "default": "../../dist/packages/storage/src/index.js" } }
+}

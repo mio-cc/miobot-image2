@@ -1,10 +1,32 @@
-﻿import { CONFIG_PACKAGE } from '@miobot-v2/config';
-import { CORE_PACKAGE } from '@miobot-v2/core';
+import type { PackageDescriptor } from '@miobot-v2/shared';
 
+export const BOT_APP: PackageDescriptor = {
+  name: '@miobot-v2/app-bot',
+  phase: 'P4-bot-engine',
+};
+
+export { createBotApp, DEFAULT_CHAT_SYSTEM_PROMPT, type BotApp, type BotAppOptions } from './app.js';
+export { createModelBackedDeps, createModelPlanner, artifactToString, artifactsToStrings, type ModelDepsOptions } from './deps.js';
+export { createImagePromptPipeline, type ImagePromptPipeline } from './image-pipeline.js';
+export { buildTtsRequest, synthesizeSpeech, shouldUseTts, activeFishVoiceId, type TtsRequestPlan, type TtsAudio } from './tts.js';
+export { parseOwnerCommand, isOwner, type OwnerCommand, type OwnerParseContext } from './owner.js';
+export { toModelNodes, toEngineRoutingConfig, toBotRouting, type BotRouting } from './config-bridge.js';
+export {
+  createBotMessageRuntime,
+  toRouterConfig,
+  toReplyStrategyConfig,
+  extractImages,
+  segmentsToRaw,
+  type NapcatMessageEvent,
+  type BotRuntimeOptions,
+  type BotRuntimeResult,
+} from './runtime.js';
+
+/** 兼容旧骨架探针（保留以防外部引用）。 */
 export function describeBotAppSkeleton() {
   return {
     app: '@miobot-v2/app-bot',
-    phase: 'P2-skeleton' as const,
-    packages: [CORE_PACKAGE.name, CONFIG_PACKAGE.name],
+    phase: 'P4-bot-engine' as const,
+    packages: ['@miobot-v2/bot-engine', '@miobot-v2/model', '@miobot-v2/config'],
   };
 }

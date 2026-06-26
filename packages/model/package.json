@@ -1,0 +1,15 @@
+{
+  "name": "@miobot-v2/model",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Unified multi-dialect model layer: openai / anthropic / gemini / huggingface / custom, with per-model capability profiles.",
+  "main": "../../dist/packages/model/src/index.js",
+  "types": "../../dist/packages/model/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "../../dist/packages/model/src/index.d.ts",
+      "default": "../../dist/packages/model/src/index.js"
+    }
+  }
+}

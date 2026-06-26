@@ -47,6 +47,11 @@ function shutdown(code = 0) {
 process.on('SIGTERM', () => shutdown(0));
 process.on('SIGINT', () => shutdown(0));
 
-console.log(`[service] starting web/admin/canvas${enableBot ? ' + bot' : ''}`);
+// Bot runtime: defaults to the rebuilt v2 architecture (apps/bot).
+// Set MIOBOT_BOT_RUNTIME=legacy to fall back to the old scripts/bot-runtime.mjs.
+const useLegacyBot = String(process.env.MIOBOT_BOT_RUNTIME || 'v2').toLowerCase() === 'legacy';
+const botScript = useLegacyBot ? 'scripts/bot-runtime.mjs' : 'scripts/bot-runtime-v2.mjs';
+
+console.log(`[service] starting web/admin/canvas${enableBot ? ` + bot(${useLegacyBot ? 'legacy' : 'v2'})` : ''}`);
 start('web', 'scripts/local-verify-server.mjs');
-if (enableBot) start('bot', 'scripts/bot-runtime.mjs');
+if (enableBot) start('bot', botScript);

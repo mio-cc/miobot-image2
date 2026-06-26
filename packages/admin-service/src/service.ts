@@ -1,0 +1,132 @@
+import { createWebApi, type ConfigRepository, type WebApi, type WebApiRequest } from '../../web-api/src/index.js';
+import { getDefaultPrompts } from '../../config/src/index.js';
+import type { LogQuery } from '../../logger/src/index.js';
+import type { PackageDescriptor } from '@miobot-v2/shared';
+import { createInMemoryLogStore, type AdminLogStore } from './logs.js';
+import type { AdminHandler, AdminResponse, AdminServiceDeps } from './types.js';
+
+export const ADMIN_SERVICE_PACKAGE: PackageDescriptor = {
+  name: '@miobot-v2/admin-service',
+  phase: 'P5-admin-service',
+};
+
+export interface AdminServiceOptions {
+  initialConfig?: unknown;
+  logs?: AdminLogStore;
+  deps?: AdminServiceDeps;
+  webApi?: WebApi;
+  now?: () => Date;
+}
+
+/**
+ * 管理后台业务：在 web-api(配置仓储/登录/导入导出) 之上补齐 logs/default-prompts/test/models/templates/codex 路由。
+ * 传输无关(吃 WebApiRequest 吐 AdminResponse)，外部集成全部依赖注入(未配置则 501)。
+ * 取代 local-verify-server.mjs 里 handleCompatApi 那一大坨内联逻辑。
+ */
+export class AdminService {
+  readonly api: WebApi;
+  readonly logs: AdminLogStore;
+  private readonly deps: AdminServiceDeps;
+
+  constructor(options: AdminServiceOptions = {}) {
+    this.api = options.webApi || createWebApi({ initialConfig: options.initialConfig, now: options.now });
+    this.logs = options.logs || createInMemoryLogStore();
+    this.deps = options.deps || {};
+  }
+
+  get repository(): ConfigRepository {
+    return this.api.repository;
+  }
+
+  async handle(req: WebApiRequest): Promise<AdminResponse> {
+    const method = String(req.method || 'GET').toUpperCase();
+    const path = normalizePath(req.path);
+
+    // 登录公共，交给 web-api。
+    if (method === 'POST' && path === '/api/login') return this.api.handle(req);
+
+    // /api/* 统一鉴权（Bearer token = derivePanelToken(passwordSeed)）。
+    if (path.startsWith('/api/') && !this.repository.isAuthorized(authHeader(req.headers))) {
+      return { status: 401, body: { success: false, error: 'Unauthorized' } };
+    }
+
+    if (method === 'GET' && path === '/api/default-prompts') {
+      return { status: 200, body: { success: true, prompts: getDefaultPrompts() } };
+    }
+
+    if (method === 'GET' && path === '/api/logs') return { status: 200, body: this.readLogs('system', req.path) };
+    if (method === 'POST' && path === '/api/logs/clear') { this.logs.system.clear(); return { status: 200, body: this.readLogs('system', req.path) }; }
+    if (method === 'GET' && path === '/api/canvas/logs') return { status: 200, body: this.readLogs('canvas', req.path) };
+    if (method === 'POST' && path === '/api/canvas/logs/clear') { this.logs.canvas.clear(); return { status: 200, body: this.readLogs('canvas', req.path) }; }
+
+    if (method === 'POST' && path === '/api/templates/title') {
+      return { status: 200, body: { success: true, title: templateTitle(req.body) } };
+    }
+    if (method === 'POST' && path === '/api/templates/convert') return this.viaDep(this.deps.templatesConvert, req.body, 'templates/convert');
+    if (method === 'POST' && path === '/api/fetch-models') return this.viaDep(this.deps.fetchModels, req.body, 'fetch-models');
+    if (method === 'POST' && path === '/api/huggingface/models') return this.viaDep(this.deps.fetchHuggingFaceModels, req.body, 'huggingface/models');
+    if (method === 'POST' && path === '/api/test-napcat') return this.viaDep(this.deps.testNapcat, req.body, 'test-napcat');
+    if (method === 'POST' && path === '/api/test-image') return this.viaDep(this.deps.testImage, req.body, 'test-image');
+
+    if (path.startsWith('/api/codex/')) {
+      if (!this.deps.codex) return notConfigured('codex');
+      return this.deps.codex.handle(method, path, req.body);
+    }
+
+    // 其余 config/import/export/auth 交给 web-api。
+    return this.api.handle(req);
+  }
+
+  private async viaDep(handler: AdminHandler | undefined, body: unknown, name: string): Promise<AdminResponse> {
+    if (typeof handler !== 'function') return notConfigured(name);
+    try {
+      return await handler(body);
+    } catch (error) {
+      return { status: 502, body: { success: false, error: error instanceof Error ? error.message : String(error) } };
+    }
+  }
+
+  private readLogs(channel: 'system' | 'canvas', rawPath: string): { success: true; items: unknown[]; total: number } {
+    const items = this.logs[channel].query(parseLogQuery(rawPath));
+    return { success: true, items, total: items.length };
+  }
+}
+
+export function createAdminService(options: AdminServiceOptions = {}): AdminService {
+  return new AdminService(options);
+}
+
+function normalizePath(path: string): string {
+  const raw = String(path || '/').split('?')[0] || '/';
+  return raw.endsWith('/') && raw.length > 1 ? raw.slice(0, -1) : raw;
+}
+
+function authHeader(headers?: Record<string, string | undefined>): string | undefined {
+  if (!headers) return undefined;
+  return headers.authorization || headers.Authorization || (headers as Record<string, string | undefined>).AUTHORIZATION;
+}
+
+function templateTitle(body: unknown): string {
+  const b = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+  const prompt = String(b.templatePrompt || b.prompt || '').trim();
+  return prompt.replace(/\{\{prompt\}\}/g, '').trim().slice(0, 16) || '模板';
+}
+
+function parseLogQuery(rawPath: string): LogQuery {
+  const query = String(rawPath || '').split('?')[1] || '';
+  const params = new URLSearchParams(query);
+  const out: LogQuery = {};
+  const level = params.get('level');
+  if (level === 'debug' || level === 'info' || level === 'warn' || level === 'error') out.level = level;
+  const scope = params.get('scope');
+  if (scope) out.scope = scope;
+  const contains = params.get('contains') || params.get('q');
+  if (contains) out.contains = contains;
+  const limit = params.get('limit');
+  if (limit && Number.isFinite(Number(limit))) out.limit = Math.max(0, Math.trunc(Number(limit)));
+  return out;
+}
+
+function notConfigured(name: string): AdminResponse {
+  return { status: 501, body: { success: false, error: `${name} 未配置（apps/admin 未注入该集成）` } };
+}

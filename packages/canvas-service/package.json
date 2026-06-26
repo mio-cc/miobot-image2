@@ -1,0 +1,10 @@
+{
+  "name": "@miobot-v2/canvas-service",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Canvas backend: single authoritative project/gallery/interrogation state + generation routed through the unified model layer.",
+  "main": "../../dist/packages/canvas-service/src/index.js",
+  "types": "../../dist/packages/canvas-service/src/index.d.ts",
+  "exports": { ".": { "types": "../../dist/packages/canvas-service/src/index.d.ts", "default": "../../dist/packages/canvas-service/src/index.js" } }
+}

@@ -37,6 +37,8 @@ export interface ReplyClient {
   sendPrivateTextForward?(userId: number | string, nodes: Array<{ title?: string; content: string }>, botName?: string): Promise<NapcatSendResult>;
   sendGroupImage(groupId: number | string, fileUrl: string, summaryText?: string): Promise<NapcatSendResult>;
   sendPrivateImage(userId: number | string, fileUrl: string): Promise<NapcatSendResult>;
+  sendGroupRecord?(groupId: number | string, fileUrl: string): Promise<NapcatSendResult>;
+  sendPrivateRecord?(userId: number | string, fileUrl: string): Promise<NapcatSendResult>;
   sendGroupImageAt?(groupId: number | string, fileUrl: string, userId: number | string): Promise<NapcatSendResult>;
   sendGroupImageQuote?(groupId: number | string, fileUrl: string, messageId: number | string): Promise<NapcatSendResult>;
   sendGroupImageForward?(groupId: number | string, fileUrl: string, botName?: string): Promise<NapcatSendResult>;
