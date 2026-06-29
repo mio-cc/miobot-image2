@@ -48,6 +48,13 @@ const SIZE_PRESETS = [
   { id: 'square', label: '正方形 1:1', size: '1024x1024' },
   { id: 'portrait', label: '竖图 2:3', size: '1024x1536' },
   { id: 'landscape', label: '横图 3:2', size: '1536x1024' },
+  { id: 'portrait-3-4', label: '竖图 3:4', size: '1152x1536' },
+  { id: 'social-portrait', label: '社交竖图 4:5', size: '1024x1280' },
+  { id: 'story', label: '竖屏故事 9:16', size: '1152x2048' },
+  { id: 'video-cover', label: '视频封面 16:9', size: '2048x1152' },
+  { id: 'landscape-4-3', label: '横图 4:3', size: '1536x1152' },
+  { id: 'landscape-5-4', label: '横图 5:4', size: '1280x1024' },
+  { id: 'ultrawide', label: '超宽屏 21:9', size: '2688x1152' },
 ];
 const STYLE_PRESETS = [{ id: 'none', label: '无', prompt: '' }];
 const MAX_GALLERY = 500;
@@ -75,6 +82,52 @@ interface CanvasJob {
  * 严格对齐 local-verify-server.handleCanvasApi 的路由与响应形状，web-canvas 前端无需改动。
  * 传输无关；二进制资产以内联 base64 持有(AssetStore)，对外按 monolith publicAsset 暴露下载链接。
  */
+export /** 从 PNG/JPEG/WebP 文件头解析实际图片尺寸（对齐 monolith readImageDimensions）。 */
+function readImageDimensions(buffer: Buffer): { width: number; height: number } | undefined {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 24) return undefined;
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
+    const width = buffer.readUInt32BE(16);
+    const height = buffer.readUInt32BE(20);
+    return width > 0 && height > 0 ? { width, height } : undefined;
+  }
+  if (buffer[0] === 0xFF && buffer[1] === 0xD8) {
+    let offset = 2;
+    while (offset + 9 < buffer.length) {
+      if (buffer[offset] !== 0xFF) { offset += 1; continue; }
+      const marker = buffer[offset + 1];
+      if (marker === 0xD8 || marker === 0xD9) { offset += 2; continue; }
+      const length = buffer.readUInt16BE(offset + 2);
+      if (length < 2 || offset + 2 + length > buffer.length) break;
+      if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
+        const height = buffer.readUInt16BE(offset + 5);
+        const width = buffer.readUInt16BE(offset + 7);
+        return width > 0 && height > 0 ? { width, height } : undefined;
+      }
+      offset += 2 + length;
+    }
+  }
+  if (buffer.length >= 30 && buffer.slice(0, 4).toString('ascii') === 'RIFF' && buffer.slice(8, 12).toString('ascii') === 'WEBP') {
+    const chunk = buffer.slice(12, 16).toString('ascii');
+    if (chunk === 'VP8 ') {
+      const width = buffer.readUInt16LE(26) & 0x3FFF;
+      const height = buffer.readUInt16LE(28) & 0x3FFF;
+      return width > 0 && height > 0 ? { width, height } : undefined;
+    }
+    if (chunk === 'VP8L') {
+      const b0 = buffer[21], b1 = buffer[22], b2 = buffer[23], b3 = buffer[24];
+      const width = 1 + ((b1 & 0x3F) << 8 | b0);
+      const height = 1 + ((b3 & 0x0F) << 10 | b2 << 2 | (b1 & 0xC0) >> 6);
+      return width > 0 && height > 0 ? { width, height } : undefined;
+    }
+    if (chunk === 'VP8X') {
+      const width = 1 + (buffer[24] | buffer[25] << 8 | buffer[26] << 16);
+      const height = 1 + (buffer[27] | buffer[28] << 8 | buffer[29] << 16);
+      return width > 0 && height > 0 ? { width, height } : undefined;
+    }
+  }
+  return undefined;
+}
+
 export class CanvasService {
   private readonly getConfig: () => AppConfig;
   private readonly generator: CanvasGenerator;
@@ -319,8 +372,7 @@ export class CanvasService {
 
   /** artifact → 资产：base64/dataUrl 转存为可下载资产，外链原样保留(对齐 monolith assetFromArtifact)。 */
   private storeOutput(artifact: GenerationArtifact, assetId: string, createdAt: string, size: { width: number; height: number }, outputFormat: string): GenerationOutput {
-    const asset = this.assetFromImage(artifact.kind === 'url' ? artifact.data : this.toDataUrl(artifact, outputFormat), assetId, undefined, outputFormat);
-    void createdAt; void size;
+    const asset = this.assetFromImage(artifact.kind === 'url' ? artifact.data : this.toDataUrl(artifact, outputFormat), assetId, undefined, outputFormat, size);
     return { id: `out_${assetId}`, status: 'succeeded', favorite: false, asset };
   }
 
@@ -331,17 +383,20 @@ export class CanvasService {
   }
 
   /** data URL/外链 → CanvasAsset。data URL 转存进 AssetStore 并改写为下载链接；外链原样。 */
-  private assetFromImage(dataUrlOrUrl: string, assetId: string, fileName: string | undefined, outputFormat: string): CanvasAsset {
+  private assetFromImage(dataUrlOrUrl: string, assetId: string, fileName: string | undefined, outputFormat: string, fallbackSize?: { width: number; height: number }): CanvasAsset {
     const raw = String(dataUrlOrUrl || '').trim();
     const parsed = parseDataUrl(raw);
     if (parsed) {
       this.assets.put(assetId, { contentType: parsed.contentType, base64: parsed.base64, createdAt: this.now().toISOString() });
       const ext = extensionFor(parsed.contentType);
+      const dims = readImageDimensions(Buffer.from(parsed.base64, 'base64'));
       return {
         id: assetId,
         url: `/canvas-api/assets/${encodeURIComponent(assetId)}/download`,
         fileName: fileName || `${assetId}.${ext}`,
         mimeType: parsed.contentType,
+        width: dims?.width || fallbackSize?.width,
+        height: dims?.height || fallbackSize?.height,
       };
     }
     // 外链或 base64:// 前缀：原样保留 url。
