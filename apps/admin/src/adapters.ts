@@ -45,11 +45,16 @@ function ok(body: unknown): AdminResponse { return { status: 200, body }; }
 function fail(status: number, error: string): AdminResponse { return { status, body: { success: false, error } }; }
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 
+/** 配置回存：结构与 web-api ConfigRepository.saveConfig 兼容(只用 .config)。同步或异步均可。 */
+type SaveConfigFn = (patch: unknown) => { config: AppConfig } | Promise<{ config: AppConfig }>;
+
 /**
  * apps/admin 注入给 admin-service 的真实外部集成。用 Node fetch + ModelClient + NapcatAdapter 实现。
  * 取代 local-verify-server 里内联的 fetchOpenAIModels / test-napcat / test-image / templates 等。
+ * @param getConfig 读热重载后的最新配置(前向引用，闭包内 svc 就绪后生效)。
+ * @param saveConfig 把配置 patch 回存(走 web-api repository.saveConfig → 触发 onReload 落盘)。
  */
-export function createAdminDeps(getConfig: () => AppConfig): AdminServiceDeps {
+export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConfigFn): AdminServiceDeps {
   const registry = createCapabilityRegistry();
 
   async function fetchModels(body: unknown): Promise<AdminResponse> {
@@ -110,21 +115,22 @@ export function createAdminDeps(getConfig: () => AppConfig): AdminServiceDeps {
     }
   }
 
+  // 模板转换：对齐 monolith 行为(非 AI)——把 rawPrompt 包成带 {{prompt}} 占位符的可复用模板，
+  // 存入 bot.promptTemplates 并回存配置；前端 applyServerConfig(res.data.config) 刷列表。
   async function templatesConvert(body: unknown): Promise<AdminResponse> {
     const cfg = getConfig();
     const b = (body || {}) as Record<string, any>;
-    const raw = String(b.rawPrompt || b.prompt || '').trim();
+    const raw = String(b.rawPrompt || b.sourcePrompt || '').trim();
     if (!raw) return fail(400, '请粘贴要转换的提示词。');
-    const model = String(cfg.llm.templateConvertModel || cfg.llm.templateModel || cfg.llm.chatModel || '').trim();
-    if (!model) return fail(400, '未配置模板转换模型。');
-    const instruction = String(cfg.llm.templateConvertPromptTemplate || '').replace(/\{\{\s*rawPrompt\s*\}\}/g, raw);
+    const existing = Array.isArray(cfg.bot?.promptTemplates) ? cfg.bot.promptTemplates : [];
+    const template = {
+      id: `mb_${existing.length + 1}`,
+      title: raw.slice(0, 16) || 'AI模板',
+      prompt: raw.includes('{{prompt}}') ? raw : `${raw || '模板'}\n\n主体内容：{{prompt}}`,
+    };
     try {
-      const client = createModelClient({ nodes: toModelNodes(cfg), registry });
-      const res = await client.chat(cfg.llm.templateConvertNodeIndex, { model, messages: [{ role: 'user', content: instruction }] });
-      const json = extractJson(res.text);
-      const title = String(json?.title || '').trim() || raw.slice(0, 16);
-      const prompt = String(json?.prompt || res.text || '').trim();
-      return ok({ success: true, template: { title, prompt } });
+      const saved = await saveConfig({ bot: { promptTemplates: [...existing, template] } });
+      return ok({ success: true, template, config: saved.config });
     } catch (e) {
       return fail(502, errMsg(e));
     }
@@ -156,13 +162,4 @@ export function createAdminDeps(getConfig: () => AppConfig): AdminServiceDeps {
   }
 
   return { fetchModels, fetchHuggingFaceModels, testImage, templatesConvert, testNapcat };
-}
-
-function extractJson(text: string): Record<string, any> | undefined {
-  const cleaned = String(text || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
-  try { return JSON.parse(cleaned); } catch { /* try slice */ }
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start >= 0 && end > start) { try { return JSON.parse(cleaned.slice(start, end + 1)); } catch { /* ignore */ } }
-  return undefined;
 }

@@ -68,6 +68,21 @@ export class AdminService {
     if (method === 'POST' && path === '/api/test-napcat') return this.viaDep(this.deps.testNapcat, req.body, 'test-napcat');
     if (method === 'POST' && path === '/api/test-image') return this.viaDep(this.deps.testImage, req.body, 'test-image');
 
+    // 画布卡片视图：admin 面板展示/删除画布画廊+反推记录，数据归属 canvas 域(经 canvasCards 注入)。
+    if (method === 'GET' && path === '/api/canvas/cards') {
+      if (!this.deps.canvasCards) return notConfigured('canvas/cards');
+      const items = this.deps.canvasCards.list();
+      return { status: 200, body: { success: true, items, total: items.length } };
+    }
+    const cardDelete = matchCanvasCardDelete(method, path);
+    if (cardDelete) {
+      if (!this.deps.canvasCards) return notConfigured('canvas/cards');
+      const deleted = this.deps.canvasCards.delete(cardDelete.kind, cardDelete.id);
+      if (!deleted) return { status: 404, body: { success: false, error: 'Card not found' } };
+      const items = this.deps.canvasCards.list();
+      return { status: 200, body: { success: true, deleted: { kind: cardDelete.kind, id: cardDelete.id }, items, total: items.length } };
+    }
+
     if (path.startsWith('/api/codex/')) {
       if (!this.deps.codex) return notConfigured('codex');
       return this.deps.codex.handle(method, path, req.body);
@@ -129,4 +144,12 @@ function parseLogQuery(rawPath: string): LogQuery {
 
 function notConfigured(name: string): AdminResponse {
   return { status: 501, body: { success: false, error: `${name} 未配置（apps/admin 未注入该集成）` } };
+}
+
+/** 匹配 DELETE /api/canvas/cards/:kind/:id（kind=gallery|interrogation）；不匹配返回 undefined。 */
+function matchCanvasCardDelete(method: string, path: string): { kind: 'gallery' | 'interrogation'; id: string } | undefined {
+  if (method !== 'DELETE') return undefined;
+  const m = path.match(/^\/api\/canvas\/cards\/(gallery|interrogation)\/(.+)$/);
+  if (!m) return undefined;
+  return { kind: m[1] as 'gallery' | 'interrogation', id: decodeURIComponent(m[2]) };
 }

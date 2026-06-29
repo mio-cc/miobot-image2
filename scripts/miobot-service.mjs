@@ -52,6 +52,11 @@ process.on('SIGINT', () => shutdown(0));
 const useLegacyBot = String(process.env.MIOBOT_BOT_RUNTIME || 'v2').toLowerCase() === 'legacy';
 const botScript = useLegacyBot ? 'scripts/bot-runtime.mjs' : 'scripts/bot-runtime-v2.mjs';
 
-console.log(`[service] starting web/admin/canvas${enableBot ? ` + bot(${useLegacyBot ? 'legacy' : 'v2'})` : ''}`);
-start('web', 'scripts/local-verify-server.mjs');
+// Web runtime: defaults to the rebuilt v2 launcher (apps/admin + apps/canvas 装配式)。
+// Set MIOBOT_WEB_RUNTIME=legacy to fall back to the old monolith scripts/local-verify-server.mjs.
+const useLegacyWeb = String(process.env.MIOBOT_WEB_RUNTIME || 'v2').toLowerCase() === 'legacy';
+const webScript = useLegacyWeb ? 'scripts/local-verify-server.mjs' : 'scripts/local-verify-server-v2.mjs';
+
+console.log(`[service] starting web/admin/canvas(${useLegacyWeb ? 'legacy' : 'v2'})${enableBot ? ` + bot(${useLegacyBot ? 'legacy' : 'v2'})` : ''}`);
+start('web', webScript);
 if (enableBot) start('bot', botScript);

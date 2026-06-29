@@ -1,16 +1,30 @@
 import type { AppConfig } from '../../config/src/index.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
-import { CanvasStore, type GenerationRecord, type InterrogationItem } from './state.js';
-import { InMemoryAssetStore, parseDataUrl, type AssetStore } from './assets.js';
+import { CanvasStore, type CanvasAsset, type GenerationOutput, type GenerationRecord, type GalleryItem, type InterrogationItem } from './state.js';
+import { InMemoryAssetStore, parseDataUrl, extensionFor, type AssetStore, type StoredAsset } from './assets.js';
 
 export interface CanvasResponse<T = unknown> { status: number; body: T; binary?: { contentType: string; base64: string } }
 export interface CanvasRequest { method: string; path: string; headers?: Record<string, string | undefined>; body?: unknown }
 
-/** 画布下游生成能力(由 apps/canvas 用 ModelClient 实现，复用加固后的方言/能力/参数规整)。 */
+/**
+ * 画布下游生成能力(由 apps/canvas 用 ModelClient 实现，复用加固后的方言/能力/参数规整)。
+ * 两步反推对齐 monolith runCanvasInterrogation：先 interrogate 拿描述，再 templateConvert 套 {{prompt}} 模板。
+ */
 export interface CanvasGenerator {
-  generate(input: { nodeIndex: number; model: string; prompt: string; size?: string; count?: number; quality?: string }): Promise<{ images: string[] }>;
-  edit(input: { nodeIndex: number; model: string; prompt: string; images: string[]; size?: string; quality?: string }): Promise<{ images: string[] }>;
+  generate(input: { nodeIndex: number; model: string; prompt: string; size?: string; count?: number; quality?: string }): Promise<{ images: GenerationArtifact[] }>;
+  edit(input: { nodeIndex: number; model: string; prompt: string; images: string[]; size?: string; quality?: string }): Promise<{ images: GenerationArtifact[] }>;
+  /** 第一步：反推图像 → 描述文本。 */
   interrogate(input: { nodeIndex: number; model: string; image: string; prompt?: string }): Promise<{ text: string }>;
+  /** 第二步(可选)：把描述改写成含 {{prompt}} 占位符的可复用模板；未实现时回退用第一步文本。 */
+  interrogateTemplate?(input: { nodeIndex: number; model: string; image: string; prompt: string }): Promise<{ text: string }>;
+}
+
+/** 上游图像产物(对齐 monolith artifact：base64 / url 两种)。 */
+export interface GenerationArtifact {
+  kind: 'base64' | 'url';
+  data: string;
+  mimeType?: string;
+  revisedPrompt?: string;
 }
 
 export interface CanvasServiceOptions {
@@ -20,6 +34,8 @@ export interface CanvasServiceOptions {
   assets?: AssetStore;
   now?: () => Date;
   idFactory?: () => string;
+  /** 鉴权回调(/bot/gallery 需要)；默认不鉴权(单体对 /canvas-api 其余路由也不鉴权)。 */
+  isAuthorized?: (headers?: Record<string, string | undefined>) => boolean;
 }
 
 export const CANVAS_SERVICE_PACKAGE: PackageDescriptor = {
@@ -34,11 +50,30 @@ const SIZE_PRESETS = [
   { id: 'landscape', label: '横图 3:2', size: '1536x1024' },
 ];
 const STYLE_PRESETS = [{ id: 'none', label: '无', prompt: '' }];
+const MAX_GALLERY = 500;
+const MAX_HISTORY = 50;
+const MAX_INTERROGATIONS = 50;
+const JOB_TTL_MS = 30 * 60 * 1000;
+
+/** 后台任务(monolith job：kind/id/mode?/status/progress/createdAt/updatedAt/record?|item?/error?/queue)。 */
+interface CanvasJob {
+  kind: 'image' | 'interrogation';
+  id: string;
+  mode?: 'generate' | 'edit';
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  progress: number;
+  createdAt: string;
+  updatedAt: string;
+  record?: GenerationRecord;
+  item?: InterrogationItem;
+  error?: string;
+  queue?: { running: number; queued: number; limit: number; position: number };
+}
 
 /**
- * 画布后端：项目/画廊/反推状态 + 生成/改图/反推(统一走 model 层)。
- * 取代 web-canvas/apps/api 与 local-verify-server 两处画布逻辑，合为一处权威实现。
- * 传输无关；二进制资产/缩略图暂以内联 data URL 处理(后续可接 storage 二进制层)。
+ * 画布后端：项目/画廊/反推状态 + 生成/改图/反推(统一走 model 层) + 异步任务 + provider/storage 配置 + bot 入库。
+ * 严格对齐 local-verify-server.handleCanvasApi 的路由与响应形状，web-canvas 前端无需改动。
+ * 传输无关；二进制资产以内联 base64 持有(AssetStore)，对外按 monolith publicAsset 暴露下载链接。
  */
 export class CanvasService {
   private readonly getConfig: () => AppConfig;
@@ -47,6 +82,9 @@ export class CanvasService {
   private readonly assets: AssetStore;
   private readonly now: () => Date;
   private readonly idFactory: () => string;
+  private readonly isAuthorized: (headers?: Record<string, string | undefined>) => boolean;
+  private readonly imageJobs = new Map<string, CanvasJob>();
+  private readonly interrogationJobs = new Map<string, CanvasJob>();
 
   constructor(options: CanvasServiceOptions) {
     this.getConfig = options.getConfig;
@@ -55,6 +93,7 @@ export class CanvasService {
     this.assets = options.assets || new InMemoryAssetStore();
     this.now = options.now || (() => new Date());
     this.idFactory = options.idFactory || defaultIdFactory();
+    this.isAuthorized = options.isAuthorized || (() => true);
   }
 
   getStore(): CanvasStore { return this.store; }
@@ -62,18 +101,42 @@ export class CanvasService {
 
   async handle(req: CanvasRequest): Promise<CanvasResponse> {
     const method = String(req.method || 'GET').toUpperCase();
-    const path = stripPrefix(req.path);
+    const { path, query } = splitPath(req.path);
     const body = req.body as Record<string, any> | undefined;
 
     if (method === 'GET' && path === '/health') return { status: 200, body: { status: 'ok' } };
     if (method === 'GET' && path === '/config') return { status: 200, body: this.configView() };
+    if (method === 'GET' && path === '/auth/status') return { status: 200, body: { signedIn: false, source: 'canvas-service', available: true } };
+    if (method === 'GET' && path === '/provider-config') return { status: 200, body: { sources: [{ id: 'local', label: 'Local canvas provider', configured: true, available: true }], current: 'local', model: this.getConfig().canvas.imageModel } };
+    if (method === 'PUT' && path === '/provider-config') return { status: 200, body: { ok: true, source: 'local' } };
+    if (method === 'GET' && path === '/storage/config') return { status: 200, body: { enabled: this.assets instanceof InMemoryAssetStore ? false : true } };
+    if (method === 'PUT' && path === '/storage/config') return { status: 200, body: { enabled: this.assets instanceof InMemoryAssetStore ? false : true } };
+    if (method === 'POST' && path === '/storage/config/test') return { status: 200, body: { ok: true, message: 'Canvas storage ok.' } };
+
     if (method === 'GET' && path === '/project') return { status: 200, body: this.publicProject() };
     if (method === 'PUT' && path === '/project') {
       this.store.setProject({ name: body?.name, snapshot: Object.prototype.hasOwnProperty.call(body || {}, 'snapshot') ? body!.snapshot : undefined });
       return { status: 200, body: this.publicProject() };
     }
-    if (method === 'GET' && path === '/gallery') return { status: 200, body: { items: this.store.gallery(), total: this.store.gallery().length } };
-    if (method === 'GET' && path === '/interrogations') return { status: 200, body: { items: this.store.interrogations(), total: this.store.interrogations().length } };
+
+    if (method === 'POST' && path === '/bot/gallery') {
+      if (!this.isAuthorized(req.headers)) return { status: 401, body: { error: { code: 'unauthorized', message: 'Unauthorized' } } };
+      try {
+        const record = this.addBotGalleryRecord(body || {});
+        return { status: 200, body: { ok: true, record: this.publicRecord(record) } };
+      } catch (error) {
+        return { status: 400, body: { error: { code: 'bot_gallery_import_failed', message: errMsg(error) } } };
+      }
+    }
+
+    if (method === 'GET' && path === '/gallery') {
+      const items = filterGallery(this.store.gallery(), query).map(this.publicGalleryItem);
+      return { status: 200, body: { items, total: this.store.gallery().length } };
+    }
+    if (method === 'GET' && path === '/interrogations') {
+      const items = filterInterrogations(this.store.interrogations(), query).map(this.publicInterrogationItem);
+      return { status: 200, body: { items, total: this.store.interrogations().length } };
+    }
 
     const galFav = path.match(/^\/gallery\/(.+)\/favorite$/);
     if (method === 'PATCH' && galFav) {
@@ -84,7 +147,7 @@ export class CanvasService {
     if (method === 'DELETE' && galDel) {
       const id = decodeURIComponent(galDel[1]);
       const ok = this.store.deleteGalleryItem(id);
-      if (ok) this.assets.delete(id);
+      if (ok) this.assets.delete(id.replace(/^out_/, '')); // gallery item.id = out_<assetId>；asset key 为 <assetId>
       return ok ? { status: 200, body: { ok: true, deleted: id } } : notFound('Gallery image record not found');
     }
     const intFav = path.match(/^\/interrogations\/(.+)\/favorite$/);
@@ -98,79 +161,256 @@ export class CanvasService {
       return ok ? { status: 200, body: { ok: true, deleted: intDel[1] } } : notFound('Interrogation record not found');
     }
 
-    if (method === 'POST' && (path === '/images/generate' || path === '/images/edit')) {
-      return this.runGeneration(path.endsWith('/edit') ? 'edit' : 'generate', body || {});
+    const imageJobMatch = path.match(/^\/images\/jobs\/([^/]+)$/);
+    if (method === 'GET' && imageJobMatch) {
+      const job = this.publicJob(this.imageJobs.get(decodeURIComponent(imageJobMatch[1])));
+      return job ? { status: 200, body: { job } } : notFound('Image job not found');
     }
-    if (method === 'POST' && path === '/interrogate') return this.runInterrogation(body || {});
+    const intJobMatch = path.match(/^\/interrogate\/jobs\/([^/]+)$/);
+    if (method === 'GET' && intJobMatch) {
+      const job = this.publicJob(this.interrogationJobs.get(decodeURIComponent(intJobMatch[1])));
+      return job ? { status: 200, body: { job } } : notFound('Interrogation job not found');
+    }
+
+    if (method === 'POST' && (path === '/images/generate' || path === '/images/edit')) {
+      const mode = path.endsWith('/edit') ? 'edit' : 'generate';
+      if (query.async === '1' || query.async === 'true') {
+        const job = this.createImageJob(mode, body || {});
+        return { status: 202, body: { job } };
+      }
+      try {
+        const record = await this.runGeneration(mode, body || {});
+        return { status: 200, body: { record: this.publicRecord(record) } };
+      } catch (error) {
+        return { status: 502, body: { error: { code: 'generation_failed', message: errMsg(error) } } };
+      }
+    }
+    if (method === 'POST' && path === '/interrogate') {
+      if (query.async === '1' || query.async === 'true') {
+        const job = this.createInterrogationJob((body || {}).image);
+        return { status: 202, body: { job } };
+      }
+      try {
+        const item = await this.runInterrogation((body || {}).image);
+        return { status: 200, body: { item: this.publicInterrogationItem(item) } };
+      } catch (error) {
+        return { status: 502, body: { error: { code: 'interrogate_failed', message: errMsg(error) } } };
+      }
+    }
 
     const assetMatch = path.match(/^\/assets\/([^/]+)\/(download|preview)$/);
     if (method === 'GET' && assetMatch) {
-      const asset = this.assets.get(decodeURIComponent(assetMatch[1]));
+      const id = decodeURIComponent(assetMatch[1]);
+      const mode = assetMatch[2];
+      const asset = this.assets.get(id);
       if (!asset) return notFound('Asset not found');
-      // preview 暂等同 download(未做缩略图)。
+      // preview 暂等同 download(未做缩略图，与 monolith 无 sharp 时回退一致)。
+      void mode;
       return { status: 200, body: null, binary: { contentType: asset.contentType, base64: asset.base64 } };
     }
 
     return notFound('Canvas API route not found');
   }
 
-  private async runGeneration(mode: 'generate' | 'edit', body: Record<string, any>): Promise<CanvasResponse> {
-    const prompt = String(body.prompt || '').trim();
-    if (!prompt) return { status: 400, body: { error: { code: 'invalid', message: '请输入提示词。' } } };
+  private async runGeneration(mode: 'generate' | 'edit', body: Record<string, any>): Promise<GenerationRecord> {
     const canvas = this.getConfig().canvas;
     const isEdit = mode === 'edit';
+    const rawPrompt = String(body.prompt || '').trim();
+    if (!rawPrompt) throw new Error('请输入提示词。');
     const model = isEdit ? (canvas.editModel || canvas.imageModel) : canvas.imageModel;
-    if (!model) return { status: 400, body: { error: { code: 'no_model', message: `画布${isEdit ? '改图' : '生图'}未配置模型。` } } };
+    if (!model) throw new Error(`画布${isEdit ? '改图' : '生图'}没有配置模型。请在后台「画布配置」选择模型。`);
     const nodeIndex = isEdit ? canvas.editNodeIndex : canvas.imageNodeIndex;
-    const size = body.size ? String(body.size) : undefined;
-    const quality = body.quality || canvas.defaultQuality;
+    const sizeApi = body.size ? String(body.size) : undefined;
+    const size = resolveSize(sizeApi);
+    const outputFormat = normalizeOutputFormat(body.outputFormat, canvas.defaultOutputFormat || 'png');
+    const quality = normalizeQuality(body.quality || canvas.defaultQuality);
     const count = Math.max(1, Math.min(16, Math.trunc(Number(body.count || canvas.defaultCount || 1) || 1)));
 
-    try {
-      let images: string[];
-      if (isEdit) {
-        const refs = (Array.isArray(body.referenceImages) ? body.referenceImages : body.referenceImage ? [body.referenceImage] : [])
-          .map((r: any) => String(r?.dataUrl || r?.url || r || '').trim()).filter(Boolean);
-        if (!refs.length) return { status: 400, body: { error: { code: 'no_reference', message: '改图缺少参考图。' } } };
-        ({ images } = await this.generator.edit({ nodeIndex, model, prompt, images: refs, size, quality }));
-      } else {
-        ({ images } = await this.generator.generate({ nodeIndex, model, prompt, size, count, quality }));
-      }
-      const createdAt = this.now().toISOString();
-      const record: GenerationRecord = {
-        id: this.idFactory(), mode, prompt, model, size, quality, createdAt,
-        outputs: images.map((image) => this.storeOutput(image, createdAt)),
-      };
-      this.store.addRecord(record);
-      return { status: 200, body: { record } };
-    } catch (error) {
-      return { status: 502, body: { error: { code: 'generation_failed', message: errMsg(error) } } };
+    let images: GenerationArtifact[];
+    if (isEdit) {
+      const refs = (Array.isArray(body.referenceImages) ? body.referenceImages : body.referenceImage ? [body.referenceImage] : [])
+        .map((r: any) => String(r?.dataUrl || r?.url || r || '').trim()).filter(Boolean);
+      if (!refs.length) throw new Error('改图缺少参考图。');
+      ({ images } = await this.generator.edit({ nodeIndex, model, prompt: rawPrompt, images: refs, size: sizeApi, quality }));
+    } else {
+      ({ images } = await this.generator.generate({ nodeIndex, model, prompt: rawPrompt, size: sizeApi, count, quality }));
     }
+    if (!Array.isArray(images) || images.length === 0) throw new Error('上游没有返回图片数据。');
+
+    const createdAt = this.now().toISOString();
+    const id = `gen_${this.idFactory()}`;
+    const outputs = images.map((artifact, index) => this.storeOutput(artifact, `${id}_${index + 1}`, createdAt, size, outputFormat));
+    const firstAsset = outputs.find((o) => o.asset)?.asset;
+    const recordSize = (sizeApi === 'auto' || !sizeApi) && firstAsset?.width
+      ? { width: firstAsset.width, height: firstAsset.height || 0 }
+      : size;
+    const effectivePrompt = images.find((a) => a.revisedPrompt)?.revisedPrompt || rawPrompt;
+
+    const record: GenerationRecord = {
+      id, mode, prompt: rawPrompt, effectivePrompt,
+      presetId: String(body.presetId || 'none'),
+      size: recordSize, quality: body.quality || canvas.defaultQuality || 'auto',
+      outputFormat, count: outputs.length, status: 'succeeded',
+      referenceAssetIds: [], createdAt, outputs,
+    };
+    this.store.addRecord(record);
+    return record;
   }
 
-  /** data URL 输出转存为二进制资产并改用下载链接;外链原样保留。 */
-  private storeOutput(image: string, createdAt: string): { id: string; url: string } {
-    const id = this.idFactory();
-    const parsed = parseDataUrl(image);
-    if (parsed) {
-      this.assets.put(id, { contentType: parsed.contentType, base64: parsed.base64, createdAt });
-      return { id, url: `/canvas-api/assets/${encodeURIComponent(id)}/download` };
-    }
-    return { id, url: image };
-  }
-
-  private async runInterrogation(body: Record<string, any>): Promise<CanvasResponse> {
-    const image = String(body.image?.dataUrl || body.image?.url || body.image || '').trim();
-    if (!image) return { status: 400, body: { error: { code: 'no_image', message: '反推缺少图片。' } } };
+  private async runInterrogation(image: any): Promise<InterrogationItem> {
+    const dataUrl = String(image?.dataUrl || image?.url || image || '').trim();
+    if (!dataUrl) throw new Error('缺少上传图片数据。');
     const canvas = this.getConfig().canvas;
-    try {
-      const { text } = await this.generator.interrogate({ nodeIndex: canvas.interrogateNodeIndex, model: canvas.interrogateModel, image, prompt: canvas.interrogatePromptTemplate });
-      const item: InterrogationItem = { id: this.idFactory(), text, sourceImage: image, favorite: false, createdAt: this.now().toISOString() };
-      this.store.addInterrogation(item);
-      return { status: 200, body: { item } };
-    } catch (error) {
-      return { status: 502, body: { error: { code: 'interrogate_failed', message: errMsg(error) } } };
+    const nodeIndex = canvas.interrogateNodeIndex;
+    const model = canvas.interrogateModel || 'gpt-4o-mini';
+    const { text: firstText } = await this.generator.interrogate({ nodeIndex, model, image: dataUrl, prompt: canvas.interrogatePromptTemplate });
+
+    // 第二步：套 {{prompt}} 模板。generator 未实现 interrogateTemplate 时回退用第一步文本做模板。
+    let templatePrompt = firstText;
+    if (typeof this.generator.interrogateTemplate === 'function') {
+      const tplNodeIndex = canvas.interrogateTemplateNodeIndex ?? nodeIndex;
+      const tplModel = canvas.interrogateTemplateModel || model;
+      const tplPromptTemplate = canvas.interrogateTemplatePromptTemplate || `请把下面的图像描述改写为包含 {{prompt}} 占位符的图像生成模板：\n${firstText}`;
+      try {
+        const { text } = await this.generator.interrogateTemplate({ nodeIndex: tplNodeIndex, model: tplModel, image: dataUrl, prompt: tplPromptTemplate });
+        templatePrompt = text || firstText;
+      } catch { /* 第二步失败不阻塞，回退第一步文本 */ }
     }
+
+    const createdAt = this.now().toISOString();
+    const id = `int_${this.idFactory()}`;
+    const asset = this.assetFromImage(dataUrl, id, image?.fileName, 'png');
+    const item: InterrogationItem = {
+      id, prompt: String(firstText || '').trim(), templatePrompt: String(templatePrompt || firstText || '').trim(),
+      fileName: image?.fileName, createdAt, favorite: false, asset,
+    };
+    this.store.addInterrogation(item);
+    return item;
+  }
+
+  /** bot 入库：把 bot 生成结果导入画廊(对齐 monolith addBotGalleryRecord)。 */
+  private addBotGalleryRecord(input: Record<string, any>): GenerationRecord {
+    const artifacts = normalizeBotArtifacts(input);
+    if (!artifacts.length) throw new Error('Bot image result is empty');
+    const outputFormat = normalizeOutputFormat(input.outputFormat, 'png');
+    const mode = input.mode === 'edit' ? 'edit' : 'generate';
+    const createdAt = this.now().toISOString();
+    const id = `bot_${this.idFactory()}`;
+    const prompt = String(input.prompt || input.rawPrompt || '').trim() || '[Bot image]';
+    const effectivePrompt = String(input.effectivePrompt || input.prompt || input.rawPrompt || '').trim() || prompt;
+    const size = resolveSize(input.sizeApiValue || input.size) || { width: 1024, height: 1024 };
+
+    const outputs: GenerationOutput[] = artifacts.map((artifact, index) => {
+      const assetId = `${id}_${index + 1}`;
+      const asset = this.assetFromImage(artifact.kind === 'url' ? artifact.data : this.toDataUrl(artifact, outputFormat), assetId, undefined, outputFormat);
+      return { id: `out_${assetId}`, status: 'succeeded', favorite: false, asset };
+    });
+    const record: GenerationRecord = {
+      id, mode, prompt, effectivePrompt, presetId: 'bot', size,
+      quality: input.quality, outputFormat, count: outputs.length, status: 'succeeded',
+      referenceAssetIds: [], createdAt, outputs, source: 'bot',
+      botContext: input.context && typeof input.context === 'object'
+        ? { chatType: String(input.context.chatType || ''), groupId: String(input.context.groupId || ''), userId: String(input.context.userId || '') }
+        : undefined,
+    };
+    this.store.addRecord(record);
+    return record;
+  }
+
+  /** artifact → 资产：base64/dataUrl 转存为可下载资产，外链原样保留(对齐 monolith assetFromArtifact)。 */
+  private storeOutput(artifact: GenerationArtifact, assetId: string, createdAt: string, size: { width: number; height: number }, outputFormat: string): GenerationOutput {
+    const asset = this.assetFromImage(artifact.kind === 'url' ? artifact.data : this.toDataUrl(artifact, outputFormat), assetId, undefined, outputFormat);
+    void createdAt; void size;
+    return { id: `out_${assetId}`, status: 'succeeded', favorite: false, asset };
+  }
+
+  private toDataUrl(artifact: GenerationArtifact, outputFormat: string): string {
+    if (artifact.kind === 'url') return artifact.data;
+    const mime = artifact.mimeType || mimeFromOutputFormat(outputFormat);
+    return `data:${mime};base64,${artifact.data}`;
+  }
+
+  /** data URL/外链 → CanvasAsset。data URL 转存进 AssetStore 并改写为下载链接；外链原样。 */
+  private assetFromImage(dataUrlOrUrl: string, assetId: string, fileName: string | undefined, outputFormat: string): CanvasAsset {
+    const raw = String(dataUrlOrUrl || '').trim();
+    const parsed = parseDataUrl(raw);
+    if (parsed) {
+      this.assets.put(assetId, { contentType: parsed.contentType, base64: parsed.base64, createdAt: this.now().toISOString() });
+      const ext = extensionFor(parsed.contentType);
+      return {
+        id: assetId,
+        url: `/canvas-api/assets/${encodeURIComponent(assetId)}/download`,
+        fileName: fileName || `${assetId}.${ext}`,
+        mimeType: parsed.contentType,
+      };
+    }
+    // 外链或 base64:// 前缀：原样保留 url。
+    const data = raw.startsWith('base64://') ? raw.slice('base64://'.length) : raw;
+    const mime = imageMimeFromDataUrl(raw) || mimeFromOutputFormat(outputFormat);
+    return { id: assetId, url: data, fileName: fileName || `${assetId}.${extensionFor(mime)}`, mimeType: mime };
+  }
+
+  // —— 异步任务系统(对齐 monolith startBackgroundJob/createImageJob/createInterrogationJob) ——
+  private createImageJob(mode: 'generate' | 'edit', body: Record<string, any>): CanvasJob {
+    const now = this.now().toISOString();
+    const job: CanvasJob = { kind: 'image', id: `img_job_${this.idFactory()}`, mode, status: 'queued', progress: 5, createdAt: now, updatedAt: now };
+    return this.startJob(this.imageJobs, job, () => this.runGeneration(mode, body), 'record');
+  }
+  private createInterrogationJob(image: any): CanvasJob {
+    const now = this.now().toISOString();
+    const job: CanvasJob = { kind: 'interrogation', id: `int_job_${this.idFactory()}`, status: 'queued', progress: 5, createdAt: now, updatedAt: now };
+    return this.startJob(this.interrogationJobs, job, () => this.runInterrogation(image), 'item');
+  }
+  private startJob(map: Map<string, CanvasJob>, job: CanvasJob, runner: () => Promise<GenerationRecord | InterrogationItem>, resultKey: 'record' | 'item'): CanvasJob {
+    map.set(job.id, job);
+    job.queue = { running: 0, queued: 0, limit: 1, position: 1 };
+    queueMicrotask(() => {
+      void (async () => {
+        try {
+          job.status = 'running'; job.progress = 12; job.updatedAt = this.now().toISOString(); job.queue = { running: 1, queued: 0, limit: 1, position: 0 };
+          const result = await runner();
+          (job as any)[resultKey] = result;
+          job.status = 'succeeded'; job.progress = 100; job.updatedAt = this.now().toISOString();
+        } catch (error) {
+          job.status = 'failed'; job.progress = 100; job.error = errMsg(error); job.updatedAt = this.now().toISOString();
+        } finally {
+          setTimeout(() => map.delete(job.id), JOB_TTL_MS).unref?.();
+        }
+      })();
+    });
+    return this.publicJob(job)!;
+  }
+
+  // —— 对外形状投影(对齐 monolith public* 系列) ——
+  private publicJob(job: CanvasJob | undefined): CanvasJob | undefined {
+    if (!job) return undefined;
+    const out: CanvasJob = { ...job };
+    if (out.record) out.record = this.publicRecord(out.record);
+    if (out.item) out.item = this.publicInterrogationItem(out.item);
+    return out;
+  }
+  private publicRecord(record: GenerationRecord): GenerationRecord {
+    return { ...record, outputs: record.outputs.map((o) => ({ ...o, asset: this.publicAsset(o.asset) })) };
+  }
+  private publicGalleryItem = (item: GalleryItem): GalleryItem => ({ ...item, asset: this.publicAsset(item.asset) });
+  private publicInterrogationItem = (item: InterrogationItem): InterrogationItem => ({ ...item, asset: this.publicAsset(item.asset) });
+  /** publicAsset：data URL/存储资产改写为下载链接，剥离内部存储字段(对齐 monolith)。 */
+  private publicAsset(asset: CanvasAsset): CanvasAsset {
+    if (!asset || typeof asset !== 'object') return asset;
+    const out = { ...asset };
+    if (out.id && (String(out.url || '').startsWith('data:image/') || this.assets.get(out.id))) {
+      out.url = `/canvas-api/assets/${encodeURIComponent(out.id)}/download`;
+    }
+    return out;
+  }
+
+  private publicProject() {
+    const project = this.store.project();
+    return {
+      ...project,
+      history: project.history.map((r) => this.publicRecord(r)),
+      interrogations: this.store.interrogations().map(this.publicInterrogationItem),
+    };
   }
 
   private configView() {
@@ -188,21 +428,103 @@ export class CanvasService {
       defaults: { quality: canvas.defaultQuality, outputFormat: canvas.defaultOutputFormat, count: canvas.defaultCount, sizePresetId: canvas.defaultSizePresetId || 'auto', stylePresetId: canvas.defaultStylePresetId },
     };
   }
-
-  private publicProject() {
-    const project = this.store.project();
-    return { ...project, interrogations: this.store.interrogations() };
-  }
 }
 
 export function createCanvasService(options: CanvasServiceOptions): CanvasService {
   return new CanvasService(options);
 }
 
-function stripPrefix(path: string): string {
-  const noQuery = String(path || '/').split('?')[0];
-  const stripped = noQuery.replace(/^\/canvas-api/, '') || '/';
-  return stripped.length > 1 && stripped.endsWith('/') ? stripped.slice(0, -1) : stripped;
+// —— 工具函数(对齐 monolith：路径拆分/过滤/尺寸/格式/错误/id) ——
+
+function splitPath(rawPath: string): { path: string; query: Record<string, string> } {
+  const noQuery = String(rawPath || '/').split('?')[0];
+  const stripped = (noQuery.replace(/^\/canvas-api/, '') || '/');
+  const path = stripped.length > 1 && stripped.endsWith('/') ? stripped.slice(0, -1) : stripped;
+  const search = String(rawPath || '').split('?')[1] || '';
+  const params = new URLSearchParams(search);
+  const query: Record<string, string> = {};
+  for (const key of ['async', 'limit', 'favorite', 'query', 'status', 'recover']) {
+    const v = params.get(key);
+    if (v !== null) query[key] = v;
+  }
+  return { path, query };
+}
+
+function collectionQuery(query: Record<string, string>) {
+  return {
+    query: String(query.query || '').trim().toLowerCase(),
+    favorite: ['1', 'true'].includes(String(query.favorite || '').toLowerCase()),
+    status: ['done', 'failed'].includes(query.status || '') ? query.status : 'all',
+    limit: Math.max(1, Math.min(240, Number.parseInt(query.limit || '120', 10) || 120)),
+  };
+}
+
+function filterGallery(items: GalleryItem[], query: Record<string, string>): GalleryItem[] {
+  const q = collectionQuery(query);
+  if (q.status === 'failed') return [];
+  return items
+    .filter((item) => !q.favorite || item.favorite)
+    .filter((item) => !q.query || `${item.prompt} ${item.effectivePrompt} ${item.presetId} ${item.outputFormat}`.toLowerCase().includes(q.query))
+    .slice(0, q.limit);
+}
+
+function filterInterrogations(items: InterrogationItem[], query: Record<string, string>): InterrogationItem[] {
+  const q = collectionQuery(query);
+  if (q.status === 'failed') return [];
+  return items
+    .filter((item) => !q.favorite || item.favorite)
+    .filter((item) => !q.query || `${item.prompt} ${item.templatePrompt} ${item.fileName || ''}`.toLowerCase().includes(q.query))
+    .slice(0, q.limit);
+}
+
+function resolveSize(sizeApi?: string): { width: number; height: number } {
+  if (!sizeApi || sizeApi === 'auto') return { width: 1024, height: 1024 };
+  const m = String(sizeApi).match(/^(\d+)x(\d+)$/);
+  if (m) return { width: Number(m[1]), height: Number(m[2]) };
+  return { width: 1024, height: 1024 };
+}
+
+function normalizeOutputFormat(value: unknown, fallback = 'png'): string {
+  const format = String(value || fallback || 'png').toLowerCase();
+  return ['png', 'jpeg', 'webp'].includes(format) ? format : 'png';
+}
+
+function normalizeQuality(value: unknown): string | undefined {
+  const quality = String(value || '').toLowerCase();
+  return ['low', 'medium', 'high'].includes(quality) ? quality : undefined;
+}
+
+function mimeFromOutputFormat(format: string): string {
+  const normalized = String(format || '').toLowerCase();
+  if (normalized === 'jpeg' || normalized === 'jpg') return 'image/jpeg';
+  if (normalized === 'webp') return 'image/webp';
+  return 'image/png';
+}
+
+function imageMimeFromDataUrl(dataUrl: string): string {
+  const match = String(dataUrl || '').match(/^data:([^;,]+)[;,]/i);
+  return match?.[1] || 'image/png';
+}
+
+function normalizeBotArtifacts(input: Record<string, any>): GenerationArtifact[] {
+  const source = Array.isArray(input.artifacts) ? input.artifacts : Array.isArray(input.images) ? input.images : [];
+  return source
+    .map((item: any) => {
+      if (typeof item === 'string') {
+        const text = item.trim();
+        if (!text) return undefined;
+        if (text.startsWith('base64://')) return { kind: 'base64', data: text.slice('base64://'.length), mimeType: 'image/png' };
+        if (/^data:image\//i.test(text)) return { kind: 'url', data: text };
+        return { kind: 'url', data: text };
+      }
+      if (!item || typeof item !== 'object') return undefined;
+      const data = String(item.data || item.url || '').trim();
+      if (!data) return undefined;
+      if (/^data:image\//i.test(data)) return { kind: 'url', data, mimeType: item.mimeType };
+      if (item.kind === 'url') return { kind: 'url', data, mimeType: item.mimeType };
+      return { kind: 'base64', data: data.startsWith('base64://') ? data.slice('base64://'.length) : data, mimeType: item.mimeType };
+    })
+    .filter(Boolean) as GenerationArtifact[];
 }
 
 function notFound(message: string): CanvasResponse {
@@ -210,10 +532,12 @@ function notFound(message: string): CanvasResponse {
 }
 
 function errMsg(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return (error as any)?.normalized?.message || (error instanceof Error ? error.message : String(error));
 }
 
 function defaultIdFactory(): () => string {
   let counter = 0;
   return () => `${Date.now().toString(36)}-${(counter++).toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
+
+export { MAX_GALLERY, MAX_HISTORY, MAX_INTERROGATIONS };

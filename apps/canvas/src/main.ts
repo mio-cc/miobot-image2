@@ -1,4 +1,4 @@
-import { createCanvasService, CanvasStore, InMemoryAssetStore, type AssetStore, type StoredAsset, type CanvasGenerator, type CanvasService } from '../../../packages/canvas-service/src/index.js';
+import { createCanvasService, CanvasStore, InMemoryAssetStore, type AssetStore, type StoredAsset, type CanvasGenerator, type CanvasService, type GenerationArtifact } from '../../../packages/canvas-service/src/index.js';
 import { createCapabilityRegistry, createModelClient, type CapabilityRegistry, type ImageArtifact, type ImageResult, type ModelClient } from '../../../packages/model/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
@@ -24,12 +24,12 @@ export class FileAssetStore implements AssetStore {
   }
 }
 
-function artifactToString(artifact: ImageArtifact): string {
-  if (artifact.kind === 'url') return artifact.data;
-  return `data:${artifact.mimeType || 'image/png'};base64,${artifact.data}`;
+function artifactToGenerationArtifact(artifact: ImageArtifact): GenerationArtifact {
+  if (artifact.kind === 'url') return { kind: 'url', data: artifact.data, mimeType: artifact.mimeType };
+  return { kind: 'base64', data: artifact.data, mimeType: artifact.mimeType || 'image/png' };
 }
-function artifactsToStrings(result: ImageResult): string[] {
-  return (result.images || []).map(artifactToString);
+function artifactsToGeneration(result: ImageResult): GenerationArtifact[] {
+  return (result.images || []).map(artifactToGenerationArtifact);
 }
 
 /** 用统一 ModelClient 实现画布生成能力——与 bot 共用方言/能力/参数规整(同一兼容性逻辑)。 */
@@ -37,13 +37,18 @@ export function createModelCanvasGenerator(client: ModelClient): CanvasGenerator
   return {
     async generate(input) {
       const res = await client.generateImages(input.nodeIndex, { model: input.model, prompt: input.prompt, size: input.size, count: input.count, quality: input.quality });
-      return { images: artifactsToStrings(res) };
+      return { images: artifactsToGeneration(res) };
     },
     async edit(input) {
       const res = await client.editImage(input.nodeIndex, { model: input.model, prompt: input.prompt, images: input.images, size: input.size, quality: input.quality });
-      return { images: artifactsToStrings(res) };
+      return { images: artifactsToGeneration(res) };
     },
     async interrogate(input) {
+      const res = await client.interrogate(input.nodeIndex, { model: input.model, imageUrls: [input.image], prompt: input.prompt });
+      return { text: res.text };
+    },
+    async interrogateTemplate(input) {
+      // 第二步：复用视觉通道(interrogate 走 buildVision)把描述套成含 {{prompt}} 占位符的可复用模板(对齐 monolith createVision)。
       const res = await client.interrogate(input.nodeIndex, { model: input.model, imageUrls: [input.image], prompt: input.prompt });
       return { text: res.text };
     },
@@ -59,6 +64,8 @@ export interface CanvasAppOptions {
   /** 资产目录;给定则二进制产物落盘可下载,否则内存。 */
   assetDir?: string;
   maxHistory?: number;
+  /** 鉴权回调(/bot/gallery 需要)；默认不鉴权。可延迟注入(闭包在请求时解析 admin 仓储)。 */
+  isAuthorized?: (headers?: Record<string, string | undefined>) => boolean;
 }
 
 export interface CanvasApp {
@@ -76,7 +83,7 @@ export function createCanvasApp(options: CanvasAppOptions): CanvasApp {
   const generator = createModelCanvasGenerator(client);
   const store = new CanvasStore({ filePath: options.stateFilePath, maxHistory: options.maxHistory ?? options.getConfig().canvas?.maxHistory });
   const assets: AssetStore = options.assetDir ? new FileAssetStore(options.assetDir) : new InMemoryAssetStore();
-  const service = createCanvasService({ getConfig: options.getConfig, generator, store, assets });
+  const service = createCanvasService({ getConfig: options.getConfig, generator, store, assets, isAuthorized: options.isAuthorized });
   return { service, client };
 }
 

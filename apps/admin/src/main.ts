@@ -1,4 +1,4 @@
-import { createAdminService, createFileLogStore, createInMemoryLogStore, type AdminResponse, type AdminServiceDeps, type AdminService } from '../../../packages/admin-service/src/index.js';
+import { createAdminService, createFileLogStore, createInMemoryLogStore, type AdminResponse, type AdminServiceDeps, type AdminService, type CanvasCardsDep } from '../../../packages/admin-service/src/index.js';
 import { ConfigStore } from '../../../packages/storage/src/index.js';
 import { createDefaultConfig, normalizeConfig, type AppConfig } from '../../../packages/config/src/index.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
@@ -16,6 +16,8 @@ export interface AdminAppOptions {
   canvasLogFile?: string;
   /** 注入外部集成(fetch-models / test-napcat / test-image / huggingface / codex)。 */
   deps?: AdminServiceDeps;
+  /** 画布卡片视图(跨域读 canvas 画廊/反推)；可延迟注入(闭包在请求时解析 canvas store)。 */
+  canvasCards?: CanvasCardsDep;
   now?: () => Date;
 }
 
@@ -36,9 +38,14 @@ export function createAdminApp(options: AdminAppOptions = {}): AdminApp {
     ? createFileLogStore(options.systemLogFile, options.canvasLogFile)
     : createInMemoryLogStore();
 
-  // 注入真实外部适配器(fetch-models/test-image/test-napcat/hf/templates);getConfig 前向引用读热重载后的配置。
+  // 注入真实外部适配器(fetch-models/test-image/test-napcat/hf/templates);getConfig/saveConfig 前向引用读热重载后的配置仓储。
   let svc: AdminService | null = null;
-  const deps = options.deps || createAdminDeps(() => (svc ? svc.repository.getConfig() : initialConfig));
+  const baseDeps = options.deps || createAdminDeps(
+    () => (svc ? svc.repository.getConfig() : initialConfig),
+    (patch) => (svc ? svc.repository.saveConfig(patch) : { config: initialConfig }),
+  );
+  // canvasCards 跨域注入(可延迟：闭包在请求时解析已装配的 canvas store)。
+  const deps: AdminServiceDeps = options.canvasCards ? { ...baseDeps, canvasCards: options.canvasCards } : baseDeps;
   const service = createAdminService({ initialConfig, logs, deps, now: options.now });
   svc = service;
 

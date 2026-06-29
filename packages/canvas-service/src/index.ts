@@ -6,16 +6,18 @@ export {
   type CanvasGenerator,
   type CanvasRequest,
   type CanvasResponse,
+  type GenerationArtifact,
 } from './service.js';
 export {
   CanvasStore,
   defaultCanvasData,
   type CanvasData,
   type GenerationRecord,
+  type GenerationOutput,
   type GalleryItem,
   type InterrogationItem,
   type ProjectState,
-  type CanvasOutput,
+  type CanvasAsset,
 } from './state.js';
 export {
   InMemoryAssetStore,
