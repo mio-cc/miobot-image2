@@ -7,7 +7,9 @@ import path from 'node:path';
 
 export const CANVAS_APP: PackageDescriptor = { name: '@miobot-v2/app-canvas', phase: 'P6-canvas-service' };
 
-/** 文件后端资产仓储：每个资产一份 JSON({contentType,base64,createdAt}),重启不丢。 */
+/** 文件后端资产仓储。
+ *  v2 格式：{id}.json（{contentType,base64,createdAt}）。
+ *  兼容 monolith 格式：{id}.{png,jpg,jpeg,webp,gif} 二进制文件（自动转 base64 返回）。 */
 export class FileAssetStore implements AssetStore {
   private readonly dir: string;
   constructor(dir: string) { this.dir = path.resolve(dir); }
@@ -17,10 +19,31 @@ export class FileAssetStore implements AssetStore {
     fs.writeFileSync(this.file(id), JSON.stringify(asset), 'utf8');
   }
   get(id: string): StoredAsset | undefined {
-    try { return JSON.parse(fs.readFileSync(this.file(id), 'utf8')) as StoredAsset; } catch { return undefined; }
+    // 1. v2 格式：{id}.json
+    try { return JSON.parse(fs.readFileSync(this.file(id), 'utf8')) as StoredAsset; } catch { /* fallthrough */ }
+    // 2. monolith 兼容：{id}.{png,jpg,jpeg,webp,gif}
+    const safeId = encodeURIComponent(id);
+    for (const ext of ['png', 'jpg', 'jpeg', 'webp', 'gif']) {
+      const binPath = path.join(this.dir, `${safeId}.${ext}`);
+      try {
+        const buf = fs.readFileSync(binPath);
+        const contentType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+          : ext === 'webp' ? 'image/webp'
+          : ext === 'gif' ? 'image/gif'
+          : 'image/png';
+        return { contentType, base64: buf.toString('base64'), createdAt: new Date().toISOString() };
+      } catch { /* try next ext */ }
+    }
+    return undefined;
   }
   delete(id: string): boolean {
-    try { fs.rmSync(this.file(id), { force: true }); return true; } catch { return false; }
+    let removed = false;
+    try { fs.rmSync(this.file(id), { force: true }); removed = true; } catch { /* ignore */ }
+    const safeId = encodeURIComponent(id);
+    for (const ext of ['png', 'jpg', 'jpeg', 'webp', 'gif']) {
+      try { fs.rmSync(path.join(this.dir, `${safeId}.${ext}`), { force: true }); removed = true; } catch { /* ignore */ }
+    }
+    return removed;
   }
 }
 
