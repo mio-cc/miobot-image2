@@ -273,7 +273,9 @@ export class CanvasService {
     const model = isEdit ? (canvas.editModel || canvas.imageModel) : canvas.imageModel;
     if (!model) throw new Error(`画布${isEdit ? '改图' : '生图'}没有配置模型。请在后台「画布配置」选择模型。`);
     const nodeIndex = isEdit ? canvas.editNodeIndex : canvas.imageNodeIndex;
-    const sizeApi = body.size ? String(body.size) : undefined;
+    // body.size 可能是 {width,height} 对象（web-canvas 前端）或 "WxH"/"auto" 字符串（bot/旧客户端）。
+    // 统一归一化为 sizeApi 字符串，避免 String(对象) 变成 "[object Object]" 导致 resolveSize 回退默认 1024x1024。
+    const sizeApi = normalizeSizeInput(body.size);
     const size = resolveSize(sizeApi);
     const outputFormat = normalizeOutputFormat(body.outputFormat, canvas.defaultOutputFormat || 'png');
     const quality = normalizeQuality(body.quality || canvas.defaultQuality);
@@ -294,7 +296,10 @@ export class CanvasService {
     const id = `gen_${this.idFactory()}`;
     const outputs = images.map((artifact, index) => this.storeOutput(artifact, `${id}_${index + 1}`, createdAt, size, outputFormat));
     const firstAsset = outputs.find((o) => o.asset)?.asset;
-    const recordSize = (sizeApi === 'auto' || !sizeApi) && firstAsset?.width
+    // meta 卡片显示的尺寸必须与图片实际尺寸一致：始终优先用 firstAsset 解码出的真实尺寸，
+    // 仅在解码失败(外链/无法解析)时回退到请求尺寸。原逻辑仅在 size=auto 时取实际尺寸，
+    // 导致选具体尺寸(如1024x1024)但模型返回不同尺寸时 meta 显示与图片不符。
+    const recordSize = firstAsset?.width
       ? { width: firstAsset.width, height: firstAsset.height || 0 }
       : size;
     const effectivePrompt = images.find((a) => a.revisedPrompt)?.revisedPrompt || rawPrompt;
@@ -351,15 +356,20 @@ export class CanvasService {
     const id = `bot_${this.idFactory()}`;
     const prompt = String(input.prompt || input.rawPrompt || '').trim() || '[Bot image]';
     const effectivePrompt = String(input.effectivePrompt || input.prompt || input.rawPrompt || '').trim() || prompt;
-    const size = resolveSize(input.sizeApiValue || input.size) || { width: 1024, height: 1024 };
+    const requestedSize = resolveSize(normalizeSizeInput(input.sizeApiValue) || normalizeSizeInput(input.size)) || { width: 1024, height: 1024 };
 
     const outputs: GenerationOutput[] = artifacts.map((artifact, index) => {
       const assetId = `${id}_${index + 1}`;
       const asset = this.assetFromImage(artifact.kind === 'url' ? artifact.data : this.toDataUrl(artifact, outputFormat), assetId, undefined, outputFormat);
       return { id: `out_${assetId}`, status: 'succeeded', favorite: false, asset };
     });
+    // 同步生成路径：优先用首张实际解码尺寸，回退请求尺寸。
+    const firstAsset = outputs.find((o) => o.asset)?.asset;
+    const recordSize = firstAsset?.width
+      ? { width: firstAsset.width, height: firstAsset.height || 0 }
+      : requestedSize;
     const record: GenerationRecord = {
-      id, mode, prompt, effectivePrompt, presetId: 'bot', size,
+      id, mode, prompt, effectivePrompt, presetId: 'bot', size: recordSize,
       quality: input.quality, outputFormat, count: outputs.length, status: 'succeeded',
       referenceAssetIds: [], createdAt, outputs, source: 'bot',
       botContext: input.context && typeof input.context === 'object'
@@ -537,6 +547,24 @@ function resolveSize(sizeApi?: string): { width: number; height: number } {
   const m = String(sizeApi).match(/^(\d+)x(\d+)$/);
   if (m) return { width: Number(m[1]), height: Number(m[2]) };
   return { width: 1024, height: 1024 };
+}
+
+/**
+ * 归一化 size 输入为 sizeApi 字符串。
+ * 接受 {width,height} 对象（web-canvas 前端发送）、"WxH" 字符串、"auto" 或 undefined。
+ * 修复：原 String(body.size) 对对象返回 "[object Object]"，导致 resolveSize 误回退 1024x1024，
+ * 且传给上游模型的 size 也是错误字符串。
+ */
+function normalizeSizeInput(size: unknown): string | undefined {
+  if (size == null) return undefined;
+  if (typeof size === 'string') return size;
+  if (typeof size === 'object' && size !== null) {
+    const obj = size as { width?: unknown; height?: unknown };
+    const w = Number(obj.width);
+    const h = Number(obj.height);
+    if (w > 0 && h > 0) return `${w}x${h}`;
+  }
+  return undefined;
 }
 
 function normalizeOutputFormat(value: unknown, fallback = 'png'): string {

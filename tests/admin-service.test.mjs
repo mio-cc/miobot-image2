@@ -80,10 +80,12 @@ test('注入集成: dep 抛错 → 502', async () => {
   assert.equal(r.body.success, false);
 });
 
-test('codex: 未配置 501；注入后委派(带 method/path)', async () => {
+test('codex: 未配置 → 200 + enabled:false(避免浏览器控制台噪音)；注入后委派(带 method/path)', async () => {
   const off = createAdminService();
   const r1 = await off.handle({ method: 'GET', path: '/api/codex/status', headers: authedHeaders(off) });
-  assert.equal(r1.status, 501);
+  assert.equal(r1.status, 200);
+  assert.equal(r1.body.enabled, false);
+  assert.equal(r1.body.notConfigured, true);
 
   const on = createAdminService({ deps: { codex: { handle: (method, path) => ({ status: 200, body: { success: true, method, path } }) } } });
   const r2 = await on.handle({ method: 'GET', path: '/api/codex/status', headers: authedHeaders(on) });

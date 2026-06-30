@@ -84,7 +84,9 @@ export class AdminService {
     }
 
     if (path.startsWith('/api/codex/')) {
-      if (!this.deps.codex) return notConfigured('codex');
+      // codex 未注入时返回 200 + enabled:false（而非 501）。
+      // 501 会让浏览器控制台刷红色网络错误噪音；200 让前端 codexStatus 正常拿到"未启用"状态。
+      if (!this.deps.codex) return { status: 200, body: { success: true, enabled: false, notConfigured: true } };
       return this.deps.codex.handle(method, path, req.body);
     }
 
