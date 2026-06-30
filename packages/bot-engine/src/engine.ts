@@ -5,7 +5,7 @@ import { resolveImageCapabilities, type EngineRoutingConfig } from './capabiliti
 
 /** 下游能力（由 apps/bot 用 model/image/reply 实现；测试可注入 fake）。 */
 export interface BotEngineDeps {
-  chat(req: { model: string; text: string; images?: string[]; sessionId?: string }): Promise<{ text: string }>;
+  chat(req: { model: string; text: string; images?: string[]; sessionId?: string; nodeIndex?: number }): Promise<{ text: string }>;
   generateImages(req: { model: string; prompt: string; size?: string; count?: number; quality?: string; templateId?: string }): Promise<{ images: string[] }>;
   editImage(req: { model: string; prompt: string; images: string[]; size?: string; quality?: string }): Promise<{ images: string[] }>;
   interrogate(req: { model: string; images: string[]; prompt?: string }): Promise<{ text: string }>;
@@ -95,7 +95,11 @@ export class BotEngine {
     const p = decision.params;
     switch (decision.kind) {
       case 'chat': {
-        const { text } = await this.deps.chat({ model: cfg.chatModel, text: p.prompt || input.text, images, sessionId: input.sessionId });
+        // freeMode planner 返回 chat 时用 freeMode 的节点+模型，不依赖 chatNodeIndex/chatModel
+        const usedPlanner = decision.usedPlanner;
+        const chatModel = usedPlanner && cfg.freeModeModel ? cfg.freeModeModel : cfg.chatModel;
+        const chatNode = usedPlanner && cfg.freeModeNodeIndex !== undefined ? cfg.freeModeNodeIndex : undefined;
+        const { text } = await this.deps.chat({ model: chatModel, text: p.prompt || input.text, images, sessionId: input.sessionId, nodeIndex: chatNode });
         return { kind: 'chat', decision, text, handled: true };
       }
       case 'image.generate': {

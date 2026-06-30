@@ -10,6 +10,7 @@ export interface EngineRoutingConfig {
   editModel: string;
   interrogateModel: string;
   freeModeModel: string;
+  freeModeNodeIndex?: number;
   freeModeEnabled?: boolean;
   preferEditWhenImagePresent?: boolean;
   maxOutputImages?: number;

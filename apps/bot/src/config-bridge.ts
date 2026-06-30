@@ -56,6 +56,7 @@ export function toEngineRoutingConfig(cfg: AppConfig): EngineRoutingConfig {
     editModel: cfg.llm.editModel,
     interrogateModel: cfg.llm.interrogateModel,
     freeModeModel: cfg.freeMode.model,
+    freeModeNodeIndex: cfg.freeMode.nodeIndex,
     freeModeEnabled: cfg.freeMode.enabled,
     preferEditWhenImagePresent: cfg.freeMode.preferEditWhenImagePresent,
     maxOutputImages: cfg.freeMode.maxOutputImages,

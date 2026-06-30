@@ -39,10 +39,11 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
   return {
     async chat(req) {
       const routing = getRouting();
+      const nodeIndex = req.nodeIndex ?? routing.chatNodeIndex;
       const images = (req.images || []).filter(Boolean);
       // 带图对话走 vision，不进会话记忆(图片上下文不便持久化)。
       if (images.length > 0 && client.can(req.model, 'vision')) {
-        const res = await client.vision(routing.chatNodeIndex, { model: req.model, prompt: req.text, imageUrls: images });
+        const res = await client.vision(nodeIndex, { model: req.model, prompt: req.text, imageUrls: images });
         return { text: res.text };
       }
       const history = sessions && req.sessionId ? sessions.get(req.sessionId) : [];
@@ -50,7 +51,7 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       if (chatSystemPrompt) messages.push({ role: 'system', content: chatSystemPrompt });
       for (const m of history) messages.push({ role: m.role, content: m.content });
       messages.push({ role: 'user', content: req.text });
-      const res = await client.chat(routing.chatNodeIndex, { model: req.model, messages });
+      const res = await client.chat(nodeIndex, { model: req.model, messages });
       const answer = res.text;
       if (sessions && req.sessionId) {
         sessions.append(req.sessionId, { role: 'user', content: req.text }, { role: 'assistant', content: answer });
