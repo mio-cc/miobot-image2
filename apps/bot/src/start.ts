@@ -8,6 +8,7 @@ import { createBotMessageRuntime } from './runtime.js';
 import { toModelNodes } from './config-bridge.js';
 import { shouldUseTts, synthesizeSpeech } from './tts.js';
 import type { OwnerCommand } from './owner.js';
+import type { NapcatHistoryMessage } from './group-context.js';
 
 export interface StartBotOptions {
   /** 配置文件(JSON);不给则用默认配置(无可用节点,仅供连通性冒烟)。 */
@@ -57,6 +58,17 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     selfId: () => adapter.selfQqId || undefined,
     botName: options.botName || 'Miobot',
     logger,
+    // 群聊上下文：@bot 时通过 napcat get_group_msg_history 拉取最近群聊记录。
+    fetchGroupHistory: async (groupId, anchorMessageId, count): Promise<NapcatHistoryMessage[]> => {
+      try {
+        const resp = await adapter.callAction('get_group_msg_history', { group_id: groupId, message_id: anchorMessageId, count });
+        const data = (resp?.data ?? {}) as { messages?: NapcatHistoryMessage[] };
+        return Array.isArray(data.messages) ? data.messages : [];
+      } catch (error) {
+        logger.warn('get_group_msg_history failed', { groupId, error: String((error as { message?: string })?.message || error) });
+        return [];
+      }
+    },
     voice: async (text) => {
       const tts = getConfig().bot.tts;
       if (!shouldUseTts(tts, text)) return null;
@@ -92,6 +104,19 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   adapter.on('close', (data) => { logger.warn('napcat connection closed', data as Record<string, unknown>); });
   adapter.on('error', (error) => { logger.error('napcat connection error', { error: String((error as { message?: string })?.message || error) }); });
 
+  // 会话记忆空闲清理：按 sessionTtlMinutes 周期性清理超时会话，避免长期运行内存堆积。
+  const sessionTtlMs = Math.max(0, (config.llm.sessionTtlMinutes ?? 0) * 60_000);
+  let cleanupTimer: NodeJS.Timeout | undefined;
+  if (sessionTtlMs > 0) {
+    cleanupTimer = setInterval(() => {
+      try {
+        const removed = app.sessions.cleanup();
+        if (removed) logger.info('session cleanup', { removed, ttlMinutes: config.llm.sessionTtlMinutes });
+      } catch (e) { logger.warn('session cleanup failed', { error: String((e as { message?: string })?.message || e) }); }
+    }, Math.max(60_000, Math.trunc(sessionTtlMs / 2)));
+    cleanupTimer.unref?.();
+  }
+
   logger.info('starting bot v2 runtime', {
     wsUrl: nap.wsUrl,
     hasToken: Boolean(nap.token),
@@ -102,7 +127,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   });
   adapter.connect();
 
-  return { adapter, getConfig, stop: () => adapter.disconnect() };
+  return { adapter, getConfig, stop: () => { if (cleanupTimer) clearInterval(cleanupTimer); adapter.disconnect(); } };
 }
 
 interface OwnerHandlerDeps { config: AppConfig; store?: ConfigStore<AppConfig> }

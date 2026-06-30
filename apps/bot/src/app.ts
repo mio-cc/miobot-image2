@@ -49,6 +49,7 @@ export function createBotApp(options: BotAppOptions): BotApp {
   const sessions = options.sessions || createSessionStore({
     maxRounds: initial.llm.maxConversationRounds,
     maxChars: initial.llm.maxConversationChars,
+    ttlMs: Math.max(0, (initial.llm.sessionTtlMinutes ?? 0) * 60_000),
   });
   const planner = options.planner || createModelPlanner(client, () => toBotRouting(options.getConfig()).freeModeNodeIndex);
   const pipeline = options.pipeline || createImagePromptPipeline(client, options.getConfig);

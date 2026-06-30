@@ -322,12 +322,12 @@ export default defineComponent({
                   当前没有画布日志记录。
                 </div>
                 <div v-else class="log-terminal__list log-terminal__list--compact">
-                  <article v-for="entry in canvasLogEntries" :key="entry.id" class="log-entry log-entry--compact">
+                  <article v-for="(entry, idx) in canvasLogEntries" :key="entry.id ?? `${entry.timestamp}-${entry.scope}-${idx}`" class="log-entry log-entry--compact">
                     <header class="log-entry__meta">
                       <span :class="['log-level-badge', levelBadgeClass(entry.level)]">{{ logLevelText(entry.level) }}</span>
                       <time>{{ entry.timestamp }}</time>
                       <span class="log-entry__scope">{{ entry.scope }}</span>
-                      <span class="log-entry__id">#{{ entry.id }}</span>
+                      <span class="log-entry__id">#{{ entry.id ?? '-' }}</span>
                       <button @click="copyLogEntry(entry)" class="log-copy-button">复制本条</button>
                     </header>
                     <p class="log-entry__message selectable-log-text">{{ entry.message }}</p>

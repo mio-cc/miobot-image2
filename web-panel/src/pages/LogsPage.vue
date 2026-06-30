@@ -82,13 +82,13 @@ export default defineComponent({
                 当前日志流为空，等待机器人交互。
               </div>
               <div v-else class="log-terminal__list">
-                <article v-for="entry in logEntries" :key="entry.id" class="log-entry">
+                <article v-for="(entry, idx) in logEntries" :key="entry.id ?? `${entry.timestamp}-${entry.scope}-${idx}`" class="log-entry">
                   <div class="log-entry__main">
                     <header class="log-entry__meta">
                       <span :class="['log-level-badge', levelBadgeClass(entry.level)]">{{ logLevelText(entry.level) }}</span>
                       <time>{{ entry.timestamp }}</time>
                       <span class="log-entry__scope">{{ entry.scope }}</span>
-                      <span class="log-entry__id">#{{ entry.id }}</span>
+                      <span class="log-entry__id">#{{ entry.id ?? '-' }}</span>
                       <button @click="copyLogEntry(entry)" class="log-copy-button">复制本条</button>
                     </header>
                     <p class="log-entry__message selectable-log-text">{{ entry.message }}</p>

@@ -6,6 +6,7 @@ import type { BotEngineResult } from '../../../packages/bot-engine/src/index.js'
 import type { BotApp } from './app.js';
 import { isOwner, parseOwnerCommand, type OwnerCommand } from './owner.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
+import { fetchGroupContext, type GroupContextOptions, type NapcatHistoryMessage } from './group-context.js';
 
 /** Napcat(OneBot) 上报的消息事件(只取本环需要的字段)。 */
 export interface NapcatMessageEvent {
@@ -30,6 +31,8 @@ export interface BotRuntimeOptions {
   botName?: string;
   /** 可选:对引用消息做 get_msg 判断是否回复的是 bot(影响群里"回复 bot"触发)。 */
   resolveReplyToBot?: (event: NapcatMessageEvent) => Promise<boolean> | boolean;
+  /** 可选:拉取群历史消息(@bot 时取最近群聊上下文)。由 start.ts 注入 napcat callAction。 */
+  fetchGroupHistory?: (groupId: number | string, anchorMessageId: number | string, count: number) => Promise<NapcatHistoryMessage[]>;
   /** 文本回复转语音:返回 record 文件引用则发语音,返回空则发文本。 */
   voice?: (text: string) => Promise<string | null | undefined>;
   /** 主人命令(owner-only):匹配则优先于普通路由处理。handle 返回文本则回复。 */
@@ -64,7 +67,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       : (event.raw_message || segmentsToRaw(event.message));
     const images = extractImages(event);
     const userId = event.user_id ?? event.sender?.user_id;
-    const sessionId = chatType === 'group' ? `group:${event.group_id}` : `private:${userId}`;
+    const sessionId = chatType === 'group' ? `group:${event.group_id}:${userId}` : `private:${userId}`;
     log?.info('收到消息', { chatType, groupId: event.group_id, userId, rawMessage: rawMessage.slice(0, 100), images: images.length });
 
     // 主人命令优先于普通路由。
@@ -128,7 +131,26 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     let result: BotEngineResult | null = null;
     try {
       if (decision.kind === 'chat' || decision.kind === 'freeMode') {
-        result = await options.app.handle({ text: stripNonTextCqSegments(decision.commandText), images, chatType, sessionId });
+        // 群聊上下文注入：@bot 时拉取最近群聊记录，让 bot 知道在聊什么。
+        let context: string | undefined;
+        const gc = cfg.bot.groupContext;
+        if (chatType === 'group' && gc?.enabled && options.fetchGroupHistory && event.message_id && event.group_id) {
+          const ctxOptions: GroupContextOptions = {
+            messageCount: gc.messageCount,
+            skipForward: gc.skipForward,
+            includeImages: gc.includeImages,
+            maxChars: gc.maxChars,
+          };
+          context = await fetchGroupContext({
+            fetchHistory: options.fetchGroupHistory,
+            groupId: event.group_id,
+            anchorMessageId: event.message_id,
+            selfId: options.selfId?.() ?? cfg.bot.botQqId,
+            options: ctxOptions,
+          });
+          if (context) log?.info('群上下文已注入', { groupId: event.group_id, contextChars: context.length });
+        }
+        result = await options.app.handle({ text: stripNonTextCqSegments(decision.commandText), images, chatType, sessionId, context });
       } else if (decision.kind === 'command') {
         result = await runCommand(options.app, decision, { text: stripNonTextCqSegments(decision.args), images, chatType, sessionId });
         if (!result) return { handled: false, reason: `command-unsupported:${decision.command}` };

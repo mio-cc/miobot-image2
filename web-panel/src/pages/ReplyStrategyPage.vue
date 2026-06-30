@@ -202,6 +202,64 @@ export default defineComponent({
 
             <div class="card p-5">
               <div class="flex items-center justify-between mb-4">
+                <h3 class="section-title">会话记忆隔离</h3>
+              </div>
+              <p style="color: var(--muted); font-size: 0.78rem; margin-bottom: 16px;">
+                每个用户 QQ 拥有独立的对话记忆（群聊按 group:群号:QQ号 隔离，私聊按 QQ 号隔离），互不干扰。设置空闲超时时间，超时未对话的会话自动清理，避免长期运行内存堆积。设为 0 表示永不清理。
+              </p>
+              <div class="group-grid group-grid--2">
+                <div>
+                  <label class="label-sm">会话空闲超时（分钟）</label>
+                  <input type="number" min="0" max="1440" v-model.number="config.llm.sessionTtlMinutes" class="input-field" />
+                  <p style="color: var(--muted); font-size: 0.72rem; margin-top: 4px;">0 = 永不清理；推荐 30 分钟</p>
+                </div>
+                <div>
+                  <label class="label-sm">最大对话轮数</label>
+                  <input type="number" min="1" max="50" v-model.number="config.llm.maxConversationRounds" class="input-field" />
+                  <p style="color: var(--muted); font-size: 0.72rem; margin-top: 4px;">1 轮 = 用户+回复，超出从最旧丢弃</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="card p-5">
+              <div class="flex items-center justify-between mb-4">
+                <h3 class="section-title">群聊上下文注入</h3>
+                <label class="setting-row" style="padding: 6px 12px; min-height: 34px;">
+                  <input type="checkbox" v-model="config.bot.groupContext.enabled" style="accent-color: #0ea5e9;" />
+                  <span style="font-size: 0.78rem; font-weight: 600; color: var(--text-soft);">启用</span>
+                </label>
+              </div>
+              <p style="color: var(--muted); font-size: 0.78rem; margin-bottom: 16px;">
+                在群聊中被 @机器人 时，自动拉取最近的群聊记录作为上下文喂给模型，让机器人知道大家在聊什么。机器人会自行判断上下文是否与你的消息相关，相关则结合回复，无关则正常回复。
+              </p>
+              <div class="group-grid group-grid--2">
+                <div>
+                  <label class="label-sm">拉取消息条数</label>
+                  <input type="number" min="5" max="50" v-model.number="config.bot.groupContext.messageCount" class="input-field" />
+                  <p style="color: var(--muted); font-size: 0.72rem; margin-top: 4px;">推荐 30 条</p>
+                </div>
+                <div>
+                  <label class="label-sm">上下文最大字符数</label>
+                  <input type="number" min="500" max="20000" v-model.number="config.bot.groupContext.maxChars" class="input-field" />
+                  <p style="color: var(--muted); font-size: 0.72rem; margin-top: 4px;">超出从最旧截断</p>
+                </div>
+                <div>
+                  <label class="setting-row" style="padding: 6px 0; min-height: 34px;">
+                    <input type="checkbox" v-model="config.bot.groupContext.skipForward" style="accent-color: #0ea5e9;" />
+                    <span style="font-size: 0.78rem; color: var(--text-soft);">跳过合并转发消息（避免内容撑爆）</span>
+                  </label>
+                </div>
+                <div>
+                  <label class="setting-row" style="padding: 6px 0; min-height: 34px;">
+                    <input type="checkbox" v-model="config.bot.groupContext.includeImages" style="accent-color: #0ea5e9;" />
+                    <span style="font-size: 0.78rem; color: var(--text-soft);">上下文含图片 URL（视频/文件/语音仍用占位符）</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="card p-5">
+              <div class="flex items-center justify-between mb-4">
                 <h3 class="section-title">文本转语音 / TTS</h3>
                 <label class="setting-row" style="padding: 6px 12px; min-height: 34px;">
                   <input type="checkbox" v-model="config.bot.tts.enabled" style="accent-color: #0ea5e9;" />

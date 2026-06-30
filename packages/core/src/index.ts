@@ -215,24 +215,35 @@ export interface SessionStoreOptions {
   maxRounds?: number;
   /** 历史 JSON 序列化后的最大字符数,超出则从最旧丢弃。 */
   maxChars?: number;
+  /** 会话空闲超时(毫秒)，超时未访问的会话在 cleanup() 时删除。0 = 永不超时。 */
+  ttlMs?: number;
+  /** 时钟注入(测试用)。 */
+  clock?: () => number;
 }
 
 /**
  * 会话记忆:按会话键保存对话历史,按轮数 + 字符数双上限裁剪。
  * 取代旧 bot-runtime 里的全局 `sessions` Map + `pruneHistory`,做成可注入、可测的内核组件。
+ * 支持空闲 TTL 清理:超时未访问的会话由 cleanup() 删除，避免长期运行内存堆积。
  */
 export class SessionStore {
   private readonly maxRounds: number;
   private readonly maxChars: number;
+  private readonly ttlMs: number;
+  private readonly clock: () => number;
   private readonly store = new Map<string, SessionMessage[]>();
+  private readonly accessedAt = new Map<string, number>();
 
   constructor(options: SessionStoreOptions = {}) {
     this.maxRounds = Math.max(1, Math.trunc(options.maxRounds ?? 8));
     this.maxChars = Math.max(1000, Math.trunc(options.maxChars ?? 12000));
+    this.ttlMs = Math.max(0, Math.trunc(options.ttlMs ?? 0));
+    this.clock = options.clock || (() => Date.now());
   }
 
   /** 取某会话的历史副本(不含 system)。 */
   get(key: string): SessionMessage[] {
+    this.accessedAt.set(key, this.clock());
     return [...(this.store.get(key) || [])];
   }
 
@@ -240,16 +251,34 @@ export class SessionStore {
   append(key: string, user: SessionMessage, assistant: SessionMessage): SessionMessage[] {
     const next = this.prune([...(this.store.get(key) || []), user, assistant]);
     this.store.set(key, next);
+    this.accessedAt.set(key, this.clock());
     return next;
   }
 
   /** 清空某会话(新开对话)。 */
   clear(key: string): boolean {
+    this.accessedAt.delete(key);
     return this.store.delete(key);
   }
 
   clearAll(): void {
     this.store.clear();
+    this.accessedAt.clear();
+  }
+
+  /** 删除空闲超时的会话，返回清理数量。ttlMs=0 时直接返回 0。 */
+  cleanup(now?: number): number {
+    if (this.ttlMs <= 0) return 0;
+    const t = now ?? this.clock();
+    let removed = 0;
+    for (const [key, at] of this.accessedAt) {
+      if (t - at > this.ttlMs) {
+        this.store.delete(key);
+        this.accessedAt.delete(key);
+        removed++;
+      }
+    }
+    return removed;
   }
 
   private prune(messages: SessionMessage[]): SessionMessage[] {

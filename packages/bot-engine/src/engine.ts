@@ -5,7 +5,7 @@ import { resolveImageCapabilities, type EngineRoutingConfig } from './capabiliti
 
 /** 下游能力（由 apps/bot 用 model/image/reply 实现；测试可注入 fake）。 */
 export interface BotEngineDeps {
-  chat(req: { model: string; text: string; images?: string[]; sessionId?: string; nodeIndex?: number }): Promise<{ text: string }>;
+  chat(req: { model: string; text: string; images?: string[]; sessionId?: string; nodeIndex?: number; context?: string }): Promise<{ text: string }>;
   generateImages(req: { model: string; prompt: string; size?: string; count?: number; quality?: string; templateId?: string }): Promise<{ images: string[] }>;
   editImage(req: { model: string; prompt: string; images: string[]; size?: string; quality?: string }): Promise<{ images: string[] }>;
   interrogate(req: { model: string; images: string[]; prompt?: string }): Promise<{ text: string }>;
@@ -24,6 +24,8 @@ export interface BotEngineOptions {
 export interface BotEngineInput extends IntentInput {
   /** 会话键(group:xxx / private:xxx),供 chat 取用对话记忆。 */
   sessionId?: string;
+  /** 群聊上下文(@bot 时拉取的最近群聊记录),以 system 消息注入 chat 模型。 */
+  context?: string;
 }
 
 export interface BotEngineResult {
@@ -110,7 +112,7 @@ export class BotEngine {
         const usedPlanner = decision.usedPlanner;
         const chatModel = usedPlanner && cfg.freeModeModel ? cfg.freeModeModel : cfg.chatModel;
         const chatNode = usedPlanner && cfg.freeModeNodeIndex !== undefined ? cfg.freeModeNodeIndex : undefined;
-        const { text } = await this.deps.chat({ model: chatModel, text: p.prompt || input.text, images, sessionId: input.sessionId, nodeIndex: chatNode });
+        const { text } = await this.deps.chat({ model: chatModel, text: p.prompt || input.text, images, sessionId: input.sessionId, nodeIndex: chatNode, context: input.context });
         return { kind: 'chat', decision, text, handled: true };
       }
       case 'image.generate': {
