@@ -23,6 +23,8 @@ export interface BotAppOptions {
   chatSystemPrompt?: string;
   /** 生图提示词流水线；不传则用 ModelClient 后端(模板渲染+润色+安全改写)。 */
   pipeline?: ImagePromptPipeline;
+  /** 可选日志器（透传给 BotEngine，用于诊断意图路由的 gate/caps 决策）。 */
+  log?: { info(message: string, data?: Record<string, unknown>): void; warn(message: string, data?: Record<string, unknown>): void; error(message: string, data?: Record<string, unknown>): void };
 }
 
 export interface BotApp {
@@ -62,6 +64,7 @@ export function createBotApp(options: BotAppOptions): BotApp {
     getConfig: () => toEngineRoutingConfig(options.getConfig()),
     registry,
     planner,
+    log: options.log,
   });
   return {
     engine,

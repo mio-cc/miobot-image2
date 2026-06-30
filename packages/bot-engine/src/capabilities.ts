@@ -24,8 +24,14 @@ export interface EngineRoutingConfig {
  * 这正是修复"可以把生图路由指向纯文本模型"的地方。
  */
 export function resolveImageCapabilities(cfg: EngineRoutingConfig, registry: CapabilityRegistry): IntentCapabilities {
+  // chat 能力需同时考虑自由模式：freeMode 的文本回复走 freeMode 节点/freeModeModel，
+  // 不应被 chatModel 的能力（或 chatEnabled）卡死，否则自由模式下任何对话都会被
+  // gate() 降级成 ignore → bot 不回复。
+  const chatCapable =
+    (cfg.chatEnabled !== false && registry.can(cfg.chatModel, 'chat')) ||
+    (Boolean(cfg.freeModeEnabled) && registry.can(cfg.freeModeModel, 'chat'));
   return {
-    chat: cfg.chatEnabled !== false && registry.can(cfg.chatModel, 'chat'),
+    chat: chatCapable,
     imageGenerate: cfg.imageEnabled !== false && registry.can(cfg.imageModel, 'image.generate'),
     imageEdit: cfg.imageEnabled !== false && registry.can(cfg.editModel, 'image.edit'),
     interrogate: registry.can(cfg.interrogateModel, 'interrogate'),

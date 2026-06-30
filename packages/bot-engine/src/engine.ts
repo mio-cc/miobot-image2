@@ -17,6 +17,8 @@ export interface BotEngineOptions {
   getConfig: () => EngineRoutingConfig;
   registry?: CapabilityRegistry;
   planner?: PlannerClient;
+  /** 可选日志器（用于诊断意图路由的 gate/caps 决策）。 */
+  log?: { info(message: string, data?: Record<string, unknown>): void; warn(message: string, data?: Record<string, unknown>): void; error(message: string, data?: Record<string, unknown>): void };
 }
 
 export interface BotEngineInput extends IntentInput {
@@ -37,28 +39,37 @@ export class BotEngine {
   private readonly getConfig: () => EngineRoutingConfig;
   private readonly registry: CapabilityRegistry;
   private readonly planner?: PlannerClient;
+  private readonly log?: { info(message: string, data?: Record<string, unknown>): void; warn(message: string, data?: Record<string, unknown>): void; error(message: string, data?: Record<string, unknown>): void };
 
   constructor(options: BotEngineOptions) {
     this.deps = options.deps;
     this.getConfig = options.getConfig;
     this.registry = options.registry || createCapabilityRegistry();
     this.planner = options.planner;
+    this.log = options.log;
   }
 
   /** 自动路由：判断 chat/生图/改图/反推 并分发。能力门控基于模型实际档案。 */
   async handleAuto(input: BotEngineInput): Promise<BotEngineResult> {
     const cfg = this.getConfig();
+    const caps = resolveImageCapabilities(cfg, this.registry);
     const router = createIntentRouter({
       planner: this.planner,
       plannerModel: cfg.freeModeModel,
       plannerVisionEnabled: this.registry.can(cfg.freeModeModel, 'vision'),
       plannerPromptTemplate: cfg.plannerPromptTemplate,
       timeoutMs: cfg.plannerTimeoutMs,
-      capabilities: resolveImageCapabilities(cfg, this.registry),
+      capabilities: caps,
       preferEditWhenImagePresent: cfg.preferEditWhenImagePresent,
       maxCount: cfg.maxOutputImages ?? 4,
     });
     const decision = await router.route(input);
+    this.log?.info('意图路由完成', {
+      kind: decision.kind, source: decision.source, reason: decision.reason,
+      caps, chatEnabled: cfg.chatEnabled, chatModel: cfg.chatModel,
+      freeModeEnabled: cfg.freeModeEnabled, freeModeModel: cfg.freeModeModel,
+      inputText: (input.text || '').slice(0, 80),
+    });
     return this.dispatch(decision, input, cfg);
   }
 

@@ -143,7 +143,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     }
     if (!result) return { handled: false, reason: 'no-result' };
 
-    log?.info('引擎返回结果', { kind: result.kind, handled: result.handled, hasText: !!(result as any).text, imageCount: (result as any).images?.length || 0 });
+    log?.info('引擎返回结果', { kind: result.kind, handled: result.handled, hasText: !!(result as any).text, imageCount: (result as any).images?.length || 0, reason: (result as any).reason || (result as any).decision?.reason });
     await sendResult(engine, replyCtx, result, options.voice, options.reply);
     log?.info('回复发送完成', { kind: result.kind });
     return { handled: result.handled, kind: result.kind };

@@ -36,7 +36,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
 
   const registry = createCapabilityRegistry();
   const client = createModelClient({ nodes: toModelNodes(config), registry });
-  const app = createBotApp({ getConfig, client, registry });
+  const app = createBotApp({ getConfig, client, registry, log: logger });
 
   const nap = config.napcat;
   const adapter = new NapcatAdapter({
