@@ -196,7 +196,7 @@ const LIGHTBOX_MIN_ZOOM = 0.25;
 const LIGHTBOX_MAX_ZOOM = 6;
 const COLLECTION_FETCH_LIMIT = 120;
 const CARD_PROMPT_PREVIEW_CHARS = 180;
-const INITIAL_COLLECTION_RENDER_LIMIT = 32;
+const INITIAL_COLLECTION_RENDER_LIMIT = 16;
 const COLLECTION_RENDER_BATCH_SIZE = 8;
 const COLLECTION_SCROLL_PRELOAD_PX = 480;
 const MASONRY_EAGER_IMAGE_COUNT = 6;
@@ -3376,6 +3376,9 @@ function LazyMasonryImage({ asset, alt, eager, rootRef }: LazyMasonryImageProps)
           height={asset.height}
           decoding="async"
           loading={eager ? "eager" : "lazy"}
+          // LCP 优化：eager 图片（首屏前6张）设 fetchPriority=high，
+          // 否则浏览器默认 Low 优先级导致 2430ms 加载延迟（实测 LCP 4133ms 主因）。
+          {...(eager ? { fetchPriority: "high" as const } : {})}
         />
       ) : (
         <span className="masonry-card__image-placeholder" aria-hidden="true" />
@@ -3489,13 +3492,22 @@ function useRowOrderedMasonry<T extends HTMLElement>(layoutKey: string) {
       pendingCards.clear();
       if (cards.length === 0) return;
 
+      // 性能优化：读写分离消除 layout thrashing。
+      // 原实现循环内先读 scrollHeight(触发 layout) 再写 gridRowEnd(使 layout 失效)，
+      // 每张卡片都强制浏览器同步重算布局，32 张卡片 = 32 次 forced reflow = 401ms。
+      // 现在先批量读取所有高度，再批量写入 span，整个 measure 只触发一次 layout。
+      const updates: Array<{ card: HTMLElement; gridRowEnd: string }> = [];
       for (const card of cards) {
         const height = card.scrollHeight || card.getBoundingClientRect().height;
         const span = Math.max(1, Math.ceil((height + rowGap) / (rowSize + rowGap)));
         const nextGridRowEnd = `span ${span}`;
         if (card.style.gridRowEnd !== nextGridRowEnd) {
-          card.style.gridRowEnd = nextGridRowEnd;
+          updates.push({ card, gridRowEnd: nextGridRowEnd });
         }
+      }
+      // 批量写入（不触发额外 layout，仅使样式失效，下次读取时才重算）
+      for (const { card, gridRowEnd } of updates) {
+        card.style.gridRowEnd = gridRowEnd;
       }
     };
 

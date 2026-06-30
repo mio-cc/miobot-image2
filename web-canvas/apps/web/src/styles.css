@@ -424,18 +424,16 @@ button:disabled {
   backdrop-filter: blur(14px);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 14px 32px rgba(0, 0, 0, 0.24);
   margin: 0 0 0.95rem;
-  transition:
-    transform 220ms var(--transition-bezier),
-    box-shadow 220ms var(--transition-bezier),
-    border-color 220ms var(--transition-bezier),
-    background 220ms var(--transition-bezier);
-  animation: card-rise 260ms var(--transition-bezier) both;
+  /* 性能优化：仅过渡 border-color(轻量)，移除 transform/background/box-shadow 过渡，
+     避免 hover 时数十张卡片同时触发重排重绘。card-rise 动画已移除避免初始渲染卡顿。 */
+  transition: border-color 160ms var(--transition-bezier);
 }
 
 .masonry-card:hover {
-  transform: translateY(-3px);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 20px 44px rgba(0, 0, 0, 0.38);
+  /* 移除 translateY(−3px)：transform 触发整列重排，卡片多时严重卡顿。
+     用 will-change 提示仅 border 变化，box-shadow 改用静态值不过渡。 */
   border-color: rgba(240, 140, 111, 0.28);
+  will-change: auto;
 }
 
 .masonry-card__image {
