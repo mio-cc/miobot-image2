@@ -331,7 +331,7 @@ export default defineComponent({
                       <button @click="copyLogEntry(entry)" class="log-copy-button">复制本条</button>
                     </header>
                     <p class="log-entry__message selectable-log-text">{{ entry.message }}</p>
-                    <pre v-if="formatLogDetails(entry.details)" class="log-entry__details selectable-log-text">{{ formatLogDetails(entry.details) }}</pre>
+                    <pre v-if="formatLogDetails(entry.details || entry.data)" class="log-entry__details selectable-log-text">{{ formatLogDetails(entry.details || entry.data) }}</pre>
                   </article>
                 </div>
               </div>

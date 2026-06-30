@@ -909,7 +909,7 @@ export function usePanelStore() {
           limit: logLimit.value,
         },
       });
-      logEntries.value = res.data.entries || [];
+      logEntries.value = res.data.items || res.data.entries || [];
       logStats.value = res.data.stats || null;
     } catch (e: any) {
       logError.value = e.response?.data?.error || e.message || '日志加载失败';
@@ -924,7 +924,7 @@ export function usePanelStore() {
     logError.value = '';
     try {
       const res = await axios.post(`${API_BASE}/logs/clear`, {}, { headers: authHeaders() });
-      logEntries.value = res.data.entries || [];
+      logEntries.value = res.data.items || res.data.entries || [];
       logStats.value = res.data.stats || null;
       showToast('日志已清空！', 'success');
     } catch (e: any) {
@@ -949,7 +949,7 @@ export function usePanelStore() {
           limit: canvasLogLimit.value,
         },
       });
-      canvasLogEntries.value = res.data.entries || [];
+      canvasLogEntries.value = res.data.items || res.data.entries || [];
       canvasLogStats.value = res.data.stats || null;
     } catch (e: any) {
       canvasLogError.value = e.response?.data?.error || e.message || '画布日志加载失败';
@@ -964,7 +964,7 @@ export function usePanelStore() {
     canvasLogError.value = '';
     try {
       const res = await axios.post(`${API_BASE}/canvas/logs/clear`, {}, { headers: authHeaders() });
-      canvasLogEntries.value = res.data.entries || [];
+      canvasLogEntries.value = res.data.items || res.data.entries || [];
       canvasLogStats.value = res.data.stats || null;
       showToast('画布日志已清空', 'success');
     } catch (e: any) {
@@ -1046,7 +1046,7 @@ export function usePanelStore() {
   }
 
   function formatLogEntry(entry: LogEntry) {
-    const details = formatLogDetails(entry.details);
+    const details = formatLogDetails(entry.details || entry.data);
     return [
       `#${entry.id} ${entry.timestamp} [${logLevelText(entry.level)}] [${entry.scope}] ${entry.message}`,
       details ? `details:\n${details}` : '',
@@ -1124,7 +1124,7 @@ export function usePanelStore() {
   }
 
   function copyLogDetails(entry: LogEntry) {
-    const details = formatLogDetails(entry.details);
+    const details = formatLogDetails(entry.details || entry.data);
     copyText(details || entry.message, `已复制详情 #${entry.id}`);
   }
 

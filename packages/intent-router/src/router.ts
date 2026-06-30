@@ -172,7 +172,10 @@ export class IntentRouter {
   /** 合并 bang 参数（最高优先）与 planner 参数；chat/interrogate 不需要图像参数。 */
   private buildParams(kind: IntentKind, params: ParsedImageParams, raw: RawDecision): IntentParams {
     if (kind === 'chat') {
-      return { prompt: raw.plannerText ?? params.prompt ?? '', tokens: params.tokens };
+      // chat 用用户原始输入作为提示词，不用 plannerText —— planner 只判定意图，
+      // 它的 text 回复若被当作用户消息喂给 chat 模型，会产生无上下文的奇怪回复，
+      // 甚至触发部分模型/中转的 function-calling 语法(如 search("..."))泄露到输出。
+      return { prompt: params.prompt ?? params.rawInput ?? '', tokens: params.tokens };
     }
     if (kind === 'image.interrogate' || kind === 'ignore') {
       return { prompt: params.prompt, tokens: params.tokens, templateId: params.templateId };

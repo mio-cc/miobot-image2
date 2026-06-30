@@ -94,12 +94,12 @@ export default defineComponent({
                     <p class="log-entry__message selectable-log-text">{{ entry.message }}</p>
                   </div>
 
-                  <div v-if="formatLogDetails(entry.details)" class="log-entry__details-panel">
+                  <div v-if="formatLogDetails(entry.details || entry.data)" class="log-entry__details-panel">
                     <div class="log-entry__details-head">
                       <span>原始堆栈 / 结构化数据</span>
                       <button @click="copyLogDetails(entry)" class="log-copy-button">复制详情</button>
                     </div>
-                    <pre class="log-entry__details selectable-log-text">{{ formatLogDetails(entry.details) }}</pre>
+                    <pre class="log-entry__details selectable-log-text">{{ formatLogDetails(entry.details || entry.data) }}</pre>
                   </div>
                 </article>
               </div>

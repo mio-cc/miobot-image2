@@ -76,14 +76,14 @@ test('detectIntentSignals: 普通文本无信号', () => {
 
 // 规划器兜底
 
-test('planner: 歧义文本 -> 规划器判 text -> chat', async () => {
+test('planner: 歧义文本 -> 规划器判 text -> chat，prompt 用用户原始输入而非 plannerText', async () => {
   const planner = new FakePlanner('{"action":"text","text":"你好呀"}');
   const router = createIntentRouter({ planner, plannerModel: 'gpt-4o-mini' });
   const d = await router.route({ text: '在吗' });
   assert.equal(d.kind, 'chat');
   assert.equal(d.source, 'planner');
   assert.equal(d.usedPlanner, true);
-  assert.equal(d.params.prompt, '你好呀');
+  assert.equal(d.params.prompt, '在吗');
 });
 
 test('planner: 判 generate -> image.generate 并带规划器 prompt', async () => {
