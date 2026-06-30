@@ -5,6 +5,7 @@ import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { BotEngineResult } from '../../../packages/bot-engine/src/index.js';
 import type { BotApp } from './app.js';
 import { isOwner, parseOwnerCommand, type OwnerCommand } from './owner.js';
+import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 
 /** Napcat(OneBot) 上报的消息事件(只取本环需要的字段)。 */
 export interface NapcatMessageEvent {
@@ -36,6 +37,8 @@ export interface BotRuntimeOptions {
     ownerQQs: () => Array<string | number>;
     handle: (command: OwnerCommand, ctx: { chatType: 'group' | 'private'; groupId?: number | string; userId?: number | string; messageId?: number | string }) => Promise<string | null | undefined>;
   };
+  /** 结构化日志器(对齐 monolith bot-runtime.mjs 的 logger);不给则无日志。 */
+  logger?: StructuredLogger;
 }
 
 export interface BotRuntimeResult {
@@ -51,6 +54,7 @@ const DEFAULT_CLEAR_ALIASES = '/clear, 新对话, 清除对话, 清空对话, cl
  * chat 带会话记忆(sessionId);clear 清会话;help 自动生成。纯装配 + 依赖注入,可用 fake 单测。
  */
 export function createBotMessageRuntime(options: BotRuntimeOptions) {
+  const log = options.logger;
   async function handleMessageEvent(event: NapcatMessageEvent): Promise<BotRuntimeResult> {
     if (event.post_type && event.post_type !== 'message') return { handled: false, reason: 'not-a-message' };
     const cfg = options.getConfig();
@@ -61,6 +65,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const images = extractImages(event);
     const userId = event.user_id ?? event.sender?.user_id;
     const sessionId = chatType === 'group' ? `group:${event.group_id}` : `private:${userId}`;
+    log?.info('收到消息', { chatType, groupId: event.group_id, userId, rawMessage: rawMessage.slice(0, 100), images: images.length });
 
     // 主人命令优先于普通路由。
     if (options.owner && isOwner(userId, options.owner.ownerQQs())) {
@@ -87,7 +92,11 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
 
     const router = createBotRouter(toRouterConfig(cfg, options.selfId?.()));
     const decision = router.route(ctx);
-    if (decision.kind === 'ignored') return { handled: false, reason: decision.reason };
+    if (decision.kind === 'ignored') {
+      log?.info('消息被忽略', { reason: decision.reason, rawMessage: rawMessage.slice(0, 80) });
+      return { handled: false, reason: decision.reason };
+    }
+    log?.info('路由决策', { kind: decision.kind, commandText: (decision as any).commandText?.slice(0, 80) });
 
     const replyCtx: ReplyContext = {
       chatType,
@@ -117,17 +126,26 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     }
 
     let result: BotEngineResult | null = null;
-    if (decision.kind === 'chat' || decision.kind === 'freeMode') {
-      result = await options.app.handle({ text: stripNonTextCqSegments(decision.commandText), images, chatType, sessionId });
-    } else if (decision.kind === 'command') {
-      result = await runCommand(options.app, decision, { text: stripNonTextCqSegments(decision.args), images, chatType, sessionId });
-      if (!result) return { handled: false, reason: `command-unsupported:${decision.command}` };
-    } else {
-      return { handled: false, reason: 'no-route' };
+    try {
+      if (decision.kind === 'chat' || decision.kind === 'freeMode') {
+        result = await options.app.handle({ text: stripNonTextCqSegments(decision.commandText), images, chatType, sessionId });
+      } else if (decision.kind === 'command') {
+        result = await runCommand(options.app, decision, { text: stripNonTextCqSegments(decision.args), images, chatType, sessionId });
+        if (!result) return { handled: false, reason: `command-unsupported:${decision.command}` };
+      } else {
+        return { handled: false, reason: 'no-route' };
+      }
+    } catch (error) {
+      const errMsg = String((error as Error)?.message || error);
+      log?.error('引擎处理失败', { error: errMsg, kind: decision.kind, chatModel: cfg.llm.chatModel, chatNodeIndex: cfg.llm.chatNodeIndex, imageNodeIndex: cfg.llm.imageNodeIndex, freeModeNodeIndex: cfg.freeMode.nodeIndex });
+      try { await engine.replyText(replyCtx, `处理失败: ${errMsg.slice(0, 200)}`); } catch { /* best-effort */ }
+      return { handled: false, reason: 'engine-error' };
     }
     if (!result) return { handled: false, reason: 'no-result' };
 
+    log?.info('引擎返回结果', { kind: result.kind, handled: result.handled, hasText: !!(result as any).text, imageCount: (result as any).images?.length || 0 });
     await sendResult(engine, replyCtx, result, options.voice, options.reply);
+    log?.info('回复发送完成', { kind: result.kind });
     return { handled: result.handled, kind: result.kind };
   }
 

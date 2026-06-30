@@ -56,6 +56,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     getConfig,
     selfId: () => adapter.selfQqId || undefined,
     botName: options.botName || 'Miobot',
+    logger,
     voice: async (text) => {
       const tts = getConfig().bot.tts;
       if (!shouldUseTts(tts, text)) return null;
