@@ -73,7 +73,7 @@ test('deps: chat without images -> client.chat with user message', async () => {
   const deps = createModelBackedDeps({ client, getRouting: () => ({ chatNodeIndex: 2, imageNodeIndex: 0, editNodeIndex: 0, interrogateNodeIndex: 0, freeModeNodeIndex: 0 }) });
   const r = await deps.chat({ model: 'gpt-4o-mini', text: '你好' });
   assert.equal(r.text, 'CHAT');
-  assert.deepEqual(client.calls[0], ['chat', 2, { model: 'gpt-4o-mini', messages: [{ role: 'user', content: '你好' }] }]);
+  assert.deepEqual(client.calls[0], ['chat', 2, { model: 'gpt-4o-mini', messages: [{ role: 'user', content: '你好' }], maxTokens: 2000 }]);
 });
 
 test('deps: chat with images on vision-capable model -> client.vision', async () => {

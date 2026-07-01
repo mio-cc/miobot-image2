@@ -1,11 +1,11 @@
 import { createIntentRouter, type IntentDecision, type IntentInput, type IntentKind, type IntentParams, type PlannerClient } from '../../intent-router/src/index.js';
-import type { CapabilityRegistry } from '../../model/src/index.js';
+import type { CapabilityRegistry, ReasoningEffort } from '../../model/src/index.js';
 import { createCapabilityRegistry } from '../../model/src/index.js';
 import { resolveImageCapabilities, type EngineRoutingConfig } from './capabilities.js';
 
 /** 下游能力（由 apps/bot 用 model/image/reply 实现；测试可注入 fake）。 */
 export interface BotEngineDeps {
-  chat(req: { model: string; text: string; images?: string[]; sessionId?: string; nodeIndex?: number; context?: string; timeoutMs?: number }): Promise<{ text: string }>;
+  chat(req: { model: string; text: string; images?: string[]; sessionId?: string; nodeIndex?: number; context?: string; timeoutMs?: number; maxTokens?: number; reasoningEffort?: ReasoningEffort }): Promise<{ text: string }>;
   generateImages(req: { model: string; prompt: string; size?: string; count?: number; quality?: string; templateId?: string }): Promise<{ images: string[] }>;
   editImage(req: { model: string; prompt: string; images: string[]; size?: string; quality?: string }): Promise<{ images: string[] }>;
   interrogate(req: { model: string; images: string[]; prompt?: string }): Promise<{ text: string }>;
@@ -124,7 +124,7 @@ export class BotEngine {
         // chat 路径注入引用/转发上下文(模型需要理解在聊什么);图像路径用纯 prompt 不污染。
         const baseText = p.prompt || input.text;
         const chatText = composeChatText(baseText, input.referenceText, input.forwardText);
-        const { text } = await this.deps.chat({ model: chatModel, text: chatText, images, sessionId: input.sessionId, nodeIndex: chatNode, context: input.context, timeoutMs: cfg.plannerTimeoutMs });
+        const { text } = await this.deps.chat({ model: chatModel, text: chatText, images, sessionId: input.sessionId, nodeIndex: chatNode, context: input.context, timeoutMs: cfg.plannerTimeoutMs, reasoningEffort: cfg.reasoningEffort });
         return { kind: 'chat', decision, text, handled: true };
       }
       case 'image.generate': {

@@ -21,6 +21,7 @@ export const openAiDialect: Dialect = {
     ];
     const body: Record<string, unknown> = { model: req.model, messages: [{ role: 'user', content }] };
     if (req.maxTokens !== undefined) body.max_tokens = req.maxTokens;
+    if (req.reasoningEffort !== undefined) body.reasoning_effort = req.reasoningEffort;
     return { method: 'POST', url: joinUrl(node.baseUrl, '/chat/completions'), headers: bearerHeaders(node.apiKey, node.headers), body };
   },
   buildImageGeneration(node: ModelNode, req: ImageGenerationRequest): RequestPlan {

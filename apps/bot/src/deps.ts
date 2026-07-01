@@ -1,5 +1,5 @@
 import type { BotEngineDeps } from '../../../packages/bot-engine/src/index.js';
-import type { ImageArtifact, ImageResult, ModelClient } from '../../../packages/model/src/index.js';
+import type { ImageArtifact, ImageResult, ModelClient, ReasoningEffort } from '../../../packages/model/src/index.js';
 import type { PlannerClient } from '../../../packages/intent-router/src/index.js';
 import type { SessionStore } from '../../../packages/core/src/index.js';
 import type { BotRouting } from './config-bridge.js';
@@ -47,10 +47,17 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       const contextSystem = req.context
         ? { role: 'system', content: `【群内最近对话上下文】\n${req.context}\n（请根据@你的消息判断是否与上述上下文相关：相关则结合上下文回复，无关则正常回复用户，不要生硬搬运上下文内容）` }
         : null;
+      // 推理模型(gpt-5/o1/o3/o4/codex)需要 reasoning_effort 字段, 否则部分上游代理
+      // (如 chatgpt2api) 转发到 /backend-anon/conversation 时会被 OpenAI 拒(403)。
+      // 对齐历史 monolith 的 shouldSendReasoningEffort + max_tokens=2000 默认值。
+      const maxTokens = req.maxTokens ?? 2000;
+      const reasoningEffort = req.reasoningEffort as ReasoningEffort | undefined;
       // 带图对话走 vision，不进会话记忆(图片上下文不便持久化)。
       if (images.length > 0 && client.can(req.model, 'vision')) {
         const prompt = contextSystem ? `${contextSystem.content}\n\n${req.text}` : req.text;
-        const res = await client.vision(nodeIndex, { model: req.model, prompt, imageUrls: images });
+        const visionReq: { model: string; prompt: string; imageUrls: string[]; maxTokens: number; reasoningEffort?: ReasoningEffort } = { model: req.model, prompt, imageUrls: images, maxTokens };
+        if (reasoningEffort) visionReq.reasoningEffort = reasoningEffort;
+        const res = await client.vision(nodeIndex, visionReq);
         return { text: res.text };
       }
       // 模型无 vision 能力:图片被丢弃,记录警告便于排查(不阻塞纯文本回复)。
@@ -63,7 +70,8 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       if (contextSystem) messages.push(contextSystem);
       for (const m of history) messages.push({ role: m.role, content: m.content });
       messages.push({ role: 'user', content: req.text });
-      const chatReq: { model: string; messages: typeof messages; timeoutMs?: number } = { model: req.model, messages };
+      const chatReq: { model: string; messages: typeof messages; maxTokens: number; reasoningEffort?: ReasoningEffort; timeoutMs?: number } = { model: req.model, messages, maxTokens };
+      if (reasoningEffort) chatReq.reasoningEffort = reasoningEffort;
       if (req.timeoutMs) chatReq.timeoutMs = req.timeoutMs;
       const res = await client.chat(nodeIndex, chatReq);
       const answer = res.text;

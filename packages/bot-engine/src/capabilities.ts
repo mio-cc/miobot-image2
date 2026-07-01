@@ -1,4 +1,4 @@
-import type { CapabilityRegistry } from '../../model/src/index.js';
+import type { CapabilityRegistry, ReasoningEffort } from '../../model/src/index.js';
 import type { IntentCapabilities } from '../../intent-router/src/index.js';
 
 /** 引擎路由所需的配置切片（由 apps/bot 从 normalized config 提供，支持热重载）。 */
@@ -16,6 +16,8 @@ export interface EngineRoutingConfig {
   maxOutputImages?: number;
   plannerTimeoutMs?: number;
   plannerPromptTemplate?: string;
+  /** 推理模型(gpt-5/o1/o3/o4)的 reasoning_effort, 透传给 chat 请求。 */
+  reasoningEffort?: ReasoningEffort;
 }
 
 /**

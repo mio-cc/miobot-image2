@@ -53,6 +53,7 @@ export interface VisionRequest {
   imageUrls: string[];
   timeoutMs?: number;
   maxTokens?: number;
+  reasoningEffort?: ReasoningEffort;
 }
 
 export interface ImageGenerationRequest {

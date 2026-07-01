@@ -62,6 +62,7 @@ export function toEngineRoutingConfig(cfg: AppConfig): EngineRoutingConfig {
     maxOutputImages: cfg.freeMode.maxOutputImages,
     plannerTimeoutMs: cfg.freeMode.timeoutMs,
     plannerPromptTemplate: cfg.freeMode.plannerPromptTemplate,
+    reasoningEffort: cfg.llm.reasoningEffort,
   };
 }
 
