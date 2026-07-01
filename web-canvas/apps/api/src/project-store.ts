@@ -19,8 +19,8 @@ import { assets, generationOutputs, generationRecords, generationReferenceAssets
 export const DEFAULT_PROJECT_ID = "default";
 const DEFAULT_PROJECT_NAME = "Default Project";
 const fallbackWarnings = new Set<string>();
-const DEFAULT_COLLECTION_LIMIT = 120;
-const MAX_COLLECTION_LIMIT = 240;
+const DEFAULT_COLLECTION_LIMIT = 200;
+const MAX_COLLECTION_LIMIT = 2000;
 
 interface ProjectSnapshotInput {
   name?: string;

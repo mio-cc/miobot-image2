@@ -195,7 +195,9 @@ const MASONRY_IMAGE_SIZES = "(max-width: 640px) 46vw, (max-width: 1180px) 30vw, 
 const LIGHTBOX_IMAGE_SIZES = "100vw";
 const LIGHTBOX_MIN_ZOOM = 0.25;
 const LIGHTBOX_MAX_ZOOM = 6;
-const COLLECTION_FETCH_LIMIT = 120;
+// 后端 MAX_COLLECTION_LIMIT 已放宽到 2000; 这里直接拉够, 配合 union merge,
+// 实际上不会丢任何本地已生成作品(超过 2000 也仍保留在 state 不被替换)。
+const COLLECTION_FETCH_LIMIT = 2000;
 const CARD_PROMPT_PREVIEW_CHARS = 180;
 const INITIAL_COLLECTION_RENDER_LIMIT = 16;
 const COLLECTION_RENDER_BATCH_SIZE = 8;
