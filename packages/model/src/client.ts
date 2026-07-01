@@ -97,12 +97,16 @@ export class ModelClient {
     return this.run('chat', nodeIndex, req.model, req.timeoutMs, (d, n) => d.buildChat(n, req), (d, data) => d.parseChat(data));
   }
   async vision(nodeIndex: number, req: VisionRequest): Promise<TextResult> {
-    return this.run('vision', nodeIndex, req.model, req.timeoutMs,
-      (d, n) => requireBuilder(d, 'buildVision', n, req), (d, data) => d.parseChat(data));
+    const resolved = await this.resolveImageUrls(nodeIndex, req.imageUrls);
+    const r = resolved !== req.imageUrls ? { ...req, imageUrls: resolved } : req;
+    return this.run('vision', nodeIndex, r.model, r.timeoutMs,
+      (d, n) => requireBuilder(d, 'buildVision', n, r), (d, data) => d.parseChat(data));
   }
   async interrogate(nodeIndex: number, req: InterrogateRequest): Promise<TextResult> {
-    return this.run('interrogate', nodeIndex, req.model, req.timeoutMs,
-      (d, n) => requireBuilder(d, 'buildVision', n, { model: req.model, prompt: req.prompt || DEFAULT_INTERROGATE_PROMPT, imageUrls: req.imageUrls, maxTokens: req.maxTokens, timeoutMs: req.timeoutMs }),
+    const resolved = await this.resolveImageUrls(nodeIndex, req.imageUrls);
+    const r = resolved !== req.imageUrls ? { ...req, imageUrls: resolved } : req;
+    return this.run('interrogate', nodeIndex, r.model, r.timeoutMs,
+      (d, n) => requireBuilder(d, 'buildVision', n, { model: r.model, prompt: r.prompt || DEFAULT_INTERROGATE_PROMPT, imageUrls: r.imageUrls, maxTokens: r.maxTokens, timeoutMs: r.timeoutMs }),
       (d, data) => d.parseChat(data));
   }
   async generateImages(nodeIndex: number, req: ImageGenerationRequest): Promise<ImageResult> {
@@ -208,6 +212,40 @@ export class ModelClient {
     if (node && node.enabled !== false && String(node.baseUrl || '').trim()) return i;
     const fallback = this.nodes.findIndex((n) => n.enabled !== false && String(n.baseUrl || '').trim());
     return fallback >= 0 ? fallback : i;
+  }
+
+  /**
+   * Gemini 方言不收 http(s) 图片 URL(只认 fileUri/gs://),需下载转 base64 data URL。
+   * 其它方言(OpenAI/Anthropic/custom)直接收 http URL,无需下载。
+   * 下载失败时保留原 URL(让上游报错,至少有明确错误信息)。
+   */
+  private async resolveImageUrls(nodeIndex: number, imageUrls: string[] | undefined): Promise<string[]> {
+    if (!Array.isArray(imageUrls) || !imageUrls.length) return imageUrls || [];
+    const idx = this.resolveIndex(nodeIndex);
+    const node = this.nodes[idx];
+    if (!node) return imageUrls;
+    const dialect = dialectFor(node);
+    if (dialect.id !== 'gemini') return imageUrls;
+    // Gemini: 把 http(s):// URL 下载为 data: base64,非 http 的(data:/base64:/file:)原样保留。
+    const needsDownload = imageUrls.some((u) => /^https?:\/\//i.test(String(u || '')));
+    if (!needsDownload) return imageUrls;
+    const resolved: string[] = [];
+    for (const url of imageUrls) {
+      const u = String(url || '').trim();
+      if (!u) continue;
+      if (!/^https?:\/\//i.test(u)) { resolved.push(u); continue; }
+      try {
+        const res = await fetch(u);
+        if (!res.ok) { resolved.push(u); continue; }
+        const buf = Buffer.from(await res.arrayBuffer());
+        const mime = res.headers.get('content-type') || 'image/png';
+        resolved.push(`data:${mime};base64,${buf.toString('base64')}`);
+      } catch {
+        // 下载失败保留原 URL,上游会报错(比静默丢图好)
+        resolved.push(u);
+      }
+    }
+    return resolved;
   }
 
   /** 方言感知 failover：其它启用节点中、声明了同名模型的，按顺序作为候选（各自用自己的方言）。 */

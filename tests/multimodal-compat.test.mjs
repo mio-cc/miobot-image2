@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { inferProfileByName, CHAT_PROFILE, TEXT_ONLY_PROFILE } from '../dist/packages/model/src/capability/profiles.js';
 import { createCapabilityRegistry } from '../dist/packages/model/src/capability/registry.js';
+import { createModelClient } from '../dist/packages/model/src/index.js';
 import { normalizeConfig, createDefaultConfig } from '../dist/packages/config/src/index.js';
 import { normalizeImageUrl, extractImages } from '../dist/apps/bot/src/runtime.js';
 
@@ -158,4 +159,110 @@ test('extractImages: base64:// 段被归一化为 data: URL', () => {
   const imgs = extractImages(event);
   assert.equal(imgs.length, 1);
   assert.ok(imgs[0].startsWith('data:image/png;base64,'));
+});
+
+// ── Gemini: http 图片 URL 下载转 base64 ──
+
+function fakeGeminiTransport(capturedBody) {
+  return async (req) => {
+    if (capturedBody) capturedBody.push(typeof req.body === 'string' ? JSON.parse(req.body) : req.body);
+    return { status: 200, data: { candidates: [{ content: { parts: [{ text: 'gemini回答' }] } }] } };
+  };
+}
+
+test('gemini: vision 时 http 图片 URL 被下载转 base64 inlineData', async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalled = 0;
+  globalThis.fetch = async (url) => {
+    fetchCalled++;
+    assert.equal(url, 'https://example.com/img.png');
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: (h) => h === 'content-type' ? 'image/png' : null },
+      arrayBuffer: async () => {
+        // 1x1 transparent PNG
+        const buf = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+        return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+      },
+    };
+  };
+  try {
+    const captured = [];
+    const client = createModelClient({
+      nodes: [{ baseUrl: 'https://gen.googleapis.com', apiKey: 'g', dialect: 'gemini' }],
+      transport: fakeGeminiTransport(captured),
+    });
+    await client.vision(0, {
+      model: 'gemini-2.5-flash',
+      prompt: '描述这张图',
+      imageUrls: ['https://example.com/img.png'],
+    });
+    assert.equal(fetchCalled, 1, '应下载 1 次图片');
+    assert.equal(captured.length, 1, '应发送 1 次请求');
+    // 检查 body 里是 inlineData 而非 fileData
+    const parts = captured[0].contents[0].parts;
+    const imagePart = parts.find((p) => p.inlineData || p.fileData);
+    assert.ok(imagePart, '应有图片 part');
+    assert.ok(imagePart.inlineData, '应是 inlineData(下载后的 base64),非 fileData');
+    assert.ok(!imagePart.fileData, '不应有 fileData');
+    assert.match(imagePart.inlineData.mimeType, /image\/png/);
+    assert.ok(imagePart.inlineData.data.length > 10, 'base64 数据非空');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('gemini: data: URL 不下载,原样传 inlineData', async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalled = 0;
+  globalThis.fetch = async () => { fetchCalled++; return { ok: true, status: 200, headers: { get: () => 'image/png' }, arrayBuffer: async () => new ArrayBuffer(0) }; };
+  try {
+    const captured = [];
+    const client = createModelClient({
+      nodes: [{ baseUrl: 'https://gen.googleapis.com', apiKey: 'g', dialect: 'gemini' }],
+      transport: fakeGeminiTransport(captured),
+    });
+    await client.vision(0, {
+      model: 'gemini-2.5-flash',
+      prompt: '看图',
+      imageUrls: ['data:image/png;base64,iVBORw0KGgo=='],
+    });
+    assert.equal(fetchCalled, 0, 'data: URL 不应触发下载');
+    const parts = captured[0].contents[0].parts;
+    const imagePart = parts.find((p) => p.inlineData);
+    assert.ok(imagePart, '应有 inlineData');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('openai 方言: http 图片 URL 不下载,原样传 image_url', async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalled = 0;
+  globalThis.fetch = async () => { fetchCalled++; return { ok: true, status: 200, headers: { get: () => 'image/png' }, arrayBuffer: async () => new ArrayBuffer(0) }; };
+  try {
+    const captured = [];
+    const transport = async (req) => {
+      captured.push(typeof req.body === 'string' ? JSON.parse(req.body) : req.body);
+      return { status: 200, data: { choices: [{ message: { content: '回答' } }] } };
+    };
+    const client = createModelClient({
+      nodes: [{ baseUrl: 'https://api.openai.com/v1', apiKey: 'k', dialect: 'openai' }],
+      transport,
+    });
+    await client.vision(0, {
+      model: 'gpt-4o',
+      prompt: '看图',
+      imageUrls: ['https://example.com/img.png'],
+    });
+    assert.equal(fetchCalled, 0, 'OpenAI 方言不应下载图片');
+    // OpenAI 格式: messages[0].content[1].image_url.url
+    const content = captured[0].messages[0].content;
+    const imagePart = content.find((p) => p.image_url);
+    assert.ok(imagePart, '应有 image_url part');
+    assert.equal(imagePart.image_url.url, 'https://example.com/img.png');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
