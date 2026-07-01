@@ -63,7 +63,9 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       if (contextSystem) messages.push(contextSystem);
       for (const m of history) messages.push({ role: m.role, content: m.content });
       messages.push({ role: 'user', content: req.text });
-      const res = await client.chat(nodeIndex, { model: req.model, messages });
+      const chatReq: { model: string; messages: typeof messages; timeoutMs?: number } = { model: req.model, messages };
+      if (req.timeoutMs) chatReq.timeoutMs = req.timeoutMs;
+      const res = await client.chat(nodeIndex, chatReq);
       const answer = res.text;
       if (sessions && req.sessionId) {
         sessions.append(req.sessionId, { role: 'user', content: req.text }, { role: 'assistant', content: answer });

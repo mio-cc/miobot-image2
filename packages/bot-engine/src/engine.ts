@@ -5,7 +5,7 @@ import { resolveImageCapabilities, type EngineRoutingConfig } from './capabiliti
 
 /** 下游能力（由 apps/bot 用 model/image/reply 实现；测试可注入 fake）。 */
 export interface BotEngineDeps {
-  chat(req: { model: string; text: string; images?: string[]; sessionId?: string; nodeIndex?: number; context?: string }): Promise<{ text: string }>;
+  chat(req: { model: string; text: string; images?: string[]; sessionId?: string; nodeIndex?: number; context?: string; timeoutMs?: number }): Promise<{ text: string }>;
   generateImages(req: { model: string; prompt: string; size?: string; count?: number; quality?: string; templateId?: string }): Promise<{ images: string[] }>;
   editImage(req: { model: string; prompt: string; images: string[]; size?: string; quality?: string }): Promise<{ images: string[] }>;
   interrogate(req: { model: string; images: string[]; prompt?: string }): Promise<{ text: string }>;
@@ -112,14 +112,19 @@ export class BotEngine {
     const p = decision.params;
     switch (decision.kind) {
       case 'chat': {
-        // freeMode planner 返回 chat 时用 freeMode 的节点+模型，不依赖 chatNodeIndex/chatModel
+        // freeMode planner 返回 chat 时用 freeMode 的节点+模型，不依赖 chatNodeIndex/chatModel。
+        // 但 planner 失败回退(source==='fallback')时不再继续用可能已挂掉的 freeMode 节点,
+        // 改回 chat 节点,让纯文本对话至少能回 —— 否则 freeMode 节点一挂,planner 失败 +
+        // fallback chat 又用同一节点,bot 完全瘫痪(403/超时连环)。
         const usedPlanner = decision.usedPlanner;
-        const chatModel = usedPlanner && cfg.freeModeModel ? cfg.freeModeModel : cfg.chatModel;
-        const chatNode = usedPlanner && cfg.freeModeNodeIndex !== undefined ? cfg.freeModeNodeIndex : undefined;
+        const isFallback = decision.source === 'fallback';
+        const useFreeMode = usedPlanner && !isFallback;
+        const chatModel = useFreeMode && cfg.freeModeModel ? cfg.freeModeModel : cfg.chatModel;
+        const chatNode = useFreeMode && cfg.freeModeNodeIndex !== undefined ? cfg.freeModeNodeIndex : undefined;
         // chat 路径注入引用/转发上下文(模型需要理解在聊什么);图像路径用纯 prompt 不污染。
         const baseText = p.prompt || input.text;
         const chatText = composeChatText(baseText, input.referenceText, input.forwardText);
-        const { text } = await this.deps.chat({ model: chatModel, text: chatText, images, sessionId: input.sessionId, nodeIndex: chatNode, context: input.context });
+        const { text } = await this.deps.chat({ model: chatModel, text: chatText, images, sessionId: input.sessionId, nodeIndex: chatNode, context: input.context, timeoutMs: cfg.plannerTimeoutMs });
         return { kind: 'chat', decision, text, handled: true };
       }
       case 'image.generate': {
