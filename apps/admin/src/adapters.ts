@@ -1,4 +1,4 @@
-import { createCapabilityRegistry, createModelClient, type ModelNode, type ProviderDialect } from '../../../packages/model/src/index.js';
+import { createCapabilityRegistry, createModelClient, type CapabilityOverride, type ModelNode, type ModelOperation, type ProviderDialect } from '../../../packages/model/src/index.js';
 import { NapcatAdapter } from '../../../packages/napcat/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { AdminResponse, AdminServiceDeps } from '../../../packages/admin-service/src/index.js';
@@ -41,6 +41,19 @@ function toModelNodes(cfg: AppConfig): ModelNode[] {
   });
 }
 
+/** AppConfig.llm.capabilityOverrides → model 层 CapabilityOverride[]。 */
+function toCapabilityOverrides(cfg: AppConfig): CapabilityOverride[] {
+  const overrides = cfg.llm?.capabilityOverrides || [];
+  if (!Array.isArray(overrides) || !overrides.length) return [];
+  const ALLOWED: ModelOperation[] = ['chat', 'vision', 'interrogate', 'image.generate', 'image.edit'];
+  return overrides
+    .filter((o) => o && String(o.model || '').trim())
+    .map((o) => {
+      const ops = (o.operations || []).map((op) => String(op || '').trim() as ModelOperation).filter((op) => (ALLOWED as string[]).includes(op));
+      return ops.length ? { model: String(o.model).trim(), operations: ops } : { model: String(o.model).trim() };
+    });
+}
+
 function ok(body: unknown): AdminResponse { return { status: 200, body }; }
 function fail(status: number, error: string): AdminResponse { return { status, body: { success: false, error } }; }
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
@@ -55,7 +68,7 @@ type SaveConfigFn = (patch: unknown) => { config: AppConfig } | Promise<{ config
  * @param saveConfig 把配置 patch 回存(走 web-api repository.saveConfig → 触发 onReload 落盘)。
  */
 export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConfigFn): AdminServiceDeps {
-  const registry = createCapabilityRegistry();
+  const registry = createCapabilityRegistry({ overrides: toCapabilityOverrides(getConfig()) });
 
   async function fetchModels(body: unknown): Promise<AdminResponse> {
     const b = (body || {}) as Record<string, any>;

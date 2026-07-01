@@ -5,7 +5,7 @@ import { createDefaultConfig, normalizeConfig, type AppConfig } from '../../../p
 import { ConsoleLogSink, createLogger, type StructuredLogger } from '../../../packages/logger/src/index.js';
 import { createBotApp } from './app.js';
 import { createBotMessageRuntime, type NapcatMessageEvent } from './runtime.js';
-import { toModelNodes } from './config-bridge.js';
+import { toModelNodes, toCapabilityOverrides } from './config-bridge.js';
 import { shouldUseTts, synthesizeSpeech } from './tts.js';
 import type { OwnerCommand } from './owner.js';
 import type { NapcatHistoryMessage } from './group-context.js';
@@ -36,7 +36,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   const config: AppConfig = store ? store.load() : createDefaultConfig();
   const getConfig = (): AppConfig => config;
 
-  const registry = createCapabilityRegistry();
+  const registry = createCapabilityRegistry({ overrides: toCapabilityOverrides(config.llm.capabilityOverrides) });
   const client = createModelClient({ nodes: toModelNodes(config), registry });
   const app = createBotApp({ getConfig, client, registry, log: logger });
 

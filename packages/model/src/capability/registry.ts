@@ -1,5 +1,5 @@
 import type { ModelOperation } from '../ports.js';
-import { CHAT_PROFILE, inferProfileByName, type ModelProfile } from './profiles.js';
+import { CHAT_PROFILE, TEXT_ONLY_PROFILE, inferProfileByName, type ModelProfile } from './profiles.js';
 
 /** 用户覆盖：把某模型名（或正则字符串）映射到自定义档案/能力。 */
 export interface CapabilityOverride {
@@ -14,7 +14,7 @@ export interface CapabilityOverride {
 
 export interface CapabilityRegistryOptions {
   overrides?: CapabilityOverride[];
-  /** 推断不到档案时的兜底（默认宽松：认为可对话）。 */
+  /** 推断不到档案时的兜底（默认保守：纯文本对话，避免误调 vision API）。 */
   fallback?: ModelProfile;
 }
 
@@ -24,7 +24,7 @@ export class CapabilityRegistry {
 
   constructor(options: CapabilityRegistryOptions = {}) {
     this.overrides = options.overrides || [];
-    this.fallback = options.fallback || CHAT_PROFILE;
+    this.fallback = options.fallback || TEXT_ONLY_PROFILE;
   }
 
   profileOf(model: string): ModelProfile {

@@ -1,6 +1,6 @@
-import type { AppConfig } from '../../../packages/config/src/index.js';
+import type { AppConfig, ConfigCapabilityOverride } from '../../../packages/config/src/index.js';
 import type { EngineRoutingConfig } from '../../../packages/bot-engine/src/index.js';
-import type { ModelNode, ProviderDialect } from '../../../packages/model/src/index.js';
+import type { CapabilityOverride, ModelNode, ModelOperation, ProviderDialect } from '../../../packages/model/src/index.js';
 
 /** bot 各能力使用哪个节点（对应 16 路由表里 bot 那几条）。 */
 export interface BotRouting {
@@ -74,4 +74,16 @@ export function toBotRouting(cfg: AppConfig): BotRouting {
     interrogateNodeIndex: cfg.llm.interrogateNodeIndex,
     freeModeNodeIndex: cfg.freeMode.nodeIndex,
   };
+}
+
+/** AppConfig.llm.capabilityOverrides(配置层) → model 层 CapabilityOverride[]。把 string[] operations 转成强类型 ModelOperation[]。 */
+export function toCapabilityOverrides(overrides: ConfigCapabilityOverride[] | undefined): CapabilityOverride[] {
+  if (!Array.isArray(overrides) || !overrides.length) return [];
+  const ALLOWED: ModelOperation[] = ['chat', 'vision', 'interrogate', 'image.generate', 'image.edit'];
+  return overrides
+    .filter((o) => o && String(o.model || '').trim())
+    .map((o) => {
+      const ops = (o.operations || []).map((op) => String(op || '').trim() as ModelOperation).filter((op) => (ALLOWED as string[]).includes(op));
+      return ops.length ? { model: String(o.model).trim(), operations: ops } : { model: String(o.model).trim() };
+    });
 }

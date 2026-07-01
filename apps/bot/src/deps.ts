@@ -26,6 +26,8 @@ export interface ModelDepsOptions {
   chatSystemPrompt?: string;
   /** 生图提示词流水线(可选)：模板渲染 + 润色 + 失败安全改写。 */
   pipeline?: ImagePromptPipeline;
+  /** 结构化日志器(可选)：记录图片被丢弃等诊断信息。 */
+  logger?: { info(message: string, data?: Record<string, unknown>): void; warn(message: string, data?: Record<string, unknown>): void; error(message: string, data?: Record<string, unknown>): void };
 }
 
 /**
@@ -35,7 +37,7 @@ export interface ModelDepsOptions {
  * 注：templateId 的模板渲染属于 image/enhance 层职责,model 层只收已渲染的 prompt。
  */
 export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps {
-  const { client, getRouting, sessions, chatSystemPrompt, pipeline } = options;
+  const { client, getRouting, sessions, chatSystemPrompt, pipeline, logger } = options;
   return {
     async chat(req) {
       const routing = getRouting();
@@ -50,6 +52,10 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
         const prompt = contextSystem ? `${contextSystem.content}\n\n${req.text}` : req.text;
         const res = await client.vision(nodeIndex, { model: req.model, prompt, imageUrls: images });
         return { text: res.text };
+      }
+      // 模型无 vision 能力:图片被丢弃,记录警告便于排查(不阻塞纯文本回复)。
+      if (images.length > 0) {
+        logger?.warn('模型无 vision 能力,图片被丢弃', { model: req.model, imageCount: images.length });
       }
       const history = sessions && req.sessionId ? sessions.get(req.sessionId) : [];
       const messages: Array<{ role: string; content: unknown }> = [];

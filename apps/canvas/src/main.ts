@@ -1,5 +1,5 @@
 import { createCanvasService, CanvasStore, InMemoryAssetStore, type AssetStore, type StoredAsset, type CanvasGenerator, type CanvasService, type GenerationArtifact } from '../../../packages/canvas-service/src/index.js';
-import { createCapabilityRegistry, createModelClient, type CapabilityRegistry, type ImageArtifact, type ImageResult, type ModelClient } from '../../../packages/model/src/index.js';
+import { createCapabilityRegistry, createModelClient, type CapabilityOverride, type CapabilityRegistry, type ImageArtifact, type ImageResult, type ModelClient, type ModelOperation } from '../../../packages/model/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
 import fs from 'node:fs';
@@ -101,7 +101,7 @@ export interface CanvasApp {
  * 取代 web-canvas/apps/api 独立的一套 provider 选择。
  */
 export function createCanvasApp(options: CanvasAppOptions): CanvasApp {
-  const registry = options.registry || createCapabilityRegistry();
+  const registry = options.registry || createCapabilityRegistry({ overrides: toCapabilityOverrides(options.getConfig()) });
   const client = options.client || createModelClient({ nodes: toModelNodes(options.getConfig()), registry });
   const generator = createModelCanvasGenerator(client);
   const store = new CanvasStore({ filePath: options.stateFilePath, maxHistory: options.maxHistory ?? options.getConfig().canvas?.maxHistory });
@@ -120,6 +120,19 @@ function toModelNodes(cfg: AppConfig) {
     const dialect = (known.includes(explicit) ? explicit : known.includes(provider) ? provider : 'openai') as 'openai' | 'anthropic' | 'gemini' | 'huggingface' | 'custom';
     return { name: node.name, dialect, baseUrl: node.baseUrl, apiKey: node.key, headers: node.headers, models: node.models, enabled: node.enabled };
   });
+}
+
+/** AppConfig.llm.capabilityOverrides → model 层 CapabilityOverride[]。 */
+function toCapabilityOverrides(cfg: AppConfig): CapabilityOverride[] {
+  const overrides = cfg.llm?.capabilityOverrides || [];
+  if (!Array.isArray(overrides) || !overrides.length) return [];
+  const ALLOWED: ModelOperation[] = ['chat', 'vision', 'interrogate', 'image.generate', 'image.edit'];
+  return overrides
+    .filter((o) => o && String(o.model || '').trim())
+    .map((o) => {
+      const ops = (o.operations || []).map((op) => String(op || '').trim() as ModelOperation).filter((op) => (ALLOWED as string[]).includes(op));
+      return ops.length ? { model: String(o.model).trim(), operations: ops } : { model: String(o.model).trim() };
+    });
 }
 
 export function describeCanvasApp() {

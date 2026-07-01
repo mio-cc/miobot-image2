@@ -3,7 +3,7 @@ import { createCapabilityRegistry, createModelClient, type CapabilityRegistry, t
 import { createSessionStore, type SessionStore } from '../../../packages/core/src/index.js';
 import type { PlannerClient } from '../../../packages/intent-router/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
-import { toBotRouting, toEngineRoutingConfig, toModelNodes } from './config-bridge.js';
+import { toBotRouting, toEngineRoutingConfig, toModelNodes, toCapabilityOverrides } from './config-bridge.js';
 import { createModelBackedDeps, createModelPlanner } from './deps.js';
 import { createImagePromptPipeline, type ImagePromptPipeline } from './image-pipeline.js';
 
@@ -43,7 +43,7 @@ export interface BotApp {
  * 在构造时固定。若节点列表本身变化（增删/改 baseUrl/方言），需由 main 重新 createBotApp。
  */
 export function createBotApp(options: BotAppOptions): BotApp {
-  const registry = options.registry || createCapabilityRegistry();
+  const registry = options.registry || createCapabilityRegistry({ overrides: toCapabilityOverrides(options.getConfig().llm.capabilityOverrides) });
   const client = options.client || createModelClient({ nodes: toModelNodes(options.getConfig()), registry });
   const initial = options.getConfig();
   const sessions = options.sessions || createSessionStore({
@@ -59,6 +59,7 @@ export function createBotApp(options: BotAppOptions): BotApp {
     sessions,
     chatSystemPrompt: options.chatSystemPrompt ?? DEFAULT_CHAT_SYSTEM_PROMPT,
     pipeline,
+    logger: options.log,
   });
   const engine = createBotEngine({
     deps,

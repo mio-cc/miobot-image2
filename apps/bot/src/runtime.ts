@@ -361,7 +361,21 @@ export function extractImages(event: NapcatMessageEvent): string[] {
     const url = (params.match(/url=([^,\]]+)/) || params.match(/file=([^,\]]+)/) || [])[1];
     if (url) urls.push(decodeCqValue(url));
   }
-  return dedupeImageUrls(urls);
+  return dedupeImageUrls(urls.map(normalizeImageUrl));
+}
+
+/**
+ * 归一化图片引用:nappcat 产出的 base64:// / base64: 前缀转 data: URL,
+ * 让 Anthropic/Gemini 方言(只认 data: 前缀)能正确解析。http(s)/data: 原样保留。
+ */
+export function normalizeImageUrl(url: string): string {
+  const u = String(url || '').trim();
+  if (!u) return u;
+  if (/^data:/i.test(u) || /^https?:\/\//i.test(u)) return u;
+  // base64://XXXX 或 base64:XXXX → data:image/png;base64,XXXX(napcat base64 默认 png)
+  const m = u.match(/^base64:\/{0,2}([A-Za-z0-9+/=]+)$/i);
+  if (m) return `data:image/png;base64,${m[1]}`;
+  return u;
 }
 
 /** 从消息事件提取被 @ 的 QQ 列表(segments at 段 + raw_message CQ at)。 */
