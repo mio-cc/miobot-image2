@@ -202,7 +202,7 @@ const COLLECTION_RENDER_BATCH_SIZE = 8;
 const COLLECTION_SCROLL_PRELOAD_PX = 480;
 const MASONRY_EAGER_IMAGE_COUNT = 6;
 const MASONRY_IDLE_PRELOAD_COUNT = 4;
-const MASONRY_PRELOAD_CONCURRENCY = 1;
+const MASONRY_PRELOAD_CONCURRENCY = 3;
 const SEARCH_DEBOUNCE_MS = 180;
 const PENDING_GENERATION_STORAGE_KEY = "miobot.canvas.pending.generations.v1";
 const PENDING_INTERROGATION_STORAGE_KEY = "miobot.canvas.pending.interrogations.v1";
@@ -3333,6 +3333,7 @@ function GalleryScrollPilot({ rootRef, enabled, updateKey, onBackToTop }: Galler
 function LazyMasonryImage({ asset, alt, eager, rootRef }: LazyMasonryImageProps) {
   const slotRef = useRef<HTMLSpanElement | null>(null);
   const [shouldLoad, setShouldLoad] = useState(eager);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     if (eager) {
@@ -3366,8 +3367,8 @@ function LazyMasonryImage({ asset, alt, eager, rootRef }: LazyMasonryImageProps)
   }, [asset.id, eager, rootRef, shouldLoad]);
 
   return (
-    <span ref={slotRef} className="masonry-card__image-lazy-slot">
-      {shouldLoad ? (
+    <span ref={slotRef} className="masonry-card__image-lazy-slot" data-loaded={loaded ? "true" : "false"}>
+      {shouldLoad && (
         <img
           src={assetPreviewUrl(asset.id, MASONRY_CARD_PREVIEW_WIDTH, asset.url)}
           srcSet={assetPreviewSrcSet(asset.id, asset.url, MASONRY_PREVIEW_WIDTHS)}
@@ -3377,13 +3378,14 @@ function LazyMasonryImage({ asset, alt, eager, rootRef }: LazyMasonryImageProps)
           height={asset.height}
           decoding="async"
           loading={eager ? "eager" : "lazy"}
+          onLoad={() => setLoaded(true)}
+          onError={() => setLoaded(true)}
           // LCP 优化：eager 图片（首屏前6张）设 fetchPriority=high，
           // 否则浏览器默认 Low 优先级导致 2430ms 加载延迟（实测 LCP 4133ms 主因）。
           {...(eager ? { fetchPriority: "high" as const } : {})}
         />
-      ) : (
-        <span className="masonry-card__image-placeholder" aria-hidden="true" />
       )}
+      {!loaded && <span className="masonry-card__image-placeholder" aria-hidden="true" />}
     </span>
   );
 }

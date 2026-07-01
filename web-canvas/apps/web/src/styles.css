@@ -461,9 +461,24 @@ button:disabled {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  opacity: 0;
   transition:
+    opacity 320ms ease,
     transform 180ms ease,
     filter 180ms ease;
+}
+
+/* 图片加载完成后淡入,shimmer 占位同时淡出 → 平滑过渡无硬切 */
+.masonry-card__image-lazy-slot[data-loaded="true"] img {
+  opacity: 1;
+}
+
+.masonry-card__image-lazy-slot[data-loaded="true"] .masonry-card__image-placeholder {
+  opacity: 0;
+}
+
+.masonry-card__image-placeholder {
+  transition: opacity 320ms ease;
 }
 
 .masonry-card:hover .masonry-card__image img {
@@ -7183,6 +7198,13 @@ body {
   break-inside: auto !important;
   content-visibility: visible !important;
   align-self: start !important;
+  /* 卡片入场:仅 opacity 渐入(GPU 合成层,不触发布局),柔化批量渲染的硬切感 */
+  animation: card-fade-in 280ms ease both;
+}
+
+@keyframes card-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .masonry-card {
