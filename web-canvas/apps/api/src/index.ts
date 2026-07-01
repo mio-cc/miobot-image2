@@ -12,6 +12,7 @@ import {
   startCodexDeviceLogin
 } from "./codex-auth.js";
 import {
+  AUTO_SIZE_PRESET_ID,
   GENERATION_COUNTS,
   IMAGE_QUALITIES,
   MAX_REFERENCE_IMAGES,
@@ -99,7 +100,15 @@ app.get("/api/config", (c) => {
     stylePresets: STYLE_PRESETS,
     qualities: IMAGE_QUALITIES,
     outputFormats: OUTPUT_FORMATS,
-    counts: GENERATION_COUNTS
+    counts: GENERATION_COUNTS,
+    // 给前端一个稳定默认:不传时前端 normalizeRuntimeConfig 也会回退到 "auto",
+    // 显式返回可让刷新后默认值与服务端一致,并避免前端因缺失 defaults 触发静默回退。
+    defaults: {
+      quality: "auto",
+      outputFormat: "png",
+      count: 1,
+      sizePresetId: AUTO_SIZE_PRESET_ID
+    }
   };
 
   return c.json(config);

@@ -7,6 +7,7 @@ import type {
 } from "./image-provider.js";
 import { ProviderError, getConfiguredImageModel } from "./image-provider.js";
 import type { ReferenceImageInput } from "./contracts.js";
+import { AUTO_SIZE_PRESET_ID } from "@gpt-image-canvas/shared";
 
 const DEFAULT_CODEX_IMAGE_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
@@ -28,6 +29,31 @@ interface ResponsesImageTool {
   format: string;
 }
 
+/**
+ * 把任意 sizeApiValue(WxH 或 "auto") 映射到 OpenAI Responses image_generation
+ * 实际支持的档位:1024x1024 / 1536x1024 / 1024x1536 / auto。
+ * 按宽高比方向选最近档位:
+ *   横图(w>h*1.05) → 1536x1024
+ *   竖图(h>w*1.05) → 1024x1536
+ *   方图(其它)     → 1024x1024
+ *   auto / 无法解析 → "auto"(交给 OpenAI)
+ * 这样用户选 16:9(2048x1152) 会被映射成 1536x1024(横),
+ * 而不是被 OpenAI 忽略后强制给 1024x1536(竖,看起来像 9:16)。
+ */
+export function mapCodexImageSize(apiValue: string | undefined): string {
+  const v = String(apiValue || "").trim();
+  if (!v || v === AUTO_SIZE_PRESET_ID) return AUTO_SIZE_PRESET_ID;
+  const m = v.match(/^(\d+)\s*x\s*(\d+)$/i);
+  if (!m) return AUTO_SIZE_PRESET_ID;
+  const w = Number.parseInt(m[1], 10);
+  const h = Number.parseInt(m[2], 10);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return AUTO_SIZE_PRESET_ID;
+  const ratio = w / h;
+  if (ratio >= 1.05) return "1536x1024"; // 横图
+  if (ratio <= 1 / 1.05) return "1024x1536"; // 竖图
+  return "1024x1024"; // 方图
+}
+
 export function getCodexImageProviderTimeoutMs(): number {
   const parsed = Number.parseInt(process.env.CODEX_IMAGE_TIMEOUT_MS ?? "", 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_CODEX_IMAGE_TIMEOUT_MS;
@@ -40,7 +66,7 @@ export function createCodexImageProvider(config: CodexImageProviderConfig): Imag
 export function createCodexResponsesRequestBody(input: ResponsesImageInput): Record<string, unknown> {
   const tool: ResponsesImageTool = {
     type: "image_generation",
-    size: input.sizeApiValue,
+    size: mapCodexImageSize(input.sizeApiValue),
     quality: input.quality,
     format: input.outputFormat
   };
@@ -178,7 +204,7 @@ class CodexResponsesImageProvider implements ImageProvider {
 
       return {
         model: this.config.model,
-        size: input.sizeApiValue,
+        size: mapCodexImageSize(input.sizeApiValue),
         images: images.map((image) => ({
           b64Json: image
         }))

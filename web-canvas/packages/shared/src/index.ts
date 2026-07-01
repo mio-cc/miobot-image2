@@ -367,6 +367,13 @@ export interface AppConfig {
   qualities: ImageQuality[];
   outputFormats: OutputFormat[];
   counts: readonly GenerationCount[];
+  /** 服务端默认值;未提供时前端 normalizeRuntimeConfig 仍会回退到本地 fallback。 */
+  defaults?: {
+    quality?: ImageQuality;
+    outputFormat?: OutputFormat;
+    count?: GenerationCount;
+    sizePresetId?: string;
+  };
 }
 
 export type RuntimeImageProvider = "openai" | "codex" | "none";

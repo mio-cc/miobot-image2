@@ -937,16 +937,13 @@ export function App() {
   }
 
   function resetGenerationForm() {
-    const defaultSizePresetId = runtimeConfig.defaults.sizePresetId || AUTO_SIZE_PRESET_ID;
+    // 仅清空"本次输入":prompt / 参考图 / 遮罩。
+    // 保留用户已选的 size / quality / outputFormat / count —— 连续生图不必每次重选尺寸
+    // (修复"选 16:9 提交后表单被弹回 auto 导致下次出图方向错乱")。
     setPrompt("");
     setMode("text");
     setReferenceImages([]);
     setMaskImage(null);
-    setQuality(runtimeConfig.defaults.quality);
-    setOutputFormat(runtimeConfig.defaults.outputFormat);
-    setCount(runtimeConfig.defaults.count);
-    setSizePresetId(defaultSizePresetId);
-    setSize(sizeForPreset(runtimeConfig.sizePresets, defaultSizePresetId));
     setNotice(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
@@ -2450,14 +2447,30 @@ function faviconMimeType(url: string): string {
 }
 
 function mergeFetchedGalleryItems(fetchedItems: GalleryImageItem[], currentItems: GalleryCardItem[]): GalleryCardItem[] {
-  const pendingItems = currentItems.filter(isPendingGalleryItem);
+  // 用户生完图后旧作品要保留:这里改成 union 合并而非整体替换。
+  // 之前只保留 pending 卡 + 用后端 ≤limit 条替换其余 → 超过 limit 的旧作品会从画布凭空消失,
+  // 看上去就是"新图顶掉旧图"。
+  // 现在以 fetched 为权威更新已存在项,同时保留 current 里多余的已完成卡(用户本地仍可见)。
   const seen = new Set<string>();
-  return [...pendingItems, ...fetchedItems].filter((item) => {
+  const merged: GalleryCardItem[] = [];
+  // 1) 后端拉回的条目优先入列,记录其 outputId
+  for (const item of fetchedItems) {
     const id = item.outputId;
-    if (seen.has(id)) return false;
+    if (seen.has(id)) continue;
     seen.add(id);
-    return true;
-  });
+    merged.push(item);
+  }
+  // 2) current 里多余的条目(pending 占位卡 + 后端这一页没返回的旧已完成卡)接在后面,
+  //    对已在 fetched 里的 id 不重复追加。pending 卡优先保留在最前。
+  const pendingItems = currentItems.filter(isPendingGalleryItem);
+  const extraDoneItems = currentItems.filter((item) => !isPendingGalleryItem(item) && !seen.has(item.outputId));
+  for (const item of [...pendingItems, ...extraDoneItems]) {
+    const id = item.outputId;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(item);
+  }
+  return merged;
 }
 
 function mergeFetchedInterrogationItems(fetchedItems: InterrogationItem[], currentItems: InterrogationCardItem[]): InterrogationCardItem[] {
