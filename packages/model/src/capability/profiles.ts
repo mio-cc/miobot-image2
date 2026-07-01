@@ -66,7 +66,7 @@ export const BUILTIN_PROFILE_RULES: ProfileRule[] = [
   { test: /qwen[-_\s]?image|wan[-_\s]?x|wanx/i, profile: GENERIC_IMAGE_PROFILE },
   { test: /(flux|stable[-_\s]?diffusion|sdxl|sd3|sd-?turbo|midjourney|kolors|seedream|hunyuan-?image|cogview|playground-?v|ideogram|recraft|kontext|luma-?photon)/i, profile: GENERIC_IMAGE_PROFILE },
   // ── 多模态对话（vision）──
-  { test: /(gpt-4o|gpt-4\.|gpt-4-turbo|gpt-5|chatgpt-4o|o1|o3|o4|claude|gemini|grok[-_\s.\w]*vision|qwen[-_\s]?vl|qwen[\d.]+-?vl|llava|vl-|vision|internvl|glm-4v|glm-[0-9.]*v|yi-vision|step-1v|pixtral|llama-?3\.2|llama-?4|phi-?3\.5-vision|phi-?4|minicpm-?v|molmo|aria|deepseek[-_\s]?vl|deepseek[\d.]*-?vl|minimax[-_\s]?vl|sensenova[-_\s]?vl|abab[-_\s]?vision|doubao[-_\s]?vision)/i, profile: CHAT_PROFILE },
+  { test: /(gpt-4o|gpt-4\.|gpt-4-turbo|gpt-5|chatgpt-4o|o1|o3|o4|claude|gemini|grok[-_\s.\w]*(?!image)|qwen[-_\s]?vl|qwen[\d.]+-?vl|llava|vl-|vision|internvl|glm-4v|glm-[0-9.]*v|yi-vision|step-1v|pixtral|llama-?3\.2|llama-?4|phi-?3\.5-vision|phi-?4|minicpm-?v|molmo|aria|deepseek[-_\s]?vl|deepseek[\d.]*-?vl|minimax[-_\s]?vl|sensenova[-_\s]?vl|abab[-_\s]?vision|doubao[-_\s]?vision)/i, profile: CHAT_PROFILE },
   // ── 纯文本对话 ──
   { test: /(gpt-3\.5|deepseek(?![-_\s]?vl)|qwen|moonshot|kimi|yi-|glm-4(?!v)|glm-3|llama|mistral|mixtral|gemma|baichuan|ernie|spark|hunyuan(?!-?image)|command-?r|abab(?![-_\s]?vision)|doubao(?![-_\s]?vision))/i, profile: TEXT_ONLY_PROFILE },
 ];

@@ -47,6 +47,25 @@ test('profiles: claude-3-5-sonnet 仍命中 vision', () => {
   assert.ok(p && p.operations.includes('vision'));
 });
 
+test('profiles: grok-2/3/4 命中 vision(xAI grok 内置视觉)', () => {
+  for (const name of ['grok-2', 'grok-3', 'grok-4', 'grok-beta', 'grok-fast', 'grok-latest']) {
+    const p = inferProfileByName(name);
+    assert.ok(p && p.operations.includes('vision'), `${name} 应有 vision 能力`);
+  }
+});
+
+test('profiles: grok-2-image 命中生图(不误判为 vision)', () => {
+  const p = inferProfileByName('grok-2-image');
+  assert.ok(p, 'grok-2-image 应有 profile');
+  assert.ok(p.operations.includes('image.generate'), 'grok-2-image 应为生图');
+  assert.ok(!p.operations.includes('vision'), 'grok-2-image 不应同时有 vision');
+});
+
+test('profiles: grok-2-vision 命中 vision', () => {
+  const p = inferProfileByName('grok-2-vision');
+  assert.ok(p && p.operations.includes('vision'));
+});
+
 // ── registry: 兜底为 TEXT_ONLY + overrides 生效 ──
 
 test('registry: 未识别模型兜底为 TEXT_ONLY(不含 vision)', () => {
