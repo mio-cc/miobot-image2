@@ -4,11 +4,12 @@ import { ConfigStore } from '../../../packages/storage/src/index.js';
 import { createDefaultConfig, normalizeConfig, type AppConfig } from '../../../packages/config/src/index.js';
 import { ConsoleLogSink, createLogger, type StructuredLogger } from '../../../packages/logger/src/index.js';
 import { createBotApp } from './app.js';
-import { createBotMessageRuntime } from './runtime.js';
+import { createBotMessageRuntime, type NapcatMessageEvent } from './runtime.js';
 import { toModelNodes } from './config-bridge.js';
 import { shouldUseTts, synthesizeSpeech } from './tts.js';
 import type { OwnerCommand } from './owner.js';
 import type { NapcatHistoryMessage } from './group-context.js';
+import { normalizeForwardPayload } from './message-enrichment.js';
 
 export interface StartBotOptions {
   /** 配置文件(JSON);不给则用默认配置(无可用节点,仅供连通性冒烟)。 */
@@ -67,6 +68,26 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       } catch (error) {
         logger.warn('get_group_msg_history failed', { groupId, error: String((error as { message?: string })?.message || error) });
         return [];
+      }
+    },
+    // 引用消息富化:回复一张图片时,get_msg 取回引用消息,把图片带给模型并判定是否回复的是 bot。
+    fetchReferencedMessage: async (replyId): Promise<NapcatMessageEvent | null> => {
+      try {
+        const data = await adapter.getMessage(replyId);
+        return (data ?? null) as NapcatMessageEvent | null;
+      } catch (error) {
+        logger.warn('get_msg (referenced) failed', { replyId, error: String((error as { message?: string })?.message || error) });
+        return null;
+      }
+    },
+    // 合并转发富化:get_forward_msg 展开转发节点,文本/图片送模型,避免 [CQ:forward] 被剥离后内容丢失。
+    fetchForwardMessage: async (forwardId): Promise<NapcatHistoryMessage[] | null> => {
+      try {
+        const data = await adapter.getForwardMessage(forwardId);
+        return normalizeForwardPayload(data);
+      } catch (error) {
+        logger.warn('get_forward_msg failed', { forwardId, error: String((error as { message?: string })?.message || error) });
+        return null;
       }
     },
     voice: async (text) => {

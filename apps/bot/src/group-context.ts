@@ -106,7 +106,7 @@ function stripNonTextCq(raw: string): string {
 }
 
 /** 取发送者显示名：群名片优先，其次昵称，最后"用户"。 */
-function senderName(msg: NapcatHistoryMessage): string {
+export function senderName(msg: NapcatHistoryMessage): string {
   const card = msg.sender?.card?.trim();
   if (card) return card;
   const nick = msg.sender?.nickname?.trim();

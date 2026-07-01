@@ -1,4 +1,4 @@
-import { createBotRouter, stripNonTextCqSegments, type BotMessageContext, type BotRouteDecision, type BotRouterConfig } from '../../../packages/bot-router/src/index.js';
+import { createBotRouter, extractReplyId, stripNonTextCqSegments, type BotMessageContext, type BotRouteDecision, type BotRouterConfig } from '../../../packages/bot-router/src/index.js';
 import { createReplyStrategyEngine, type ReplyClient, type ReplyContext, type ReplyStrategyConfig } from '../../../packages/reply/src/index.js';
 import { dedupeImageUrls } from '../../../packages/napcat/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
@@ -7,6 +7,7 @@ import type { BotApp } from './app.js';
 import { isOwner, parseOwnerCommand, type OwnerCommand } from './owner.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 import { fetchGroupContext, type GroupContextOptions, type NapcatHistoryMessage } from './group-context.js';
+import { composeEnrichedText, extractForwardIds, extractReferenceText, formatForwardMessages, isReferencedFromBot } from './message-enrichment.js';
 
 /** Napcat(OneBot) 上报的消息事件(只取本环需要的字段)。 */
 export interface NapcatMessageEvent {
@@ -31,6 +32,10 @@ export interface BotRuntimeOptions {
   botName?: string;
   /** 可选:对引用消息做 get_msg 判断是否回复的是 bot(影响群里"回复 bot"触发)。 */
   resolveReplyToBot?: (event: NapcatMessageEvent) => Promise<boolean> | boolean;
+  /** 可选:拉取被引用(回复)的消息(get_msg)。用于①判定回复是否指向 bot ②把引用消息里的图片/转发内容带回模型。 */
+  fetchReferencedMessage?: (replyId: string | number) => Promise<NapcatMessageEvent | null>;
+  /** 可选:展开合并转发消息(get_forward_msg),把转发节点文本/图片带给模型。 */
+  fetchForwardMessage?: (forwardId: string) => Promise<NapcatHistoryMessage[] | null>;
   /** 可选:拉取群历史消息(@bot 时取最近群聊上下文)。由 start.ts 注入 napcat callAction。 */
   fetchGroupHistory?: (groupId: number | string, anchorMessageId: number | string, count: number) => Promise<NapcatHistoryMessage[]>;
   /** 文本回复转语音:返回 record 文件引用则发语音,返回空则发文本。 */
@@ -65,10 +70,10 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const rawMessage = typeof event.message === 'string' && event.message
       ? event.message
       : (event.raw_message || segmentsToRaw(event.message));
-    const images = extractImages(event);
+    const baseImages = extractImages(event);
     const userId = event.user_id ?? event.sender?.user_id;
     const sessionId = chatType === 'group' ? `group:${event.group_id}:${userId}` : `private:${userId}`;
-    log?.info('收到消息', { chatType, groupId: event.group_id, userId, rawMessage: rawMessage.slice(0, 100), images: images.length });
+    log?.info('收到消息', { chatType, groupId: event.group_id, userId, rawMessage: rawMessage.slice(0, 100), images: baseImages.length });
 
     // 主人命令优先于普通路由。
     if (options.owner && isOwner(userId, options.owner.ownerQQs())) {
@@ -83,13 +88,28 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       }
     }
 
+    // 引用消息富化:get_msg 拉取被回复的消息 → 取其图片/转发内容,并判定是否回复的是 bot("回复 bot"触发依赖此判定)。
+    const selfId = options.selfId?.() ?? cfg.bot.botQqId;
+    const replyId = extractReplyId(rawMessage);
+    let referenced: NapcatMessageEvent | null = null;
+    if (replyId && options.fetchReferencedMessage) {
+      try {
+        referenced = await options.fetchReferencedMessage(replyId);
+      } catch (e) {
+        log?.warn('fetchReferencedMessage failed', { replyId, error: String((e as Error)?.message || e) });
+      }
+    }
+    const replyToBot = options.resolveReplyToBot
+      ? await options.resolveReplyToBot(event)
+      : (referenced ? isReferencedFromBot(referenced, selfId) : undefined);
+
     const ctx: BotMessageContext = {
       chatType,
       rawMessage,
       messageId: event.message_id,
       groupId: event.group_id,
       userId,
-      replyToBot: options.resolveReplyToBot ? await options.resolveReplyToBot(event) : undefined,
+      replyToBot,
       originalChoiceAvailable: false,
     };
 
@@ -128,6 +148,22 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       }
     }
 
+    // 转发富化:展开当前消息/引用消息里的合并转发(get_forward_msg),取文本 + 图片,
+    // 连同引用消息的图片,合并进最终送模型的 images/text,避免引用图片与转发内容丢失。
+    const forwardIds = [...extractForwardIds(event), ...(referenced ? extractForwardIds(referenced) : [])];
+    const forwardNodes = await expandForwards(forwardIds, options, log);
+    const referenceText = referenced ? extractReferenceText(referenced) : '';
+    const forwardText = forwardNodes.length ? formatForwardMessages(forwardNodes, { maxChars: 4000 }) : '';
+    const maxInputImages = Math.max(1, cfg.freeMode.maxInputImages || 6);
+    const enrichedImages = dedupeImageUrls([
+      ...baseImages,
+      ...(referenced ? extractImages(referenced) : []),
+      ...forwardNodes.flatMap((n) => extractImages(n as unknown as NapcatMessageEvent)),
+    ]).slice(0, maxInputImages);
+    if (referenced || forwardNodes.length) {
+      log?.info('消息内容已富化', { referencedImages: referenced ? extractImages(referenced).length : 0, forwardNodes: forwardNodes.length, enrichedImages: enrichedImages.length });
+    }
+
     let result: BotEngineResult | null = null;
     try {
       if (decision.kind === 'chat' || decision.kind === 'freeMode') {
@@ -150,9 +186,11 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           });
           if (context) log?.info('群上下文已注入', { groupId: event.group_id, contextChars: context.length });
         }
-        result = await options.app.handle({ text: stripNonTextCqSegments(decision.commandText), images, chatType, sessionId, context });
+        const text = composeEnrichedText(stripNonTextCqSegments(decision.commandText), referenceText, forwardText);
+        result = await options.app.handle({ text, images: enrichedImages, chatType, sessionId, context });
       } else if (decision.kind === 'command') {
-        result = await runCommand(options.app, decision, { text: stripNonTextCqSegments(decision.args), images, chatType, sessionId });
+        // 命令类:图片用富化后的(引用图片可达改图/反推),提示词保持原始 args 不注入引用文本。
+        result = await runCommand(options.app, decision, { text: stripNonTextCqSegments(decision.args), images: enrichedImages, chatType, sessionId });
         if (!result) return { handled: false, reason: `command-unsupported:${decision.command}` };
       } else {
         return { handled: false, reason: 'no-route' };
@@ -196,6 +234,35 @@ async function runCommand(
       // templateLibrary/originalImage*/remotePrompt* 需要额外子系统,后续批次接入。
       return null;
   }
+}
+
+/** 递归展开合并转发(深度受限 + seen 防环),返回所有节点;拉取由注入的 fetchForwardMessage 完成。 */
+async function expandForwards(
+  forwardIds: string[],
+  options: BotRuntimeOptions,
+  log?: StructuredLogger,
+  seen: Set<string> = new Set(),
+  depth = 0,
+): Promise<NapcatHistoryMessage[]> {
+  if (depth >= 3 || !options.fetchForwardMessage) return [];
+  const out: NapcatHistoryMessage[] = [];
+  for (const fid of forwardIds) {
+    const id = String(fid || '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    try {
+      const nodes = await options.fetchForwardMessage(id);
+      if (nodes?.length) {
+        out.push(...nodes);
+        // 转发节点里可能还嵌套转发,递归展开。
+        const nested = nodes.flatMap((n) => extractForwardIds(n));
+        if (nested.length) out.push(...await expandForwards(nested, options, log, seen, depth + 1));
+      }
+    } catch (e) {
+      log?.warn('fetchForwardMessage failed', { forwardId: id, error: String((e as Error)?.message || e) });
+    }
+  }
+  return out;
 }
 
 async function sendResult(
