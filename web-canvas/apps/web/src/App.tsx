@@ -188,7 +188,8 @@ const SUPPORTED_UPLOAD_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", 
 const GENERATION_JOB_POLL_INTERVAL_MS = 2000;
 const GENERATION_JOB_MAX_POLLS = 600;
 const MASONRY_CARD_PREVIEW_WIDTH = 512;
-const MASONRY_PREVIEW_WIDTHS = [MASONRY_CARD_PREVIEW_WIDTH] as const;
+// 512 为主档;1024 供高 DPI(2x) 屏幕通过 srcSet 选择更清晰的版本。
+const MASONRY_PREVIEW_WIDTHS = [512, 1024] as const;
 const LIGHTBOX_PREVIEW_WIDTHS = [512, 1024, 2048] as const;
 const MASONRY_IMAGE_SIZES = "(max-width: 640px) 46vw, (max-width: 1180px) 30vw, 240px";
 const LIGHTBOX_IMAGE_SIZES = "100vw";
