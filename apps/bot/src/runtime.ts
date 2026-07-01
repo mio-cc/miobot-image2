@@ -7,7 +7,7 @@ import type { BotApp } from './app.js';
 import { isOwner, parseOwnerCommand, type OwnerCommand } from './owner.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 import { fetchGroupContext, type GroupContextOptions, type NapcatHistoryMessage } from './group-context.js';
-import { composeEnrichedText, extractForwardIds, extractReferenceText, formatForwardMessages, isReferencedFromBot } from './message-enrichment.js';
+import { extractForwardIds, extractReferenceText, formatForwardMessages, isReferencedFromBot } from './message-enrichment.js';
 
 /** Napcat(OneBot) 上报的消息事件(只取本环需要的字段)。 */
 export interface NapcatMessageEvent {
@@ -149,19 +149,21 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     }
 
     // 转发富化:展开当前消息/引用消息里的合并转发(get_forward_msg),取文本 + 图片,
-    // 连同引用消息的图片,合并进最终送模型的 images/text,避免引用图片与转发内容丢失。
+    // 连同引用消息的图片,合并进最终送模型的 images,避免引用图片与转发内容丢失。
     const forwardIds = [...extractForwardIds(event), ...(referenced ? extractForwardIds(referenced) : [])];
     const forwardNodes = await expandForwards(forwardIds, options, log);
     const referenceText = referenced ? extractReferenceText(referenced) : '';
     const forwardText = forwardNodes.length ? formatForwardMessages(forwardNodes, { maxChars: 4000 }) : '';
+    const referencedImages = referenced ? extractImages(referenced) : [];
     const maxInputImages = Math.max(1, cfg.freeMode.maxInputImages || 6);
     const enrichedImages = dedupeImageUrls([
       ...baseImages,
-      ...(referenced ? extractImages(referenced) : []),
+      ...referencedImages,
       ...forwardNodes.flatMap((n) => extractImages(n as unknown as NapcatMessageEvent)),
     ]).slice(0, maxInputImages);
+    const hasReferencedImage = referencedImages.length > 0 || forwardNodes.some((n) => extractImages(n as unknown as NapcatMessageEvent).length > 0);
     if (referenced || forwardNodes.length) {
-      log?.info('消息内容已富化', { referencedImages: referenced ? extractImages(referenced).length : 0, forwardNodes: forwardNodes.length, enrichedImages: enrichedImages.length });
+      log?.info('消息内容已富化', { referencedImages: referencedImages.length, forwardNodes: forwardNodes.length, enrichedImages: enrichedImages.length, hasReferencedImage });
     }
 
     let result: BotEngineResult | null = null;
@@ -186,11 +188,12 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           });
           if (context) log?.info('群上下文已注入', { groupId: event.group_id, contextChars: context.length });
         }
-        const text = composeEnrichedText(stripNonTextCqSegments(decision.commandText), referenceText, forwardText);
-        result = await options.app.handle({ text, images: enrichedImages, chatType, sessionId, context });
+        // 纯用户文本送意图路由(不污染 edit/generate prompt);引用/转发文本由 engine 仅在 chat 路径注入。
+        const cleanText = stripNonTextCqSegments(decision.commandText);
+        result = await options.app.handle({ text: cleanText, images: enrichedImages, hasReferencedImage, chatType, sessionId, context, referenceText, forwardText });
       } else if (decision.kind === 'command') {
         // 命令类:图片用富化后的(引用图片可达改图/反推),提示词保持原始 args 不注入引用文本。
-        result = await runCommand(options.app, decision, { text: stripNonTextCqSegments(decision.args), images: enrichedImages, chatType, sessionId });
+        result = await runCommand(options.app, decision, { text: stripNonTextCqSegments(decision.args), images: enrichedImages, hasReferencedImage, chatType, sessionId });
         if (!result) return { handled: false, reason: `command-unsupported:${decision.command}` };
       } else {
         return { handled: false, reason: 'no-route' };
@@ -220,7 +223,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
 async function runCommand(
   app: BotApp,
   decision: Extract<BotRouteDecision, { kind: 'command' }>,
-  input: { text: string; images: string[]; chatType: 'group' | 'private'; sessionId: string },
+  input: { text: string; images: string[]; hasReferencedImage?: boolean; chatType: 'group' | 'private'; sessionId: string },
 ): Promise<BotEngineResult | null> {
   switch (decision.command) {
     case 'genImage':

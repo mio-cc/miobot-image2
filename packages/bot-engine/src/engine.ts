@@ -26,6 +26,10 @@ export interface BotEngineInput extends IntentInput {
   sessionId?: string;
   /** 群聊上下文(@bot 时拉取的最近群聊记录),以 system 消息注入 chat 模型。 */
   context?: string;
+  /** 引用消息文本(回复某条消息时该消息的文字内容),仅注入 chat 路径,不污染图像 prompt。 */
+  referenceText?: string;
+  /** 合并转发展开文本,仅注入 chat 路径,不污染图像 prompt。 */
+  forwardText?: string;
 }
 
 export interface BotEngineResult {
@@ -112,7 +116,10 @@ export class BotEngine {
         const usedPlanner = decision.usedPlanner;
         const chatModel = usedPlanner && cfg.freeModeModel ? cfg.freeModeModel : cfg.chatModel;
         const chatNode = usedPlanner && cfg.freeModeNodeIndex !== undefined ? cfg.freeModeNodeIndex : undefined;
-        const { text } = await this.deps.chat({ model: chatModel, text: p.prompt || input.text, images, sessionId: input.sessionId, nodeIndex: chatNode, context: input.context });
+        // chat 路径注入引用/转发上下文(模型需要理解在聊什么);图像路径用纯 prompt 不污染。
+        const baseText = p.prompt || input.text;
+        const chatText = composeChatText(baseText, input.referenceText, input.forwardText);
+        const { text } = await this.deps.chat({ model: chatModel, text: chatText, images, sessionId: input.sessionId, nodeIndex: chatNode, context: input.context });
         return { kind: 'chat', decision, text, handled: true };
       }
       case 'image.generate': {
@@ -135,4 +142,18 @@ export class BotEngine {
 
 export function createBotEngine(options: BotEngineOptions): BotEngine {
   return new BotEngine(options);
+}
+
+/**
+ * 把用户文本 + 引用内容 + 转发内容合成为 chat 用的文本。
+ * 仅用于 chat 路径;图像 generate/edit/interrogate 路径用纯 prompt,不注入引用文本。
+ */
+function composeChatText(userText: string, referenceText?: string, forwardText?: string): string {
+  const body = String(userText || '').trim();
+  const parts: string[] = [];
+  if (body) parts.push(body);
+  if (referenceText) parts.push(`【引用内容】\n${referenceText}`);
+  if (forwardText) parts.push(`【合并转发内容】\n${forwardText}`);
+  if (!parts.length) return '请根据引用/转发内容处理。';
+  return parts.join('\n\n');
 }
