@@ -72,7 +72,11 @@ function collectForwardIdsUnknown(value: unknown, ids: string[], depth: number):
 export function normalizeForwardPayload(payload: unknown): NapcatHistoryMessage[] {
   if (!payload) return [];
   const root = payload as any;
-  const arr = root.messages ?? root.data?.messages ?? root.forward?.messages;
+  const arr = root.messages
+    ?? root.data?.messages
+    ?? root.forward?.messages
+    ?? root.data?.forward?.messages
+    ?? root.result?.messages;
   const items = Array.isArray(arr) ? arr : Array.isArray(root) ? root : [];
   const out: NapcatHistoryMessage[] = [];
   for (const item of items) {
@@ -83,23 +87,88 @@ export function normalizeForwardPayload(payload: unknown): NapcatHistoryMessage[
   const body = root.message ?? root.content ?? root.data?.message ?? root.data?.content;
   if (Array.isArray(body)) {
     for (const seg of body) {
-      if (seg && typeof seg === 'object' && seg.type === 'node') out.push(normalizeForwardNode(seg.data ?? {}));
+      if (seg && typeof seg === 'object' && (seg.type === 'node' || seg.type === 'forward')) {
+        out.push(normalizeForwardNode(seg.data ?? seg));
+      }
     }
   }
   return out;
 }
 
 function normalizeForwardNode(item: any): NapcatHistoryMessage {
-  const content = item.content ?? item.message ?? item.data?.content ?? item.data?.message;
+  // Napcat/Lagrange/go-cqhttp 转发节点字段差异大: content | message | data.content | body。
+  const content = item.content
+    ?? item.message
+    ?? item.body
+    ?? item.data?.content
+    ?? item.data?.message
+    ?? item.data?.body;
+  const normalizedMessage = normalizeForwardContent(content);
+  const raw = item.raw_message
+    ?? item.data?.raw_message
+    ?? (typeof content === 'string' ? content : undefined);
   return {
-    message_id: item.message_id ?? item.id,
-    user_id: item.user_id ?? item.sender?.user_id ?? item.data?.user_id,
+    message_id: item.message_id ?? item.id ?? item.data?.message_id,
+    user_id: item.user_id ?? item.sender?.user_id ?? item.data?.user_id ?? item.uin,
     self_id: item.self_id,
-    time: item.time,
-    sender: item.sender ?? { user_id: item.user_id, nickname: item.nickname },
-    message: Array.isArray(content) ? content : (typeof content === 'string' ? content : undefined),
-    raw_message: item.raw_message ?? item.data?.raw_message,
+    time: item.time ?? item.data?.time,
+    sender: item.sender ?? {
+      user_id: item.user_id ?? item.uin,
+      nickname: item.nickname ?? item.data?.nickname ?? item.sender_name,
+    },
+    message: normalizedMessage,
+    raw_message: raw,
   };
+}
+
+/** 归一化转发 content:数组原样;CQ 字符串保留;单段对象包成数组;嵌套 content 再拆一层。 */
+function normalizeForwardContent(content: unknown): NapcatHistoryMessage['message'] {
+  if (Array.isArray(content)) return content as NapcatHistoryMessage['message'];
+  if (typeof content === 'string') return content;
+  if (content && typeof content === 'object') {
+    const obj = content as Record<string, any>;
+    if (Array.isArray(obj.message)) return obj.message;
+    if (Array.isArray(obj.content)) return obj.content;
+    if (typeof obj.type === 'string') return [obj as { type: string; data: Record<string, any> }];
+  }
+  return undefined;
+}
+
+/**
+ * 从已归一化的转发节点批量抽图(url/file/path),供 runtime 合并进模型输入。
+ * 与 extractImages 语义对齐,但允许传入 HistoryMessage 形态。
+ */
+export function extractImagesFromForwardNodes(nodes: NapcatHistoryMessage[]): string[] {
+  const urls: string[] = [];
+  for (const node of nodes || []) {
+    const body = node.message;
+    if (Array.isArray(body)) {
+      for (const seg of body) {
+        if (!seg || typeof seg !== 'object') continue;
+        const type = String(seg.type || '').toLowerCase();
+        if (type !== 'image' && type !== 'mface') continue;
+        const d = seg.data || {};
+        const u = String(d.url || d.file || d.path || '').trim();
+        if (u) urls.push(u);
+      }
+    } else if (typeof body === 'string') {
+      for (const m of body.matchAll(/\[CQ:(?:image|mface),([^\]]*)\]/gi)) {
+        const hit = (m[1] || '').match(/(?:url|file|path)=([^,\]]+)/i);
+        if (hit?.[1]) {
+          try { urls.push(decodeURIComponent(hit[1])); } catch { urls.push(hit[1]); }
+        }
+      }
+    }
+    if (typeof node.raw_message === 'string' && node.raw_message) {
+      for (const m of node.raw_message.matchAll(/\[CQ:(?:image|mface),([^\]]*)\]/gi)) {
+        const hit = (m[1] || '').match(/(?:url|file|path)=([^,\]]+)/i);
+        if (hit?.[1]) {
+          try { urls.push(decodeURIComponent(hit[1])); } catch { urls.push(hit[1]); }
+        }
+      }
+    }
+  }
+  return dedupeStrings(urls);
 }
 
 /** 把转发节点数组格式化为紧凑文本(图片占位,真实图片走 images 数组喂 vision)。 */

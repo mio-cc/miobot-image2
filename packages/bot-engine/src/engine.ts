@@ -5,10 +5,12 @@ import { resolveImageCapabilities, type EngineRoutingConfig } from './capabiliti
 
 /** 下游能力（由 apps/bot 用 model/image/reply 实现；测试可注入 fake）。 */
 export interface BotEngineDeps {
-  chat(req: { model: string; text: string; images?: string[]; sessionId?: string; nodeIndex?: number; context?: string; timeoutMs?: number; maxTokens?: number; reasoningEffort?: ReasoningEffort }): Promise<{ text: string }>;
+  chat(req: { model: string; text: string; images?: string[]; videos?: string[]; sessionId?: string; nodeIndex?: number; context?: string; timeoutMs?: number; maxTokens?: number; reasoningEffort?: ReasoningEffort }): Promise<{ text: string }>;
   generateImages(req: { model: string; prompt: string; size?: string; count?: number; quality?: string; templateId?: string }): Promise<{ images: string[] }>;
   editImage(req: { model: string; prompt: string; images: string[]; size?: string; quality?: string }): Promise<{ images: string[] }>;
   interrogate(req: { model: string; images: string[]; prompt?: string }): Promise<{ text: string }>;
+  /** 视频生成；返回可发送的 url / data URL 列表。 */
+  generateVideo(req: { model: string; prompt: string; imageUrl?: string; duration?: number; aspectRatio?: string; resolution?: string }): Promise<{ videos: string[] }>;
 }
 
 export interface BotEngineOptions {
@@ -37,6 +39,8 @@ export interface BotEngineResult {
   decision: IntentDecision;
   text?: string;
   images?: string[];
+  /** 生成的视频 url / data URL，由 reply/napcat 发 type:video。 */
+  videos?: string[];
   handled: boolean;
 }
 
@@ -109,6 +113,7 @@ export class BotEngine {
 
   private async dispatch(decision: IntentDecision, input: BotEngineInput, cfg: EngineRoutingConfig): Promise<BotEngineResult> {
     const images = (input.images || []).filter(Boolean);
+    const videos = (input.videos || []).filter(Boolean);
     const p = decision.params;
     switch (decision.kind) {
       case 'chat': {
@@ -124,7 +129,10 @@ export class BotEngine {
         // chat 路径注入引用/转发上下文(模型需要理解在聊什么);图像路径用纯 prompt 不污染。
         const baseText = p.prompt || input.text;
         const chatText = composeChatText(baseText, input.referenceText, input.forwardText);
-        const { text } = await this.deps.chat({ model: chatModel, text: chatText, images, sessionId: input.sessionId, nodeIndex: chatNode, context: input.context, timeoutMs: cfg.plannerTimeoutMs, reasoningEffort: cfg.reasoningEffort });
+        const { text } = await this.deps.chat({
+          model: chatModel, text: chatText, images, videos, sessionId: input.sessionId,
+          nodeIndex: chatNode, context: input.context, timeoutMs: cfg.plannerTimeoutMs, reasoningEffort: cfg.reasoningEffort,
+        });
         return { kind: 'chat', decision, text, handled: true };
       }
       case 'image.generate': {
@@ -138,6 +146,20 @@ export class BotEngine {
       case 'image.interrogate': {
         const { text } = await this.deps.interrogate({ model: cfg.interrogateModel, images, prompt: p.prompt || undefined });
         return { kind: 'image.interrogate', decision, text, handled: true };
+      }
+      case 'video.generate': {
+        // 图生视频：优先用当前消息/引用图第一张作为起始帧；纯文生视频可不带图。
+        const imageUrl = images[0];
+        const aspectRatio = p.size && /^\d{1,2}:\d{1,2}$/.test(p.size) ? p.size : undefined;
+        const { videos: out } = await this.deps.generateVideo({
+          model: cfg.videoModel,
+          prompt: p.prompt,
+          imageUrl,
+          duration: p.duration,
+          aspectRatio,
+          resolution: p.resolution,
+        });
+        return { kind: 'video.generate', decision, videos: out, handled: true };
       }
       default:
         return { kind: 'ignore', decision, handled: false };

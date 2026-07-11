@@ -36,6 +36,25 @@ const INTERROGATE_TERMS = [
   'analyze this image', 'interrogate', 'reverse engineer this image',
 ];
 
+/**
+ * 视频生成意图词。
+ * 自由模式说「生成视频 / 做个视频 / 视频」等应路由到 video.generate。
+ * 单独「视频」作中等置信；带「生成/做/拍」等动词时高置信。
+ */
+const VIDEO_TERMS = [
+  // zh
+  '生成视频', '做个视频', '做视频', '拍个视频', '拍视频', '视频生成', '文生视频', '图生视频',
+  '来个视频', '来段视频', '制作视频', '帮我视频', '出个视频', '动态视频',
+  // en
+  'generate video', 'make a video', 'make me a video', 'create a video', 'text to video',
+  'text2video', 'image to video', 'img2video', 'animate this', 'animate the image',
+];
+
+/** 单独「视频」类弱信号（避免「视频会议」等误伤，要求较短或明确上下文）。 */
+const VIDEO_WEAK_TERMS = [
+  '视频', 'video',
+];
+
 // ── 匹配工具 ──────────────────────────────────────────────────────────────
 
 function hasCjk(value: string): boolean {
@@ -77,6 +96,35 @@ export function hasImageBang(params: ParsedImageParams): boolean {
   );
 }
 
+/**
+ * 是否存在视频类 bang：video! / 视频! / 6s! / duration=6! / 480p! / 720p! 等。
+ * 与生图 bang 区分，用于自由模式自动路由到 video.generate。
+ */
+export function hasVideoBang(params: ParsedImageParams): boolean {
+  return params.tokens.some((token) =>
+    /^(?:video|视频|t2v|i2v|\d{1,2}s|duration=\d+|480p|720p|1080p)!$/i.test(token),
+  );
+}
+
+export function hasVideoVerb(text: string): string | undefined {
+  return matchesAny(text, VIDEO_TERMS) || matchWeakVideoTerm(text);
+}
+
+function matchWeakVideoTerm(text: string): string | undefined {
+  const value = String(text || '').trim();
+  if (!value) return undefined;
+  // 弱词：短句里出现「视频/video」且不像「看视频/视频会议」闲聊。
+  for (const term of VIDEO_WEAK_TERMS) {
+    if (!matchesTerm(value, term)) continue;
+    if (/(?:视频会议|看视频|刷视频|短视频平台|youtube|bilibili|抖音)/i.test(value)) return undefined;
+    // 与「生成/做/画/帮我」等同现，或整句很短（自由模式「视频 猫跑步」）
+    if (/(?:生成|做|拍|来|出|制作|帮我|给我|create|make|generate|draw)/i.test(value) || value.length <= 40) {
+      return term;
+    }
+  }
+  return undefined;
+}
+
 export interface SignalOptions {
   preferEditWhenImagePresent?: boolean;
 }
@@ -98,10 +146,24 @@ export function detectIntentSignals(
   const gen = hasGenerateVerb(text);
   const edit = hasEditVerb(text);
   const interrogate = hasInterrogateVerb(text);
+  const video = hasVideoVerb(text);
   const imageBang = hasImageBang(params);
+  const videoBang = hasVideoBang(params);
+
+  // 0) 视频生成：明确视频词 / video bang —— 优先于生图，避免「生成视频」被当成生图。
+  if (video || videoBang) {
+    const hit = video || (videoBang ? 'video-bang' : 'video');
+    signals.push({
+      kind: 'video.generate',
+      confidence: videoBang && !video ? 0.8 : 0.9,
+      reason: videoBang && !video
+        ? '存在视频 bang 参数（video!/时长/分辨率等）'
+        : `检测到视频生成意图（"${hit}"）`,
+    });
+  }
 
   // 1) 反推/识图：有图 + 反推类动词，且没有明确的"再画一张/改成"意图。
-  if (hasImages && interrogate && !gen) {
+  if (hasImages && interrogate && !gen && !video) {
     signals.push({
       kind: 'image.interrogate',
       confidence: 0.92,
@@ -109,8 +171,8 @@ export function detectIntentSignals(
     });
   }
 
-  // 2) 改图：有图 + 编辑类动词。
-  if (hasImages && edit) {
+  // 2) 改图：有图 + 编辑类动词（视频意图时不抢 edit）。
+  if (hasImages && edit && !video) {
     signals.push({
       kind: 'image.edit',
       confidence: 0.9,
@@ -118,8 +180,8 @@ export function detectIntentSignals(
     });
   }
 
-  // 3) 生图：明确的生成类动词。
-  if (gen) {
+  // 3) 生图：明确的生成类动词（已是视频意图时跳过，避免双信号打架）。
+  if (gen && !video && !videoBang) {
     // 有图 + 生成词：可能是"用这风格再画一张"，倾向 edit 时降权由 router 决策；这里给 generate 中高置信。
     signals.push({
       kind: 'image.generate',

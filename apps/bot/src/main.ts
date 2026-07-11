@@ -6,7 +6,7 @@ export const BOT_APP: PackageDescriptor = {
 };
 
 export { createBotApp, DEFAULT_CHAT_SYSTEM_PROMPT, type BotApp, type BotAppOptions } from './app.js';
-export { createModelBackedDeps, createModelPlanner, artifactToString, artifactsToStrings, type ModelDepsOptions } from './deps.js';
+export { createModelBackedDeps, createModelPlanner, artifactToString, artifactsToStrings, videoArtifactToString, videoArtifactsToStrings, type ModelDepsOptions } from './deps.js';
 export { createImagePromptPipeline, type ImagePromptPipeline } from './image-pipeline.js';
 export { buildTtsRequest, synthesizeSpeech, shouldUseTts, activeFishVoiceId, type TtsRequestPlan, type TtsAudio } from './tts.js';
 export { parseOwnerCommand, isOwner, type OwnerCommand, type OwnerParseContext } from './owner.js';
@@ -16,11 +16,23 @@ export {
   toRouterConfig,
   toReplyStrategyConfig,
   extractImages,
+  extractVideos,
+  extractReplyIdFromEvent,
+  normalizeImageUrl,
+  normalizeVideoUrl,
   segmentsToRaw,
   type NapcatMessageEvent,
   type BotRuntimeOptions,
   type BotRuntimeResult,
 } from './runtime.js';
+export {
+  extractForwardIds,
+  normalizeForwardPayload,
+  extractImagesFromForwardNodes,
+  formatForwardMessages,
+  extractReferenceText,
+  composeEnrichedText,
+} from './message-enrichment.js';
 
 /** 兼容旧骨架探针（保留以防外部引用）。 */
 export function describeBotAppSkeleton() {

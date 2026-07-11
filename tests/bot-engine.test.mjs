@@ -12,12 +12,14 @@ function makeDeps() {
     generateImages: async (r) => { calls.push(['generate', r]); return { images: ['img-gen'] }; },
     editImage: async (r) => { calls.push(['edit', r]); return { images: ['img-edit'] }; },
     interrogate: async (r) => { calls.push(['interrogate', r]); return { text: 'DESC' }; },
+    generateVideo: async (r) => { calls.push(['video', r]); return { videos: ['https://vid.example/out.mp4'] }; },
   };
 }
 
 const baseCfg = {
   chatEnabled: true, chatModel: 'gpt-4o-mini',
   imageEnabled: true, imageModel: 'gpt-image-2', editModel: 'gpt-image-2', interrogateModel: 'gpt-4o',
+  videoEnabled: true, videoModel: 'grok-imagine-video',
   freeModeModel: 'gpt-4o-mini', preferEditWhenImagePresent: true, maxOutputImages: 4,
 };
 
@@ -86,4 +88,41 @@ test('engine: 图像开关关闭 -> 生图降级 chat', async () => {
   const engine = createBotEngine({ deps, getConfig: () => ({ ...baseCfg, imageEnabled: false }) });
   const r = await engine.handleAuto({ text: '画一只猫' });
   assert.equal(r.kind, 'chat');
+});
+
+test('engine: 视频意图 -> generateVideo(videoModel)', async () => {
+  const deps = makeDeps();
+  const engine = createBotEngine({ deps, getConfig: () => baseCfg });
+  const r = await engine.handleAuto({ text: '生成视频 火箭从火星发射' });
+  assert.equal(r.kind, 'video.generate');
+  assert.deepEqual(r.videos, ['https://vid.example/out.mp4']);
+  assert.equal(deps.calls[0][0], 'video');
+  assert.equal(deps.calls[0][1].model, 'grok-imagine-video');
+  assert.match(deps.calls[0][1].prompt, /火箭/);
+});
+
+test('engine: 图生视频带 imageUrl', async () => {
+  const deps = makeDeps();
+  const engine = createBotEngine({ deps, getConfig: () => baseCfg });
+  const r = await engine.handleAuto({ text: '做个视频 让它动起来', images: ['https://img.example/still.png'] });
+  assert.equal(r.kind, 'video.generate');
+  assert.equal(deps.calls[0][1].imageUrl, 'https://img.example/still.png');
+});
+
+test('engine: 视频能力不可用则降级 chat', async () => {
+  const deps = makeDeps();
+  const cfg = { ...baseCfg, videoModel: 'gpt-4o-mini' }; // 无 video.generate
+  const engine = createBotEngine({ deps, getConfig: () => cfg });
+  const r = await engine.handleAuto({ text: '生成视频 一只猫跑步' });
+  assert.equal(r.decision.degradedFrom, 'video.generate');
+  assert.equal(r.kind, 'chat');
+  assert.equal(deps.calls.some((c) => c[0] === 'video'), false);
+});
+
+test('resolveImageCapabilities: videoGenerate 反映档案', () => {
+  const reg = createCapabilityRegistry();
+  const caps = resolveImageCapabilities(baseCfg, reg);
+  assert.equal(caps.videoGenerate, true);
+  const caps2 = resolveImageCapabilities({ ...baseCfg, videoEnabled: false }, reg);
+  assert.equal(caps2.videoGenerate, false);
 });

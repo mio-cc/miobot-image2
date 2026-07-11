@@ -15,7 +15,7 @@ export interface PlannerClient {
   createText(request: { model: string; messages: PlannerMessage[]; timeoutMs?: number; maxTokens?: number }): Promise<{ text: string; raw?: unknown }>;
 }
 
-export type PlannerAction = 'text' | 'generate' | 'edit' | 'interrogate';
+export type PlannerAction = 'text' | 'generate' | 'edit' | 'interrogate' | 'video';
 
 export interface PlannerOutput {
   action: PlannerAction;
@@ -24,6 +24,8 @@ export interface PlannerOutput {
   size?: string;
   count?: number;
   quality?: string;
+  duration?: number;
+  resolution?: string;
 }
 
 export const DEFAULT_PLANNER_TEMPLATE = [
@@ -33,10 +35,12 @@ export const DEFAULT_PLANNER_TEMPLATE = [
   '  {"action":"generate","prompt":"<image prompt>","size":"1024x1024","count":1}',
   '  {"action":"edit","prompt":"<edit instruction>"}',
   '  {"action":"interrogate"}',
+  '  {"action":"video","prompt":"<video prompt>","duration":6,"resolution":"720p"}',
   'Rules:',
   '- Use "edit" only when input images are present AND the user wants to modify an image.',
   '- Use "interrogate" when the user wants the image described / reverse-prompted.',
   '- Use "generate" for text-to-image requests.',
+  '- Use "video" when the user asks to generate/make a video / 生成视频 / 做个视频 (text-to-video or image-to-video).',
   '- Otherwise use "text".',
   '- Preserve the user content language in prompt/text; if the user content is Chinese, keep Chinese unless the user explicitly asks for English.',
   'User content: {{userContent}}',
@@ -92,6 +96,15 @@ export function parsePlannerOutput(raw: string): PlannerOutput {
     if (action === 'interrogate') {
       return { action: 'interrogate' };
     }
+    if (action === 'video') {
+      return {
+        action: 'video',
+        prompt: String(record.prompt ?? record.videoPrompt ?? record.description ?? '').trim(),
+        size: nonEmpty(record.size ?? record.aspect_ratio ?? record.aspectRatio),
+        duration: numberOrUndefined(record.duration ?? record.seconds),
+        resolution: nonEmpty(record.resolution ?? record.quality),
+      };
+    }
     return {
       action,
       prompt: String(record.prompt ?? record.imagePrompt ?? record.description ?? '').trim(),
@@ -109,6 +122,7 @@ export function plannerActionToIntentKind(action: PlannerAction): IntentKind {
     case 'generate': return 'image.generate';
     case 'edit': return 'image.edit';
     case 'interrogate': return 'image.interrogate';
+    case 'video': return 'video.generate';
     default: return 'chat';
   }
 }
@@ -116,11 +130,13 @@ export function plannerActionToIntentKind(action: PlannerAction): IntentKind {
 function normalizeAction(actionRaw: string, record: Record<string, unknown>): PlannerAction {
   if (actionRaw === 'edit') return 'edit';
   if (actionRaw === 'interrogate' || actionRaw === 'describe' || actionRaw === 'caption') return 'interrogate';
+  if (actionRaw === 'video' || actionRaw === 't2v' || actionRaw === 'i2v' || actionRaw === 'text-to-video' || actionRaw === 'image-to-video') return 'video';
   if (actionRaw === 'generate' || actionRaw === 'image' || actionRaw === 'images') return 'generate';
   if (actionRaw === 'text' || actionRaw === 'chat' || actionRaw === 'reply') return 'text';
   // 兼容旧 planner：mode=edit/generate + 有 prompt 即视为图像。
   const mode = String(record.mode ?? '').toLowerCase();
   if (mode === 'edit') return 'edit';
+  if (mode === 'video') return 'video';
   if (record.prompt || record.imagePrompt || mode === 'generate') return 'generate';
   return 'text';
 }

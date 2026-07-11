@@ -8,7 +8,12 @@ export interface BotRouting {
   imageNodeIndex: number;
   editNodeIndex: number;
   interrogateNodeIndex: number;
+  videoNodeIndex: number;
   freeModeNodeIndex: number;
+  /** 视频 HTTP 超时与轮询参数（透传 generateVideo）。 */
+  videoTimeoutMs?: number;
+  videoPollTimeoutMs?: number;
+  videoPollIntervalMs?: number;
 }
 
 const KNOWN_DIALECTS: ProviderDialect[] = ['openai', 'anthropic', 'gemini', 'huggingface', 'custom'];
@@ -55,6 +60,8 @@ export function toEngineRoutingConfig(cfg: AppConfig): EngineRoutingConfig {
     imageModel: cfg.llm.imageModel,
     editModel: cfg.llm.editModel,
     interrogateModel: cfg.llm.interrogateModel,
+    videoEnabled: cfg.llm.videoEnabled,
+    videoModel: cfg.llm.videoModel,
     freeModeModel: cfg.freeMode.model,
     freeModeNodeIndex: cfg.freeMode.nodeIndex,
     freeModeEnabled: cfg.freeMode.enabled,
@@ -73,14 +80,18 @@ export function toBotRouting(cfg: AppConfig): BotRouting {
     imageNodeIndex: cfg.llm.imageNodeIndex,
     editNodeIndex: cfg.llm.editNodeIndex,
     interrogateNodeIndex: cfg.llm.interrogateNodeIndex,
+    videoNodeIndex: cfg.llm.videoNodeIndex,
     freeModeNodeIndex: cfg.freeMode.nodeIndex,
+    videoTimeoutMs: cfg.llm.videoTimeoutMs,
+    videoPollTimeoutMs: cfg.llm.videoPollTimeoutMs,
+    videoPollIntervalMs: cfg.llm.videoPollIntervalMs,
   };
 }
 
 /** AppConfig.llm.capabilityOverrides(配置层) → model 层 CapabilityOverride[]。把 string[] operations 转成强类型 ModelOperation[]。 */
 export function toCapabilityOverrides(overrides: ConfigCapabilityOverride[] | undefined): CapabilityOverride[] {
   if (!Array.isArray(overrides) || !overrides.length) return [];
-  const ALLOWED: ModelOperation[] = ['chat', 'vision', 'interrogate', 'image.generate', 'image.edit'];
+  const ALLOWED: ModelOperation[] = ['chat', 'vision', 'interrogate', 'image.generate', 'image.edit', 'video.generate'];
   return overrides
     .filter((o) => o && String(o.model || '').trim())
     .map((o) => {

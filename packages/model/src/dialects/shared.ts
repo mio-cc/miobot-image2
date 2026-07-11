@@ -1,4 +1,4 @@
-import { ModelError, type ImageArtifact, type ImageResult, type TextResult } from '../ports.js';
+import { ModelError, type ImageArtifact, type ImageResult, type ModelNode, type RequestPlan, type TextResult, type VideoArtifact, type VideoJobStatus, type VideoResult } from '../ports.js';
 
 export function asRecord(value: unknown): Record<string, any> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, any>) : {};
@@ -85,6 +85,100 @@ export function parseImageItem(item: unknown, index: number): ImageArtifact {
   if (typeof record.base64 === 'string' && record.base64) return { kind: 'base64', data: record.base64, mimeType, revisedPrompt, index };
   if (typeof record.url === 'string' && record.url) return { kind: 'url', data: record.url, mimeType, revisedPrompt, index };
   throw new ModelError(`Image response data[${index}] missing b64_json/base64/url`, { category: 'validation', retryable: false });
+}
+
+/**
+ * 解析 OpenAI 风格 / xAI Grok Imagine 视频响应。
+ * 兼容形态:
+ * - 提交: { request_id } → pending
+ * - 轮询: { status: "pending"|"done"|"failed"|"expired", video: { url, duration } }
+ * - 即时: { data: [{ url | b64_json }] } / { video: { url } } / { url }
+ *
+ * 官方文档: POST /v1/videos/generations → GET /v1/videos/{request_id}
+ * status: pending | done | failed | expired
+ */
+export function parseOpenAiVideo(data: unknown): VideoResult {
+  const root = asRecord(data);
+  const jobStatus = normalizeVideoJobStatus(root.status);
+  const requestId = stringOrUndef(root.request_id ?? root.requestId ?? root.id);
+
+  // 终端失败态须在 assertNoTopLevelError 之前：轮询响应常带 error 字段，
+  // 若先 assert 会丢掉 video_failed/video_expired 专用 code。
+  if (jobStatus === 'failed' || jobStatus === 'expired') {
+    const errRec = asRecord(root.error);
+    const detail = stringOrUndef(errRec.message ?? root.error ?? root.message) || jobStatus;
+    throw new ModelError(`Video generation ${jobStatus}: ${detail}`, {
+      category: 'upstream',
+      retryable: false,
+      code: jobStatus === 'expired' ? 'video_expired' : 'video_failed',
+    });
+  }
+
+  assertNoTopLevelError(data);
+
+  const items = Array.isArray(root.data) ? root.data
+    : root.video ? [root.video]
+      : root.url || root.b64_json || root.base64 ? [root]
+        : [];
+  const videos: VideoArtifact[] = [];
+  items.forEach((item: unknown, index: number) => {
+    const record = asRecord(item);
+    if (record.error !== undefined) {
+      const err = asRecord(record.error);
+      throw new ModelError(`video data[${index}].error: ${String(err.message || record.error)}`, { category: 'upstream', retryable: true });
+    }
+    const mimeType = typeof record.mime_type === 'string' ? record.mime_type : typeof record.mimeType === 'string' ? record.mimeType : 'video/mp4';
+    if (typeof record.url === 'string' && record.url) {
+      videos.push({ kind: 'url', data: record.url, mimeType, index, requestId: stringOrUndef(record.request_id ?? record.id) ?? requestId });
+      return;
+    }
+    if (typeof record.b64_json === 'string' && record.b64_json) {
+      videos.push({ kind: 'base64', data: record.b64_json, mimeType, index, requestId });
+      return;
+    }
+    if (typeof record.base64 === 'string' && record.base64) {
+      videos.push({ kind: 'base64', data: record.base64, mimeType, index, requestId });
+    }
+  });
+
+  const hasPlayable = videos.some((v) => String(v.data || '').trim());
+  if (hasPlayable) return { videos, raw: data, pending: false, jobStatus: jobStatus === 'unknown' ? 'done' : jobStatus };
+
+  // 仍在生成 / 仅有 request_id
+  if (jobStatus === 'pending' || requestId) {
+    return {
+      videos: [{ kind: 'url', data: '', mimeType: 'video/mp4', requestId: requestId || videos[0]?.requestId, index: 0 }],
+      raw: data,
+      pending: true,
+      jobStatus: jobStatus === 'unknown' ? 'pending' : jobStatus,
+    };
+  }
+  throw new ModelError('Video response missing data[]/url/request_id', { category: 'validation', retryable: false });
+}
+
+/** xAI / OpenAI 兼容：GET {baseUrl}/videos/{requestId} */
+export function buildOpenAiVideoStatus(node: ModelNode, requestId: string): RequestPlan {
+  const id = encodeURIComponent(String(requestId || '').trim());
+  return {
+    method: 'GET',
+    url: joinUrl(node.baseUrl, `/videos/${id}`),
+    headers: bearerHeaders(node.apiKey, node.headers),
+  };
+}
+
+export function normalizeVideoJobStatus(value: unknown): VideoJobStatus {
+  const s = String(value ?? '').trim().toLowerCase();
+  if (!s) return 'unknown';
+  if (s === 'done' || s === 'completed' || s === 'succeeded' || s === 'success') return 'done';
+  if (s === 'failed' || s === 'error' || s === 'cancelled' || s === 'canceled') return 'failed';
+  if (s === 'expired') return 'expired';
+  if (s === 'pending' || s === 'processing' || s === 'running' || s === 'queued' || s === 'in_progress') return 'pending';
+  return 'unknown';
+}
+
+function stringOrUndef(value: unknown): string | undefined {
+  const text = value === undefined || value === null ? '' : String(value).trim();
+  return text || undefined;
 }
 
 export function getByPath(data: unknown, path: string): unknown {

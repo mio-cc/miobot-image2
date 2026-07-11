@@ -69,7 +69,7 @@ export interface FreeModeDirectives {
   templateId?: string;
 }
 
-const DEFAULT_PLANNER_TEMPLATE = 'You are the Napcat Bot Free Mode planner. Return JSON only. Use {"action":"text","text":"..."} or {"action":"image","mode":"generate|edit","prompt":"...","size":"1024x1024","count":1}. Preserve the user content language in image prompt; if the user content is Chinese, prompt must contain Chinese and must not be translated into English unless the user explicitly asks for English. User content: {{userContent}}';
+const DEFAULT_PLANNER_TEMPLATE = 'You are the Napcat Bot Free Mode planner. Return JSON only. Use {"action":"text","text":"..."} or {"action":"image","mode":"generate|edit","prompt":"...","size":"1024x1024","count":1} or {"action":"video","prompt":"...","duration":6}. Prefer video when user asks to generate/make a video. Preserve the user content language in image/video prompt; if the user content is Chinese, prompt must contain Chinese and must not be translated into English unless the user explicitly asks for English. User content: {{userContent}}';
 
 export class FreeModeEngine {
   private readonly options: Required<Omit<FreeModeOptions, 'reply' | 'plannerPromptTemplate'>> & Pick<FreeModeOptions, 'reply' | 'plannerPromptTemplate'>;

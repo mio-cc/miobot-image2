@@ -1,5 +1,5 @@
 import type { BotEngineDeps } from '../../../packages/bot-engine/src/index.js';
-import type { ImageArtifact, ImageResult, ModelClient, ReasoningEffort } from '../../../packages/model/src/index.js';
+import type { ImageArtifact, ImageResult, ModelClient, ReasoningEffort, VideoArtifact, VideoResult } from '../../../packages/model/src/index.js';
 import type { PlannerClient } from '../../../packages/intent-router/src/index.js';
 import type { SessionStore } from '../../../packages/core/src/index.js';
 import type { BotRouting } from './config-bridge.js';
@@ -14,6 +14,17 @@ export function artifactToString(artifact: ImageArtifact): string {
 
 export function artifactsToStrings(result: ImageResult): string[] {
   return (result.images || []).map(artifactToString);
+}
+
+/** 视频产物 → 可发 QQ 的 file 引用（url 或 data:video/...;base64）。 */
+export function videoArtifactToString(artifact: VideoArtifact): string {
+  if (artifact.kind === 'url') return artifact.data;
+  const mime = artifact.mimeType || 'video/mp4';
+  return `data:${mime};base64,${artifact.data}`;
+}
+
+export function videoArtifactsToStrings(result: VideoResult): string[] {
+  return (result.videos || []).map(videoArtifactToString).filter((u) => String(u || '').trim());
 }
 
 export interface ModelDepsOptions {
@@ -43,6 +54,7 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       const routing = getRouting();
       const nodeIndex = req.nodeIndex ?? routing.chatNodeIndex;
       const images = (req.images || []).filter(Boolean);
+      const videos = (req.videos || []).filter(Boolean);
       // 群聊上下文：@bot 时拉取的最近群聊记录，作为 system 前置注入，让 bot 知道在聊什么。
       const contextSystem = req.context
         ? { role: 'system', content: `【群内最近对话上下文】\n${req.context}\n（请根据@你的消息判断是否与上述上下文相关：相关则结合上下文回复，无关则正常回复用户，不要生硬搬运上下文内容）` }
@@ -52,9 +64,14 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       // 对齐历史 monolith 的 shouldSendReasoningEffort + max_tokens=2000 默认值。
       const maxTokens = req.maxTokens ?? 2000;
       const reasoningEffort = req.reasoningEffort as ReasoningEffort | undefined;
+      // 当前对话模型普遍不支持视频理解：把视频 URL 以文字提示注入，避免当图片喂 vision 崩掉。
+      const videoNote = videos.length
+        ? `\n\n【用户附带了 ${videos.length} 个视频附件，当前模型无法直接解析视频内容；仅保留引用：${videos.slice(0, 3).map((v, i) => `[${i + 1}] ${String(v).slice(0, 120)}`).join(' ')}】`
+        : '';
       // 带图对话走 vision，不进会话记忆(图片上下文不便持久化)。
       if (images.length > 0 && client.can(req.model, 'vision')) {
-        const prompt = contextSystem ? `${contextSystem.content}\n\n${req.text}` : req.text;
+        const promptBase = contextSystem ? `${contextSystem.content}\n\n${req.text}` : req.text;
+        const prompt = `${promptBase}${videoNote}`;
         const visionReq: { model: string; prompt: string; imageUrls: string[]; maxTokens: number; reasoningEffort?: ReasoningEffort } = { model: req.model, prompt, imageUrls: images, maxTokens };
         if (reasoningEffort) visionReq.reasoningEffort = reasoningEffort;
         const res = await client.vision(nodeIndex, visionReq);
@@ -64,12 +81,15 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       if (images.length > 0) {
         logger?.warn('模型无 vision 能力,图片被丢弃', { model: req.model, imageCount: images.length });
       }
+      if (videos.length) {
+        logger?.info('chat 路径收到视频附件,已降级为文字引用', { model: req.model, videoCount: videos.length });
+      }
       const history = sessions && req.sessionId ? sessions.get(req.sessionId) : [];
       const messages: Array<{ role: string; content: unknown }> = [];
       if (chatSystemPrompt) messages.push({ role: 'system', content: chatSystemPrompt });
       if (contextSystem) messages.push(contextSystem);
       for (const m of history) messages.push({ role: m.role, content: m.content });
-      messages.push({ role: 'user', content: req.text });
+      messages.push({ role: 'user', content: `${req.text}${videoNote}` });
       const chatReq: { model: string; messages: typeof messages; maxTokens: number; reasoningEffort?: ReasoningEffort; timeoutMs?: number } = { model: req.model, messages, maxTokens };
       if (reasoningEffort) chatReq.reasoningEffort = reasoningEffort;
       if (req.timeoutMs) chatReq.timeoutMs = req.timeoutMs;
@@ -119,12 +139,37 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       });
       return { text: res.text };
     },
+    async generateVideo(req) {
+      const routing = getRouting();
+      // ModelClient.generateVideo 内部完成异步轮询，此处只等最终 URL。
+      const res = await client.generateVideo(routing.videoNodeIndex, {
+        model: req.model,
+        prompt: req.prompt,
+        imageUrl: req.imageUrl,
+        duration: req.duration,
+        aspectRatio: req.aspectRatio,
+        resolution: req.resolution,
+        timeoutMs: routing.videoTimeoutMs,
+        pollTimeoutMs: routing.videoPollTimeoutMs,
+        pollIntervalMs: routing.videoPollIntervalMs,
+      });
+      const videos = videoArtifactsToStrings(res);
+      if (!videos.length) {
+        throw new Error('视频生成完成但未返回可播放 URL（可能仍 pending 或上游异常）');
+      }
+      return { videos };
+    },
   };
 }
 
 /**
  * ModelClient 后端的意图规划器:自由模式/歧义判定时,intent-router 用它做一次 LLM 判定。
  * 走 freeMode 节点;不具备 vision 时 intent-router 会自动只传文本。
+ *
+ * 多模态:buildPlannerMessages 会在 visionEnabled 时把 image_url 拼进 messages。
+ * OpenAI 兼容(含 xAI grok-4.5)的 /chat/completions 直接透传 content 数组即可识图。
+ * 若某条 message content 含 image_url 而模型无 vision 能力,上游可能 4xx —— 由
+ * IntentRouter.plannerVisionEnabled 在调用前按档案门控避免盲发。
  */
 export function createModelPlanner(client: ModelClient, getNodeIndex: () => number): PlannerClient {
   return {

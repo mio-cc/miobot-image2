@@ -35,11 +35,33 @@ export const DALLE2_PROFILE: ModelProfile = {
   sizes: ['256x256', '512x512', '1024x1024'],
   supportsSize: true, supportsCount: true, supportsQuality: false, supportsMask: true, maxImagesPerRequest: 10,
 };
-/** xAI Grok 生图(grok-2-image)：OpenAI 兼容端点，但**不接受 size/quality/style/response_format**，只认 prompt/n。 */
+/**
+ * xAI Grok 旧生图(grok-2-image): OpenAI 兼容 /images/generations,认 prompt/n,
+ * 不接受 size/quality;通常无官方改图端点。
+ */
 export const GROK_IMAGE_PROFILE: ModelProfile = {
   operations: ['image.generate'],
   sizes: [],
   supportsSize: false, supportsCount: true, supportsQuality: false, supportsMask: false, maxImagesPerRequest: 10,
+};
+/**
+ * xAI Grok Imagine 生图(grok-imagine-image*): 支持 n、response_format、aspect_ratio、
+ * resolution,以及自然语言改图(image.edit)。size 仍关掉(用 aspect_ratio)。
+ */
+export const GROK_IMAGINE_IMAGE_PROFILE: ModelProfile = {
+  operations: ['image.generate', 'image.edit'],
+  sizes: [],
+  supportsSize: false, supportsCount: true, supportsQuality: false, supportsMask: false, maxImagesPerRequest: 10,
+};
+/**
+ * xAI Grok Imagine 视频档案(grok-imagine-video*)。
+ * 端点: POST {baseUrl}/videos/generations → GET {baseUrl}/videos/{request_id} 轮询。
+ * 能力: video.generate；QQ 侧发送见 napcat sendGroupVideo（注意时长/大小/编码限制）。
+ */
+export const GROK_VIDEO_PROFILE: ModelProfile = {
+  operations: ['video.generate'],
+  sizes: [],
+  supportsSize: false, supportsCount: false, supportsQuality: false, supportsMask: false, maxImagesPerRequest: 1,
 };
 /** Gemini 原生生图(gemini-*-image / imagen / nano-banana)：走 generateContent，**不接受 OpenAI 的 size/quality**。 */
 export const GEMINI_IMAGE_PROFILE: ModelProfile = {
@@ -57,16 +79,21 @@ export const GENERIC_IMAGE_PROFILE: ModelProfile = {
 export interface ProfileRule { test: RegExp; profile: ModelProfile }
 
 export const BUILTIN_PROFILE_RULES: ProfileRule[] = [
-  // ── 生图类（务必排在聊天/视觉规则之前，避免被 gemini/grok/qwen 等通名抢先误判为对话）──
+  // ── 视频 / 生图类（务必排在聊天/视觉规则之前，避免被 gemini/grok/qwen 等通名抢先误判为对话）──
   { test: /gpt-image|gpt_image/i, profile: GPT_IMAGE_PROFILE },
   { test: /dall[-_\s]?e[-_\s]?3/i, profile: DALLE3_PROFILE },
   { test: /dall[-_\s]?e/i, profile: DALLE2_PROFILE },
+  // grok 视频优先于生图(名称常含 video)
+  { test: /grok[-_\s.\w]*(?:imagine[-_\s.\w]*)?video|grok-imagine-video/i, profile: GROK_VIDEO_PROFILE },
+  // grok-imagine-image* 先于 grok-2-image
+  { test: /grok[-_\s.\w]*imagine/i, profile: GROK_IMAGINE_IMAGE_PROFILE },
+  // grok-2-image / 其它 *image 名
   { test: /grok[-_\s.\w]*image/i, profile: GROK_IMAGE_PROFILE },
   { test: /gemini[-_\s.\w]*image|imagen|nano[-_\s]?banana/i, profile: GEMINI_IMAGE_PROFILE },
   { test: /qwen[-_\s]?image|wan[-_\s]?x|wanx/i, profile: GENERIC_IMAGE_PROFILE },
   { test: /(flux|stable[-_\s]?diffusion|sdxl|sd3|sd-?turbo|midjourney|kolors|seedream|hunyuan-?image|cogview|playground-?v|ideogram|recraft|kontext|luma-?photon)/i, profile: GENERIC_IMAGE_PROFILE },
-  // ── 多模态对话（vision）──
-  { test: /(gpt-4o|gpt-4\.|gpt-4-turbo|gpt-5|chatgpt-4o|o1|o3|o4|claude|gemini|grok[-_\s.\w]*(?!image)|qwen[-_\s]?vl|qwen[\d.]+-?vl|llava|vl-|vision|internvl|glm-4v|glm-[0-9.]*v|yi-vision|step-1v|pixtral|llama-?3\.2|llama-?4|phi-?3\.5-vision|phi-?4|minicpm-?v|molmo|aria|deepseek[-_\s]?vl|deepseek[\d.]*-?vl|minimax[-_\s]?vl|sensenova[-_\s]?vl|abab[-_\s]?vision|doubao[-_\s]?vision)/i, profile: CHAT_PROFILE },
+  // ── 多模态对话（vision）: grok-4 / grok-4.5 / grok-2-vision 等 ──
+  { test: /(gpt-4o|gpt-4\.|gpt-4-turbo|gpt-5|chatgpt-4o|o1|o3|o4|claude|gemini|grok[-_\s.\w]*(?!image|imagine|video)|qwen[-_\s]?vl|qwen[\d.]+-?vl|llava|vl-|vision|internvl|glm-4v|glm-[0-9.]*v|yi-vision|step-1v|pixtral|llama-?3\.2|llama-?4|phi-?3\.5-vision|phi-?4|minicpm-?v|molmo|aria|deepseek[-_\s]?vl|deepseek[\d.]*-?vl|minimax[-_\s]?vl|sensenova[-_\s]?vl|abab[-_\s]?vision|doubao[-_\s]?vision)/i, profile: CHAT_PROFILE },
   // ── 纯文本对话 ──
   { test: /(gpt-3\.5|deepseek(?![-_\s]?vl)|qwen|moonshot|kimi|yi-|glm-4(?!v)|glm-3|llama|mistral|mixtral|gemma|baichuan|ernie|spark|hunyuan(?!-?image)|command-?r|abab(?![-_\s]?vision)|doubao(?![-_\s]?vision))/i, profile: TEXT_ONLY_PROFILE },
 ];

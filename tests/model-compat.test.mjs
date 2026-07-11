@@ -32,6 +32,19 @@ test('capability: grok 视觉/文本、qwen 系列、dall-e-2 区分', () => {
   assert.equal(reg.can('dall-e-3', 'image.edit'), false);
 });
 
+test('capability: grok-4.5 对话+vision；grok-imagine 生图/改图；video 独立', () => {
+  const reg = createCapabilityRegistry();
+  assert.equal(reg.can('grok-4.5', 'chat'), true);
+  assert.equal(reg.can('grok-4.5', 'vision'), true);
+  assert.equal(reg.can('grok-4.5', 'image.generate'), false);
+  assert.equal(reg.can('grok-imagine-image-quality', 'image.generate'), true);
+  assert.equal(reg.can('grok-imagine-image-quality', 'image.edit'), true);
+  assert.equal(reg.can('grok-imagine-image-quality', 'chat'), false);
+  assert.equal(reg.can('grok-imagine-video', 'video.generate'), true);
+  assert.equal(reg.can('grok-imagine-video', 'image.generate'), false);
+  assert.equal(reg.can('grok-imagine-video-1.5', 'video.generate'), true);
+});
+
 // ── 参数规整：按档案剔除不支持的 size/quality ─────────────────────────
 function fakeTransport(handler) {
   const calls = [];
@@ -49,6 +62,110 @@ test('shaping: grok-2-image 生图不携带 size/quality（避免上游报错）
   assert.equal('size' in body, false);
   assert.equal('quality' in body, false);
   assert.equal(body.n, 3); // grok 支持 n
+});
+
+test('openai dialect: grok-imagine 可带 aspect_ratio/resolution；视频走 /videos/generations', async () => {
+  const transport = fakeTransport((req) => {
+    if (String(req.url).includes('/videos/generations')) {
+      return { status: 200, data: { request_id: 'vid_async_1' } };
+    }
+    if (String(req.url).includes('/videos/vid_async_1')) {
+      return { status: 200, data: { status: 'done', video: { url: 'https://vidgen.x.ai/out.mp4', duration: 6 } } };
+    }
+    return { status: 200, data: { data: [{ url: 'https://img.example/a.png' }] } };
+  });
+  const client = createModelClient({ nodes: [{ baseUrl: 'https://api.x.ai/v1', apiKey: 'k', dialect: 'openai' }], transport });
+  await client.generateImages(0, {
+    model: 'grok-imagine-image-quality',
+    prompt: 'cat',
+    aspectRatio: '16:9',
+    resolution: '2k',
+  });
+  assert.equal(transport.calls[0].body.aspect_ratio, '16:9');
+  assert.equal(transport.calls[0].body.resolution, '2k');
+  assert.match(transport.calls[0].url, /\/images\/generations$/);
+
+  // waitForCompletion=false：只验证提交脚手架
+  const pending = await client.generateVideo(0, {
+    model: 'grok-imagine-video',
+    prompt: 'rocket launch',
+    imageUrl: 'https://img.example/still.png',
+    duration: 6,
+    aspectRatio: '16:9',
+    waitForCompletion: false,
+  });
+  assert.equal(pending.pending, true);
+  assert.equal(pending.videos[0].requestId, 'vid_async_1');
+  assert.match(transport.calls[1].url, /\/videos\/generations$/);
+  assert.equal(transport.calls[1].body.image.url, 'https://img.example/still.png');
+  assert.equal(transport.calls[1].body.duration, 6);
+});
+
+test('video poll: pending → GET /videos/{id} → done 返回 URL', async () => {
+  let pollN = 0;
+  const transport = fakeTransport((req) => {
+    if (String(req.method || 'POST').toUpperCase() === 'POST' || String(req.url).includes('/generations')) {
+      return { status: 200, data: { request_id: 'req-poll-1' } };
+    }
+    pollN += 1;
+    if (pollN < 2) return { status: 200, data: { status: 'pending' } };
+    return { status: 200, data: { status: 'done', video: { url: 'https://vidgen.x.ai/final.mp4', duration: 8 } } };
+  });
+  const client = createModelClient({
+    nodes: [{ baseUrl: 'https://api.x.ai/v1', apiKey: 'k', dialect: 'openai' }],
+    transport,
+  });
+  const video = await client.generateVideo(0, {
+    model: 'grok-imagine-video',
+    prompt: 'mars rocket',
+    pollIntervalMs: 20,
+    pollTimeoutMs: 5000,
+  });
+  assert.equal(video.pending, false);
+  assert.equal(video.videos[0].data, 'https://vidgen.x.ai/final.mp4');
+  assert.equal(video.videos[0].requestId, 'req-poll-1');
+  assert.ok(pollN >= 2);
+  assert.ok(transport.calls.some((c) => String(c.method).toUpperCase() === 'GET' && /\/videos\/req-poll-1$/.test(c.url)));
+});
+
+test('video poll: 超时抛 video_poll_timeout', async () => {
+  const transport = fakeTransport((req) => {
+    if (String(req.url).includes('/generations')) return { status: 200, data: { request_id: 'req-timeout' } };
+    return { status: 200, data: { status: 'pending' } };
+  });
+  const client = createModelClient({
+    nodes: [{ baseUrl: 'https://api.x.ai/v1', apiKey: 'k', dialect: 'openai' }],
+    transport,
+  });
+  await assert.rejects(
+    () => client.generateVideo(0, {
+      model: 'grok-imagine-video',
+      prompt: 'slow',
+      pollIntervalMs: 15,
+      pollTimeoutMs: 80,
+    }),
+    (e) => e instanceof ModelError && e.code === 'video_poll_timeout',
+  );
+});
+
+test('video poll: status=failed 抛 video_failed', async () => {
+  const transport = fakeTransport((req) => {
+    if (String(req.url).includes('/generations')) return { status: 200, data: { request_id: 'req-fail' } };
+    return { status: 200, data: { status: 'failed', error: { message: 'moderation' } } };
+  });
+  const client = createModelClient({
+    nodes: [{ baseUrl: 'https://api.x.ai/v1', apiKey: 'k', dialect: 'openai' }],
+    transport,
+  });
+  await assert.rejects(
+    () => client.generateVideo(0, {
+      model: 'grok-imagine-video',
+      prompt: 'bad',
+      pollIntervalMs: 10,
+      pollTimeoutMs: 2000,
+    }),
+    (e) => e instanceof ModelError && e.code === 'video_failed',
+  );
 });
 
 test('shaping: gpt-image 合法 size 透传、非法 size 被剔除', async () => {

@@ -2,8 +2,11 @@ import type { PackageDescriptor } from '@miobot-v2/shared';
 
 export const MODEL_PACKAGE: PackageDescriptor = { name: '@miobot-v2/model', phase: 'P2-model' };
 
-/** 模型能力维度。 */
-export type ModelOperation = 'chat' | 'vision' | 'image.generate' | 'image.edit' | 'interrogate';
+/**
+ * 模型能力维度。
+ * `video.generate`：xAI Grok Imagine Video 等（POST /videos/generations + GET /videos/{id} 轮询）。
+ */
+export type ModelOperation = 'chat' | 'vision' | 'image.generate' | 'image.edit' | 'interrogate' | 'video.generate';
 
 /** 节点说话用的协议方言。 */
 export type ProviderDialect = 'openai' | 'anthropic' | 'gemini' | 'huggingface' | 'custom';
@@ -62,6 +65,10 @@ export interface ImageGenerationRequest {
   size?: string;
   count?: number;
   quality?: string;
+  /** xAI Grok Imagine 等使用的宽高比(如 16:9),与 OpenAI size 互斥时由方言决定如何发送。 */
+  aspectRatio?: string;
+  /** xAI Grok Imagine 分辨率:1k / 2k。 */
+  resolution?: string;
   timeoutMs?: number;
 }
 
@@ -72,7 +79,42 @@ export interface ImageEditRequest {
   mask?: string;
   size?: string;
   quality?: string;
+  aspectRatio?: string;
+  resolution?: string;
   timeoutMs?: number;
+}
+
+/**
+ * 视频生成请求。
+ * xAI: POST /v1/videos/generations → request_id，再 GET /v1/videos/{id} 轮询至 done。
+ * ModelClient.generateVideo 内部完成轮询，对调用方表现为拿到视频 URL。
+ *
+ * QQ/Napcat 注意：短视频消息对时长/大小/编码有限制（常见约数十秒内、MP4/H.264）；
+ * 超限时可能需改发文件段，或压缩后再发。
+ */
+export interface VideoGenerationRequest {
+  model: string;
+  prompt: string;
+  /** 参考图 URL / data URL(image-to-video)。 */
+  imageUrl?: string;
+  /** 秒数；xAI 允许 1–15。 */
+  duration?: number;
+  aspectRatio?: string;
+  resolution?: string;
+  /** 单次 HTTP（提交/轮询）超时。 */
+  timeoutMs?: number;
+  /**
+   * 异步轮询总等待上限（默认 600000ms = 10 分钟，对齐 xAI SDK pollTimeout）。
+   * 超时抛 ModelError(category=timeout, code=video_poll_timeout)。
+   */
+  pollTimeoutMs?: number;
+  /** 轮询间隔（默认 5000ms，对齐官方 REST 示例）。 */
+  pollIntervalMs?: number;
+  /**
+   * 为 true 时不自动轮询，直接返回 pending/requestId（单测或上层自管轮询用）。
+   * 默认 false：对调用方表现为「拿到视频 URL 即完成」。
+   */
+  waitForCompletion?: boolean;
 }
 
 export interface TextResult { text: string; raw: unknown; status?: number }
@@ -81,12 +123,34 @@ export type ImageArtifactKind = 'base64' | 'url';
 export interface ImageArtifact { kind: ImageArtifactKind; data: string; mimeType?: string; revisedPrompt?: string; index: number }
 export interface ImageResult { images: ImageArtifact[]; raw: unknown; status?: number }
 
+export type VideoArtifactKind = 'url' | 'base64';
+export interface VideoArtifact {
+  kind: VideoArtifactKind;
+  data: string;
+  mimeType?: string;
+  /** 异步任务 id(若上游返回 request_id / id 而非即时视频)。 */
+  requestId?: string;
+  index: number;
+}
+/** xAI 轮询状态：pending | done | failed | expired（及兼容 processing）。 */
+export type VideoJobStatus = 'pending' | 'done' | 'failed' | 'expired' | 'unknown';
+export interface VideoResult {
+  videos: VideoArtifact[];
+  raw: unknown;
+  status?: number;
+  /** 上游异步:true 表示 videos 可能只有 requestId（waitForCompletion=false 时）。 */
+  pending?: boolean;
+  /** 轮询响应里的 status 字段（若有）。 */
+  jobStatus?: VideoJobStatus;
+}
+
 /** 方言生成的一次 HTTP 请求计划（纯数据，便于单测）。 */
 export interface RequestPlan {
-  method: 'POST';
+  /** GET 用于视频状态轮询（xAI GET /videos/{request_id}）。 */
+  method: 'POST' | 'GET';
   url: string;
   headers: Record<string, string>;
-  body: unknown;
+  body?: unknown;
   /** body 为 FormData 时为 true（multipart，跳过 JSON.stringify）。 */
   multipart?: boolean;
 }
@@ -109,6 +173,11 @@ export interface Dialect {
   buildImageGeneration?(node: ModelNode, req: ImageGenerationRequest): RequestPlan;
   buildImageEdit?(node: ModelNode, req: ImageEditRequest): RequestPlan;
   parseImage?(data: unknown): ImageResult;
+  /** 视频生成：POST /videos/generations（xAI 等）。 */
+  buildVideoGeneration?(node: ModelNode, req: VideoGenerationRequest): RequestPlan;
+  /** 视频任务状态轮询：GET /videos/{requestId}。未实现时 ModelClient 用 OpenAI 兼容默认。 */
+  buildVideoStatus?(node: ModelNode, requestId: string): RequestPlan;
+  parseVideo?(data: unknown): VideoResult;
 }
 
 export class ModelError extends Error {

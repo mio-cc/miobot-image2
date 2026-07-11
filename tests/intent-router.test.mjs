@@ -9,6 +9,8 @@ import {
   plannerActionToIntentKind,
   preserveLanguage,
   hasImageBang,
+  hasVideoBang,
+  hasVideoVerb,
 } from '../dist/packages/intent-router/src/index.js';
 import { parseImageCommand } from '../dist/packages/image/src/index.js';
 
@@ -72,6 +74,52 @@ test('hasImageBang: 识别尺寸/比例/张数/模板 token', () => {
 test('detectIntentSignals: 普通文本无信号', () => {
   const signals = detectIntentSignals({ text: '今天天气怎么样' }, parseImageCommand('今天天气怎么样'), {});
   assert.equal(signals.length, 0);
+});
+
+test('signal: 生成视频 -> video.generate', async () => {
+  const router = createIntentRouter();
+  const d = await router.route({ text: '生成视频 火箭从火星发射' });
+  assert.equal(d.kind, 'video.generate');
+  assert.equal(d.source, 'signal');
+  assert.match(d.params.prompt, /火箭|发射/);
+});
+
+test('signal: 做个视频 / 视频 短句 -> video.generate', async () => {
+  const router = createIntentRouter();
+  const d1 = await router.route({ text: '做个视频 猫咪在草地上跑' });
+  assert.equal(d1.kind, 'video.generate');
+  const d2 = await router.route({ text: '视频 日落海边' });
+  assert.equal(d2.kind, 'video.generate');
+});
+
+test('signal: video! bang + 主体 -> video.generate', async () => {
+  const router = createIntentRouter();
+  const d = await router.route({ text: 'video! 720p! 6s! 一只狐狸穿过雪地' });
+  assert.equal(d.kind, 'video.generate');
+  assert.equal(d.params.duration, 6);
+  assert.equal(d.params.resolution, '720p');
+});
+
+test('hasVideoVerb / hasVideoBang', () => {
+  assert.ok(hasVideoVerb('生成视频 猫'));
+  assert.ok(hasVideoVerb('make a video of a cat'));
+  assert.equal(hasVideoBang(parseImageCommand('video! 猫')), true);
+  assert.equal(hasVideoBang(parseImageCommand('720p! 6s! 猫')), true);
+  assert.equal(hasVideoBang(parseImageCommand('画一只猫')), false);
+});
+
+test('signal: 生成视频 优先于生图，不因「生成」走 image', async () => {
+  const router = createIntentRouter();
+  const d = await router.route({ text: '生成视频 赛博城市夜景' });
+  assert.equal(d.kind, 'video.generate');
+  assert.notEqual(d.kind, 'image.generate');
+});
+
+test('门控: video.generate 不可用 -> 降级 chat', async () => {
+  const router = createIntentRouter({ capabilities: { videoGenerate: false, chat: true } });
+  const d = await router.route({ text: '生成视频 一只猫' });
+  assert.equal(d.degradedFrom, 'video.generate');
+  assert.equal(d.kind, 'chat');
 });
 
 // 规划器兜底
@@ -175,5 +223,23 @@ test('plannerActionToIntentKind 映射', () => {
   assert.equal(plannerActionToIntentKind('generate'), 'image.generate');
   assert.equal(plannerActionToIntentKind('edit'), 'image.edit');
   assert.equal(plannerActionToIntentKind('interrogate'), 'image.interrogate');
+  assert.equal(plannerActionToIntentKind('video'), 'video.generate');
   assert.equal(plannerActionToIntentKind('text'), 'chat');
+});
+
+test('planner: action=video -> video.generate', async () => {
+  const planner = new FakePlanner('{"action":"video","prompt":"火箭升空","duration":8,"resolution":"720p"}');
+  const router = createIntentRouter({ planner, plannerModel: 'm' });
+  const d = await router.route({ text: '来点动态的吧' });
+  assert.equal(d.kind, 'video.generate');
+  assert.equal(d.params.prompt, '火箭升空');
+  assert.equal(d.params.duration, 8);
+  assert.equal(d.params.resolution, '720p');
+});
+
+test('parsePlannerOutput: video', () => {
+  const out = parsePlannerOutput('{"action":"video","prompt":"cat runs","duration":6}');
+  assert.equal(out.action, 'video');
+  assert.equal(out.prompt, 'cat runs');
+  assert.equal(out.duration, 6);
 });

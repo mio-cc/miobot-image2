@@ -9,6 +9,9 @@ export interface EngineRoutingConfig {
   imageModel: string;
   editModel: string;
   interrogateModel: string;
+  /** 视频生成开关；默认跟随 imageEnabled 语义时由 config-bridge 填 true/false。 */
+  videoEnabled?: boolean;
+  videoModel: string;
   freeModeModel: string;
   freeModeNodeIndex?: number;
   freeModeEnabled?: boolean;
@@ -37,5 +40,6 @@ export function resolveImageCapabilities(cfg: EngineRoutingConfig, registry: Cap
     imageGenerate: cfg.imageEnabled !== false && registry.can(cfg.imageModel, 'image.generate'),
     imageEdit: cfg.imageEnabled !== false && registry.can(cfg.editModel, 'image.edit'),
     interrogate: registry.can(cfg.interrogateModel, 'interrogate'),
+    videoGenerate: cfg.videoEnabled !== false && registry.can(cfg.videoModel, 'video.generate'),
   };
 }

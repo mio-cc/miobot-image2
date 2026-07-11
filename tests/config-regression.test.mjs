@@ -153,6 +153,30 @@ test('config regression: invalid payload is safe and returns default config with
   assert.ok(result.warnings.length >= 1);
 });
 
+test('config regression: 视频默认字段与 normalize clamp', () => {
+  const defaults = createDefaultConfig();
+  assert.equal(defaults.llm.videoModel, 'grok-imagine-video');
+  assert.equal(defaults.llm.videoEnabled, true);
+  assert.equal(defaults.llm.videoNodeIndex, 0);
+  assert.equal(defaults.llm.videoTimeoutMs, 120000);
+  assert.equal(defaults.llm.videoPollTimeoutMs, 600000);
+  assert.equal(defaults.llm.videoPollIntervalMs, 5000);
+  // 旧配置无视频字段 → 补默认
+  const bare = normalizeConfig({ llm: { chatModel: 'gpt-4o-mini', apiKeys: [{ name: 'n', baseUrl: 'http://x', key: 'k', enabled: true, models: [] }] } });
+  assert.equal(bare.llm.videoModel, 'grok-imagine-video');
+  assert.equal(bare.llm.videoEnabled, true);
+  // capabilityOverrides 允许 video.generate
+  const withOverride = normalizeConfig({
+    llm: {
+      capabilityOverrides: [{ model: 'my-vid', operations: ['video.generate', 'hack'] }],
+    },
+  });
+  assert.deepEqual(withOverride.llm.capabilityOverrides[0].operations, ['video.generate']);
+  // poll interval clamp
+  const clamped = normalizeConfig({ llm: { videoPollIntervalMs: 10 } });
+  assert.equal(clamped.llm.videoPollIntervalMs, 200);
+});
+
 test('config regression: aliases from arrays are deduped and keep default fallbacks', () => {
   const result = importConfig({ bot: { commands: { genImage: ['draw', 'Draw', '画图'] } } });
   assert.equal(result.config.bot.commands.genImage, 'draw, 画图, 生图, 画');

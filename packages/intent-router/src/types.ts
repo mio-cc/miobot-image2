@@ -15,6 +15,7 @@ export type IntentKind =
   | 'image.generate'
   | 'image.edit'
   | 'image.interrogate'
+  | 'video.generate'
   | 'ignore';
 
 /** 决策来源：signal=确定性信号命中（无 LLM）；planner=LLM 规划器；fallback=兜底规则。 */
@@ -26,6 +27,8 @@ export interface IntentCapabilities {
   imageGenerate?: boolean;
   imageEdit?: boolean;
   interrogate?: boolean;
+  /** 文生视频 / 图生视频（grok-imagine-video 等）。 */
+  videoGenerate?: boolean;
 }
 
 export interface IntentInput {
@@ -35,6 +38,12 @@ export interface IntentInput {
   images?: string[];
   /** 引用消息/合并转发中可取到的图片（影响 edit/interrogate 判定）。 */
   hasReferencedImage?: boolean;
+  /**
+   * 当前/引用消息中的视频引用（url / file / data）。
+   * 多数对话模型不支持视频理解；runtime 会优雅降级，不因有视频而崩溃。
+   */
+  videos?: string[];
+  hasReferencedVideo?: boolean;
   chatType?: 'group' | 'private';
 }
 
@@ -45,6 +54,10 @@ export interface IntentParams {
   count?: number;
   quality?: string;
   templateId?: string;
+  /** 视频时长（秒），可由 bang 如 6s! / duration=6! 指定。 */
+  duration?: number;
+  /** 视频分辨率，如 480p / 720p。 */
+  resolution?: string;
   /** 识别到的 bang token，便于下游复用/记录。 */
   tokens: string[];
 }

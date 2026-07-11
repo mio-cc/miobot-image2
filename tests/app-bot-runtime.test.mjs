@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createBotApp, createBotMessageRuntime, extractImages, segmentsToRaw } from '../dist/apps/bot/src/main.js';
+import { createBotApp, createBotMessageRuntime, extractImages, extractVideos, extractReplyIdFromEvent, segmentsToRaw } from '../dist/apps/bot/src/main.js';
 import { createDefaultConfig } from '../dist/packages/config/src/index.js';
 
 function makeModelClient() {
@@ -12,6 +12,7 @@ function makeModelClient() {
       if (op === 'vision') return /gpt-4o/.test(m);
       if (op === 'image.generate' || op === 'image.edit') return /image|dall/.test(m);
       if (op === 'interrogate') return /gpt-4o/.test(m);
+      if (op === 'video.generate') return /video|imagine-video/i.test(m);
       return true;
     },
     chat: async (i, r) => { calls.push(['chat', r]); return { text: 'CHAT', raw: {} }; },
@@ -19,6 +20,7 @@ function makeModelClient() {
     generateImages: async (i, r) => { calls.push(['generate', r]); return { images: [{ kind: 'base64', data: 'AAA', mimeType: 'image/png', index: 0 }], raw: {} }; },
     editImage: async (i, r) => { calls.push(['edit', r]); return { images: [{ kind: 'base64', data: 'BBB', mimeType: 'image/png', index: 0 }], raw: {} }; },
     interrogate: async (i, r) => { calls.push(['interrogate', r]); return { text: 'a cat on a sofa', raw: {} }; },
+    generateVideo: async (i, r) => { calls.push(['video', r]); return { videos: [{ kind: 'url', data: 'https://vid.example/out.mp4', index: 0 }], pending: false, raw: {} }; },
   };
 }
 
@@ -31,6 +33,8 @@ function makeReply() {
     sendPrivateText: async (u, t) => { sent.push(['privateText', u, t]); return ok(); },
     sendGroupImage: async (g, f) => { sent.push(['groupImage', g, f]); return ok(); },
     sendPrivateImage: async (u, f) => { sent.push(['privateImage', u, f]); return ok(); },
+    sendGroupVideo: async (g, f) => { sent.push(['groupVideo', g, f]); return ok(); },
+    sendPrivateVideo: async (u, f) => { sent.push(['privateVideo', u, f]); return ok(); },
   };
 }
 
@@ -51,6 +55,48 @@ test('extractImages: from segments and CQ image, deduped', () => {
   assert.deepEqual(imgs, ['http://x/a.png', 'http://x/b.png']);
 });
 
+test('extractVideos: type:video 段与 CQ:video', () => {
+  assert.deepEqual(
+    extractVideos({
+      message: [{ type: 'video', data: { url: 'http://x/a.mp4' } }],
+      raw_message: '[CQ:video,file=http://x/a.mp4][CQ:video,file=http://x/b.mp4]',
+    }),
+    ['http://x/a.mp4', 'http://x/b.mp4'],
+  );
+  assert.deepEqual(
+    extractVideos({ message: [{ type: 'video', data: { path: 'http://x/c.mp4' } }] }),
+    ['http://x/c.mp4'],
+  );
+});
+
+test('extractImages: path 字段 / content 转发节点 / message 为 CQ 字符串', () => {
+  assert.deepEqual(
+    extractImages({ message: [{ type: 'image', data: { path: 'http://x/c.png' } }] }),
+    ['http://x/c.png'],
+  );
+  assert.deepEqual(
+    extractImages({ content: [{ type: 'image', data: { file: 'http://x/d.png' } }] }),
+    ['http://x/d.png'],
+  );
+  assert.deepEqual(
+    extractImages({ message: '[CQ:image,url=http://x/e.png]' }),
+    ['http://x/e.png'],
+  );
+});
+
+test('extractReplyIdFromEvent: segments 优先于残缺 raw_message', () => {
+  const id = extractReplyIdFromEvent({
+    message: [
+      { type: 'reply', data: { id: '7788' } },
+      { type: 'at', data: { qq: '10000' } },
+      { type: 'text', data: { text: '这是什么' } },
+    ],
+    // 模拟部分 Napcat: raw 不含 reply CQ
+    raw_message: '[CQ:at,qq=10000] 这是什么',
+  });
+  assert.equal(id, '7788');
+});
+
 test('segmentsToRaw: rebuilds at/reply/image/text', () => {
   const raw = segmentsToRaw([
     { type: 'reply', data: { id: '99' } },
@@ -58,6 +104,91 @@ test('segmentsToRaw: rebuilds at/reply/image/text', () => {
     { type: 'text', data: { text: 'hello' } },
   ]);
   assert.equal(raw, '[CQ:reply,id=99][CQ:at,qq=10000]hello');
+});
+
+test('freeMode: 生成视频 → generateVideo + 发 groupVideo', async () => {
+  const client = makeModelClient();
+  const reply = makeReply();
+  const getConfig = () => {
+    const c = createDefaultConfig();
+    c.bot.botQqId = '10000';
+    c.freeMode.enabled = true;
+    c.freeMode.model = 'gpt-4o-mini';
+    c.llm.videoModel = 'grok-imagine-video';
+    c.llm.videoEnabled = true;
+    c.llm.chatModel = 'gpt-4o-mini';
+    c.bot.whitelistPrivate = ['2000'];
+    return c;
+  };
+  const app = createBotApp({ getConfig, client });
+  const rt = createBotMessageRuntime({ app, reply, getConfig, botName: 'Mio' });
+  const result = await rt.handleMessageEvent({
+    post_type: 'message',
+    message_type: 'private',
+    user_id: 2000,
+    message_id: 1,
+    raw_message: '生成视频 火箭升空',
+    message: [{ type: 'text', data: { text: '生成视频 火箭升空' } }],
+  });
+  assert.equal(result.handled, true);
+  assert.equal(result.kind, 'video.generate');
+  assert.ok(client.calls.some((c) => c[0] === 'video'));
+  assert.ok(reply.sent.some((s) => s[0] === 'privateVideo' && s[2] === 'https://vid.example/out.mp4'));
+});
+
+test('freeMode: 引用图片 + @bot + 文本 → 引擎拿到引用图并走 vision/edit 路径', async () => {
+  const client = makeModelClient();
+  const reply = makeReply();
+  const getConfig = () => {
+    const c = createDefaultConfig();
+    c.bot.botQqId = '10000';
+    c.freeMode.enabled = true;
+    c.freeMode.includeQuotedMessage = true;
+    c.freeMode.model = 'gpt-4o-mini';
+    c.llm.chatModel = 'gpt-4o';
+    c.llm.editModel = 'gpt-image-2';
+    return c;
+  };
+  const app = createBotApp({ getConfig, client });
+  const rt = createBotMessageRuntime({
+    app,
+    reply,
+    getConfig,
+    botName: 'Mio',
+    fetchReferencedMessage: async (id) => {
+      assert.equal(String(id), '4242');
+      return {
+        message_id: 4242,
+        user_id: 9,
+        message: [{ type: 'image', data: { url: 'http://ref/quoted.png' } }],
+        raw_message: '[CQ:image,url=http://ref/quoted.png]',
+      };
+    },
+  });
+  // 关键: reply 只在 segments,raw_message 无 [CQ:reply] —— 旧实现会丢图
+  const r = await rt.handleMessageEvent({
+    post_type: 'message',
+    message_type: 'group',
+    group_id: 9,
+    user_id: 5,
+    message_id: 100,
+    raw_message: '[CQ:at,qq=10000] 描述一下这张图',
+    message: [
+      { type: 'reply', data: { id: '4242' } },
+      { type: 'at', data: { qq: '10000' } },
+      { type: 'text', data: { text: ' 描述一下这张图' } },
+    ],
+  });
+  assert.equal(r.handled, true);
+  // 反推信号: 有图 + "描述" → interrogate 或 vision chat
+  const ops = client.calls.map((c) => c[0]);
+  assert.ok(ops.includes('interrogate') || ops.includes('vision') || ops.includes('chat') || ops.includes('edit'), `ops=${ops}`);
+  const withImages = client.calls.find((c) => {
+    const payload = c[1] || {};
+    const imgs = payload.imageUrls || payload.images || [];
+    return Array.isArray(imgs) && imgs.includes('http://ref/quoted.png');
+  });
+  assert.ok(withImages, `引用图应进入模型调用: ${JSON.stringify(client.calls)}`);
 });
 
 test('private chat: 闲聊 -> 文本回复', async () => {

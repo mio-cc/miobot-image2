@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   extractForwardIds,
   normalizeForwardPayload,
+  extractImagesFromForwardNodes,
   formatForwardMessages,
   extractReferenceText,
   isReferencedFromBot,
@@ -67,6 +68,42 @@ test('normalizeForwardPayload: 空返回 []', () => {
   assert.deepEqual(normalizeForwardPayload(null), []);
   assert.deepEqual(normalizeForwardPayload({}), []);
   assert.deepEqual(normalizeForwardPayload({ messages: 'not-array' }), []);
+});
+
+test('normalizeForwardPayload + extractImagesFromForwardNodes: 转发内图片可抽出', () => {
+  const payload = {
+    messages: [
+      {
+        user_id: 1,
+        nickname: 'A',
+        content: [
+          { type: 'text', data: { text: '看图' } },
+          { type: 'image', data: { url: 'http://fwd/a.png' } },
+        ],
+      },
+      {
+        user_id: 2,
+        content: [{ type: 'image', data: { file: 'http://fwd/b.png', path: '/tmp/x' } }],
+      },
+    ],
+  };
+  const nodes = normalizeForwardPayload(payload);
+  assert.equal(nodes.length, 2);
+  const imgs = extractImagesFromForwardNodes(nodes);
+  assert.ok(imgs.includes('http://fwd/a.png'));
+  assert.ok(imgs.includes('http://fwd/b.png'));
+});
+
+test('normalizeForwardPayload: result.messages / body 字段兼容', () => {
+  const nodes = normalizeForwardPayload({
+    result: {
+      messages: [{ uin: 7, nickname: 'N', body: [{ type: 'image', data: { url: 'http://z/1.png' } }] }],
+    },
+  });
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0].user_id, 7);
+  assert.ok(Array.isArray(nodes[0].message));
+  assert.deepEqual(extractImagesFromForwardNodes(nodes), ['http://z/1.png']);
 });
 
 test('formatForwardMessages: 文本拼接 + 图片占位', () => {

@@ -5,10 +5,13 @@ import {
   buildFileForwardNodes,
   buildImageForwardNodes,
   buildMixedForwardNodes,
+  buildVideoForwardNodes,
+  buildVideoSegment,
   dedupeImageUrls,
   formatReadyState,
   NapcatAdapter,
   NAPCAT_READY_STATE,
+  normalizeVideoFilePayload,
 } from '../dist/packages/napcat/src/index.js';
 
 class FakeSocket {
@@ -167,6 +170,45 @@ test('napcat adapter: buildImageForwardNodes creates one independent node per im
   assert.deepEqual(nodes.map((node) => node.data.nickname), ['Bot 1/3', 'Bot 2/3', 'Bot 3/3']);
   assert.notStrictEqual(nodes[0], nodes[1]);
   assert.notStrictEqual(nodes[0].data.content, nodes[1].data.content);
+});
+
+test('napcat adapter: buildVideoSegment supports url/base64/data URL', () => {
+  assert.deepEqual(buildVideoSegment('https://cdn.example/v.mp4'), { type: 'video', data: { file: 'https://cdn.example/v.mp4' } });
+  assert.deepEqual(buildVideoSegment('base64://AAAA'), { type: 'video', data: { file: 'base64://AAAA' } });
+  assert.equal(normalizeVideoFilePayload('data:video/mp4;base64,QQQQ'), 'base64://QQQQ');
+  assert.deepEqual(buildVideoSegment('data:video/mp4;base64,QQQQ'), { type: 'video', data: { file: 'base64://QQQQ' } });
+  assert.equal(buildVideoSegment(''), undefined);
+});
+
+test('napcat adapter: sendGroupVideo / sendPrivateVideo 构造 type:video 段', async () => {
+  const { adapter, sockets } = createHarness();
+  adapter.connect();
+  sockets[0].open();
+
+  const gPending = adapter.sendGroupVideo(1000, 'https://cdn.example/a.mp4', '生成完成');
+  const gAction = sockets[0].sent[0];
+  assert.equal(gAction.action, 'send_group_msg');
+  assert.equal(gAction.params.group_id, 1000);
+  assert.equal(gAction.params.message[0].type, 'text');
+  assert.equal(gAction.params.message[1].type, 'video');
+  assert.equal(gAction.params.message[1].data.file, 'https://cdn.example/a.mp4');
+  sockets[0].message({ echo: gAction.echo, status: 'ok', retcode: 0, data: { message_id: 11 } });
+  assert.equal((await gPending).success, true);
+
+  const pPending = adapter.sendPrivateVideo(2000, 'base64://VID');
+  const pAction = sockets[0].sent[1];
+  assert.equal(pAction.action, 'send_private_msg');
+  assert.equal(pAction.params.user_id, 2000);
+  assert.deepEqual(pAction.params.message, [{ type: 'video', data: { file: 'base64://VID' } }]);
+  sockets[0].message({ echo: pAction.echo, status: 'ok', retcode: 0, data: { message_id: 12 } });
+  assert.equal((await pPending).success, true);
+});
+
+test('napcat adapter: buildVideoForwardNodes 去重', () => {
+  const nodes = buildVideoForwardNodes(['v1', 'v2', 'v1'], { botName: 'Bot', userId: 1 });
+  assert.equal(nodes.length, 2);
+  assert.equal(nodes[0].data.content[0].type, 'video');
+  assert.deepEqual(nodes.map((n) => n.data.content[0].data.file), ['v1', 'v2']);
 });
 
 test('napcat adapter: sendGroupImagesForward sends merged forward nodes with de-duped images', async () => {

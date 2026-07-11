@@ -5,6 +5,7 @@ import { geminiDialect } from './dialects/gemini.js';
 import { huggingFaceDialect } from './dialects/huggingface.js';
 import { openAiDialect } from './dialects/openai.js';
 import { defaultFetchTransport } from './transport.js';
+import { buildOpenAiVideoStatus } from './dialects/shared.js';
 import {
   ModelError,
   type ChatRequest,
@@ -19,8 +20,14 @@ import {
   type RequestPlan,
   type TextResult,
   type Transport,
+  type VideoGenerationRequest,
+  type VideoResult,
   type VisionRequest,
 } from './ports.js';
+
+/** 视频异步轮询默认：总等待 10 分钟、间隔 5 秒（对齐 xAI REST 示例 / SDK pollTimeout）。 */
+const DEFAULT_VIDEO_POLL_TIMEOUT_MS = 600_000;
+const DEFAULT_VIDEO_POLL_INTERVAL_MS = 5_000;
 
 const DIALECTS: Record<ProviderDialect, Dialect> = {
   openai: openAiDialect,
@@ -118,6 +125,109 @@ export class ModelClient {
     const shaped = this.shapeImageEdit(req);
     return this.run('image.edit', nodeIndex, shaped.model, shaped.timeoutMs,
       (d, n) => requireBuilder(d, 'buildImageEdit', n, shaped), (d, data) => requireImageParser(d, data));
+  }
+
+  /**
+   * 视频生成(xAI grok-imagine-video 等)。
+   * 1) POST /videos/generations 拿 request_id（或即时 url）
+   * 2) 若 pending 且 waitForCompletion !== false：GET /videos/{id} 轮询至 done/failed/expired/超时
+   * 对调用方默认表现为「拿到可播放 URL 即完成」；设 waitForCompletion=false 可只拿 requestId。
+   */
+  async generateVideo(nodeIndex: number, req: VideoGenerationRequest): Promise<VideoResult> {
+    const initial = await this.run('video.generate', nodeIndex, req.model, req.timeoutMs,
+      (d, n) => requireBuilder(d, 'buildVideoGeneration', n, req), (d, data) => requireVideoParser(d, data));
+    if (req.waitForCompletion === false) return initial;
+    if (!initial.pending) return initial;
+    const requestId = initial.videos.find((v) => v.requestId)?.requestId || initial.videos[0]?.requestId;
+    if (!requestId) {
+      throw new ModelError('Video generation pending but missing request_id', { category: 'validation', retryable: false, code: 'video_missing_request_id' });
+    }
+    return this.pollVideoUntilDone(nodeIndex, req, requestId, initial);
+  }
+
+  /**
+   * 轮询 GET /videos/{requestId} 直到完成。
+   * - done + url → 返回 VideoResult
+   * - failed/expired → 抛 ModelError
+   * - 超过 pollTimeoutMs → 抛 timeout
+   * 有限重试：单次 GET 网络/5xx 可短暂重试，失败态不重试。
+   */
+  private async pollVideoUntilDone(
+    nodeIndex: number,
+    req: VideoGenerationRequest,
+    requestId: string,
+    initial: VideoResult,
+  ): Promise<VideoResult> {
+    const pollTimeoutMs = Math.max(1_000, Math.trunc(req.pollTimeoutMs ?? DEFAULT_VIDEO_POLL_TIMEOUT_MS));
+    const pollIntervalMs = Math.max(200, Math.trunc(req.pollIntervalMs ?? DEFAULT_VIDEO_POLL_INTERVAL_MS));
+    const httpTimeoutMs = Math.max(1, Math.trunc(req.timeoutMs ?? this.timeoutMs));
+    const deadline = Date.now() + pollTimeoutMs;
+    const primary = this.resolveIndex(nodeIndex);
+    const node = this.nodes[primary];
+    if (!node) throw new ModelError(`节点索引 ${primary} 不存在`, { category: 'validation', retryable: false });
+
+    let consecutiveTransportErrors = 0;
+    const maxTransportErrors = 3;
+
+    while (Date.now() < deadline) {
+      await delay(pollIntervalMs);
+      if (Date.now() >= deadline) break;
+
+      const dialect = dialectFor(node);
+      const plan = typeof dialect.buildVideoStatus === 'function'
+        ? dialect.buildVideoStatus(node, requestId)
+        : buildOpenAiVideoStatus(node, requestId);
+
+      try {
+        const response = await this.transport({ ...plan, timeoutMs: httpTimeoutMs });
+        if (response.status >= 400) {
+          // 404/429/5xx 短暂可恢复；4xx 其它直接失败。
+          const err = errorFromResponse(response);
+          if (response.status === 404 || response.status === 429 || response.status >= 500) {
+            consecutiveTransportErrors += 1;
+            if (consecutiveTransportErrors >= maxTransportErrors) throw err;
+            this.logger?.warn?.('video poll transient error', { requestId, status: response.status });
+            continue;
+          }
+          throw err;
+        }
+        consecutiveTransportErrors = 0;
+        const parsed = requireVideoParser(dialect, response.data);
+        if (!parsed.pending && parsed.videos.some((v) => String(v.data || '').trim())) {
+          // 保留 requestId 便于追踪
+          const videos = parsed.videos.map((v, index) => ({
+            ...v,
+            requestId: v.requestId || requestId,
+            index: v.index ?? index,
+          }));
+          this.logger?.info?.('video poll completed', { requestId, model: req.model });
+          return { ...parsed, videos, pending: false };
+        }
+        // 仍 pending：继续轮询
+        this.logger?.info?.('video poll pending', { requestId, jobStatus: parsed.jobStatus });
+      } catch (error) {
+        // 任务终态 / 不可重试校验错误：立即上抛，勿当瞬时网络错误重试。
+        if (error instanceof ModelError) {
+          if (error.code === 'video_failed' || error.code === 'video_expired' || error.code === 'video_missing_request_id') {
+            throw error;
+          }
+          if (error.category === 'validation' || error.retryable === false) throw error;
+        }
+        consecutiveTransportErrors += 1;
+        if (consecutiveTransportErrors >= maxTransportErrors) throw error;
+        this.logger?.warn?.('video poll error, retrying', {
+          requestId,
+          attempt: consecutiveTransportErrors,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    throw new ModelError(`Video generation timed out after ${pollTimeoutMs}ms (request_id=${requestId})`, {
+      category: 'timeout',
+      retryable: true,
+      code: 'video_poll_timeout',
+    });
   }
 
   /** 按模型能力档案规整生图参数：不支持的 size/quality 剔除、count 钳到上限，避免对上游盲发导致 4xx。 */
@@ -280,7 +390,12 @@ function applySizeProfile(req: { size?: string }, profile: { supportsSize?: bool
   }
 }
 
-function requireBuilder(dialect: Dialect, method: 'buildVision' | 'buildImageGeneration' | 'buildImageEdit', node: ModelNode, req: any): RequestPlan {
+function requireBuilder(
+  dialect: Dialect,
+  method: 'buildVision' | 'buildImageGeneration' | 'buildImageEdit' | 'buildVideoGeneration',
+  node: ModelNode,
+  req: any,
+): RequestPlan {
   const fn = (dialect as any)[method] as ((n: ModelNode, r: any) => RequestPlan) | undefined;
   if (typeof fn !== 'function') throw new ModelError(`方言 ${dialect.id} 未实现 ${method}`, { category: 'validation', retryable: false, code: 'dialect_unsupported' });
   return fn.call(dialect, node, req);
@@ -289,6 +404,11 @@ function requireBuilder(dialect: Dialect, method: 'buildVision' | 'buildImageGen
 function requireImageParser(dialect: Dialect, data: unknown): ImageResult {
   if (typeof dialect.parseImage !== 'function') throw new ModelError(`方言 ${dialect.id} 未实现 parseImage`, { category: 'validation', retryable: false });
   return dialect.parseImage(data);
+}
+
+function requireVideoParser(dialect: Dialect, data: unknown): VideoResult {
+  if (typeof dialect.parseVideo !== 'function') throw new ModelError(`方言 ${dialect.id} 未实现 parseVideo`, { category: 'validation', retryable: false, code: 'dialect_unsupported' });
+  return dialect.parseVideo(data);
 }
 
 function shouldFailover(error: unknown): boolean {

@@ -1,6 +1,6 @@
 import { createBotRouter, extractReplyId, stripNonTextCqSegments, type BotMessageContext, type BotRouteDecision, type BotRouterConfig } from '../../../packages/bot-router/src/index.js';
 import { createReplyStrategyEngine, type ReplyClient, type ReplyContext, type ReplyStrategyConfig } from '../../../packages/reply/src/index.js';
-import { dedupeImageUrls } from '../../../packages/napcat/src/index.js';
+import { dedupeImageUrls, dedupeVideoUrls } from '../../../packages/napcat/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { BotEngineResult } from '../../../packages/bot-engine/src/index.js';
 import type { BotApp } from './app.js';
@@ -71,9 +71,10 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       ? event.message
       : (event.raw_message || segmentsToRaw(event.message));
     const baseImages = extractImages(event);
+    const baseVideos = extractVideos(event);
     const userId = event.user_id ?? event.sender?.user_id;
     const sessionId = chatType === 'group' ? `group:${event.group_id}:${userId}` : `private:${userId}`;
-    log?.info('收到消息', { chatType, groupId: event.group_id, userId, rawMessage: rawMessage.slice(0, 100), images: baseImages.length });
+    log?.info('收到消息', { chatType, groupId: event.group_id, userId, rawMessage: rawMessage.slice(0, 100), images: baseImages.length, videos: baseVideos.length });
 
     // 主人命令优先于普通路由。
     if (options.owner && isOwner(userId, options.owner.ownerQQs())) {
@@ -89,10 +90,13 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     }
 
     // 引用消息富化:get_msg 拉取被回复的消息 → 取其图片/转发内容,并判定是否回复的是 bot("回复 bot"触发依赖此判定)。
+    // 注意: reply id 必须同时从 segments 与 CQ 取(legacy bot-runtime 的 extractReplyIdFromSegments || extractReplyIdFromRaw)。
+    // 仅依赖 raw_message 时,部分 Napcat/OneBot 实现只在 message[] 里放 reply 段,会导致引用图完全丢失。
     const selfId = options.selfId?.() ?? cfg.bot.botQqId;
-    const replyId = extractReplyId(rawMessage);
+    const includeQuoted = cfg.freeMode?.includeQuotedMessage !== false;
+    const replyId = extractReplyIdFromEvent(event, rawMessage);
     let referenced: NapcatMessageEvent | null = null;
-    if (replyId && options.fetchReferencedMessage) {
+    if (includeQuoted && replyId && options.fetchReferencedMessage) {
       try {
         referenced = await options.fetchReferencedMessage(replyId);
       } catch (e) {
@@ -155,15 +159,38 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const referenceText = referenced ? extractReferenceText(referenced) : '';
     const forwardText = forwardNodes.length ? formatForwardMessages(forwardNodes, { maxChars: 4000 }) : '';
     const referencedImages = referenced ? extractImages(referenced) : [];
+    const forwardImages = forwardNodes.flatMap((n) => extractImages(n as unknown as NapcatMessageEvent));
+    const referencedVideos = referenced ? extractVideos(referenced) : [];
+    const forwardVideos = forwardNodes.flatMap((n) => extractVideos(n as unknown as NapcatMessageEvent));
     const maxInputImages = Math.max(1, cfg.freeMode.maxInputImages || 6);
+    // 引用/转发图片/视频是否并入模型输入:受 freeMode.includeQuotedMessage 控制(默认 true)。
+    // 当前消息自带图/视频始终保留。
+    const quotedImages = includeQuoted ? [...referencedImages, ...forwardImages] : [];
+    const quotedVideos = includeQuoted ? [...referencedVideos, ...forwardVideos] : [];
     const enrichedImages = dedupeImageUrls([
       ...baseImages,
-      ...referencedImages,
-      ...forwardNodes.flatMap((n) => extractImages(n as unknown as NapcatMessageEvent)),
+      ...quotedImages,
     ]).slice(0, maxInputImages);
-    const hasReferencedImage = referencedImages.length > 0 || forwardNodes.some((n) => extractImages(n as unknown as NapcatMessageEvent).length > 0);
-    if (referenced || forwardNodes.length) {
-      log?.info('消息内容已富化', { referencedImages: referencedImages.length, forwardNodes: forwardNodes.length, enrichedImages: enrichedImages.length, hasReferencedImage });
+    const enrichedVideos = dedupeVideoUrls([
+      ...baseVideos,
+      ...quotedVideos,
+    ]).slice(0, maxInputImages);
+    const hasReferencedImage = includeQuoted && (referencedImages.length > 0 || forwardImages.length > 0);
+    const hasReferencedVideo = includeQuoted && (referencedVideos.length > 0 || forwardVideos.length > 0);
+    if (referenced || forwardNodes.length || baseVideos.length) {
+      log?.info('消息内容已富化', {
+        replyId: replyId || null,
+        referencedImages: referencedImages.length,
+        forwardNodes: forwardNodes.length,
+        forwardImages: forwardImages.length,
+        enrichedImages: enrichedImages.length,
+        enrichedVideos: enrichedVideos.length,
+        hasReferencedImage,
+        hasReferencedVideo,
+        includeQuoted,
+      });
+    } else if (replyId && !referenced) {
+      log?.warn('引用消息未能拉取', { replyId, includeQuoted, hasFetch: Boolean(options.fetchReferencedMessage) });
     }
 
     let result: BotEngineResult | null = null;
@@ -190,10 +217,16 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         }
         // 纯用户文本送意图路由(不污染 edit/generate prompt);引用/转发文本由 engine 仅在 chat 路径注入。
         const cleanText = stripNonTextCqSegments(decision.commandText);
-        result = await options.app.handle({ text: cleanText, images: enrichedImages, hasReferencedImage, chatType, sessionId, context, referenceText, forwardText });
+        result = await options.app.handle({
+          text: cleanText, images: enrichedImages, videos: enrichedVideos,
+          hasReferencedImage, hasReferencedVideo, chatType, sessionId, context, referenceText, forwardText,
+        });
       } else if (decision.kind === 'command') {
         // 命令类:图片用富化后的(引用图片可达改图/反推),提示词保持原始 args 不注入引用文本。
-        result = await runCommand(options.app, decision, { text: stripNonTextCqSegments(decision.args), images: enrichedImages, hasReferencedImage, chatType, sessionId });
+        result = await runCommand(options.app, decision, {
+          text: stripNonTextCqSegments(decision.args), images: enrichedImages, videos: enrichedVideos,
+          hasReferencedImage, hasReferencedVideo, chatType, sessionId,
+        });
         if (!result) return { handled: false, reason: `command-unsupported:${decision.command}` };
       } else {
         return { handled: false, reason: 'no-route' };
@@ -206,7 +239,11 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     }
     if (!result) return { handled: false, reason: 'no-result' };
 
-    log?.info('引擎返回结果', { kind: result.kind, handled: result.handled, hasText: !!(result as any).text, imageCount: (result as any).images?.length || 0, reason: (result as any).reason || (result as any).decision?.reason });
+    log?.info('引擎返回结果', {
+      kind: result.kind, handled: result.handled, hasText: !!(result as any).text,
+      imageCount: (result as any).images?.length || 0, videoCount: (result as any).videos?.length || 0,
+      reason: (result as any).reason || (result as any).decision?.reason,
+    });
     await sendResult(engine, replyCtx, result, options.voice, options.reply);
     log?.info('回复发送完成', { kind: result.kind });
     return { handled: result.handled, kind: result.kind };
@@ -223,7 +260,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
 async function runCommand(
   app: BotApp,
   decision: Extract<BotRouteDecision, { kind: 'command' }>,
-  input: { text: string; images: string[]; hasReferencedImage?: boolean; chatType: 'group' | 'private'; sessionId: string },
+  input: { text: string; images: string[]; videos?: string[]; hasReferencedImage?: boolean; hasReferencedVideo?: boolean; chatType: 'group' | 'private'; sessionId: string },
 ): Promise<BotEngineResult | null> {
   switch (decision.command) {
     case 'genImage':
@@ -275,6 +312,11 @@ async function sendResult(
   voice?: (text: string) => Promise<string | null | undefined>,
   reply?: ReplyClient,
 ): Promise<void> {
+  const videos = (result.videos || []).filter(Boolean);
+  // 视频优先：单视频直发 type:video；多视频合并转发（见 ReplyStrategyEngine.replyVideos）。
+  // QQ 注意：短视频有时长/大小/编码限制；超限时 Napcat 可能失败，可后续改发 file。
+  if (videos.length === 1) { await engine.replyVideo(ctx, videos[0]); return; }
+  if (videos.length > 1) { await engine.replyVideos(ctx, videos); return; }
   const images = (result.images || []).filter(Boolean);
   if (images.length === 1) { await engine.replyImage(ctx, images[0]); return; }
   if (images.length > 1) { await engine.replyImages(ctx, images); return; }
@@ -307,6 +349,7 @@ function buildHelpText(cfg: AppConfig): string {
     `· 图生图: ${first(c.img2Img, '图生图')} <描述>（带图）`,
     `· 改图: ${first(c.editImage, '改图')} <描述>（带图）`,
     `· 反推: ${first(c.interrogate, '反推')}（带图）`,
+    '· 视频: 自由模式说「生成视频 / 做个视频 / 视频 …」或 bang「video!」「6s!」「720p!」',
     `· 本地模板库: ${first(c.templateLibrary, '模板库')}`,
     `· 远程模板: ${first(c.remotePromptSearch, 'pp')} / 智能生图: ${first(c.remotePromptSmartImage, 'spp')}`,
     `· 新对话: ${first(DEFAULT_CLEAR_ALIASES, '/clear')}`,
@@ -344,24 +387,88 @@ export function toReplyStrategyConfig(cfg: AppConfig): ReplyStrategyConfig {
   return { text: s.text, image: s.image, multiImage: s.multiImage };
 }
 
-/** 从消息事件提取图片引用(segments 的 image 段 + raw_message 里的 CQ image)。 */
-export function extractImages(event: NapcatMessageEvent): string[] {
+/**
+ * 从消息事件提取图片引用。
+ * 兼容: message[] 段 / message 为 CQ 字符串 / content 字段(转发节点) / raw_message CQ /
+ * image|mface 段的 url|file|path / base64://。
+ * 对齐 legacy bot-runtime.extractImageUrls,并覆盖 get_msg / get_forward_msg 常见结构。
+ */
+export function extractImages(event: NapcatMessageEvent | { message?: unknown; content?: unknown; raw_message?: string } | null | undefined): string[] {
+  return extractMediaRefs(event, ['image', 'mface'], /\[CQ:(?:image|mface),([^\]]*)\]/gi, normalizeImageUrl, dedupeImageUrls);
+}
+
+/**
+ * 从消息事件提取视频引用（OneBot type:video / CQ:video）。
+ * 与 extractImages 并列，供引用/转发富化与模型输入（视频理解不支持时由 deps.chat 优雅降级）。
+ */
+export function extractVideos(event: NapcatMessageEvent | { message?: unknown; content?: unknown; raw_message?: string } | null | undefined): string[] {
+  return extractMediaRefs(event, ['video'], /\[CQ:video,([^\]]*)\]/gi, normalizeVideoUrl, dedupeVideoUrls);
+}
+
+function extractMediaRefs(
+  event: NapcatMessageEvent | { message?: unknown; content?: unknown; raw_message?: string } | null | undefined,
+  types: string[],
+  cqRe: RegExp,
+  normalize: (url: string) => string,
+  dedupe: (urls: string[]) => string[],
+): string[] {
+  if (!event || typeof event !== 'object') return [];
   const urls: string[] = [];
+  const typeSet = new Set(types.map((t) => t.toLowerCase()));
+  const push = (value: unknown) => {
+    const u = String(value || '').trim();
+    if (u) urls.push(u);
+  };
+  const visitSegments = (body: unknown) => {
+    if (!body) return;
+    if (typeof body === 'string') {
+      for (const m of body.matchAll(cqRe)) {
+        const params = m[1] || '';
+        const hit = params.match(/(?:url|file|path)=([^,\]]+)/i);
+        if (hit?.[1]) push(decodeCqValue(hit[1]));
+      }
+      return;
+    }
+    if (!Array.isArray(body)) return;
+    for (const seg of body) {
+      if (!seg || typeof seg !== 'object') continue;
+      const type = String((seg as { type?: string }).type || '').toLowerCase();
+      const data = ((seg as { data?: Record<string, unknown> }).data || {}) as Record<string, unknown>;
+      if (typeSet.has(type)) {
+        push(data.url || data.file || data.path);
+      } else if (type === 'node') {
+        visitSegments(data.content ?? data.message ?? (seg as { content?: unknown }).content);
+      }
+    }
+  };
+
+  const anyEvent = event as { message?: unknown; content?: unknown; raw_message?: string; data?: { message?: unknown; content?: unknown } };
+  visitSegments(anyEvent.message);
+  visitSegments(anyEvent.content);
+  if (anyEvent.data && typeof anyEvent.data === 'object') {
+    visitSegments(anyEvent.data.message);
+    visitSegments(anyEvent.data.content);
+  }
+  const raw = typeof anyEvent.raw_message === 'string' ? anyEvent.raw_message : (typeof anyEvent.message === 'string' ? anyEvent.message : '');
+  if (raw) visitSegments(raw);
+  return dedupe(urls.map(normalize).filter(Boolean));
+}
+
+/**
+ * 从 segments + CQ raw 提取 reply id。
+ * 部分 Napcat 上报 raw_message 不含 [CQ:reply],仅 message[] 有 reply 段 —— 必须 segments 优先。
+ */
+export function extractReplyIdFromEvent(event: NapcatMessageEvent, rawMessage?: string): string | undefined {
   if (Array.isArray(event.message)) {
     for (const seg of event.message) {
-      if (seg && seg.type === 'image') {
-        const u = String(seg.data?.url || seg.data?.file || '').trim();
-        if (u) urls.push(u);
+      if (seg && seg.type === 'reply') {
+        const id = seg.data?.id ?? seg.data?.message_id;
+        if (id !== undefined && id !== null && String(id).trim()) return String(id).trim();
       }
     }
   }
-  const raw = typeof event.raw_message === 'string' ? event.raw_message : '';
-  for (const m of raw.matchAll(/\[CQ:image,([^\]]*)\]/g)) {
-    const params = m[1];
-    const url = (params.match(/url=([^,\]]+)/) || params.match(/file=([^,\]]+)/) || [])[1];
-    if (url) urls.push(decodeCqValue(url));
-  }
-  return dedupeImageUrls(urls.map(normalizeImageUrl));
+  const raw = rawMessage ?? (typeof event.raw_message === 'string' ? event.raw_message : '') ?? segmentsToRaw(event.message);
+  return extractReplyId(raw);
 }
 
 /**
@@ -375,6 +482,16 @@ export function normalizeImageUrl(url: string): string {
   // base64://XXXX 或 base64:XXXX → data:image/png;base64,XXXX(napcat base64 默认 png)
   const m = u.match(/^base64:\/{0,2}([A-Za-z0-9+/=]+)$/i);
   if (m) return `data:image/png;base64,${m[1]}`;
+  return u;
+}
+
+/** 视频引用归一：data:/http(s) 保留；base64:// → data:video/mp4;base64, */
+export function normalizeVideoUrl(url: string): string {
+  const u = String(url || '').trim();
+  if (!u) return u;
+  if (/^data:/i.test(u) || /^https?:\/\//i.test(u)) return u;
+  const m = u.match(/^base64:\/{0,2}([A-Za-z0-9+/=]+)$/i);
+  if (m) return `data:video/mp4;base64,${m[1]}`;
   return u;
 }
 
@@ -406,9 +523,12 @@ export function segmentsToRaw(message: NapcatMessageEvent['message']): string {
     if (!seg || typeof seg !== 'object') continue;
     switch (seg.type) {
       case 'text': parts.push(String(seg.data?.text ?? '')); break;
-      case 'at': parts.push(`[CQ:at,qq=${seg.data?.qq ?? ''}]`); break;
-      case 'reply': parts.push(`[CQ:reply,id=${seg.data?.id ?? ''}]`); break;
-      case 'image': parts.push(`[CQ:image,file=${seg.data?.file ?? seg.data?.url ?? ''}]`); break;
+      case 'at': parts.push(`[CQ:at,qq=${seg.data?.qq ?? seg.data?.user_id ?? ''}]`); break;
+      case 'reply': parts.push(`[CQ:reply,id=${seg.data?.id ?? seg.data?.message_id ?? ''}]`); break;
+      case 'image': parts.push(`[CQ:image,file=${seg.data?.url ?? seg.data?.file ?? seg.data?.path ?? ''}]`); break;
+      case 'video': parts.push(`[CQ:video,file=${seg.data?.url ?? seg.data?.file ?? seg.data?.path ?? ''}]`); break;
+      case 'mface': parts.push(`[CQ:mface,url=${seg.data?.url ?? seg.data?.file ?? ''}]`); break;
+      case 'forward': parts.push(`[CQ:forward,id=${seg.data?.id ?? seg.data?.file ?? seg.data?.resid ?? seg.data?.res_id ?? ''}]`); break;
       default: break;
     }
   }

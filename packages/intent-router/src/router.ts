@@ -43,6 +43,8 @@ interface RawDecision {
   plannerSize?: string;
   plannerCount?: number;
   plannerQuality?: string;
+  plannerDuration?: number;
+  plannerResolution?: string;
 }
 
 export class IntentRouter {
@@ -100,6 +102,8 @@ export class IntentRouter {
           plannerSize: output.size,
           plannerCount: output.count,
           plannerQuality: output.quality,
+          plannerDuration: output.duration,
+          plannerResolution: output.resolution,
         });
       } catch (error) {
         // 规划器失败 → 走兜底规则，不让自动路由整体崩掉。
@@ -180,18 +184,22 @@ export class IntentRouter {
     if (kind === 'image.interrogate' || kind === 'ignore') {
       return { prompt: params.prompt, tokens: params.tokens, templateId: params.templateId };
     }
-    // 图像生成/编辑：bang 参数最高优先；prompt 主体在规划器路径采用规划器产出（受语言保持约束），否则用清洗后的用户文本。
+    // 图像/视频生成：bang 参数最高优先；prompt 主体在规划器路径采用规划器产出（受语言保持约束）。
     const explicitSize = params.tokens.some((t) => /^(?:\d{2,5}x\d{2,5}|\d{1,2}:\d{1,2}|[124]k)!$/i.test(t));
     const explicitCount = params.tokens.some((t) => /^(?:\d+|n=\d+)!$/i.test(t));
     const explicitQuality = params.tokens.some((t) => /^(?:low|medium|high|auto|standard|hd)!$/i.test(t));
     const plannerPrompt = (raw.plannerPrompt || '').trim();
     const basePrompt = plannerPrompt ? preserveLanguage(params.rawInput || params.prompt, plannerPrompt) : params.prompt;
+    const duration = extractDurationBang(params.tokens) ?? raw.plannerDuration;
+    const resolution = extractResolutionBang(params.tokens) ?? raw.plannerResolution;
     return {
       prompt: basePrompt || params.prompt || plannerPrompt,
       size: explicitSize ? params.size : (raw.plannerSize || params.size),
       count: explicitCount ? params.count : (raw.plannerCount ?? params.count),
       quality: explicitQuality ? params.quality : (raw.plannerQuality || params.quality),
       templateId: params.templateId,
+      duration,
+      resolution,
       tokens: params.tokens,
     };
   }
@@ -209,11 +217,12 @@ function isCapable(kind: IntentKind, caps: IntentCapabilities): boolean {
     case 'image.generate': return caps.imageGenerate !== false;
     case 'image.edit': return caps.imageEdit !== false;
     case 'image.interrogate': return caps.interrogate !== false;
+    case 'video.generate': return caps.videoGenerate !== false;
     case 'ignore': return true;
   }
 }
 
-/** 不可用时的降级链：edit→generate→chat→ignore；generate→chat→ignore；interrogate→chat→ignore。 */
+/** 不可用时的降级链：edit→generate→chat；video→chat；generate→chat；interrogate→chat。 */
 function degradeKind(kind: IntentKind, caps: IntentCapabilities): IntentKind {
   const chain: IntentKind[] = kind === 'image.edit'
     ? ['image.generate', 'chat', 'ignore']
@@ -221,11 +230,34 @@ function degradeKind(kind: IntentKind, caps: IntentCapabilities): IntentKind {
       ? ['chat', 'ignore']
       : kind === 'image.interrogate'
         ? ['chat', 'ignore']
-        : ['ignore'];
+        : kind === 'video.generate'
+          ? ['chat', 'ignore']
+          : ['ignore'];
   for (const candidate of chain) {
     if (isCapable(candidate, caps)) return candidate;
   }
   return 'ignore';
+}
+
+/** bang: 6s! / duration=6! → 6 */
+function extractDurationBang(tokens: string[]): number | undefined {
+  for (const token of tokens) {
+    const m = String(token || '').match(/^(?:(\d{1,2})s|duration=(\d{1,2}))!$/i);
+    if (m) {
+      const n = Number(m[1] || m[2]);
+      if (Number.isFinite(n) && n > 0) return Math.min(15, Math.max(1, Math.trunc(n)));
+    }
+  }
+  return undefined;
+}
+
+/** bang: 480p! / 720p! / 1080p! */
+function extractResolutionBang(tokens: string[]): string | undefined {
+  for (const token of tokens) {
+    const m = String(token || '').match(/^(480p|720p|1080p)!$/i);
+    if (m) return m[1].toLowerCase();
+  }
+  return undefined;
 }
 
 // ── 语言保持（中文 prompt 不被擅自翻译成英文）────────────────────────────────

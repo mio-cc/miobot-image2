@@ -36,6 +36,8 @@ export interface NapcatAdapterOptions {
   actionTimeoutMs?: number;
   textSendTimeoutMs?: number;
   imageSendTimeoutMs?: number;
+  /** 视频发送超时；QQ 短视频上传可能较慢，默认与 file 同级。 */
+  videoSendTimeoutMs?: number;
   fileSendTimeoutMs?: number;
   fileSendRetryCount?: number;
   fileSendRetryDelayMs?: number;
@@ -97,6 +99,7 @@ export interface NapcatFilePayload {
 export type NapcatMixedForwardItem =
   | { kind: 'text'; text: string; title?: string }
   | { kind: 'image'; file: string; title?: string }
+  | { kind: 'video'; file: string; title?: string }
   | { kind: 'file'; file: string; name?: string; title?: string };
 
 export interface NapcatForwardNode {
@@ -152,6 +155,8 @@ export class NapcatAdapter {
       actionTimeoutMs: positiveInt(options.actionTimeoutMs, 15000),
       textSendTimeoutMs: positiveInt(options.textSendTimeoutMs, 15000),
       imageSendTimeoutMs: positiveInt(options.imageSendTimeoutMs, 120000),
+      // QQ 短视频：常见限制为较短时长(约数十秒级)、H.264/MP4、体积不宜过大；超限可能失败或需改发文件。
+      videoSendTimeoutMs: positiveInt(options.videoSendTimeoutMs, positiveInt(options.fileSendTimeoutMs, 300000)),
       fileSendTimeoutMs: positiveInt(options.fileSendTimeoutMs, positiveInt(options.forwardSendTimeoutMs, 300000)),
       fileSendRetryCount: Math.max(0, Math.trunc(Number(options.fileSendRetryCount ?? 1) || 0)),
       fileSendRetryDelayMs: Math.max(0, Math.trunc(Number(options.fileSendRetryDelayMs ?? 1200) || 0)),
@@ -352,6 +357,44 @@ export class NapcatAdapter {
       user_id: userId,
       message: [{ type: 'image', data: { file: fileUrl } }],
     }, this.options.imageSendTimeoutMs);
+  }
+
+  /**
+   * 发送群视频（OneBot type:video）。
+   * file 支持 http(s) URL、本地路径、base64://、data:video/...;base64,。
+   * 注意 QQ 短视频限制：时长/大小/编码(多为 MP4+H.264)；失败时可改用 sendGroupFile。
+   */
+  async sendGroupVideo(groupId: number | string, fileUrl: string, summaryText = ''): Promise<NapcatSendResult> {
+    const segment = buildVideoSegment(fileUrl);
+    if (!segment) return { success: false, error: 'no video to send' };
+    const message: NapcatMessageSegment[] = [];
+    if (summaryText) message.push({ type: 'text', data: { text: `${summaryText}\r\n` } });
+    message.push(segment);
+    return this.sendAndReportResult('send_group_msg', { group_id: groupId, message }, this.options.videoSendTimeoutMs);
+  }
+
+  /** 发送私聊视频（OneBot type:video）。file 形态同 sendGroupVideo。 */
+  async sendPrivateVideo(userId: number | string, fileUrl: string): Promise<NapcatSendResult> {
+    const segment = buildVideoSegment(fileUrl);
+    if (!segment) return { success: false, error: 'no video to send' };
+    return this.sendAndReportResult('send_private_msg', {
+      user_id: userId,
+      message: [segment],
+    }, this.options.videoSendTimeoutMs);
+  }
+
+  /** 多视频合并转发（群）。 */
+  async sendGroupVideosForward(groupId: number | string, fileUrls: string[], botName = 'Miobot'): Promise<NapcatSendResult> {
+    const messages = buildVideoForwardNodes(fileUrls, { botName, userId: this.getForwardUserId() });
+    if (!messages.length) return { success: false, error: 'no videos to send' };
+    return this.sendAndReportResult('send_group_forward_msg', { group_id: groupId, messages }, this.options.forwardSendTimeoutMs);
+  }
+
+  /** 多视频合并转发（私聊）。 */
+  async sendPrivateVideosForward(userId: number | string, fileUrls: string[], botName = 'Miobot'): Promise<NapcatSendResult> {
+    const messages = buildVideoForwardNodes(fileUrls, { botName, userId: this.getForwardUserId() });
+    if (!messages.length) return { success: false, error: 'no videos to send' };
+    return this.sendAndReportResult('send_private_forward_msg', { user_id: userId, messages }, this.options.forwardSendTimeoutMs);
   }
 
   async sendGroupImageAt(groupId: number | string, fileUrl: string, userId: number | string): Promise<NapcatSendResult> {
@@ -585,6 +628,44 @@ export function buildImageForwardNodes(fileUrls: string[], options: { botName?: 
   }));
 }
 
+export function buildVideoForwardNodes(fileUrls: string[], options: { botName?: string; userId?: number | string } = {}): NapcatForwardNode[] {
+  const cleanUrls = dedupeVideoUrls(fileUrls);
+  const botName = options.botName || 'Miobot';
+  const userId = options.userId ?? 0;
+  return cleanUrls.map((fileUrl, idx) => ({
+    type: 'node',
+    data: {
+      user_id: userId,
+      nickname: `${botName} 视频 ${idx + 1}/${cleanUrls.length}`,
+      content: [buildVideoSegment(fileUrl)!],
+    },
+  }));
+}
+
+/**
+ * 构造 type:video 消息段。
+ * 支持 http(s)、file 路径、base64://、data:video/...;base64,。
+ * data URL 会规范为 Napcat 更易识别的 base64:// 或原样 file。
+ */
+export function buildVideoSegment(fileUrl: string): NapcatMessageSegment | undefined {
+  const file = normalizeVideoFilePayload(fileUrl);
+  if (!file) return undefined;
+  return { type: 'video', data: { file } };
+}
+
+/** 将 data:video/...;base64,XXX 转为 base64://XXX，便于部分 Napcat 版本识别。 */
+export function normalizeVideoFilePayload(fileUrl: string): string {
+  const u = String(fileUrl || '').trim();
+  if (!u) return '';
+  const dataMatch = u.match(/^data:video\/[\w.+-]+;base64,([A-Za-z0-9+/=\s]+)$/i);
+  if (dataMatch) return `base64://${dataMatch[1].replace(/\s+/g, '')}`;
+  return u;
+}
+
+export function dedupeVideoUrls(fileUrls: string[]): string[] {
+  return dedupeImageUrls(fileUrls);
+}
+
 export function buildTextForwardNodes(nodes: Array<{ title?: string; content: string }>, options: { botName?: string; userId?: number | string } = {}): NapcatForwardNode[] {
   const botName = options.botName || 'Miobot';
   const userId = options.userId ?? 0;
@@ -624,7 +705,9 @@ export function buildMixedForwardNodes(items: NapcatMixedForwardItem[], options:
       ? [{ type: 'text', data: { text: item.text } }]
       : item.kind === 'image'
         ? [{ type: 'image', data: { file: item.file } }]
-        : [buildFileSegment(item.file, item.name)!];
+        : item.kind === 'video'
+          ? [buildVideoSegment(item.file)!]
+          : [buildFileSegment(item.file, item.name)!];
     return {
       type: 'node',
       data: {
@@ -678,6 +761,7 @@ export function buildFileSegment(file: string, name?: string): NapcatMessageSegm
 export function normalizeMixedForwardItems(items: NapcatMixedForwardItem[]): NapcatMixedForwardItem[] {
   const output: NapcatMixedForwardItem[] = [];
   const seenImages = new Set<string>();
+  const seenVideos = new Set<string>();
   const seenFiles = new Set<string>();
   for (const item of Array.isArray(items) ? items : []) {
     if (!item || typeof item !== 'object') continue;
@@ -690,6 +774,13 @@ export function normalizeMixedForwardItems(items: NapcatMixedForwardItem[]): Nap
       const file = String(item.file || '').trim();
       if (!file || seenImages.has(file)) continue;
       seenImages.add(file);
+      output.push({ ...item, file });
+      continue;
+    }
+    if (item.kind === 'video') {
+      const file = normalizeVideoFilePayload(String(item.file || '').trim());
+      if (!file || seenVideos.has(file)) continue;
+      seenVideos.add(file);
       output.push({ ...item, file });
       continue;
     }

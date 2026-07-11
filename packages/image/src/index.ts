@@ -274,6 +274,11 @@ export function parseImageCommand(input: string, options: ImageCommandParseOptio
       tokens.push(token);
       continue;
     }
+    // 视频 bang：video! / 视频! / t2v! / i2v! / 6s! / duration=6! / 480p! / 720p! / 1080p!
+    if (/^(?:video|视频|t2v|i2v|\d{1,2}s|duration=\d+|480p|720p|1080p)$/i.test(body)) {
+      tokens.push(token);
+      continue;
+    }
     warnings.push(`unknown token ignored: ${token}`);
     promptParts.push(token);
   }

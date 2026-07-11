@@ -19,6 +19,10 @@ class FakeReplyClient {
   sendPrivateTextForward(userId, nodes, botName) { return this.record('sendPrivateTextForward', { userId, nodes, botName }); }
   sendGroupImage(groupId, fileUrl, summaryText) { return this.record('sendGroupImage', { groupId, fileUrl, summaryText }); }
   sendPrivateImage(userId, fileUrl) { return this.record('sendPrivateImage', { userId, fileUrl }); }
+  sendGroupVideo(groupId, fileUrl, summaryText) { return this.record('sendGroupVideo', { groupId, fileUrl, summaryText }); }
+  sendPrivateVideo(userId, fileUrl) { return this.record('sendPrivateVideo', { userId, fileUrl }); }
+  sendGroupVideosForward(groupId, fileUrls, botName) { return this.record('sendGroupVideosForward', { groupId, fileUrls, botName }, this.forwardResult); }
+  sendPrivateVideosForward(userId, fileUrls, botName) { return this.record('sendPrivateVideosForward', { userId, fileUrls, botName }, this.forwardResult); }
   sendGroupImageAt(groupId, fileUrl, userId) { return this.record('sendGroupImageAt', { groupId, fileUrl, userId }); }
   sendGroupImageQuote(groupId, fileUrl, messageId) { return this.record('sendGroupImageQuote', { groupId, fileUrl, messageId }); }
   sendGroupImageForward(groupId, fileUrl, botName) { return this.record('sendGroupImageForward', { groupId, fileUrl, botName }, { success: true, forwardId: 'single-fwd', forwardIds: ['single-fwd'] }); }
@@ -179,4 +183,43 @@ test('reply strategy: private files use private file and private forward methods
     { file: 'https://example.test/three.zip', name: 'three.zip' },
   ]);
   assert.deepEqual(client.calls.map((call) => call.method), ['sendPrivateFile', 'sendPrivateFilesForward']);
+});
+
+test('reply strategy: 单视频群/私聊直发 type:video', async () => {
+  const client = new FakeReplyClient();
+  const engine = new ReplyStrategyEngine(client);
+  const g = await engine.replyVideo(groupContext, 'https://cdn.example/a.mp4');
+  assert.equal(g.success, true);
+  assert.equal(g.kind, 'video');
+  assert.equal(client.calls[0].method, 'sendGroupVideo');
+  assert.equal(client.calls[0].args.fileUrl, 'https://cdn.example/a.mp4');
+  const p = await engine.replyVideo(privateContext, 'base64://VV');
+  assert.equal(client.calls[1].method, 'sendPrivateVideo');
+  assert.deepEqual(p.sentVideos, ['base64://VV']);
+});
+
+test('reply strategy: 多视频合并转发并去重', async () => {
+  const client = new FakeReplyClient();
+  const engine = new ReplyStrategyEngine(client, { multiVideo: 'forward' });
+  const result = await engine.replyVideos(groupContext, ['v1', 'v2', 'v1']);
+  assert.equal(result.success, true);
+  assert.equal(result.kind, 'multiVideo');
+  assert.equal(client.calls[0].method, 'sendGroupVideosForward');
+  assert.deepEqual(client.calls[0].args.fileUrls, ['v1', 'v2']);
+  assert.deepEqual(result.sentVideos, ['v1', 'v2']);
+});
+
+test('reply strategy: 图视混排走 mixed forward', async () => {
+  const client = new FakeReplyClient();
+  const engine = new ReplyStrategyEngine(client, { mixed: 'forward' });
+  const result = await engine.replyMixed(groupContext, {
+    text: '成品',
+    images: ['img1'],
+    videos: ['vid1'],
+  });
+  assert.equal(result.success, true);
+  assert.equal(client.calls[0].method, 'sendGroupMixedForward');
+  const items = client.calls[0].args.items;
+  assert.ok(items.some((i) => i.kind === 'video' && i.file === 'vid1'));
+  assert.ok(items.some((i) => i.kind === 'image' && i.file === 'img1'));
 });
