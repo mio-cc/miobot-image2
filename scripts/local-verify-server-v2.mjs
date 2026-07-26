@@ -94,7 +94,14 @@ const canvasApp = createCanvasApp({
   getConfig: () => adminService.repository.getConfig(),
   stateFilePath: canvasStatePath,
   assetDir: canvasAssetDir,
-  isAuthorized: (headers) => adminService.repository.isAuthorized(authHeader(headers)),
+  // 画布可以来自两种凭据：bot 回写画廊时带 Authorization 头；
+  // 浏览器访问画布前台时只有登录后台时种下的 Cookie。
+  isAuthorized: (headers) => {
+    const bearer = authHeader(headers);
+    if (bearer && adminService.repository.isAuthorized(bearer)) return true;
+    const fromCookie = cookieToken(headers);
+    return Boolean(fromCookie) && adminService.repository.isAuthorized(`Bearer ${fromCookie}`);
+  },
 });
 const canvasService = canvasApp.service;
 
@@ -137,7 +144,41 @@ async function handleAdmin(req, res, url) {
     headers: req.headers,
     body,
   });
+
+  // 登录成功时顺带把会话令牌写进 Cookie。
+  // 画布前台是个纯静态页，没有登录入口、也从不发 Authorization 头，
+  // 所以「仅管理员」这个访问模式原本等于把画布彻底废掉——页面照常打开、
+  // 参数照常能调，一点生成就永远失败，用户还看不出为什么。
+  // 有了这个 Cookie，先在 /admin/ 登录过的人回到 /canvas/ 就能正常用。
+  // HttpOnly：JS 读不到，降低 XSS 顺手偷走令牌的风险。
+  // SameSite=Lax：跨站请求不会带上它，画布是同源访问，不受影响。
+  if (url.pathname === '/api/login' && result.status === 200 && result.body?.auth?.token) {
+    const parts = [
+      `${PANEL_SESSION_COOKIE}=${encodeURIComponent(result.body.auth.token)}`,
+      'Path=/',
+      'HttpOnly',
+      'SameSite=Lax',
+      `Max-Age=${30 * 24 * 3600}`,
+    ];
+    res.setHeader('Set-Cookie', parts.join('; '));
+  }
+
   applyAdminResponse(res, result);
+}
+
+const PANEL_SESSION_COOKIE = 'miobot_panel';
+
+/** 从 Cookie 头里取面板令牌。画布没有地方放 Authorization 头，只能走 Cookie。 */
+function cookieToken(headers) {
+  const raw = headers?.cookie;
+  if (!raw) return undefined;
+  for (const piece of String(raw).split(';')) {
+    const at = piece.indexOf('=');
+    if (at < 0) continue;
+    if (piece.slice(0, at).trim() !== PANEL_SESSION_COOKIE) continue;
+    try { return decodeURIComponent(piece.slice(at + 1).trim()); } catch { return piece.slice(at + 1).trim(); }
+  }
+  return undefined;
 }
 
 async function handleCanvas(req, res, url) {

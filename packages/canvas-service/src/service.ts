@@ -510,7 +510,23 @@ export class CanvasService {
   private publicRecord(record: GenerationRecord): GenerationRecord {
     return { ...record, outputs: record.outputs.map((o) => ({ ...o, asset: this.publicAsset(o.asset) })) };
   }
-  private publicGalleryItem = (item: GalleryItem): GalleryItem => ({ ...item, asset: this.publicAsset(item.asset) });
+  /**
+   * 画廊条目对外的形状。
+   *
+   * 前台（web-canvas）按 shared 里的 GalleryImageItem 写死了 **outputId**：
+   * 去重、pending 判定、收藏/删除的 URL 全读它。而这边内部主键叫 id
+   * （state.ts 建条目时用的是 output.id），于是前台拿到的每条都是 outputId=undefined：
+   *   · 去重时 seen.add(undefined)，第一条之后全被跳过 → 作品库永远只显示 1 张
+   *   · 筛选/搜索触发再次合并时 item.outputId.startsWith(...) 抛 TypeError，
+   *     而这个异常出在 React setState 内部、前台又没有 ErrorBoundary → 整页白屏
+   *   · 收藏/删除的 URL 变成 /gallery/undefined/... → 404
+   * 这里补一个同值别名，id 保留不动（admin 侧读的是 store 内部结构，不经过这个投影）。
+   */
+  private publicGalleryItem = (item: GalleryItem): GalleryItem & { outputId: string } => ({
+    ...item,
+    outputId: item.id,
+    asset: this.publicAsset(item.asset),
+  });
   private publicInterrogationItem = (item: InterrogationItem): InterrogationItem => ({ ...item, asset: this.publicAsset(item.asset) });
   /** publicAsset：data URL/存储资产改写为下载链接，剥离内部存储字段(对齐 monolith)。 */
   private publicAsset(asset: CanvasAsset): CanvasAsset {

@@ -257,3 +257,57 @@ test('超大项目快照被拒绝，不会常驻内存并反复落盘', async ()
   const after = await service.handle({ method: 'GET', path: '/project' });
   assert.notEqual(after.body.snapshot?.blob?.length, huge.blob.length, '不该被存进去');
 });
+
+/* ── 画廊字段契约（复查确认：前台读 outputId，后端只给 id → 白屏） ────── */
+
+test('GET /gallery 每条都带 outputId，且与 id 同值', async () => {
+  const service = createCanvasService({
+    getConfig: () => normalizeConfig({}),
+    generator: {
+      generate: async () => ({ images: [
+        { kind: 'base64', data: 'AAA', mimeType: 'image/png' },
+        { kind: 'base64', data: 'BBB', mimeType: 'image/png' },
+      ] }),
+      edit: async () => ({ images: [] }),
+      interrogate: async () => ({ text: '' }),
+    },
+  });
+
+  await service.handle({ method: 'POST', path: '/images/generate', body: { prompt: '猫', count: 2 } });
+  await service.handle({ method: 'POST', path: '/images/generate', body: { prompt: '狗', count: 2 } });
+
+  const res = await service.handle({ method: 'GET', path: '/gallery' });
+  assert.equal(res.status, 200);
+  assert.ok(res.body.items.length >= 2, '应当有多条记录');
+
+  for (const item of res.body.items) {
+    assert.equal(typeof item.outputId, 'string', '前台按 outputId 去重，缺了会导致只显示 1 张然后白屏');
+    assert.ok(item.outputId, 'outputId 不能是空');
+    assert.equal(item.outputId, item.id, '别名必须与内部主键同值，否则收藏/删除的 URL 对不上');
+  }
+
+  // 模拟前台的去重逻辑：outputId 缺失时会塌成 1 条
+  const seen = new Set();
+  const merged = res.body.items.filter((i) => (seen.has(i.outputId) ? false : (seen.add(i.outputId), true)));
+  assert.equal(merged.length, res.body.items.length, '按 outputId 去重后不该少条目');
+});
+
+test('收藏/删除用 outputId 也能命中', async () => {
+  const service = createCanvasService({
+    getConfig: () => normalizeConfig({}),
+    generator: {
+      generate: async () => ({ images: [{ kind: 'base64', data: 'AAA', mimeType: 'image/png' }] }),
+      edit: async () => ({ images: [] }),
+      interrogate: async () => ({ text: '' }),
+    },
+  });
+  await service.handle({ method: 'POST', path: '/images/generate', body: { prompt: '猫' } });
+  const list = await service.handle({ method: 'GET', path: '/gallery' });
+  const target = list.body.items[0];
+
+  const fav = await service.handle({ method: 'PATCH', path: `/gallery/${encodeURIComponent(target.outputId)}/favorite`, body: { favorite: true } });
+  assert.equal(fav.status, 200, '前台就是拿 outputId 拼 URL 的');
+
+  const del = await service.handle({ method: 'DELETE', path: `/gallery/${encodeURIComponent(target.outputId)}` });
+  assert.equal(del.status, 200);
+});

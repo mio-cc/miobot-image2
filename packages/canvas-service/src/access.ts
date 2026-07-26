@@ -132,15 +132,15 @@ export function checkCanvasAccess(options: CanvasAccessOptions): CanvasAccessDec
   const canvas = options.config.canvas;
 
   if (canvas.enabled === false) {
-    return { allowed: false, status: 403, code: 'canvas_disabled', message: '画布前台已在后台关闭。' };
+    return { allowed: false, status: 403, code: 'canvas_disabled', message: '画布已在后台关闭' };
   }
 
   const mode = canvas.access || 'public';
   if (mode === 'admin' && !options.isAuthorized(options.headers)) {
-    return { allowed: false, status: 401, code: 'unauthorized', message: '画布当前限管理员使用，请先登录后台。' };
+    return { allowed: false, status: 401, code: 'unauthorized', message: '请先登录后台再用' };
   }
   if (mode === 'local-only' && !isLocalClient(options.headers) && !options.isAuthorized(options.headers)) {
-    return { allowed: false, status: 403, code: 'forbidden_origin', message: '画布当前只允许本机/内网访问。' };
+    return { allowed: false, status: 403, code: 'forbidden_origin', message: '仅限本机内网访问' };
   }
 
   // 管理员不受限流约束——他就是额度的主人，被自己的限流挡住只会莫名其妙。
@@ -154,7 +154,7 @@ export function checkCanvasAccess(options: CanvasAccessOptions): CanvasAccessDec
       allowed: false,
       status: 429,
       code: 'rate_limited',
-      message: `请求过于频繁，每分钟最多 ${canvas.rateLimitPerMinute} 次。`,
+      message: `太频繁，每分钟限 ${canvas.rateLimitPerMinute} 次`,
     };
   }
 

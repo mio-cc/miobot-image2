@@ -124,6 +124,34 @@ class GenerationJobFailedError extends Error {
   }
 }
 
+/**
+ * 被后端的访问控制拒绝（401 未登录 / 403 来源或开关不允许 / 429 限流）。
+ *
+ * 和网络抖动的区别是：重试没有任何意义。以前这几个状态码走通用 Error 分支，
+ * 前台按「可能只是没收到响应」处理，把卡片挂在 96% 空转三分钟、
+ * 期间每 3 秒轮询一次画廊，最后才认输——用户完全看不出自己是被拒绝了。
+ */
+class AccessDeniedError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "AccessDeniedError";
+    this.status = status;
+  }
+}
+
+/** 401/403/429 归为终态，其余仍按可重试处理。 */
+function isAccessDenied(status: number): boolean {
+  return status === 401 || status === 403 || status === 429;
+}
+
+/** 按状态码选错误类型后抛出。所有 !response.ok 的地方都该走这里。 */
+async function throwApiError(response: Response, fallback: string): Promise<never> {
+  const message = await readApiError(response, fallback);
+  if (isAccessDenied(response.status)) throw new AccessDeniedError(message, response.status);
+  throw new Error(message);
+}
+
 interface GenerationJob {
   id: string;
   mode: "generate" | "edit";
@@ -498,7 +526,7 @@ export function App() {
         favoritesOnly,
         statusFilter
       })}`), { signal });
-      if (!response.ok) throw new Error(await readApiError(response, "图库加载失败"));
+      if (!response.ok) await throwApiError(response, "图库加载失败");
       const body = (await response.json()) as GalleryResponse;
       const fetchedItems = Array.isArray(body.items) ? body.items : [];
       setGalleryItems((current) => mergeFetchedGalleryItems(fetchedItems, current));
@@ -521,7 +549,7 @@ export function App() {
         favoritesOnly,
         statusFilter
       })}`), { signal });
-      if (!response.ok) throw new Error(await readApiError(response, "模板库加载失败"));
+      if (!response.ok) await throwApiError(response, "模板库加载失败");
       const body = (await response.json()) as InterrogationResponse;
       const fetchedItems = Array.isArray(body.items) ? body.items : [];
       setInterrogateItems((current) => mergeFetchedInterrogationItems(fetchedItems, current));
@@ -541,7 +569,7 @@ export function App() {
     async function loadConfig() {
       try {
         const response = await fetch(apiPath("/config"));
-        if (!response.ok) throw new Error(await readApiError(response, "画布配置加载失败"));
+        if (!response.ok) await throwApiError(response, "画布配置加载失败");
         const nextConfig = normalizeRuntimeConfig(await response.json());
         if (disposed) return;
         setRuntimeConfig(nextConfig);
@@ -810,7 +838,7 @@ export function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ image: imageInput })
       });
-      if (!response.ok) throw new Error(await readApiError(response, "反推失败"));
+      if (!response.ok) await throwApiError(response, "反推失败");
       const data = (await response.json()) as InterrogateImageResult | InterrogationJobResponse;
       let item: InterrogationItem;
       if (isInterrogationJobResponse(data)) {
@@ -828,14 +856,18 @@ export function App() {
       removeStoredPendingInterrogation(pendingItem.id);
       setInterrogateStatus("已反推并保存到模板库。");
     } catch (error) {
+      const message = error instanceof Error ? error.message : "反推失败";
       updatePendingInterrogationItem(pendingItem.id, {
         clientStatus: "failed",
         progress: 100,
-        error: error instanceof Error ? error.message : "反推失败"
+        error: message
       });
       scheduleRemovePendingInterrogationItem(pendingItem.id);
-      setInterrogateError("");
+      // 卡片 1 秒后就自毁，这里再把错误清空的话，用户回头看界面像什么都没发生过。
+      // 保留错误文案；被访问控制拒绝时再额外挂一条不会自动消失的顶部提示。
+      setInterrogateError(message);
       setInterrogateStatus("");
+      if (error instanceof AccessDeniedError) setNotice({ tone: "error", message });
     } finally {
       setIsInterrogating(false);
     }
@@ -994,6 +1026,20 @@ export function App() {
       }
       throw new Error("未找到可恢复的生成任务结果");
     } catch (error) {
+      // 被访问控制拒绝：立刻认输。重试和「恢复已完成的生成」都没有意义，
+      // 而且失败卡片 1 秒后就自毁，所以必须同时挂一条不会自动消失的提示，
+      // 否则用户回头看界面像什么都没发生过。
+      if (error instanceof AccessDeniedError) {
+        updatePendingGalleryItem(pendingItem.outputId, {
+          clientStatus: "failed",
+          progress: 100,
+          error: error.message,
+          status: "failed"
+        });
+        scheduleRemovePendingGalleryItem(pendingItem.outputId);
+        setNotice({ tone: "error", message: error.message });
+        return;
+      }
       if (error instanceof GenerationJobFailedError) {
         updatePendingGalleryItem(pendingItem.outputId, {
           clientStatus: "failed",
@@ -1110,7 +1156,7 @@ export function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(snapshot.body)
       });
-      if (!response.ok) throw new Error(await readApiError(response, "生成失败"));
+      if (!response.ok) await throwApiError(response, "生成失败");
       const data = (await response.json()) as GenerationResponse | GenerationJobResponse;
       let record: GenerationRecord;
       if (isGenerationJobResponse(data)) {
@@ -1149,6 +1195,20 @@ export function App() {
         }
       }
     } catch (error) {
+      // 被访问控制拒绝：立刻认输。重试和「恢复已完成的生成」都没有意义，
+      // 而且失败卡片 1 秒后就自毁，所以必须同时挂一条不会自动消失的提示，
+      // 否则用户回头看界面像什么都没发生过。
+      if (error instanceof AccessDeniedError) {
+        updatePendingGalleryItem(pendingItem.outputId, {
+          clientStatus: "failed",
+          progress: 100,
+          error: error.message,
+          status: "failed"
+        });
+        scheduleRemovePendingGalleryItem(pendingItem.outputId);
+        setNotice({ tone: "error", message: error.message });
+        return;
+      }
       if (error instanceof GenerationJobFailedError) {
         updatePendingGalleryItem(pendingItem.outputId, {
           clientStatus: "failed",
@@ -1224,7 +1284,7 @@ export function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ favorite })
       });
-      if (!response.ok) throw new Error(await readApiError(response, "收藏状态保存失败"));
+      if (!response.ok) await throwApiError(response, "收藏状态保存失败");
       setToast({ tone: "success", message: favorite ? "已加入收藏。" : "已取消收藏。" });
     } catch (error) {
       setGalleryItems((current) =>
@@ -1246,7 +1306,7 @@ export function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ favorite })
       });
-      if (!response.ok) throw new Error(await readApiError(response, "收藏状态保存失败"));
+      if (!response.ok) await throwApiError(response, "收藏状态保存失败");
       setToast({ tone: "success", message: favorite ? "已加入收藏。" : "已取消收藏。" });
     } catch (error) {
       setInterrogateItems((current) =>
@@ -1594,7 +1654,7 @@ export function App() {
                     </button>
                     <div className="masonry-card__meta">
                       <span>{item.clientStatus === "failed" ? "生成失败" : item.clientStatus ? "生成中" : `${item.size.width}x${item.size.height}`}</span>
-                      <span>{item.clientStatus === "failed" ? promptExcerpt(item.error || "请稍后重试", 18) : item.outputFormat.toUpperCase()}</span>
+                      <span title={item.clientStatus === "failed" ? item.error || "请稍后重试" : undefined}>{item.clientStatus === "failed" ? promptExcerpt(item.error || "请稍后重试", 18) : item.outputFormat.toUpperCase()}</span>
                     </div>
                   </div>
                 </article>
@@ -1690,7 +1750,7 @@ export function App() {
                       </button>
                       <div className="masonry-card__meta">
                         <span>{item.clientStatus === "failed" ? "反推失败" : item.clientStatus ? "反推中" : "反推"}</span>
-                        <span>{item.clientStatus === "failed" ? promptExcerpt(item.error || "请稍后重试", 18) : "模板"}</span>
+                        <span title={item.clientStatus === "failed" ? item.error || "请稍后重试" : undefined}>{item.clientStatus === "failed" ? promptExcerpt(item.error || "请稍后重试", 18) : "模板"}</span>
                       </div>
                     </div>
                   </article>
@@ -2708,7 +2768,7 @@ async function waitForGenerationJob(jobId: string, onPoll?: (job: GenerationJob)
     let data: GenerationJobResponse;
     try {
       const response = await fetch(apiPath(`/images/jobs/${encodeURIComponent(jobId)}?t=${Date.now()}`), { cache: "no-store" });
-      if (!response.ok) throw new Error(await readApiError(response, "读取生成任务失败"));
+      if (!response.ok) await throwApiError(response, "读取生成任务失败");
       data = (await response.json()) as GenerationJobResponse;
       transientFailures = 0;
     } catch (error) {
@@ -2739,7 +2799,7 @@ async function waitForInterrogationJob(jobId: string, onPoll?: (job: Interrogati
   for (let attempt = 0; attempt < GENERATION_JOB_MAX_POLLS; attempt += 1) {
     await sleep(GENERATION_JOB_POLL_INTERVAL_MS);
     const response = await fetch(apiPath(`/interrogate/jobs/${encodeURIComponent(jobId)}`), { cache: "no-store" });
-    if (!response.ok) throw new Error(await readApiError(response, "读取反推任务失败"));
+    if (!response.ok) await throwApiError(response, "读取反推任务失败");
     const data = (await response.json()) as InterrogationJobResponse;
     const job = data.job;
     onPoll?.(job);
