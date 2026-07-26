@@ -1,62 +1,137 @@
-﻿@import "tailwindcss";
+@import "tailwindcss";
 
 /* ═══════════════════════════════════════════════════════════════
-   MioBot Console — 精致浅色 SaaS 设计系统
-   Linear / Stripe Dashboard 风格：暖灰背景 + 靛蓝紫主色 + 细腻阴影
+   MioBot Console — 墨色 / 暖纸白设计系统
+
+   定位是运维控制台，不是营销落地页：无渐变、无彩色主按钮、无 emoji 图标。
+   品牌感来自排版与留白，语义色只保留四个且永远配合文字出现
+   （颜色不单独承载状态，色盲用户同样能读）。
    ═══════════════════════════════════════════════════════════════ */
 
 :root {
-  /* 暖白背景系（stone 暖灰，比冷灰更精致温暖） */
-  --page: #fafaf9;
-  --surface: #ffffff;
-  --surface-soft: #f5f5f4;
-  --line: #e7e5e4;
-  --line-strong: #d6d3d1;
+  color-scheme: light;
 
-  /* 文字（stone 暖灰） */
-  --text: #1c1917;
-  --text-soft: #44403c;
-  --muted: #78716c;
-  --muted-light: #a8a29e;
+  /* 暖纸白：不是纯白，避免长时间盯屏的刺眼感 */
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --surface-soft: #f3f2ee;
+  --line: #e1e0d9;
+  --line-strong: #c3c2b7;
 
-  /* 主色：靛蓝紫（精致克制，非默认蓝） */
-  --primary: #5b5bd6;
-  --primary-strong: #4f46e5;
-  --primary-soft: #eef0fc;
-  --primary-line: #c7c9f0;
+  /* 墨色文字 */
+  --text: #0b0b0b;
+  --text-soft: #52514e;
+  --muted: #898781;
+  --muted-light: #a8a6a0;
 
-  /* 语义色 */
-  --success: #16a34a;
-  --success-soft: #f0fdf4;
-  --success-line: #bbf7d0;
-  --danger: #dc2626;
-  --danger-soft: #fef2f2;
-  --danger-line: #fecaca;
-  --warn: #d97706;
-  --warn-soft: #fffbeb;
-  --warn-line: #fde68a;
+  /* 主色即墨色：主操作用实底墨色，不用彩色按钮 */
+  --primary: #0b0b0b;
+  --primary-strong: #000000;
+  --primary-soft: #f3f2ee;
+  --primary-line: #c3c2b7;
+  --primary-ink: #fcfcfb;
 
-  /* 终端深色（log-terminal 专用，保留深色） */
-  --terminal-bg: #0c1015;
-  --terminal-surface: #111720;
-  --terminal-text: #c9d4e5;
-  --terminal-muted: #6b7689;
-  --terminal-line: rgba(148, 163, 184, 0.14);
+  /* 语义色：仅这四个，且永远配合文字/图标 */
+  --success: #006300;
+  --success-soft: #f2f7f2;
+  --success-line: #cfe0cf;
+  --danger: #d03b3b;
+  --danger-soft: #fdf3f3;
+  --danger-line: #f0cfcf;
+  --warn: #a06a00;
+  --warn-soft: #fbf6ec;
+  --warn-line: #e8dcc2;
 
-  /* 圆角 */
-  --radius: 16px;
-  --radius-sm: 10px;
-  --radius-lg: 20px;
+  /* 图表单系列色（经 CVD 校验） */
+  --series-1: #2a78d6;
 
-  /* 阴影：多层微妙（Linear 风格，不是粗阴影） */
-  --shadow-card: 0 1px 2px rgba(28, 25, 23, 0.03), 0 4px 12px rgba(28, 25, 23, 0.04);
-  --shadow-card-hover: 0 1px 3px rgba(28, 25, 23, 0.05), 0 8px 24px rgba(28, 25, 23, 0.06);
-  --shadow-float: 0 4px 8px rgba(28, 25, 23, 0.04), 0 24px 48px rgba(28, 25, 23, 0.06);
-  --shadow-primary: 0 1px 2px rgba(91, 91, 214, 0.12), 0 4px 14px rgba(91, 91, 214, 0.18);
+  /* 终端深色（日志面板专用） */
+  --terminal-bg: #131312;
+  --terminal-surface: #1a1a19;
+  --terminal-text: #e8e7e1;
+  --terminal-muted: #898781;
+  --terminal-line: rgba(255, 255, 255, 0.10);
 
-  /* 字体 */
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "Cascadia Code", Consolas, monospace;
+  /* 圆角：控制台用小圆角，不要过分圆润 */
+  --radius: 10px;
+  --radius-sm: 6px;
+  --radius-lg: 14px;
+
+  /* 阴影：hairline 边框为主，阴影极轻 */
+  --shadow-card: 0 1px 2px rgba(11, 11, 11, 0.03);
+  --shadow-card-hover: 0 1px 3px rgba(11, 11, 11, 0.05);
+  --shadow-float: 0 2px 6px rgba(11, 11, 11, 0.05), 0 12px 32px rgba(11, 11, 11, 0.06);
+  --shadow-primary: 0 1px 2px rgba(11, 11, 11, 0.10);
+
+  /* 字体：界面用系统栈，标识符一律等宽 */
+  --font-sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Sarasa Mono SC", Consolas, monospace;
+}
+
+/* 深色主题：跟随系统，同时支持 data-theme 手动覆盖（两个方向都要能压过系统） */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --surface-soft: #232322;
+    --line: #2c2c2a;
+    --line-strong: #383835;
+    --text: #ffffff;
+    --text-soft: #c3c2b7;
+    --muted: #898781;
+    --muted-light: #6f6d68;
+    --primary: #f2f1ec;
+    --primary-strong: #ffffff;
+    --primary-soft: #232322;
+    --primary-line: #383835;
+    --primary-ink: #111110;
+    --success: #0ca30c;
+    --success-soft: #16210f;
+    --success-line: #2c3f22;
+    --danger: #e66767;
+    --danger-soft: #2a1616;
+    --danger-line: #4a2626;
+    --warn: #fab219;
+    --warn-soft: #2a2110;
+    --warn-line: #4a3a1a;
+    --series-1: #3987e5;
+    --terminal-bg: #0f0f0e;
+    --terminal-surface: #161615;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-float: 0 2px 6px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.5);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --surface-soft: #232322;
+  --line: #2c2c2a;
+  --line-strong: #383835;
+  --text: #ffffff;
+  --text-soft: #c3c2b7;
+  --muted: #898781;
+  --muted-light: #6f6d68;
+  --primary: #f2f1ec;
+  --primary-strong: #ffffff;
+  --primary-soft: #232322;
+  --primary-line: #383835;
+  --primary-ink: #111110;
+  --success: #0ca30c;
+  --success-soft: #16210f;
+  --success-line: #2c3f22;
+  --danger: #e66767;
+  --danger-soft: #2a1616;
+  --danger-line: #4a2626;
+  --warn: #fab219;
+  --warn-soft: #2a2110;
+  --warn-line: #4a3a1a;
+  --series-1: #3987e5;
+  --terminal-bg: #0f0f0e;
+  --terminal-surface: #161615;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-float: 0 2px 6px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.5);
 }
 
 /* ── 基础重置 ── */
@@ -77,7 +152,7 @@ body {
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: not-allowed; opacity: 0.55; }
-::selection { background: rgba(91, 91, 214, 0.14); color: var(--text); }
+::selection { background: color-mix(in srgb, var(--series-1) 18%, transparent); color: var(--text); }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
@@ -93,8 +168,8 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   align-items: center;
   justify-content: center;
   border-radius: 12px;
-  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-  color: #fff;
+  background: var(--primary);
+  color: var(--primary-ink);
   font-size: 1.2rem;
   font-weight: 800;
   box-shadow: var(--shadow-primary), inset 0 1px 0 rgba(255, 255, 255, 0.2);
@@ -107,10 +182,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   display: grid;
   place-items: center;
   padding: clamp(16px, 3vw, 40px);
-  background:
-    radial-gradient(circle at 20% 20%, rgba(91, 91, 214, 0.06), transparent 40rem),
-    radial-gradient(circle at 80% 80%, rgba(99, 102, 241, 0.04), transparent 36rem),
-    var(--page);
+  background: var(--page);
 }
 
 .login-shell {
@@ -132,16 +204,14 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   flex-direction: column;
   justify-content: space-between;
   padding: clamp(28px, 5vw, 56px);
-  background:
-    radial-gradient(circle at 30% 70%, rgba(91, 91, 214, 0.08), transparent 30rem),
-    linear-gradient(150deg, #fcfcfb 0%, #f6f5ff 50%, #fafaf9 100%);
+  background: var(--surface-soft);
   overflow: hidden;
 }
 .login-visual::before {
   content: "";
   position: absolute;
   inset: 0;
-  background-image: radial-gradient(circle, rgba(91, 91, 214, 0.07) 1px, transparent 1px);
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--line-strong) 55%, transparent) 1px, transparent 1px);
   background-size: 24px 24px;
   opacity: 0.5;
   pointer-events: none;
@@ -151,7 +221,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   position: absolute;
   inset: auto -10% -10% 8%;
   height: 48%;
-  background: radial-gradient(ellipse at center, rgba(91, 91, 214, 0.1), transparent 70%);
+  background: none;
   filter: blur(8px);
   transform: rotate(-6deg);
   pointer-events: none;
@@ -349,7 +419,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   font-weight: 700;
 }
 .rail-item--active .rail-item__icon {
-  background: linear-gradient(135deg, #6366f1, var(--primary));
+  background: var(--primary);
   color: #fff;
   box-shadow: var(--shadow-primary);
 }
@@ -568,7 +638,7 @@ textarea.input-field { min-height: 90px; line-height: 1.5; resize: vertical; max
   font-weight: 600;
   transition: transform 0.12s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
-.btn-primary { border: 1px solid var(--primary-strong); background: linear-gradient(180deg, #6366f1, var(--primary)); color: #fff; box-shadow: var(--shadow-primary); }
+.btn-primary { border: 1px solid var(--primary-strong); background: var(--primary); color: var(--primary-ink); box-shadow: var(--shadow-primary); }
 .btn-primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 2px 4px rgba(91, 91, 214, 0.15), 0 8px 20px rgba(91, 91, 214, 0.22); }
 .btn-outline { border: 1px solid var(--line); background: var(--surface); color: var(--text-soft); }
 .btn-outline:hover:not(:disabled) { border-color: var(--primary-line); background: var(--primary-soft); color: var(--primary); }
@@ -711,7 +781,7 @@ textarea.input-field { min-height: 90px; line-height: 1.5; resize: vertical; max
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: linear-gradient(rgba(28, 25, 23, 0.02) 1px, transparent 1px);
+  background: none;
   background-size: 100% 28px;
   opacity: 0.6;
 }
@@ -796,7 +866,7 @@ textarea.input-field { min-height: 90px; line-height: 1.5; resize: vertical; max
   overflow: hidden;
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: var(--radius);
-  background: linear-gradient(180deg, var(--terminal-bg) 0%, #090d12 100%);
+  background: var(--terminal-bg);
   box-shadow: 0 20px 60px rgba(12, 16, 21, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 .log-terminal__bar {

@@ -15,3 +15,4 @@ export {
   createInMemoryLogStore,
   createFileLogStore,
 } from './logs.js';
+export * from './capabilities.js';

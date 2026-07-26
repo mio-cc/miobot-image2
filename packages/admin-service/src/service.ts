@@ -3,6 +3,8 @@ import { getDefaultPrompts } from '../../config/src/index.js';
 import type { LogQuery } from '../../logger/src/index.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
 import { createInMemoryLogStore, type AdminLogStore } from './logs.js';
+import { OPERATION_LABELS, checkCapabilityBindings, resolveModelCapabilities } from './capabilities.js';
+import { createMetrics, type Metrics } from '../../core/src/metrics.js';
 import type { AdminHandler, AdminResponse, AdminServiceDeps } from './types.js';
 
 export const ADMIN_SERVICE_PACKAGE: PackageDescriptor = {
@@ -16,6 +18,8 @@ export interface AdminServiceOptions {
   deps?: AdminServiceDeps;
   webApi?: WebApi;
   now?: () => Date;
+  /** 运行指标收集器；不传则用纯内存实例（重启即清零）。 */
+  metrics?: Metrics;
 }
 
 /**
@@ -26,12 +30,14 @@ export interface AdminServiceOptions {
 export class AdminService {
   readonly api: WebApi;
   readonly logs: AdminLogStore;
+  readonly metrics: Metrics;
   private readonly deps: AdminServiceDeps;
 
   constructor(options: AdminServiceOptions = {}) {
     this.api = options.webApi || createWebApi({ initialConfig: options.initialConfig, now: options.now });
     this.logs = options.logs || createInMemoryLogStore();
     this.deps = options.deps || {};
+    this.metrics = options.metrics || createMetrics();
   }
 
   get repository(): ConfigRepository {
@@ -52,6 +58,36 @@ export class AdminService {
 
     if (method === 'GET' && path === '/api/default-prompts') {
       return { status: 200, body: { success: true, prompts: getDefaultPrompts() } };
+    }
+
+    // 能力体检：逐项检查「这项能力配的模型能不能干这活」，
+    // 让用户在发消息之前就看到问题，而不是等群里收到一句看不懂的 400。
+    if (method === 'GET' && path === '/api/capabilities') {
+      const bindings = checkCapabilityBindings(this.repository.getConfig());
+      return {
+        status: 200,
+        body: {
+          success: true,
+          bindings,
+          labels: OPERATION_LABELS,
+          brokenCount: bindings.filter((b) => b.enabled && !b.ok).length,
+        },
+      };
+    }
+
+    if (method === 'POST' && path === '/api/capabilities/resolve') {
+      const body = (req.body || {}) as { nodeIndex?: unknown; model?: unknown };
+      const model = String(body.model ?? '').trim();
+      if (!model) return { status: 400, body: { success: false, error: '缺少 model' } };
+      return {
+        status: 200,
+        body: { success: true, resolved: resolveModelCapabilities(this.repository.getConfig(), Number(body.nodeIndex ?? 0) || 0, model) },
+      };
+    }
+
+    /** 近 24 小时的分小时指标，总览页用它画趋势。 */
+    if (method === 'GET' && path === '/api/metrics') {
+      return { status: 200, body: { success: true, ...this.metrics.snapshot() } };
     }
 
     if (method === 'GET' && path === '/api/logs') return { status: 200, body: this.readLogs('system', req.path) };

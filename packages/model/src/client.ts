@@ -1,5 +1,7 @@
 import { CapabilityRegistry, createCapabilityRegistry } from './capability/registry.js';
 import { applyFix, applyLearned, diagnose, healingKey, rememberFix } from './capability/healing.js';
+import { imageEditTransportsFor } from './capability/params.js';
+import { buildMultipartImageEdit, resolveImageBytes } from './dialects/multipart.js';
 import { anthropicDialect } from './dialects/anthropic.js';
 import { customDialect } from './dialects/custom.js';
 import { geminiDialect } from './dialects/gemini.js';
@@ -124,10 +126,47 @@ export class ModelClient {
     return this.run('image.generate', nodeIndex, shaped.model, shaped.timeoutMs,
       (d, n) => requireBuilder(d, 'buildImageGeneration', n, shaped), (d, data) => requireImageParser(d, data));
   }
+  /**
+   * 改图。请求体形态按模型决定：
+   * 官方 /images/edits 只接受 multipart/form-data（JSON 会被直接拒），
+   * 而 xAI 官方文档明确说不支持 multipart。顺序排错会让每次改图都先白白失败一轮。
+   */
   async editImage(nodeIndex: number, req: ImageEditRequest): Promise<ImageResult> {
     const shaped = this.shapeImageEdit(req);
+    const node = this.nodes[this.resolveIndex(nodeIndex)];
+    const dialect = node ? dialectFor(node) : undefined;
+
+    // 只有 OpenAI 兼容方言存在 JSON / multipart 之分；其它方言（gemini 原生等）走自己的实现。
+    const wantsMultipartFirst = dialect?.id === 'openai' && imageEditTransportsFor(shaped.model)[0] === 'multipart';
+    if (wantsMultipartFirst && node) {
+      try {
+        return await this.editImageMultipart(nodeIndex, shaped, node);
+      } catch (error) {
+        // multipart 明确不被接受时退回 JSON；其余错误照常上抛。
+        if (!looksLikeShapeRejection(error)) throw error;
+        this.logger?.warn?.('image edit multipart rejected, falling back to JSON', {
+          model: shaped.model,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     return this.run('image.edit', nodeIndex, shaped.model, shaped.timeoutMs,
       (d, n) => requireBuilder(d, 'buildImageEdit', n, shaped), (d, data) => requireImageParser(d, data));
+  }
+
+  /** multipart 改图：先把图片解析成字节（异步），再交给纯函数拼装请求。 */
+  private async editImageMultipart(nodeIndex: number, req: ImageEditRequest, node: ModelNode): Promise<ImageResult> {
+    if (!this.registry.can(req.model, 'image.edit')) {
+      throw new ModelError(`模型 "${req.model}" 不具备能力 image.edit`, { category: 'validation', retryable: false, code: 'capability_unsupported' });
+    }
+    const images = await Promise.all(req.images.map((ref) => resolveImageBytes(ref)));
+    const mask = req.mask ? await resolveImageBytes(req.mask) : undefined;
+    const plan = buildMultipartImageEdit(node, req, images, mask);
+
+    const response = await this.transport({ ...plan, timeoutMs: Math.max(1, Math.trunc(req.timeoutMs ?? this.timeoutMs)) });
+    if (response.status >= 400) throw errorFromResponse(response);
+    return requireImageParser(dialectFor(node), response.data);
   }
 
   /**
@@ -435,6 +474,17 @@ function requireImageParser(dialect: Dialect, data: unknown): ImageResult {
 function requireVideoParser(dialect: Dialect, data: unknown): VideoResult {
   if (typeof dialect.parseVideo !== 'function') throw new ModelError(`方言 ${dialect.id} 未实现 parseVideo`, { category: 'validation', retryable: false, code: 'dialect_unsupported' });
   return dialect.parseVideo(data);
+}
+
+/**
+ * 上游是否在抱怨「请求体形态不对」（而不是别的错误）。
+ * 只有这种情况才值得换一种形态重试。
+ */
+function looksLikeShapeRejection(error: unknown): boolean {
+  const status = error instanceof ModelError ? Number(error.status || 0) : 0;
+  if (![400, 404, 405, 415, 422].includes(status)) return false;
+  const text = error instanceof Error ? error.message : String(error);
+  return /multipart|form-?data|content[- ]type|unsupported media|invalid.*image|image.*required|unknown parameter|unsupported parameter/i.test(text);
 }
 
 function shouldFailover(error: unknown): boolean {
