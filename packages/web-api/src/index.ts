@@ -1,4 +1,4 @@
-﻿import { createHash } from 'node:crypto';
+﻿import { createHash, timingSafeEqual } from 'node:crypto';
 import {
   createDefaultConfig,
   exportConfig,
@@ -9,6 +9,7 @@ import {
   type ExportedConfigFile,
 } from '../../config/src/index.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
+import { maskConfigSecrets, unmaskConfigSecrets } from './secrets.js';
 
 export const WEB_API_PACKAGE: PackageDescriptor = {
   name: '@miobot-v2/web-api',
@@ -101,6 +102,15 @@ export class ConfigRepository {
     return clone(this.config);
   }
 
+  /**
+   * 给浏览器看的配置：密钥一律打码。
+   * 注意不要把打码逻辑放进 getConfig()——热重载监听器（bot 运行时）消费的是同一个方法，
+   * 它需要真实密钥才能调上游。
+   */
+  getMaskedConfig(): AppConfig {
+    return maskConfigSecrets(this.getConfig());
+  }
+
   getAuthSnapshot(passwordSeedChanged = false): PanelAuthSnapshot {
     return {
       token: derivePanelToken(this.config.panel.passwordSeed),
@@ -111,10 +121,10 @@ export class ConfigRepository {
   }
 
   login(password: string): LoginResult {
-    if (String(password) !== this.config.panel.passwordSeed) {
+    if (!safeEqual(String(password ?? ''), this.config.panel.passwordSeed)) {
       throw new WebApiError(401, '密码错误');
     }
-    return { success: true, auth: this.getAuthSnapshot(false), config: this.getConfig(), revision: this.revisionValue };
+    return { success: true, auth: this.getAuthSnapshot(false), config: this.getMaskedConfig(), revision: this.revisionValue };
   }
 
   isAuthorized(authorizationHeader?: string): boolean {
@@ -131,13 +141,20 @@ export class ConfigRepository {
   }
 
   importAndSave(payload: unknown): ConfigImportSaveResult {
+    // 先让 importAppConfig 解掉 { config: ... } 外壳并归一化，再还原打码字段——
+    // 导入的可能是本机导出的备份（真实密钥），也可能是面板上打码过的配置。
+    // 还原只在「值恰好等于当前值的打码结果」时生效，两种来源都安全。
     const imported = importAppConfig(payload);
-    const saved = this.saveFullConfig(imported.config, '配置已导入并热重载');
+    const restored = unmaskConfigSecrets(imported.config, this.config);
+    const saved = this.saveFullConfig(restored, '配置已导入并热重载');
     return { ...saved, importResult: imported };
   }
 
   saveConfig(patchOrConfig: unknown): ConfigSaveResult {
-    const merged = mergeConfigPatch(this.config, objectOrEmpty(patchOrConfig));
+    // 面板拿到的是打码后的配置，原样提交回来时要先还原成真实密钥，
+    // 否则一次「只改了别的字段」的保存就会把密钥写成一串圆点。
+    const restored = unmaskConfigSecrets(objectOrEmpty(patchOrConfig), this.config);
+    const merged = mergeConfigPatch(this.config, objectOrEmpty(restored));
     return this.saveFullConfig(merged, '配置已热重载生效，无需重启');
   }
 
@@ -169,7 +186,7 @@ export class ConfigRepository {
     return {
       success: true,
       message,
-      config: this.getConfig(),
+      config: this.getMaskedConfig(),
       revision: this.revisionValue,
       hotReload,
       auth: this.getAuthSnapshot(passwordSeedChanged),
@@ -197,7 +214,7 @@ export class WebApi {
       }
 
       if (method === 'GET' && path === '/api/config') {
-        return ok({ success: true, config: this.repository.getConfig(), revision: this.repository.revision, auth: this.repository.getAuthSnapshot(false) });
+        return ok({ success: true, config: this.repository.getMaskedConfig(), revision: this.repository.revision, auth: this.repository.getAuthSnapshot(false) });
       }
       if (method === 'POST' && path === '/api/config') {
         const saved = this.repository.saveConfig(request.body);
@@ -231,6 +248,21 @@ export function createConfigRepository(options: ConfigRepositoryOptions = {}): C
 
 export function createWebApi(options: WebApiOptions = {}): WebApi {
   return new WebApi(options);
+}
+
+/**
+ * 常量时间比较。用逐字符短路比较校验密码，理论上可以按响应耗时逐位试出前缀；
+ * 这里比较的是用户真实密码，值得用常量时间。
+ */
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(String(b ?? ''), 'utf8');
+  if (bufA.length !== bufB.length) {
+    // 长度不同也跑一次比较，保持耗时稳定。
+    timingSafeEqual(bufA, bufA);
+    return false;
+  }
+  return timingSafeEqual(bufA, bufB);
 }
 
 export function derivePanelToken(passwordSeed: string): string {
