@@ -40,6 +40,14 @@ export interface BotRuntimeOptions {
   fetchGroupHistory?: (groupId: number | string, anchorMessageId: number | string, count: number) => Promise<NapcatHistoryMessage[]>;
   /** 文本回复转语音:返回 record 文件引用则发语音,返回空则发文本。 */
   voice?: (text: string) => Promise<string | null | undefined>;
+  /**
+   * 运行指标（可选）。写在 bot 进程，面板在 web 进程读同一个文件。
+   * 不注入时所有埋点都是空操作。
+   */
+  metrics?: {
+    record(event: 'message' | 'command' | 'chat' | 'image' | 'video' | 'voice' | 'error', count?: number): void;
+    recordDuration(key: string, ms: number): void;
+  };
   /** 主人命令(owner-only):匹配则优先于普通路由处理。handle 返回文本则回复。 */
   owner?: {
     ownerQQs: () => Array<string | number>;
@@ -193,6 +201,11 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       log?.warn('引用消息未能拉取', { replyId, includeQuoted, hasFetch: Boolean(options.fetchReferencedMessage) });
     }
 
+    const metrics = options.metrics;
+    metrics?.record('message');
+    if (decision.kind === 'command') metrics?.record('command');
+    const startedAt = Date.now();
+
     let result: BotEngineResult | null = null;
     try {
       if (decision.kind === 'chat' || decision.kind === 'freeMode') {
@@ -233,6 +246,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       }
     } catch (error) {
       const errMsg = String((error as Error)?.message || error);
+      metrics?.record('error');
       log?.error('引擎处理失败', { error: errMsg, kind: decision.kind, chatModel: cfg.llm.chatModel, chatNodeIndex: cfg.llm.chatNodeIndex, imageNodeIndex: cfg.llm.imageNodeIndex, freeModeNodeIndex: cfg.freeMode.nodeIndex });
       try { await engine.replyText(replyCtx, `处理失败: ${errMsg.slice(0, 200)}`); } catch { /* best-effort */ }
       return { handled: false, reason: 'engine-error' };
@@ -244,6 +258,15 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       imageCount: (result as any).images?.length || 0, videoCount: (result as any).videos?.length || 0,
       reason: (result as any).reason || (result as any).decision?.reason,
     });
+    // 按实际产出的能力计数，总览页的四张卡和 24 小时图就是靠这里。
+    const elapsed = Date.now() - startedAt;
+    if (result.kind === 'chat') { metrics?.record('chat'); metrics?.recordDuration('chat', elapsed); }
+    else if (result.kind === 'image.generate' || result.kind === 'image.edit') {
+      metrics?.record('image', (result as { images?: string[] }).images?.length || 1);
+      metrics?.recordDuration('image', elapsed);
+    } else if (result.kind === 'video.generate') { metrics?.record('video'); metrics?.recordDuration('video', elapsed); }
+    else if (result.kind === 'image.interrogate') { metrics?.recordDuration('interrogate', elapsed); }
+
     await sendResult(engine, replyCtx, result, options.voice, options.reply);
     log?.info('回复发送完成', { kind: result.kind });
     return { handled: result.handled, kind: result.kind };

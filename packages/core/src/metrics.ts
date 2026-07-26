@@ -1,3 +1,6 @@
+import nodeFs from 'node:fs';
+import nodePath from 'node:path';
+
 /**
  * 轻量指标采集。
  *
@@ -112,6 +115,18 @@ export class Metrics {
     (this.flushTimer as { unref?: () => void }).unref?.();
   }
 
+  /**
+   * 让下次访问重新从 store 读。
+   *
+   * 跨进程用：写在 bot 进程（消息流在那儿），读在 web 进程（面板在那儿）。
+   * 读侧如果只在启动时 load 一次，面板永远看到的是进程启动那一刻的快照。
+   * 没有 store 时这个调用是空操作，不会清掉内存里的数据。
+   */
+  reload(): void {
+    if (!this.store) return;
+    this.loaded = false;
+  }
+
   flush(): void {
     if (!this.store) return;
     try {
@@ -190,4 +205,31 @@ export class Metrics {
 
 export function createMetrics(options: MetricsOptions = {}): Metrics {
   return new Metrics(options);
+}
+
+/**
+ * 文件型指标存储。bot 进程写、web 进程读，两边指到同一个文件。
+ * 写用临时文件 + rename，避免读侧读到写了一半的 JSON。
+ */
+export function createFileMetricsStore(filePath: string): MetricsStore {
+  return {
+    load(): MetricsState {
+      try {
+        const raw = nodeFs.readFileSync(filePath, 'utf8');
+        const parsed = JSON.parse(raw) as MetricsState;
+        return {
+          buckets: Array.isArray(parsed?.buckets) ? parsed.buckets : [],
+          durations: parsed?.durations && typeof parsed.durations === 'object' ? parsed.durations : {},
+        };
+      } catch {
+        return { buckets: [], durations: {} };
+      }
+    },
+    save(state: MetricsState): void {
+      const tmp = `${filePath}.tmp`;
+      nodeFs.mkdirSync(nodePath.dirname(filePath), { recursive: true });
+      nodeFs.writeFileSync(tmp, JSON.stringify(state), 'utf8');
+      nodeFs.renameSync(tmp, filePath);
+    },
+  };
 }

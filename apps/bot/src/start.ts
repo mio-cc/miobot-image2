@@ -1,6 +1,7 @@
 import { NapcatAdapter } from '../../../packages/napcat/src/index.js';
 import { createModelClient, createReloadableRegistry } from '../../../packages/model/src/index.js';
 import { ConfigStore } from '../../../packages/storage/src/index.js';
+import { createFileMetricsStore, createMetrics } from '../../../packages/core/src/metrics.js';
 import { createDefaultConfig, normalizeConfig, type AppConfig } from '../../../packages/config/src/index.js';
 import { ConsoleLogSink, createLogger, type StructuredLogger } from '../../../packages/logger/src/index.js';
 import { createBotApp } from './app.js';
@@ -16,6 +17,11 @@ export interface StartBotOptions {
   configFilePath?: string;
   logger?: StructuredLogger;
   botName?: string;
+  /**
+   * 运行指标落盘路径。消息流在 bot 进程，而面板在 web 进程，
+   * 两边只能靠这个文件交换数据——不给就不统计。
+   */
+  metricsFilePath?: string;
 }
 
 export interface RunningBot {
@@ -48,6 +54,11 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // 这样面板保存后，bot 进程下一条消息就用上新配置，不需要重启——
   // 否则 web 和 bot 是两个进程，面板那句「无需重启」对机器人是假的。
   const getConfig = (): AppConfig => (store ? store.loadIfChanged() : config);
+
+  // 指标写文件，web 进程读同一个文件。不配路径就不统计。
+  const metrics = options.metricsFilePath
+    ? createMetrics({ store: createFileMetricsStore(options.metricsFilePath) })
+    : undefined;
 
   const getRegistry = createReloadableRegistry(() => toCapabilityOverrides(getConfig().llm.capabilityOverrides));
   const registry = getRegistry();
@@ -104,6 +115,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         return null;
       }
     },
+    metrics,
     voice: async (text) => {
       const tts = getConfig().bot.tts;
       if (!shouldUseTts(tts, text)) return null;

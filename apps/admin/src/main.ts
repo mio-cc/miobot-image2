@@ -1,3 +1,4 @@
+import { createFileMetricsStore, createMetrics } from '../../../packages/core/src/metrics.js';
 import { createAdminService, createFileLogStore, createInMemoryLogStore, type AdminResponse, type AdminServiceDeps, type AdminService, type CanvasCardsDep } from '../../../packages/admin-service/src/index.js';
 import { ConfigStore } from '../../../packages/storage/src/index.js';
 import { createDefaultConfig, normalizeConfig, type AppConfig } from '../../../packages/config/src/index.js';
@@ -9,6 +10,8 @@ export { createAdminDeps, cleanBaseUrl, extractModelIds } from './adapters.js';
 export const ADMIN_APP: PackageDescriptor = { name: '@miobot-v2/app-admin', phase: 'P5-admin-service' };
 
 export interface AdminAppOptions {
+  /** 指标文件（与 bot 进程共用）。不给则面板的指标接口只返回本进程内存里的数据。 */
+  metricsFilePath?: string;
   /** 配置文件路径(JSON)。给定则从文件读、热重载回存；不给则纯内存默认配置。 */
   configFilePath?: string;
   /** 系统/画布日志文件；两个都给才用文件日志，否则内存日志。 */
@@ -65,7 +68,11 @@ export function createAdminApp(options: AdminAppOptions = {}): AdminApp {
   );
   // canvasCards 跨域注入(可延迟：闭包在请求时解析已装配的 canvas store)。
   const deps: AdminServiceDeps = options.canvasCards ? { ...baseDeps, canvasCards: options.canvasCards } : baseDeps;
-  const service = createAdminService({ initialConfig, logs, deps, now: options.now });
+  // 指标由 bot 进程写文件，这里只读。没配路径就退回纯内存实例（面板上会是一片 0）。
+  const metrics = options.metricsFilePath
+    ? createMetrics({ store: createFileMetricsStore(options.metricsFilePath) })
+    : undefined;
+  const service = createAdminService({ initialConfig, logs, deps, metrics, now: options.now });
   svc = service;
 
   // 配置热重载 → 原子回存到文件。

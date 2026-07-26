@@ -34,6 +34,8 @@ const canvasAssetDir = process.env.MIOBOT_CANVAS_ASSET_DIR ? path.resolve(proces
 const logDir = process.env.MIOBOT_LOG_DIR ? path.resolve(process.env.MIOBOT_LOG_DIR) : path.join(runtimeDir, 'logs');
 const systemLogPath = process.env.MIOBOT_SYSTEM_LOG_PATH ? path.resolve(process.env.MIOBOT_SYSTEM_LOG_PATH) : path.join(logDir, 'system.ndjson');
 const canvasLogPath = process.env.MIOBOT_CANVAS_LOG_PATH ? path.resolve(process.env.MIOBOT_CANVAS_LOG_PATH) : path.join(logDir, 'canvas.ndjson');
+// 指标文件：bot 进程写、这里读，两边必须指到同一个。
+const metricsFilePath = process.env.MIOBOT_METRICS_PATH ? path.resolve(process.env.MIOBOT_METRICS_PATH) : path.join(runtimeDir, 'metrics.json');
 const port = Number(process.env.MIOBOT_PORT || process.env.MIOBOT_VERIFY_PORT || process.env.PORT || 3018);
 const host = process.env.MIOBOT_HOST || process.env.HOST || 'localhost';
 
@@ -50,6 +52,7 @@ const adminApp = createAdminApp({
   configFilePath: configPath,
   systemLogFile: systemLogPath,
   canvasLogFile: canvasLogPath,
+  metricsFilePath,
   canvasCards: {
     list() {
       const store = canvasStoreRef;

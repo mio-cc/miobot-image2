@@ -87,6 +87,9 @@ export class AdminService {
 
     /** 近 24 小时的分小时指标，总览页用它画趋势。 */
     if (method === 'GET' && path === '/api/metrics') {
+      // 数据是 bot 进程写的，这里必须重读文件——否则面板永远显示 web 进程
+      // 启动那一刻的快照（在没有生产者的年代，那就是一片 0）。
+      this.metrics.reload();
       return { status: 200, body: { success: true, ...this.metrics.snapshot() } };
     }
 

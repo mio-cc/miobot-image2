@@ -13,6 +13,8 @@ const root = path.resolve(__dirname, '..');
 const runtimeDir = process.env.MIOBOT_RUNTIME_DIR || path.join(root, '.runtime');
 const configFilePath = process.env.MIOBOT_CONFIG_PATH || path.join(runtimeDir, 'config.json');
 const systemLogPath = process.env.MIOBOT_SYSTEM_LOG_PATH || path.join(runtimeDir, 'logs', 'system.ndjson');
+// 指标文件：bot 进程写，web 进程（面板 /api/metrics）读同一个。
+const metricsFilePath = process.env.MIOBOT_METRICS_PATH || path.join(runtimeDir, 'metrics.json');
 
 // 确保日志目录存在
 fs.mkdirSync(path.dirname(systemLogPath), { recursive: true });
@@ -28,7 +30,7 @@ const logger = createLogger({
 
 console.log(`[bot-v2] starting with config: ${configFilePath}`);
 console.log(`[bot-v2] system log: ${systemLogPath}`);
-const bot = startBot({ configFilePath, logger });
+const bot = startBot({ configFilePath, logger, metricsFilePath });
 
 function shutdown() {
   try { bot.stop(); } catch { /* ignore */ }
