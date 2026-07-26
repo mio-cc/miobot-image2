@@ -59,8 +59,49 @@ export function parseOpenAiText(data: unknown): TextResult {
     const message = asRecord(item.message);
     const text = flattenTextContent(message.content ?? item.text);
     if (text.trim()) return { text, raw: data };
+    // 部分推理模型把正文放在 reasoning_content 里。注意 content 常常是空字符串而不是 null，
+    // 用 ?? 串联取不到这个兜底，必须显式判空。
+    const reasoning = flattenTextContent(message.reasoning_content);
+    if (reasoning.trim()) return { text: reasoning, raw: data };
   }
-  throw new ModelError('Text response missing choices[].message.content/output_text', { category: 'validation', retryable: false });
+
+  // 到这里说明没取到正文。下面两种情况很常见，必须给出说得清的原因，
+  // 否则用户只会看到一句「missing choices」，完全不知道发生了什么。
+  if (!choices.length) {
+    // Gemini 经 OpenAI 兼容层做安全拦截时会返回 200 + 空 choices，真实原因在 prompt_feedback 里。
+    const feedback = root.prompt_feedback ?? root.promptFeedback;
+    if (feedback !== undefined) {
+      throw new ModelError(`上游拒绝生成（可能触发内容安全策略）：${safeJson(feedback)}`, {
+        category: 'upstream', retryable: false, code: 'content_filtered',
+      });
+    }
+    throw new ModelError(`上游返回了空 choices：${safeJson(data).slice(0, 400)}`, {
+      category: 'upstream', retryable: false, code: 'empty_choices',
+    });
+  }
+
+  const finishReason = String(asRecord(choices[0]).finish_reason ?? '').toLowerCase();
+  if (finishReason === 'length') {
+    // 推理模型的推理 token 与正文共用输出额度，给小了就会推理没跑完先被截断。
+    throw new ModelError('输出被 token 上限截断（推理模型请调大输出预算）', {
+      category: 'validation', retryable: false, code: 'output_truncated',
+    });
+  }
+  if (finishReason === 'content_filter') {
+    throw new ModelError('上游内容安全策略拦截了本次输出', { category: 'upstream', retryable: false, code: 'content_filtered' });
+  }
+
+  throw new ModelError(`上游未返回文本内容（finish_reason=${finishReason || 'unknown'}）`, {
+    category: 'validation', retryable: false, code: 'empty_content',
+  });
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
 }
 
 /** 从 OpenAI 风格 images 响应取图片（data[].b64_json/url）。 */

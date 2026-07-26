@@ -157,7 +157,9 @@ function isObj(v: unknown): v is R { return !!v && typeof v === 'object' && !Arr
 function obj(v: unknown): R { return isObj(v) ? v : {}; }
 function ensure(o: R, k: string): R { if (!isObj(o[k])) o[k] = {}; return o[k]; }
 function clone<T>(v: T): T { return JSON.parse(JSON.stringify(v)) as T; }
-function deepMerge(a: R, b: R): R { const r: R = { ...a }; for (const [k, v] of Object.entries(b)) r[k] = isObj(v) && isObj(r[k]) ? deepMerge(r[k], v) : v; return r; }
+/** 配置来自 HTTP 请求体与磁盘文件，合并时必须挡掉原型链注入。 */
+const FORBIDDEN_MERGE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+function deepMerge(a: R, b: R): R { const r: R = { ...a }; for (const [k, v] of Object.entries(b)) { if (FORBIDDEN_MERGE_KEYS.has(k)) continue; r[k] = isObj(v) && isObj(r[k]) ? deepMerge(r[k], v) : v; } return r; }
 function num(v: unknown): number | undefined { if (v === undefined || v === null || v === '') return undefined; const n = Number(v); return Number.isFinite(n) ? n : undefined; }
 function clamp(v: unknown, fb: number, min?: number, max?: number, int = false): number { let n = num(v) ?? fb; if (int) n = Math.trunc(n); if (min !== undefined) n = Math.max(min, n); if (max !== undefined) n = Math.min(max, n); return n; }
 function str(v: unknown, fb: string, trim = true): string { if (v === undefined || v === null) return fb; const s = String(v); const out = trim ? s.trim() : s; return out || fb; }
@@ -166,6 +168,13 @@ function pick<const T extends readonly (string | number)[]>(v: unknown, allowed:
 function list(v: unknown): string[] { const src = Array.isArray(v) ? v : typeof v === 'string' ? v.split(/[,\uFF0C\u3001\uFF1B;\n]+/) : []; const seen = new Set<string>(); const out: string[] = []; for (const x of src) { const s = String(x ?? '').trim(); if (s && !seen.has(s)) { seen.add(s); out.push(s); } } return out; }
 function normHeaders(v: unknown): Record<string, string> { const source = obj(v); const out: Record<string, string> = {}; for (const [key, value] of Object.entries(source)) { const name = String(key || '').trim(); const text = String(value ?? '').trim(); if (name && text) out[name] = text; } return out; }
 function normTtsVoiceIds(v: unknown, active: string): string[] { const source = Array.isArray(v) ? v : typeof v === 'string' ? v.split(/[,\uFF0C\u3001\uFF1B;\n]+/) : []; const seen = new Set<string>(); const out: string[] = []; for (const x of [active, ...source]) { const s = String(x ?? '').trim(); if (s && !seen.has(s)) { seen.add(s); out.push(s); } } return out; }
+/**
+ * \u547D\u4EE4\u522B\u540D\uFF1A\u7528\u6237\u503C\u4E0E\u9ED8\u8BA4\u503C\u53D6\u5E76\u96C6\uFF08\u89C1 tests/config-regression\u300Ckeep default fallbacks\u300D\uFF09\u3002
+ *
+ * \u5DF2\u77E5\u53D6\u820D\uFF1A\u8FD9\u6837\u7528\u6237\u5220\u4E0D\u6389\u5185\u7F6E\u522B\u540D\u3002\u9ED8\u8BA4\u7684 genImage \u542B\u5355\u5B57\u300C\u753B\u300D\uFF0C\u89E6\u53D1\u9762\u504F\u5927\uFF0C
+ * \u60F3\u6536\u7D27\u7684\u7528\u6237\u76EE\u524D\u53EA\u80FD\u6539\u9ED8\u8BA4\u503C\u800C\u4E0D\u80FD\u5220\u3002\u82E5\u8981\u6539\u6210\u300C\u7528\u6237\u4E3A\u7A7A\u624D\u56DE\u843D\u9ED8\u8BA4\u300D\uFF0C
+ * \u9700\u540C\u6B65\u6539\u4E0A\u9762\u90A3\u6761\u56DE\u5F52\u6D4B\u8BD5\u3002
+ */
 function aliases(v: unknown, fb: string): string { const raw = Array.isArray(v) ? v : String(v ?? fb).split(/[,\uFF0C\u3001\uFF1B;\n]+/); const def = String(fb).split(/[,\uFF0C\u3001\uFF1B;\n]+/); const seen = new Set<string>(); const out: string[] = []; for (const x of [...raw, ...def]) { const s = String(x ?? '').replace(/\s+/g, ' ').trim(); const key = s.toLowerCase(); if (s && !seen.has(key)) { seen.add(key); out.push(s); } } return out.join(', '); }
 function strategy(v: unknown, fb: ReplyStrategy): ReplyStrategy { return pick(v, ['at', 'forward', 'quote', 'plain'] as const, fb); }
 function imageQuality(v: unknown, fb: CanvasImageQuality): CanvasImageQuality { const s = String(v ?? '').trim().toLowerCase(); return pick(s === 'hd' ? 'high' : s, ['auto', 'low', 'medium', 'high'] as const, fb); }

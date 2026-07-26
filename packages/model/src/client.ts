@@ -1,4 +1,5 @@
 import { CapabilityRegistry, createCapabilityRegistry } from './capability/registry.js';
+import { applyFix, applyLearned, diagnose, healingKey, rememberFix } from './capability/healing.js';
 import { anthropicDialect } from './dialects/anthropic.js';
 import { customDialect } from './dialects/custom.js';
 import { geminiDialect } from './dialects/gemini.js';
@@ -28,6 +29,8 @@ import {
 /** 视频异步轮询默认：总等待 10 分钟、间隔 5 秒（对齐 xAI REST 示例 / SDK pollTimeout）。 */
 const DEFAULT_VIDEO_POLL_TIMEOUT_MS = 600_000;
 const DEFAULT_VIDEO_POLL_INTERVAL_MS = 5_000;
+/** 单次请求最多因参数问题自愈几轮，防止上游把参数一个个拒过来时打转。 */
+const MAX_PARAM_HEALING_ATTEMPTS = 3;
 
 const DIALECTS: Record<ProviderDialect, Dialect> = {
   openai: openAiDialect,
@@ -299,11 +302,34 @@ export class ModelClient {
     }
     const plan = build(dialect, node);
     const resolvedTimeout = Math.max(1, Math.trunc(timeoutMs ?? this.timeoutMs));
+    const healKey = healingKey(nodeIndex, model);
+
+    // 先套用之前学到的结论：这个「节点 + 模型」已知不认识哪些参数、哪些要改名。
+    // multipart 的 body 是 FormData，不参与自愈。
+    let body = plan.multipart ? plan.body : applyLearned(healKey, plan.body);
     let attempt = 0;
+    let healed = 0;
+
     for (;;) {
       try {
-        const response = await this.transport({ ...plan, timeoutMs: resolvedTimeout });
-        if (response.status >= 400) throw errorFromResponse(response);
+        const response = await this.transport({ ...plan, body, timeoutMs: resolvedTimeout });
+        if (response.status >= 400) {
+          // 参数问题：剔除或按上游提示改名后重试，并记住结论，之后不再犯同样的错。
+          const fix = plan.multipart ? undefined : diagnose(response.status, response.data, body);
+          if (fix && healed < MAX_PARAM_HEALING_ATTEMPTS) {
+            healed += 1;
+            rememberFix(healKey, fix);
+            body = applyFix(body, fix);
+            this.logger?.warn?.('model param healing', {
+              op, model, nodeIndex,
+              action: fix.action,
+              param: fix.param,
+              to: fix.action === 'rename' ? fix.to : undefined,
+            });
+            continue;
+          }
+          throw errorFromResponse(response);
+        }
         return parse(dialect, response.data);
       } catch (error) {
         if (attempt < this.retries && shouldFailover(error)) {

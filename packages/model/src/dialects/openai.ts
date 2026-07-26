@@ -10,6 +10,12 @@ import type {
   VisionRequest,
 } from '../ports.js';
 import { bearerHeaders, buildOpenAiVideoStatus, joinUrl, parseOpenAiImages, parseOpenAiText, parseOpenAiVideo } from './shared.js';
+import {
+  supportsReasoningEffort,
+  supportsResponseFormat,
+  supportsTemperature,
+  tokenParamFor,
+} from '../capability/params.js';
 
 /** OpenAI 兼容方言协议层能力(含 xAI grok 文本/生图/视频扩展点)。 */
 const OPS: ModelOperation[] = ['chat', 'vision', 'image.generate', 'image.edit', 'interrogate', 'video.generate'];
@@ -19,9 +25,7 @@ export const openAiDialect: Dialect = {
   supports: (op) => OPS.includes(op),
   buildChat(node: ModelNode, req: ChatRequest): RequestPlan {
     const body: Record<string, unknown> = { model: req.model, messages: req.messages };
-    if (req.maxTokens !== undefined) body.max_tokens = req.maxTokens;
-    if (req.temperature !== undefined) body.temperature = req.temperature;
-    if (req.reasoningEffort !== undefined) body.reasoning_effort = req.reasoningEffort;
+    applyChatParams(body, req);
     return { method: 'POST', url: joinUrl(node.baseUrl, '/chat/completions'), headers: bearerHeaders(node.apiKey, node.headers), body };
   },
   parseChat: parseOpenAiText,
@@ -31,14 +35,15 @@ export const openAiDialect: Dialect = {
       ...req.imageUrls.map((url) => ({ type: 'image_url', image_url: { url } })),
     ];
     const body: Record<string, unknown> = { model: req.model, messages: [{ role: 'user', content }] };
-    if (req.maxTokens !== undefined) body.max_tokens = req.maxTokens;
-    if (req.reasoningEffort !== undefined) body.reasoning_effort = req.reasoningEffort;
+    applyChatParams(body, req);
     return { method: 'POST', url: joinUrl(node.baseUrl, '/chat/completions'), headers: bearerHeaders(node.apiKey, node.headers), body };
   },
   buildImageGeneration(node: ModelNode, req: ImageGenerationRequest): RequestPlan {
     const body: Record<string, unknown> = {
-      model: req.model, prompt: req.prompt, n: clampCount(req.count), response_format: 'b64_json',
+      model: req.model, prompt: req.prompt, n: clampCount(req.count),
     };
+    // gpt-image 系列恒定返回 b64_json，传 response_format 会被官方直接 400 Unknown parameter。
+    if (supportsResponseFormat(req.model)) body.response_format = 'b64_json';
     if (req.size) body.size = req.size;
     if (req.quality) body.quality = req.quality;
     // xAI Grok Imagine: aspect_ratio / resolution(与 OpenAI size 并存时由能力档案决定是否带 size)
@@ -50,9 +55,10 @@ export const openAiDialect: Dialect = {
   buildImageEdit(node: ModelNode, req: ImageEditRequest): RequestPlan {
     const images = req.images.map((s) => String(s || '').trim()).filter(Boolean);
     const body: Record<string, unknown> = {
-      model: req.model, prompt: req.prompt, response_format: 'b64_json',
+      model: req.model, prompt: req.prompt,
       images: images.map((img) => ({ image_url: img })),
     };
+    if (supportsResponseFormat(req.model)) body.response_format = 'b64_json';
     if (req.size) body.size = req.size;
     if (req.quality) body.quality = req.quality;
     if (req.aspectRatio) body.aspect_ratio = req.aspectRatio;
@@ -85,6 +91,19 @@ export const openAiDialect: Dialect = {
   buildVideoStatus: buildOpenAiVideoStatus,
   parseVideo: parseOpenAiVideo,
 };
+
+/**
+ * 按模型分流对话参数。
+ *
+ * 官方对 o 系列 / gpt-5 系列拒收 max_tokens（必须 max_completion_tokens）、
+ * 拒收 temperature，o1-mini 与 gpt-5-chat 还拒收 reasoning_effort。
+ * 这些错误都不带可自动降级的提示，不分流就是必然 400。
+ */
+function applyChatParams(body: Record<string, unknown>, req: { model: string; maxTokens?: number; temperature?: number; reasoningEffort?: string }): void {
+  if (req.maxTokens !== undefined) body[tokenParamFor(req.model)] = req.maxTokens;
+  if (req.temperature !== undefined && supportsTemperature(req.model)) body.temperature = req.temperature;
+  if (req.reasoningEffort !== undefined && supportsReasoningEffort(req.model)) body.reasoning_effort = req.reasoningEffort;
+}
 
 function clampCount(count?: number): number {
   return Math.min(16, Math.max(1, Math.trunc(count ?? 1)));
