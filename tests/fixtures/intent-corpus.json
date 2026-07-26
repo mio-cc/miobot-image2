@@ -1,0 +1,975 @@
+[
+ {
+  "text": "这动画第三季啥时候出啊 等两年了都",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "聊番剧更新，「动画」里的画字跟画图无关",
+  "trap": "含「画」字但说的是动画番剧"
+ },
+ {
+  "text": "这画质也太糊了吧 是不是被q压过了",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "吐槽图片清晰度，没让机器人做任何处理",
+  "trap": "有图+「画质」，极易被误判成 image.edit"
+ },
+ {
+  "text": "老板画饼画一年了 年终奖影子都没见着",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "「画饼」是俗语，纯吐槽",
+  "trap": "「画」字高频出现"
+ },
+ {
+  "text": "你最近画风变了啊 以前不这样的",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "说人性格变化，「画风」是网络用语",
+  "trap": "「画风」容易触发绘图意图"
+ },
+ {
+  "text": "帮我生成个网名呗 要中二一点的",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "要的是文字结果，回文本即可",
+  "trap": "「生成」但产物是文字不是图"
+ },
+ {
+  "text": "这游戏画面还行 就是优化太拉了",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "评价游戏，纯闲聊",
+  "trap": "「画面」"
+ },
+ {
+  "text": "设计模式那本书谁看过 值得买不",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "问书，「设计模式」是编程术语",
+  "trap": "「设计」是术语的一部分"
+ },
+ {
+  "text": "求问这是哪个插画师的图 想去关注一下",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "问作者身份不是要描述画面内容，答不出来就说不知道",
+  "trap": "有图+「插画」，容易被当 image.interrogate"
+ },
+ {
+  "text": "现在写代码都直接让ai生成了 感觉我要失业",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "感慨AI写代码，没有任何生成请求",
+  "trap": "「生成」出现在陈述句里"
+ },
+ {
+  "text": "这漫画后期画得跟赶工一样 太敷衍",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "吐槽漫画质量",
+  "trap": "「漫画」「画得」"
+ },
+ {
+  "text": "这壁纸哪下的啊 求个源",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "要链接出处，不是要新图",
+  "trap": "有图+「壁纸」，最容易被误判成 image.generate"
+ },
+ {
+  "text": "画个圈圈诅咒你",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "玩梗，不是绘图指令，且后面不是空格",
+  "trap": "以「画个」开头，形近显式指令"
+ },
+ {
+  "text": "ai生成的东西版权到底算谁的",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "讨论版权话题",
+  "trap": "「生成」+「ai」双关键词"
+ },
+ {
+  "text": "娃的绘本推荐几本呗 三岁看的",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "求推荐书单",
+  "trap": "「绘」字"
+ },
+ {
+  "text": "我去 这是不是被设计了 感觉被套话",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "「设计」是被陷害的意思",
+  "trap": "「设计」歧义"
+ },
+ {
+  "text": "国漫这几年画工进步是真的大",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "闲聊行业感受",
+  "trap": "「画工」"
+ },
+ {
+  "text": "方案我周末生成一版发群里 你们看看",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "说自己写文档，不是让bot干活",
+  "trap": "「生成一版」主语是人不是bot"
+ },
+ {
+  "text": "这界面谁设计的啊 用着好难受",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "吐槽UI，没有改图或描述需求",
+  "trap": "有图+「设计」，容易被当改图"
+ },
+ {
+  "text": "把这段话翻译成日语呗",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复一张截图让翻译上面的文字，要的是文字回复，不是改图",
+  "trap": "有图+「把这」，形式上极像改图指令"
+ },
+ {
+  "text": "这个报错咋改啊 蹲个大佬",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复报错截图问解决办法，「改」指的是改代码不是改图片",
+  "trap": "含「改」且带图，最容易误判成 image.edit"
+ },
+ {
+  "text": "换个思路呢 我感觉这么写太绕了",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "「换」的是解题思路，纯讨论",
+  "trap": "含「换」+带图"
+ },
+ {
+  "text": "这预算得调整下吧 感觉超了不少",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复报价表截图讨论预算，「调整」指数字不是图像",
+  "trap": "含「调整」+带图"
+ },
+ {
+  "text": "把这个知识点讲讲 我是真没看懂",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复课件截图求讲解，是问答",
+  "trap": "「把这」开头带图，像改图句式"
+ },
+ {
+  "text": "这简历还有哪要改 求指点",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复简历截图问内容意见，要的是建议文字",
+  "trap": "含「改」+图片，非常像润色图片"
+ },
+ {
+  "text": "帮我把这段文案改通顺点 别太官腔",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "改的是文案文字内容，输出应该是新文案而不是新图",
+  "trap": "「把这…改」全套关键词+带图"
+ },
+ {
+  "text": "去掉那些客套话 直接说结论就行",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复长文截图让提炼重点，「去掉」指删文字",
+  "trap": "含「去掉」，和「去掉背景/水印」只差一个词"
+ },
+ {
+  "text": "这个字段名换成啥比较合适",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复代码截图讨论命名，纯技术咨询",
+  "trap": "含「换成」+带图"
+ },
+ {
+  "text": "加个索引能快多少啊",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复慢查询截图问性能，「加」指加数据库索引",
+  "trap": "含「加」+带图，像「加个滤镜」"
+ },
+ {
+  "text": "这 bug 我修一下午了 谁有思路",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复报错图求思路，是求助不是要产出图",
+  "trap": "含「修」，容易被当成修图"
+ },
+ {
+  "text": "这表格公式要改哪 算出来对不上",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复表格截图问公式逻辑，要的是文字解释",
+  "trap": "含「改」+表格图"
+ },
+ {
+  "text": "合同第三条要不要改 我怎么觉得有坑",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复合同照片问条款意见，法务咨询",
+  "trap": "含「改」+文档图"
+ },
+ {
+  "text": "你这编辑器哪个啊 主题挺好看",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复别人的界面截图问软件名字，纯闲聊",
+  "trap": "含「编辑」但只是「编辑器」这个名词"
+ },
+ {
+  "text": "这里替换成 redis 是不是好点",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复架构图讨论技术选型",
+  "trap": "含「替换」+带图"
+ },
+ {
+  "text": "这方案还得调整哪些 老板说不满意",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复方案截图问修改方向，要建议",
+  "trap": "含「调整」+带图"
+ },
+ {
+  "text": "把这题步骤写一下 我想看哪步错了",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复题目照片求解题过程，输出是文字",
+  "trap": "「把这」开头+带图"
+ },
+ {
+  "text": "空调调整到几度合适 这面板我看不懂",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复空调面板照片问生活常识",
+  "trap": "含「调整」但是生活场景，不是图像调整"
+ },
+ {
+  "text": "奶茶去掉糖是不是就不胖了",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复菜单图闲聊，「去掉」指配料",
+  "trap": "含「去掉」但对象是糖不是图上元素"
+ },
+ {
+  "text": "这段代码加个重试怎么写比较好",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复代码截图问写法，要的是代码文字",
+  "trap": "含「加」+带图"
+ },
+ {
+  "text": "这颜色换一件是不是更好看 你们觉得呢",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复穿搭照片征求意见，是问看法不是让机器人换衣服颜色",
+  "trap": "「换」+颜色+人像图，最像 image.edit 的一条"
+ },
+ {
+  "text": "把这个改成 markdown 格式发我",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "回复文档截图要求转成文本格式，产出是文字",
+  "trap": "「把这个改成」标准改图句式，但目标是格式转换"
+ },
+ {
+  "text": "看看他说的对不对啊 我咋记得不是这样",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "用户要的是对截图里观点的判断和回话，输出是文字不是图",
+  "trap": "有图+「看看」，像 interrogate，其实是让判断聊天截图里的观点"
+ },
+ {
+  "text": "这是什么价啊 我上周买才三百多",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "重点是吐槽价格贵不贵，属于闲聊求认同，回文字即可",
+  "trap": "「这是什么」+图，容易误判成反推"
+ },
+ {
+  "text": "分析下我这波还有救没 心态崩了",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "要的是建议和安慰，不是描述图片内容",
+  "trap": "「分析」+图，像图像解析"
+ },
+ {
+  "text": "图里这个我也有 当时买贵了呜呜",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "纯附和吐槽，没有任何生成或反推需求",
+  "trap": "出现「图里」但根本没提问"
+ },
+ {
+  "text": "解析一下这题呗 老师讲太快了没跟上",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "要的是讲解题目思路，输出是文字答案不是图片描述",
+  "trap": "「解析」+题目图，像 interrogate"
+ },
+ {
+  "text": "描述得也太真实了吧 这不就是我",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "是在感叹图片内容说到心坎里，没有任何指令意图",
+  "trap": "含「描述」二字但是形容词用法"
+ },
+ {
+  "text": "这是什么鬼操作 我人麻了",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "是情绪化吐槽，接一句话就行，反推图片纯属浪费",
+  "trap": "「这是什么」开头+图，极易误判反推"
+ },
+ {
+  "text": "帮我看看这报错咋整 搞一晚上了",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "技术求助，期待的是排查建议文字，不是图片描述或改图",
+  "trap": "「看看」+截图，像图片理解任务"
+ },
+ {
+  "text": "描述一下你自己呗 你是啥模型来着",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "问的是bot身份，无图也无生成需求",
+  "trap": "「描述」是核心动词但对象是机器人自己"
+ },
+ {
+  "text": "这是什么梗啊 群里都在刷 我一脸懵",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "问网络梗含义，属于知识问答",
+  "trap": "「这是什么」但没图"
+ },
+ {
+  "text": "看看我说得对不对 显卡是不是水冷更静音",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "求验证观点，回文字",
+  "trap": "「看看」在这里等于「评评理」"
+ },
+ {
+  "text": "解析下这句歌词啥意思 我听了半天没懂",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "歌词含义解读，纯文本任务",
+  "trap": "「解析」+无图"
+ },
+ {
+  "text": "图里那个猫猫表情包叫啥名字来着 我想搜",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "没有输入图片，只能按记忆回答，只能走 chat",
+  "trap": "出现「图里」却根本没带图，硬判 interrogate 会直接报错"
+ },
+ {
+  "text": "看看这段代码哪有问题 for循环那儿是不是少冒号了",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "贴的是文本代码，要的是纠错说明",
+  "trap": "「看看」像看图"
+ },
+ {
+  "text": "分析下今晚吃啥 众口难调啊",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "纯闲聊拿主意，跟图像视频毫无关系",
+  "trap": "「分析」被滥用成口头禅"
+ },
+ {
+  "text": "这视频也太搞笑了吧哈哈哈哈哈",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "纯粹是对已有视频的观后感吐槽，没有任何生成诉求",
+  "trap": "含「视频」但只是评论"
+ },
+ {
+  "text": "刚那个视频发我一下呗",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "是让群友转发已有文件，不是让bot生成视频",
+  "trap": ""
+ },
+ {
+  "text": "视频一直转圈加载不出来 是我网的问题吗",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "技术求助问答，回文字即可",
+  "trap": ""
+ },
+ {
+  "text": "剪视频用啥软件比较好啊",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "问工具推荐，「剪视频」是话题不是指令",
+  "trap": "「剪视频」带动词像是要处理视频"
+ },
+ {
+  "text": "b站那个视频你们看了没",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "聊平台内容，典型闲聊",
+  "trap": ""
+ },
+ {
+  "text": "为啥我发视频到群里就糊成马赛克了",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "抱怨压缩画质的技术问题",
+  "trap": ""
+ },
+ {
+  "text": "这是那个视频的截图吧？",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "带图但只是在确认图片来源，不是要改图也不是要反推",
+  "trap": "有图+含视频，最容易被误判成 image.edit/interrogate"
+ },
+ {
+  "text": "视频里那个bgm叫啥名来着",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "问背景音乐名字，纯问答",
+  "trap": ""
+ },
+ {
+  "text": "这视频多少秒啊 感觉好长",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "带的是视频封面图，问的是时长，属于闲聊",
+  "trap": "有图时容易被当成要描述图片"
+ },
+ {
+  "text": "我手机拍的视频传电脑上贼慢 有啥办法没",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "传输方案求助",
+  "trap": ""
+ },
+ {
+  "text": "抖音刷到个视频给我笑吐了",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "分享感受，无任何生成意图",
+  "trap": ""
+ },
+ {
+  "text": "视频面试要开摄像头么",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "跟视频生成完全无关的生活问题",
+  "trap": ""
+ },
+ {
+  "text": "谁会把视频转成gif啊 教教我",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "问转换方法，不是让bot产出任何媒体",
+  "trap": "「转成gif」像图像生成任务"
+ },
+ {
+  "text": "刚才那个视频删了？我还没看完呢",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "群内对话，追问消息撤回",
+  "trap": ""
+ },
+ {
+  "text": "视频封面用这张行不行",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "是在征求意见而不是让bot改这张图",
+  "trap": "有图+像是在指派图片处理任务"
+ },
+ {
+  "text": "视频会议链接谁发一下 马上开始了",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "要会议链接，跟生成毫无关系",
+  "trap": ""
+ },
+ {
+  "text": "这视频咋没声音的",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "极短技术疑问句",
+  "trap": ""
+ },
+ {
+  "text": "up主新视频出了没",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "追更闲聊，短句",
+  "trap": ""
+ },
+ {
+  "text": "这种视频现在AI能做出来不",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "是在讨论AI能力的看法，不是下达生成指令，拿不准也应判chat",
+  "trap": "提到AI+做视频，极易被误判成 video.generate"
+ },
+ {
+  "text": "视频我传不上去 提示格式不支持 有人遇到过吗",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "上传报错求助",
+  "trap": ""
+ },
+ {
+  "text": "截的这帧是视频里哪一段来着 我记得后面还有个反转",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "带图讨论剧情记忆，不是要bot描述图片内容",
+  "trap": "有图+长句，看着像要反推"
+ },
+ {
+  "text": "你们说视频号和b站哪个体验好点",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "平台对比讨论，纯聊天",
+  "trap": ""
+ },
+ {
+  "text": "帮我弄张戴墨镜的柴犬呗",
+  "hasImages": false,
+  "expected": "image.generate",
+  "why": "明确要一张不存在的新图，没带图，纯文生图",
+  "trap": "没有任何「画/生图」关键词，靠「弄张…」口语表达"
+ },
+ {
+  "text": "来张赛博朋克风的城市夜景 要下雨的那种",
+  "hasImages": false,
+  "expected": "image.generate",
+  "why": "「来张…」+ 风格描述，典型文生图诉求",
+  "trap": ""
+ },
+ {
+  "text": "整个生日贺卡 上面写生日快乐老王",
+  "hasImages": false,
+  "expected": "image.generate",
+  "why": "要做一张贺卡图，无输入图",
+  "trap": "「整个」东北口语，容易被当成闲聊"
+ },
+ {
+  "text": "猫猫翻白眼的表情包 给我搞一个",
+  "hasImages": false,
+  "expected": "image.generate",
+  "why": "要生成一张表情包图片，没图可改",
+  "trap": "表情包场景像在群里闲扯，但确实是要出图"
+ },
+ {
+  "text": "能不能生成一只穿西装的鲨鱼哈哈哈",
+  "hasImages": false,
+  "expected": "image.generate",
+  "why": "「生成」+具体画面内容，无图，文生图",
+  "trap": ""
+ },
+ {
+  "text": "帮我p一张中国龙盘在摩天大楼上 国潮风",
+  "hasImages": false,
+  "expected": "image.generate",
+  "why": "虽然说「p」，但没有任何输入图，只能从零生成",
+  "trap": "说了「p图」这种改图词，但 hasImages=false，不能判 image.edit"
+ },
+ {
+  "text": "搞张壁纸 手机竖屏 星空加雪山那种",
+  "hasImages": false,
+  "expected": "image.generate",
+  "why": "要一张新壁纸图，含尺寸和内容描述",
+  "trap": ""
+ },
+ {
+  "text": "想要个logo 咖啡店的 简约点 店名叫慢慢来",
+  "hasImages": false,
+  "expected": "image.generate",
+  "why": "设计需求本质是出一张图，没有参考图",
+  "trap": "说的是「想要个logo」，没有任何出图动词"
+ },
+ {
+  "text": "梵高风格的西湖 来一张？",
+  "hasImages": false,
+  "expected": "image.generate",
+  "why": "风格+主体+「来一张」，标准文生图",
+  "trap": "句子极短且是疑问句，像在问问题"
+ },
+ {
+  "text": "帮我出张图 加班到凌晨的程序员 要搞笑的",
+  "hasImages": false,
+  "expected": "image.generate",
+  "why": "「出张图」明确要图，内容自定，无输入图",
+  "trap": ""
+ },
+ {
+  "text": "把背景换成海边",
+  "hasImages": true,
+  "expected": "image.edit",
+  "why": "带图且要替换背景，是典型改图",
+  "trap": ""
+ },
+ {
+  "text": "右下角那水印能去掉不",
+  "hasImages": true,
+  "expected": "image.edit",
+  "why": "对已有图做去水印，属于编辑",
+  "trap": "疑问句「能不能」，容易被判成 chat 回一句「可以」"
+ },
+ {
+  "text": "这张给我弄成黑白的",
+  "hasImages": true,
+  "expected": "image.edit",
+  "why": "对输入图做整体调色，改图",
+  "trap": ""
+ },
+ {
+  "text": "帮我把中间那个路人擦了 谢谢",
+  "hasImages": true,
+  "expected": "image.edit",
+  "why": "消除画面元素，需要原图，是 edit",
+  "trap": "「擦了」很口语，没有出现「图」字"
+ },
+ {
+  "text": "把这狗子弄成戴帽子的哈哈哈",
+  "hasImages": true,
+  "expected": "image.edit",
+  "why": "在原图基础上加元素，有图所以是 edit 不是 generate",
+  "trap": "内容描述像文生图，但带了图必须走 edit"
+ },
+ {
+  "text": "给他加个墨镜 笑死我了",
+  "hasImages": true,
+  "expected": "image.edit",
+  "why": "对图中人物加配饰，明确的编辑指令",
+  "trap": "后半句纯吐槽语气，很像单纯图片评论"
+ },
+ {
+  "text": "这个改成竖版的 我要发朋友圈",
+  "hasImages": true,
+  "expected": "image.edit",
+  "why": "改比例/构图，需要原图",
+  "trap": "「改成」前面没有「图」，靠上下文判断"
+ },
+ {
+  "text": "上面那行字改成早安 别的别动",
+  "hasImages": true,
+  "expected": "image.edit",
+  "why": "改图内文字，局部编辑",
+  "trap": ""
+ },
+ {
+  "text": "她衣服颜色换成红的行不行",
+  "hasImages": true,
+  "expected": "image.edit",
+  "why": "局部换色，属于图片编辑",
+  "trap": "「行不行」问句形式，容易滑到 chat"
+ },
+ {
+  "text": "这张有点糊 帮我修清楚点",
+  "hasImages": true,
+  "expected": "image.edit",
+  "why": "修复/增强清晰度，输出仍是一张改过的图",
+  "trap": "前半句像在评价图片质量，容易被判成 chat 或 interrogate"
+ },
+ {
+  "text": "背景太乱了 换成纯白 我要当证件照用",
+  "hasImages": true,
+  "expected": "image.edit",
+  "why": "抠图换纯色背景，标准改图需求",
+  "trap": "开头是一句吐槽评价，真正诉求在后半句"
+ },
+ {
+  "text": "这张图的提示词是啥啊 求一个",
+  "hasImages": true,
+  "expected": "image.interrogate",
+  "why": "明确要图的 prompt，属于反推诉求，且带图",
+  "trap": ""
+ },
+ {
+  "text": "帮我看看这图什么画风的",
+  "hasImages": true,
+  "expected": "image.interrogate",
+  "why": "问的是已有图的风格描述，不是要画新图",
+  "trap": "含「画风」的「画」字，容易被误判成 image.generate"
+ },
+ {
+  "text": "这个能反推出tag不 我想抄一下",
+  "hasImages": true,
+  "expected": "image.interrogate",
+  "why": "口语的「反推tag」就是标准反推需求",
+  "trap": ""
+ },
+ {
+  "text": "老哥 这图的词条帮我扒一下呗",
+  "hasImages": true,
+  "expected": "image.interrogate",
+  "why": "「扒词条」是群里对反推的黑话说法",
+  "trap": ""
+ },
+ {
+  "text": "描述下这张图里都有些啥东西",
+  "hasImages": true,
+  "expected": "image.interrogate",
+  "why": "要求对图片内容做描述",
+  "trap": ""
+ },
+ {
+  "text": "这构图怎么搞的 分析分析",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "针对图片构图的分析性描述，落在反推范畴（复核修正：建议改判 chat。①「怎么搞的」在群聊里最常见的语用是吐槽/惊叹（怎么搞成这样），而不是提问；②即便按请求理解，用户要的是构图点评这类主观评述文字，跟 #5「描述下这张图里都有些啥东西」那种客观内容描述不是一回事，反推模型给不了；③按「拿不准判 chat」原则，这种双关句应该落 chat。）",
+  "trap": ""
+ },
+ {
+  "text": "给个英文prompt 我拿去自己跑",
+  "hasImages": true,
+  "expected": "image.interrogate",
+  "why": "要的是从图里提炼英文提示词",
+  "trap": ""
+ },
+ {
+  "text": "这图咋形容 我想搜个同款",
+  "hasImages": true,
+  "expected": "image.interrogate",
+  "why": "要把图转成文字描述用于检索",
+  "trap": ""
+ },
+ {
+  "text": "看看这个的风格关键词都有哪些",
+  "hasImages": true,
+  "expected": "image.interrogate",
+  "why": "问风格关键词，本质是反推",
+  "trap": ""
+ },
+ {
+  "text": "这张图能不能给我逆出提示词来",
+  "hasImages": true,
+  "expected": "image.interrogate",
+  "why": "「逆出提示词」是反推的另一种口语表达",
+  "trap": ""
+ },
+ {
+  "text": "生成一段海浪拍礁石的视频",
+  "hasImages": false,
+  "expected": "video.generate",
+  "why": "直说要视频，且给了明确画面内容",
+  "trap": ""
+ },
+ {
+  "text": "整个6秒的猫跑步小视频呗",
+  "hasImages": false,
+  "expected": "video.generate",
+  "why": "有时长有主体，明确是视频生成",
+  "trap": ""
+ },
+ {
+  "text": "把这张图搞成动的",
+  "hasImages": true,
+  "expected": "video.generate",
+  "why": "图生视频诉求，虽然没说「视频」两个字",
+  "trap": "有图 + 没出现「视频」，容易被判成 image.edit"
+ },
+ {
+  "text": "帮我弄段片子 下雨天玻璃上水珠往下淌",
+  "hasImages": false,
+  "expected": "video.generate",
+  "why": "「片子」等同视频，内容描述完整",
+  "trap": ""
+ },
+ {
+  "text": "让这图动起来 加点风吹的效果",
+  "hasImages": true,
+  "expected": "video.generate",
+  "why": "「动起来」是典型图生视频，不是改图",
+  "trap": "「加点效果」很像 image.edit"
+ },
+ {
+  "text": "整段动画 火柴人打架那种 十秒",
+  "hasImages": false,
+  "expected": "video.generate",
+  "why": "要的是一段动画短片",
+  "trap": "「动画」含「画」字，易误判 image.generate"
+ },
+ {
+  "text": "做个视频 画面是夕阳下的公路 镜头往前推",
+  "hasImages": false,
+  "expected": "video.generate",
+  "why": "明说做视频，还带运镜描述",
+  "trap": "出现「画面」二字"
+ },
+ {
+  "text": "能不能生成视频啊 就那种樱花一直飘的",
+  "hasImages": false,
+  "expected": "video.generate",
+  "why": "直接问能不能生成视频并给了内容",
+  "trap": ""
+ },
+ {
+  "text": "拿这张照片做个视频 让人眨眨眼就行",
+  "hasImages": true,
+  "expected": "video.generate",
+  "why": "以图为素材生成视频",
+  "trap": ""
+ },
+ {
+  "text": "来个5秒的 柯基在草地上狂奔 要视频不要图",
+  "hasImages": false,
+  "expected": "video.generate",
+  "why": "自己强调了要视频不要图",
+  "trap": ""
+ },
+ {
+  "text": "你会画画吗",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "问的是机器人有没有这功能，回文字介绍即可，出图就是白花钱",
+  "trap": "含「画」但是疑问句问能力，不是下单"
+ },
+ {
+  "text": "这图谁画的啊 太丑了吧",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "重灾区组合：回复别人的图吐槽，没有任何生成或反推诉求",
+  "trap": "有图 + 含「画」，但其实是吐槽/闲聊"
+ },
+ {
+  "text": "帮我把背景换成海边 顺便说说这图啥风格",
+  "hasImages": true,
+  "expected": "image.edit",
+  "why": "主诉求是换背景，后半句只是搭话；改图优先，反推顺带口头回答",
+  "trap": "改图词和反推词同时出现在一句里"
+ },
+ {
+  "text": "这图里写的啥 我眼瞎看不清",
+  "hasImages": true,
+  "expected": "image.interrogate",
+  "why": "要的是看图说内容，属于反推/识图，不需要出新图",
+  "trap": "纯口语，一个「反推」「描述」类关键词都没有"
+ },
+ {
+  "text": "视频里这女的是谁啊 眼熟",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "图是视频截图，用户在问人是谁，纯八卦聊天",
+  "trap": "含「视频」二字 + 有图，极易误判 video.generate"
+ },
+ {
+  "text": "你做视频要多久啊 收费不",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "问能力和成本，真去生成视频代价最大，必须判 chat",
+  "trap": "含视频词但是问耗时和价格"
+ },
+ {
+  "text": "把这张改成视频",
+  "hasImages": true,
+  "expected": "video.generate",
+  "why": "输出物是视频，图生视频，改字只是口语连接",
+  "trap": "「改」在前「视频」在后，容易被改图词抢走判成 image.edit"
+ },
+ {
+  "text": "就上次那画风 给我整个二次元美少女",
+  "hasImages": false,
+  "expected": "image.generate",
+  "why": "无图 + 明确描述画面内容，是要一张全新的图",
+  "trap": "含「画风」而不是「画」，且用「整个」这种土话当动词"
+ },
+ {
+  "text": "这图能把那个人p掉不",
+  "hasImages": true,
+  "expected": "image.edit",
+  "why": "有图 + 要求在原图上删除元素，是典型改图；疑问语气只是客气",
+  "trap": "用「p掉」而不是「改图」，还是疑问句形式"
+ },
+ {
+  "text": "我想学画画 有啥教程推荐没",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "求推荐教程，主语是「我想学」，跟出图无关",
+  "trap": "连着两个「画」字，还有祈使感"
+ },
+ {
+  "text": "这是不是ai生成的",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "问的是图片来源真伪不是内容描述，拿不准就回文字，别调反推",
+  "trap": "有图 + 像是让模型分析图片，但反推给不了答案"
+ },
+ {
+  "text": "给我康康这图的提示词",
+  "hasImages": true,
+  "expected": "image.interrogate",
+  "why": "要的就是从图倒推 prompt，标准 interrogate",
+  "trap": "「提示词」是反推的黑话，没有出现「反推」二字"
+ },
+ {
+  "text": "这猫真好看 你也整一只白的呗",
+  "hasImages": true,
+  "expected": "image.generate",
+  "why": "参考原图另画一只白猫，属于新生成而非编辑",
+  "trap": "有图，但要的是新图不是在原图上改"
+ },
+ {
+  "text": "别画了别画了 刷屏了都",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "用户在制止刷屏，此时再出图就是火上浇油",
+  "trap": "含「画」且是祈使句，实际是叫停"
+ },
+ {
+  "text": "16:9! 赛博朋克风的上海夜景",
+  "hasImages": false,
+  "expected": "image.generate",
+  "why": "感叹号是参数分隔，后面是完整画面描述",
+  "trap": "比例参数带感叹号打头，没有任何指令动词"
+ },
+ {
+  "text": "你这画的啥玩意 重新弄一张",
+  "hasImages": true,
+  "expected": "image.generate",
+  "why": "对上一张不满意要求重出，走生成而不是在废图上改",
+  "trap": "有图 + 含「画」+ 疑问 + 「重新弄」，三种信号打架"
+ },
+ {
+  "text": "这表情包咋做的 教教我",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "问的是制作方法，「教教我」定性为求教程",
+  "trap": "有图 + 含「做」，像是让机器人做一个"
+ },
+ {
+  "text": "把这上面的字给我抠出来",
+  "hasImages": true,
+  "expected": "chat",
+  "why": "要的是文字内容而不是新图片，归到识图反推（复核修正：这条是全表唯一我认为标错的。两个问题：（1）语义本身 50/50——「抠出来」在中文里既是抠图（P 图，image.edit，抠成透明/单独一张）也可以是「把文字提取出来」（OCR），群里两种都常见，标注里那句「其实是 OCR」的确信度是虚的；（2）更硬的问题是本项目的 interrogate 根本给不出文字：实现是把用户文本当「额外要求」拼在固定模板后面——模板是「请分析这张图片，并反推一段适合图像生成模型复现它的提示词」（src/core/configManager.ts:273），拼接逻辑在 src/modules/enhance.ts:1849-1853。所以即便判 interrogate，用户拿到的也是一段生图提示词，而不是图上的字。建议优先改写这条句子（想 OCR 就写「这上面写的啥」，想抠图就写「把这几个字单独抠出来做表情包」）；如果必须保留原句，按你们自己的「拿不准判 chat」原则降级为 chat 最稳妥（不花钱、不刷屏）。）",
+  "trap": "「抠出来」听着像 P 图，其实是 OCR"
+ },
+ {
+  "text": "能不能让这张动起来 加点雪飘的效果",
+  "hasImages": true,
+  "expected": "video.generate",
+  "why": "输出必须是动态的，图生视频；只判 edit 会答非所问",
+  "trap": "「加效果」是改图信号，「动起来」才是决定性的"
+ },
+ {
+  "text": "画个锤子 我自己都会画",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "川渝黑话表否定，真出一把锤子就闹笑话了",
+  "trap": "「画个锤子」是骂人口语，字面完全符合出图模板"
+ },
+ {
+  "text": "这个高清一下能行不",
+  "hasImages": true,
+  "expected": "image.edit",
+  "why": "有图 + 要求提升画质，属于在原图上处理",
+  "trap": "全句没有任何改图关键词，只有一个「高清一下」"
+ }
+]

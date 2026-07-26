@@ -30,6 +30,13 @@ export interface IntentRouterOptions {
   defaultQuality?: string;
   /** 命中确定性信号的最低置信阈值；低于此值仍会尝试 planner。默认 0.7。 */
   signalThreshold?: number;
+  /**
+   * 没有规划器复核时，信号至少要多确信才敢直接执行。默认 0.65。
+   * 弱信号（「把这」「画」「换个」这类日常词）现在只给 0.55~0.6，
+   * 正常情况下会落到 planner 手里；但如果用户压根没配规划器，
+   * 就必须宁可当聊天，也不能拿一个 0.55 的猜测去烧生图额度。
+   */
+  minActionableConfidence?: number;
 }
 
 interface RawDecision {
@@ -108,22 +115,34 @@ export class IntentRouter {
       } catch (error) {
         // 规划器失败 → 走兜底规则，不让自动路由整体崩掉。
         return this.gate(params, {
-          kind: this.fallbackKind(input, top?.kind),
+          // 能走到这里说明 top 的置信低于阈值。拿一个自己都不确信的信号当兜底，
+          // 只会把「规划器挂了」变成「莫名其妙改了张图」。
+          kind: this.fallbackKind(input),
           source: 'fallback',
           confidence: 0.4,
-          reason: `规划器失败，使用兜底规则：${describeError(error)}`,
+          reason: `规划器失败，按聊天处理：${describeError(error)}`,
           usedPlanner: true,
         });
       }
     }
 
-    // 3) 无规划器：用最高信号或兜底。
-    if (top) {
+    // 3) 无规划器：只有足够确信的信号才直接执行，否则宁可当聊天。
+    const minActionable = this.options.minActionableConfidence ?? 0.65;
+    if (top && top.confidence >= minActionable) {
       return this.gate(params, {
         kind: top.kind,
         source: 'signal',
         confidence: top.confidence,
         reason: `${top.reason}（无规划器，采用最高信号）`,
+        usedPlanner: false,
+      });
+    }
+    if (top) {
+      return this.gate(params, {
+        kind: this.fallbackKind(input),
+        source: 'fallback',
+        confidence: 0.4,
+        reason: `${top.reason}；证据不足且无规划器可复核，按聊天处理`,
         usedPlanner: false,
       });
     }
@@ -136,11 +155,13 @@ export class IntentRouter {
     });
   }
 
-  /** 兜底意图：有图倾向 edit（若开启），否则 chat。 */
-  private fallbackKind(input: IntentInput, hint?: IntentKind): IntentKind {
-    if (hint) return hint;
-    const hasImages = Boolean((input.images && input.images.length) || input.hasReferencedImage);
-    if (hasImages && this.options.preferEditWhenImagePresent !== false) return 'image.edit';
+  /**
+   * 兜底意图恒为 chat。
+   * 以前是「有图就当改图」——但群里回复一张图再 @bot 说话是最常见的用法，
+   * 一旦没有明确的编辑意图，把用户的话当提示词丢给改图模型只会毁掉那张图并烧掉额度。
+   * 有图但意图不明时，chat 模型（若具备视觉）本来就能看图回答。
+   */
+  private fallbackKind(_input: IntentInput): IntentKind {
     return 'chat';
   }
 

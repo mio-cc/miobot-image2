@@ -45,10 +45,30 @@ test('signal: 有图 + 反推动词 -> image.interrogate', async () => {
   assert.equal(d.kind, 'image.interrogate');
 });
 
-test('signal: "这是什么" + 引用图片 -> image.interrogate', async () => {
+/**
+ * 行为变更（本轮）：「这是什么」以前直接判 image.interrogate。
+ * 但 interrogate 走的是「反推一段能复现这张图的提示词」，返回的是 SD 风格提示词，
+ * 并不回答「这是什么」；用户想要的其实是带视觉的对话回答。
+ * 这句话是真歧义，所以现在只给 0.55 的弱信号交规划器定夺；
+ * 没有规划器可复核时宁可当聊天，也不擅自动作。
+ */
+test('signal: "这是什么" + 引用图片 -> 证据不足，交规划器；无规划器时按聊天处理', async () => {
   const router = createIntentRouter();
   const d = await router.route({ text: '这是什么', hasReferencedImage: true });
+  assert.equal(d.kind, 'chat');
+  assert.equal(d.source, 'fallback');
+
+  const withPlanner = createIntentRouter({ planner: new FakePlanner('{"action":"interrogate"}'), plannerModel: 'm' });
+  const d2 = await withPlanner.route({ text: '这是什么', hasReferencedImage: true });
+  assert.equal(d2.kind, 'image.interrogate', '有规划器时应当由它定夺');
+  assert.equal(d2.usedPlanner, true);
+});
+
+test('signal: 明确要反推提示词 -> image.interrogate（强词，不经规划器）', async () => {
+  const router = createIntentRouter();
+  const d = await router.route({ text: '这张图的提示词是什么', hasReferencedImage: true });
   assert.equal(d.kind, 'image.interrogate');
+  assert.equal(d.source, 'signal');
 });
 
 test('signal: 显式尺寸 bang + 主体且无图 -> image.generate', async () => {
