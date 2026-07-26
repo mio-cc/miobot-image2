@@ -1,4 +1,5 @@
 import { normalizeError } from '../../core/src/index.js';
+import { guardVideoPayload, guardWebSocketPayload } from './media-limits.js';
 import type { StructuredLogger } from '../../logger/src/index.js';
 import type { PackageDescriptor, SerializableError } from '@miobot-v2/shared';
 import * as fs from 'node:fs';
@@ -84,6 +85,10 @@ export interface NapcatSendResult {
   timedOut?: boolean;
   uncertain?: boolean;
   attempts?: Array<{ attempt: number; success: boolean; error?: string; timedOut?: boolean }>;
+  /** 因体积超限被发送前拦下（未真正发出）。 */
+  oversized?: boolean;
+  /** 视频超过 100MB 时的建议：改用文件方式发送。 */
+  suggestFileSend?: boolean;
 }
 
 export interface NapcatMessageSegment {
@@ -292,6 +297,8 @@ export class NapcatAdapter {
   }
 
   async sendGroupRecord(groupId: number | string, fileUrl: string, _replyToMessageId?: number | string): Promise<NapcatSendResult> {
+    const guard = guardWebSocketPayload(fileUrl, '语音');
+    if (!guard.ok) return { success: false, error: guard.reason, oversized: true };
     const message: NapcatMessageSegment[] = [{ type: 'record', data: { file: fileUrl } }];
     return this.sendAndReportResult('send_group_msg', { group_id: groupId, message }, this.options.imageSendTimeoutMs);
   }
@@ -306,6 +313,8 @@ export class NapcatAdapter {
   async sendGroupFile(groupId: number | string, fileUrl: string, fileName?: string): Promise<NapcatSendResult> {
     const segment = buildFileSegment(fileUrl, fileName);
     if (!segment) return { success: false, error: 'no file to send' };
+    const guard = guardWebSocketPayload(fileUrl, '文件');
+    if (!guard.ok) return { success: false, error: guard.reason, oversized: true };
     return this.sendAndReportResultWithRetry('send_group_msg', {
       group_id: groupId,
       message: [segment],
@@ -367,6 +376,8 @@ export class NapcatAdapter {
   async sendGroupVideo(groupId: number | string, fileUrl: string, summaryText = ''): Promise<NapcatSendResult> {
     const segment = buildVideoSegment(fileUrl);
     if (!segment) return { success: false, error: 'no video to send' };
+    const guard = guardVideoPayload(fileUrl);
+    if (!guard.ok) return { success: false, error: guard.reason, oversized: true, suggestFileSend: guard.suggestFileSend };
     const message: NapcatMessageSegment[] = [];
     if (summaryText) message.push({ type: 'text', data: { text: `${summaryText}\r\n` } });
     message.push(segment);
@@ -377,6 +388,8 @@ export class NapcatAdapter {
   async sendPrivateVideo(userId: number | string, fileUrl: string): Promise<NapcatSendResult> {
     const segment = buildVideoSegment(fileUrl);
     if (!segment) return { success: false, error: 'no video to send' };
+    const guard = guardVideoPayload(fileUrl);
+    if (!guard.ok) return { success: false, error: guard.reason, oversized: true, suggestFileSend: guard.suggestFileSend };
     return this.sendAndReportResult('send_private_msg', {
       user_id: userId,
       message: [segment],
@@ -647,6 +660,8 @@ export function buildVideoForwardNodes(fileUrls: string[], options: { botName?: 
  * 支持 http(s)、file 路径、base64://、data:video/...;base64,。
  * data URL 会规范为 Napcat 更易识别的 base64:// 或原样 file。
  */
+export { guardVideoPayload, guardWebSocketPayload, inspectMediaPayload, VIDEO_MAX_BYTES, WS_BASE64_SAFE_BYTES, describeBytes } from './media-limits.js';
+
 export function buildVideoSegment(fileUrl: string): NapcatMessageSegment | undefined {
   const file = normalizeVideoFilePayload(fileUrl);
   if (!file) return undefined;
