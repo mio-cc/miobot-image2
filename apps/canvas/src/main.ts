@@ -1,5 +1,5 @@
 import { createCanvasService, CanvasStore, InMemoryAssetStore, type AssetStore, type StoredAsset, type CanvasGenerator, type CanvasService, type GenerationArtifact } from '../../../packages/canvas-service/src/index.js';
-import { createCapabilityRegistry, createModelClient, type CapabilityOverride, type CapabilityRegistry, type ImageArtifact, type ImageResult, type ModelClient, type ModelOperation } from '../../../packages/model/src/index.js';
+import { createModelClient, createReloadableRegistry, type CapabilityOverride, type CapabilityRegistry, type ImageArtifact, type ImageResult, type ModelClient, type ModelOperation } from '../../../packages/model/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
 import fs from 'node:fs';
@@ -55,24 +55,31 @@ function artifactsToGeneration(result: ImageResult): GenerationArtifact[] {
   return (result.images || []).map(artifactToGenerationArtifact);
 }
 
-/** 用统一 ModelClient 实现画布生成能力——与 bot 共用方言/能力/参数规整(同一兼容性逻辑)。 */
-export function createModelCanvasGenerator(client: ModelClient): CanvasGenerator {
+/**
+ * 用统一 ModelClient 实现画布生成能力——与 bot 共用方言/能力/参数规整(同一兼容性逻辑)。
+ *
+ * getConfig 用来现读超时：canvas.imageTimeoutMs / interrogateTimeoutMs 在配置里
+ * 归一化得好好的、面板上也能改，但以前从没传下来，全部落到客户端默认的 60s，
+ * 而 gpt-image 系单次出图 60-180s 很常见。
+ */
+export function createModelCanvasGenerator(client: ModelClient, getConfig?: () => AppConfig): CanvasGenerator {
+  const canvas = () => getConfig?.().canvas;
   return {
     async generate(input) {
-      const res = await client.generateImages(input.nodeIndex, { model: input.model, prompt: input.prompt, size: input.size, count: input.count, quality: input.quality });
+      const res = await client.generateImages(input.nodeIndex, { model: input.model, prompt: input.prompt, size: input.size, count: input.count, quality: input.quality, ...(canvas()?.imageTimeoutMs ? { timeoutMs: canvas()!.imageTimeoutMs } : {}) });
       return { images: artifactsToGeneration(res) };
     },
     async edit(input) {
-      const res = await client.editImage(input.nodeIndex, { model: input.model, prompt: input.prompt, images: input.images, size: input.size, quality: input.quality });
+      const res = await client.editImage(input.nodeIndex, { model: input.model, prompt: input.prompt, images: input.images, size: input.size, quality: input.quality, ...(canvas()?.imageTimeoutMs ? { timeoutMs: canvas()!.imageTimeoutMs } : {}) });
       return { images: artifactsToGeneration(res) };
     },
     async interrogate(input) {
-      const res = await client.interrogate(input.nodeIndex, { model: input.model, imageUrls: [input.image], prompt: input.prompt });
+      const res = await client.interrogate(input.nodeIndex, { model: input.model, imageUrls: [input.image], prompt: input.prompt, ...(canvas()?.interrogateTimeoutMs ? { timeoutMs: canvas()!.interrogateTimeoutMs } : {}) });
       return { text: res.text };
     },
     async interrogateTemplate(input) {
       // 第二步：复用视觉通道(interrogate 走 buildVision)把描述套成含 {{prompt}} 占位符的可复用模板(对齐 monolith createVision)。
-      const res = await client.interrogate(input.nodeIndex, { model: input.model, imageUrls: [input.image], prompt: input.prompt });
+      const res = await client.interrogate(input.nodeIndex, { model: input.model, imageUrls: [input.image], prompt: input.prompt, ...(canvas()?.interrogateTemplateTimeoutMs ? { timeoutMs: canvas()!.interrogateTemplateTimeoutMs } : {}) });
       return { text: res.text };
     },
   };
@@ -101,16 +108,22 @@ export interface CanvasApp {
  * 取代 web-canvas/apps/api 独立的一套 provider 选择。
  */
 export function createCanvasApp(options: CanvasAppOptions): CanvasApp {
-  const registry = options.registry || createCapabilityRegistry({ overrides: toCapabilityOverrides(options.getConfig()) });
+  // 全部现读。此前这里是装配时刻的快照，导致「填完节点保存 → 面板说热重载成功 →
+  // 画布依然用空 baseUrl/空 key 发请求」这个全新部署必踩的坑。
+  const injected = options.registry;
+  const getRegistry = injected
+    ? () => injected
+    : createReloadableRegistry(() => toCapabilityOverrides(options.getConfig()));
+  const registry = getRegistry();
   const client = options.client || createModelClient({
-    nodes: toModelNodes(options.getConfig()),
-    registry,
+    nodes: () => toModelNodes(options.getConfig()),
+    registry: getRegistry,
     // 画布和 bot 各自持有 ModelClient，因此闸门也是各自一套：
     // 两边同时打满时上游看到的是 2×limit。这是刻意的——把它们合成一个全局闸门
     // 会让画布的一次批量生成把群里的对话堵死。
     getNodeConcurrency: (i) => options.getConfig().llm.apiKeys?.[i]?.concurrency,
   });
-  const generator = createModelCanvasGenerator(client);
+  const generator = createModelCanvasGenerator(client, options.getConfig);
   const store = new CanvasStore({ filePath: options.stateFilePath, maxHistory: options.maxHistory ?? options.getConfig().canvas?.maxHistory });
   const assets: AssetStore = options.assetDir ? new FileAssetStore(options.assetDir) : new InMemoryAssetStore();
   const service = createCanvasService({ getConfig: options.getConfig, generator, store, assets, isAuthorized: options.isAuthorized });

@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { ConfigRepository, WebApi, derivePanelToken } from '../dist/packages/web-api/src/index.js';
-import { maskSecretValue } from '../dist/packages/web-api/src/secrets.js';
+import { ConfigRepository, WebApi, createConfigRepository, derivePanelToken } from '../dist/packages/web-api/src/index.js';
+import { findUnresolvedSecrets, maskSecretValue } from '../dist/packages/web-api/src/secrets.js';
 
 /**
  * 密钥打码往返。
@@ -127,4 +127,107 @@ test('导入打码过的配置不会把密钥写坏', async () => {
   const read = await api.handle({ method: 'GET', path: '/api/config', headers: auth });
   await api.handle({ method: 'POST', path: '/api/config/import', headers: auth, body: { config: read.body.config } });
   assert.equal(repository.getConfig().llm.apiKeys[0].key, 'sk-real-key-aaaaaaaa1234');
+});
+
+/* ── 删/移动节点后的密钥保全（复查确认的高危缺陷） ────────────────── */
+
+test('删掉中间节点再保存，其余节点的真实密钥不受影响', () => {
+  const repo = createConfigRepository({
+    initialConfig: {
+      panel: { passwordSeed: 'seed-value-1234' },
+      llm: {
+        apiKeys: [
+          { name: 'n0', baseUrl: 'https://a/v1', key: 'sk-aaaaaaaaaaaa1111' },
+          { name: 'n1', baseUrl: 'https://b/v1', key: 'sk-bbbbbbbbbbbb2222' },
+          { name: 'n2', baseUrl: 'https://c/v1', key: 'sk-cccccccccccc3333' },
+        ],
+      },
+    },
+  });
+
+  // 面板拿到的是打码版
+  const masked = repo.getMaskedConfig();
+  assert.ok(masked.llm.apiKeys.every((n) => n.key.includes('••••')), '面板不该拿到明文');
+
+  // 用户删掉第 0 个节点（面板就是 splice），把剩下的原样提交回来
+  const submitted = JSON.parse(JSON.stringify(masked));
+  submitted.llm.apiKeys.splice(0, 1);
+  repo.saveConfig(submitted);
+
+  const after = repo.getConfig();
+  assert.equal(after.llm.apiKeys.length, 2);
+  assert.equal(after.llm.apiKeys[0].key, 'sk-bbbbbbbbbbbb2222', 'n1 的密钥必须原样保留');
+  assert.equal(after.llm.apiKeys[1].key, 'sk-cccccccccccc3333', 'n2 的密钥必须原样保留');
+  assert.ok(!after.llm.apiKeys.some((n) => n.key.includes('••••')), '不能把圆点串写进配置');
+});
+
+test('节点重排后密钥跟着节点走，不会张冠李戴', () => {
+  const repo = createConfigRepository({
+    initialConfig: {
+      llm: {
+        apiKeys: [
+          { name: 'n0', baseUrl: 'https://a/v1', key: 'sk-aaaaaaaaaaaa1111' },
+          { name: 'n1', baseUrl: 'https://b/v1', key: 'sk-bbbbbbbbbbbb2222' },
+        ],
+      },
+    },
+  });
+
+  const submitted = JSON.parse(JSON.stringify(repo.getMaskedConfig()));
+  submitted.llm.apiKeys.reverse();
+  repo.saveConfig(submitted);
+
+  const after = repo.getConfig();
+  assert.equal(after.llm.apiKeys[0].name, 'n1');
+  assert.equal(after.llm.apiKeys[0].key, 'sk-bbbbbbbbbbbb2222', '密钥要跟着节点走');
+  assert.equal(after.llm.apiKeys[1].key, 'sk-aaaaaaaaaaaa1111');
+});
+
+test('新增节点填了真密钥，旧节点不受影响', () => {
+  const repo = createConfigRepository({
+    initialConfig: { llm: { apiKeys: [{ name: 'n0', baseUrl: 'https://a/v1', key: 'sk-aaaaaaaaaaaa1111' }] } },
+  });
+  const submitted = JSON.parse(JSON.stringify(repo.getMaskedConfig()));
+  submitted.llm.apiKeys.push({ name: 'new', baseUrl: 'https://n/v1', key: 'sk-newnewnewnew9999', enabled: true, models: [] });
+  repo.saveConfig(submitted);
+
+  const after = repo.getConfig();
+  assert.equal(after.llm.apiKeys[0].key, 'sk-aaaaaaaaaaaa1111');
+  assert.equal(after.llm.apiKeys[1].key, 'sk-newnewnewnew9999');
+});
+
+test('导入别处打码过的配置：整份拒绝，不写坏本机凭据', () => {
+  const repo = createConfigRepository({
+    initialConfig: {
+      panel: { passwordSeed: 'my-real-password' },
+      napcat: { wsUrl: 'ws://localhost:3001', token: 'my-real-napcat-token' },
+      llm: { apiKeys: [{ name: 'n0', baseUrl: 'https://a/v1', key: 'sk-my-real-key-1111' }] },
+    },
+  });
+
+  // 别人机器上导出的配置：圆点串对不上本机任何旧值
+  const foreign = {
+    config: {
+      panel: { passwordSeed: 'his••••••••word' },
+      napcat: { wsUrl: 'ws://other:3001', token: 'his••••••••oken' },
+      llm: { apiKeys: [{ name: 'theirs', baseUrl: 'https://x/v1', key: 'sk-••••••••9999' }] },
+    },
+  };
+
+  assert.throws(() => repo.importAndSave(foreign), /仍是打码值/);
+
+  const after = repo.getConfig();
+  assert.equal(after.panel.passwordSeed, 'my-real-password', '本机面板密码不能被圆点覆盖');
+  assert.equal(after.napcat.token, 'my-real-napcat-token');
+  assert.equal(after.llm.apiKeys[0].key, 'sk-my-real-key-1111');
+});
+
+test('findUnresolvedSecrets 指名道姓地列出问题字段', () => {
+  const bad = findUnresolvedSecrets({
+    panel: { passwordSeed: 'aaa••••••••bbb' },
+    llm: { apiKeys: [{ name: '好用的中转', key: 'sk-••••••••1234' }, { name: 'ok', key: 'sk-real' }] },
+  });
+  assert.ok(bad.some((x) => x.includes('panel.passwordSeed')));
+  assert.ok(bad.some((x) => x.includes('好用的中转')), '要带上节点名，用户才知道去哪改');
+  assert.equal(bad.length, 2);
 });

@@ -56,7 +56,13 @@ async function convertToTemplate() {
     convertStatus.value = '正在转化模板...';
     try {
         const res = await client.post('/templates/convert', { rawPrompt });
-        if (res.data.config) configStore.applyServerConfig(res.data);
+        // 只把新模板并进本地列表，**不要**用服务端配置整体覆盖：
+        // 那样会把用户在别的页面还没保存的改动无声吃掉，
+        // 顶栏的「未保存」还会变成绿色的「已保存」，用户完全收不到提示。
+        if (res.data.template) {
+            templates.value.push(res.data.template);
+            normalizeIds();
+        }
         convertSource.value = '';
         convertStatus.value = `已新增模板 ${res.data.template?.id || ''} ${res.data.template?.title || ''}`.trim();
     } catch (error: any) {

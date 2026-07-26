@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import { FileJsonStore } from '../dist/packages/storage/src/json-store.js';
 import { ConfigStore } from '../dist/packages/storage/src/config-store.js';
+import { createConfigRepository } from '../dist/packages/web-api/src/index.js';
 import { normalizeConfig } from '../dist/packages/config/src/index.js';
 
 /**
@@ -127,4 +128,43 @@ test('白名单数字会被归一化为字符串（否则路由里永远匹配�
   const cfg = normalizeConfig({ bot: { whitelistGroups: [123456789, '  987654321  '], whitelistPrivate: [111] } });
   assert.deepEqual(cfg.bot.whitelistGroups, ['123456789', '987654321']);
   assert.deepEqual(cfg.bot.whitelistPrivate, ['111']);
+});
+
+/* ── 落盘失败必须让用户看见（复查确认：原来被空 catch 吞掉） ────────── */
+
+test('落盘失败时 persisted=false，并把原因带回给面板', () => {
+  const repo = createConfigRepository({ initialConfig: { bot: { botQqId: '1' } } });
+
+  repo.onReload(() => { throw new Error('EACCES: permission denied'); });
+
+  const result = repo.saveConfig({ bot: { botQqId: '2' } });
+  assert.equal(result.persisted, false, '写盘失败必须如实报出来');
+  assert.match(result.message, /写入磁盘失败/);
+  assert.match(result.message, /EACCES/);
+  assert.deepEqual(result.persistErrors, ['EACCES: permission denied']);
+
+  // 内存里仍然生效（热重载不该被磁盘问题阻断），但用户会看到明确的失败提示
+  assert.equal(repo.getConfig().bot.botQqId, '2');
+});
+
+test('落盘成功时 persisted=true，消息不变', () => {
+  const repo = createConfigRepository({ initialConfig: { bot: { botQqId: '1' } } });
+  let saved = 0;
+  repo.onReload(() => { saved += 1; });
+  const result = repo.saveConfig({ bot: { botQqId: '2' } });
+  assert.equal(result.persisted, true);
+  assert.equal(result.persistErrors, undefined);
+  assert.equal(saved, 1);
+});
+
+test('一个监听器炸了不影响其它监听器', () => {
+  const repo = createConfigRepository({ initialConfig: {} });
+  const ran = [];
+  repo.onReload(() => { ran.push('a'); });
+  repo.onReload(() => { throw new Error('boom'); });
+  repo.onReload(() => { ran.push('c'); });
+
+  const result = repo.saveConfig({ bot: { botQqId: '9' } });
+  assert.deepEqual(ran, ['a', 'c'], '中间那个抛错不该阻断后面的');
+  assert.equal(result.persisted, false);
 });

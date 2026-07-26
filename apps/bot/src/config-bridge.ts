@@ -14,6 +14,16 @@ export interface BotRouting {
   videoTimeoutMs?: number;
   videoPollTimeoutMs?: number;
   videoPollIntervalMs?: number;
+  /**
+   * 生图/改图/反推的超时。以前这三个字段在 config 里归一化得好好的、面板上也能改，
+   * 但从来没有任何调用方把它们传给 ModelClient，于是全部落到客户端默认的 60s——
+   * 而 gpt-image 系单次出图 60-180s 很常见，等于所有生图必然超时。
+   */
+  imageTimeoutMs?: number;
+  interrogateTimeoutMs?: number;
+  /** 生图失败重试（面板上原本是个死输入框）。 */
+  imageRetryCount?: number;
+  imageRetryDelayMs?: number;
 }
 
 const KNOWN_DIALECTS: ProviderDialect[] = ['openai', 'anthropic', 'gemini', 'huggingface', 'custom'];
@@ -86,6 +96,10 @@ export function toBotRouting(cfg: AppConfig): BotRouting {
     videoTimeoutMs: cfg.llm.videoTimeoutMs,
     videoPollTimeoutMs: cfg.llm.videoPollTimeoutMs,
     videoPollIntervalMs: cfg.llm.videoPollIntervalMs,
+    imageTimeoutMs: cfg.llm.imageTimeoutMs,
+    interrogateTimeoutMs: cfg.llm.interrogateTimeoutMs,
+    imageRetryCount: cfg.llm.imageRetryCount,
+    imageRetryDelayMs: cfg.llm.imageRetryDelayMs,
   };
 }
 

@@ -1,5 +1,5 @@
 import { NapcatAdapter } from '../../../packages/napcat/src/index.js';
-import { createCapabilityRegistry, createModelClient } from '../../../packages/model/src/index.js';
+import { createModelClient, createReloadableRegistry } from '../../../packages/model/src/index.js';
 import { ConfigStore } from '../../../packages/storage/src/index.js';
 import { createDefaultConfig, normalizeConfig, type AppConfig } from '../../../packages/config/src/index.js';
 import { ConsoleLogSink, createLogger, type StructuredLogger } from '../../../packages/logger/src/index.js';
@@ -31,13 +31,24 @@ export interface RunningBot {
 export function startBot(options: StartBotOptions = {}): RunningBot {
   const logger = options.logger || createLogger({ scope: 'bot-v2', level: 'info', sinks: [new ConsoleLogSink()] });
   const store = options.configFilePath
-    ? new ConfigStore<AppConfig>(options.configFilePath, { defaultValue: createDefaultConfig(), normalize: normalizeConfig })
+    ? new ConfigStore<AppConfig>(options.configFilePath, {
+        defaultValue: createDefaultConfig(),
+        normalize: normalizeConfig,
+        onCorrupted: (info) => logger.error('config.json 解析失败', { reason: info.reason, backupPath: info.backupPath }),
+      })
     : undefined;
   const config: AppConfig = store ? store.load() : createDefaultConfig();
+
+  // 与 admin 同理：带着默认配置起来的 bot 是「白名单全空 = 谁都能用」，
+  // 比起不起来危险得多。
+  if (store?.isCorrupted()) {
+    throw new Error(`config.json 解析失败，bot 拒绝启动：${store.corruptionReason()}。原文件未被覆盖，修好语法后重启。`);
+  }
   const getConfig = (): AppConfig => config;
 
-  const registry = createCapabilityRegistry({ overrides: toCapabilityOverrides(config.llm.capabilityOverrides) });
-  const client = createModelClient({ nodes: toModelNodes(config), registry, getNodeConcurrency: (i) => getConfig().llm.apiKeys?.[i]?.concurrency });
+  const getRegistry = createReloadableRegistry(() => toCapabilityOverrides(getConfig().llm.capabilityOverrides));
+  const registry = getRegistry();
+  const client = createModelClient({ nodes: () => toModelNodes(getConfig()), registry: getRegistry, getNodeConcurrency: (i) => getConfig().llm.apiKeys?.[i]?.concurrency });
   const app = createBotApp({ getConfig, client, registry, log: logger });
 
   const nap = config.napcat;

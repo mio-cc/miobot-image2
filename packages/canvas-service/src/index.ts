@@ -23,10 +23,12 @@ export {
   RateLimiter,
   checkCanvasAccess,
   clientAddress,
+  canvasRouteGuard,
   isCostlyCanvasRoute,
   isLocalClient,
   type CanvasAccessDecision,
   type CanvasAccessOptions,
+  type CanvasRouteGuard,
 } from './access.js';
 export {
   InMemoryAssetStore,

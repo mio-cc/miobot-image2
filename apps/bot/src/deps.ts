@@ -110,6 +110,7 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       try {
         const res = await client.generateImages(routing.imageNodeIndex, {
           model: req.model, prompt, size: req.size, count: req.count, quality: req.quality,
+          ...(routing.imageTimeoutMs ? { timeoutMs: routing.imageTimeoutMs } : {}),
         });
         return { images: artifactsToStrings(res) };
       } catch (error) {
@@ -118,6 +119,7 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
           if (safe && safe.trim() && safe !== prompt) {
             const res = await client.generateImages(routing.imageNodeIndex, {
               model: req.model, prompt: safe, size: req.size, count: req.count, quality: req.quality,
+              ...(routing.imageTimeoutMs ? { timeoutMs: routing.imageTimeoutMs } : {}),
             });
             return { images: artifactsToStrings(res) };
           }
@@ -129,6 +131,7 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       const routing = getRouting();
       const res = await client.editImage(routing.editNodeIndex, {
         model: req.model, prompt: req.prompt, images: req.images, size: req.size, quality: req.quality,
+        ...(routing.imageTimeoutMs ? { timeoutMs: routing.imageTimeoutMs } : {}),
       });
       return { images: artifactsToStrings(res) };
     },
@@ -136,6 +139,7 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       const routing = getRouting();
       const res = await client.interrogate(routing.interrogateNodeIndex, {
         model: req.model, imageUrls: req.images, prompt: req.prompt,
+        ...(routing.interrogateTimeoutMs ? { timeoutMs: routing.interrogateTimeoutMs } : {}),
       });
       return { text: res.text };
     },

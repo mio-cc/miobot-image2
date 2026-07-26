@@ -4,7 +4,7 @@ import { CanvasStore, type CanvasAsset, type GenerationOutput, type GenerationRe
 import { InMemoryAssetStore, parseDataUrl, extensionFor, type AssetStore, type StoredAsset } from './assets.js';
 
 export interface CanvasResponse<T = unknown> { status: number; body: T; binary?: { contentType: string; base64: string } }
-import { RateLimiter, checkCanvasAccess, isCostlyCanvasRoute } from './access.js';
+import { RateLimiter, canvasRouteGuard, checkCanvasAccess } from './access.js';
 
 export interface CanvasRequest { method: string; path: string; headers?: Record<string, string | undefined>; body?: unknown }
 
@@ -130,6 +130,26 @@ function readImageDimensions(buffer: Buffer): { width: number; height: number } 
   return undefined;
 }
 
+/**
+ * 项目快照的体积上限。
+ * 快照会常驻内存，并且画布每发生一次状态变更（每次生图、每条反推、每次收藏）
+ * 都会把它整个 JSON.stringify 一遍写盘。没有上限的话，一次 PUT 就能让之后
+ * 每一次操作都卡住主线程几百毫秒，重启回读还会重现。
+ */
+const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024;
+
+function snapshotTooLarge(snapshot: unknown): string | undefined {
+  if (snapshot === undefined || snapshot === null) return undefined;
+  let size = 0;
+  try {
+    size = Buffer.byteLength(JSON.stringify(snapshot) ?? '', 'utf8');
+  } catch {
+    return '项目快照无法序列化（可能存在循环引用）。';
+  }
+  if (size <= MAX_SNAPSHOT_BYTES) return undefined;
+  return `项目快照 ${(size / 1024 / 1024).toFixed(1)}MB，超过上限 ${MAX_SNAPSHOT_BYTES / 1024 / 1024}MB。`;
+}
+
 export class CanvasService {
   private readonly getConfig: () => AppConfig;
   private readonly generator: CanvasGenerator;
@@ -160,14 +180,16 @@ export class CanvasService {
     const { path, query } = splitPath(req.path);
     const body = req.body as Record<string, any> | undefined;
 
-    // 花钱的路由先过访问控制与限流：画布前台没有登录态，
-    // 不拦的话任何能访问端口的人都能消耗上游额度。
-    if (isCostlyCanvasRoute(method, path)) {
+    // 所有会改变状态的路由都要过访问控制：画布前台没有登录态，
+    // 不拦的话任何能访问端口的人都能消耗上游额度、甚至把画廊连同磁盘资产删空。
+    const guard = canvasRouteGuard(method, path);
+    if (guard.guarded) {
       const decision = checkCanvasAccess({
         config: this.getConfig(),
         headers: req.headers,
         isAuthorized: this.isAuthorized,
         limiter: this.limiter,
+        countsAgainstLimit: guard.countsAgainstLimit,
       });
       if (!decision.allowed) {
         return { status: decision.status, body: { error: { code: decision.code, message: decision.message } } };
@@ -185,7 +207,21 @@ export class CanvasService {
 
     if (method === 'GET' && path === '/project') return { status: 200, body: this.publicProject() };
     if (method === 'PUT' && path === '/project') {
-      this.store.setProject({ name: body?.name, snapshot: Object.prototype.hasOwnProperty.call(body || {}, 'snapshot') ? body!.snapshot : undefined });
+      // 只把**确实提交了**的字段放进 patch。
+      // 原来写的是 { name: body?.name, snapshot: 有就取没有就 undefined }——
+      // 对象展开会把值为 undefined 的键一起覆盖过去，于是 PUT {name:'x'} 会把
+      // 已有的 snapshot 抹成 undefined，只改个名字就把整个画布内容清空了。
+      const patch: { name?: string; snapshot?: unknown } = {};
+      const raw = (body || {}) as Record<string, unknown>;
+      if (Object.prototype.hasOwnProperty.call(raw, 'name')) patch.name = String(raw.name ?? '');
+      if (Object.prototype.hasOwnProperty.call(raw, 'snapshot')) {
+        const oversized = snapshotTooLarge(raw.snapshot);
+        if (oversized) {
+          return { status: 413, body: { error: { code: 'snapshot_too_large', message: oversized } } };
+        }
+        patch.snapshot = raw.snapshot;
+      }
+      this.store.setProject(patch);
       return { status: 200, body: this.publicProject() };
     }
 

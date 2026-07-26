@@ -28,6 +28,8 @@ export const useConfigStore = defineStore('config', () => {
     const revision = ref(0);
 
     const loaded = computed(() => Boolean(config.value));
+    // savedSnapshot 为空串时 dirty 恒为 true：这既覆盖「还没加载完」，
+    // 也覆盖「保存了但没落盘」——后者必须继续显示未保存，不能骗用户。
     const dirty = computed(() => loaded.value && JSON.stringify(config.value) !== savedSnapshot.value);
 
     /** 改动落在哪几个顶层区块，给用户一个"改了什么"的实感。 */
@@ -45,7 +47,6 @@ export const useConfigStore = defineStore('config', () => {
         if (!c) return;
         c.llm ||= {};
         c.llm.apiKeys ||= [];
-        c.llm.modelLimits ||= [];
         c.llm.capabilityOverrides ||= [];
         c.bot ||= {};
         c.bot.commands ||= {};
@@ -71,11 +72,20 @@ export const useConfigStore = defineStore('config', () => {
         savedSnapshot.value = JSON.stringify(config.value);
     }
 
+    /**
+     * 用服务端返回的配置替换本地。
+     * markSaved 只在**确实落盘**时才做——服务端 persisted:false 表示改动只在内存里，
+     * 重启就没了。这时候还去清脏标记，等于骗用户「已保存」。
+     */
     function applyServerConfig(payload: any) {
         config.value = payload?.config ?? payload;
         if (typeof payload?.revision === 'number') revision.value = payload.revision;
         guardShape();
-        markSaved();
+        if (payload?.persisted === false) {
+            savedSnapshot.value = '';  // 保持脏状态，顶栏继续显示「未保存」
+        } else {
+            markSaved();
+        }
         // 改密码后派生出的 token 会变，服务端在同一响应里给了新的，直接换掉，
         // 免得用户刚保存完就被踢回登录页。
         const nextToken = payload?.auth?.token;
@@ -102,11 +112,14 @@ export const useConfigStore = defineStore('config', () => {
         try {
             const res = await client.post('/config', config.value);
             applyServerConfig(res.data);
-            saveStatus.value = res.data?.message || '已保存并热重载';
-            window.setTimeout(() => {
-                if (saveStatus.value === (res.data?.message || '已保存并热重载')) saveStatus.value = '';
-            }, 4000);
-            return { ok: true, hotReload: res.data?.hotReload };
+            const persisted = res.data?.persisted !== false;
+            const message = res.data?.message || '已保存并热重载';
+            saveStatus.value = persisted ? message : `保存失败：${message}`;
+            // 落盘失败的提示不自动消失——用户必须看见它。
+            if (persisted) {
+                window.setTimeout(() => { if (saveStatus.value === message) saveStatus.value = ''; }, 4000);
+            }
+            return { ok: persisted, hotReload: res.data?.hotReload };
         } catch (error: any) {
             saveStatus.value = `保存失败：${errorMessage(error)}`;
             return { ok: false, hotReload: undefined };

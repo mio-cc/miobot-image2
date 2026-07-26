@@ -128,7 +128,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 async function handleAdmin(req, res, url) {
-  const body = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method || '') ? await readBody(req) : undefined;
+  const parsed = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method || '') ? await readBody(req) : { value: undefined };
+  if (bodyErrorResponse(res, parsed)) return;
+  const body = parsed.value;
   const result = await adminService.handle({
     method: req.method || 'GET',
     path: url.pathname + url.search,
@@ -139,7 +141,9 @@ async function handleAdmin(req, res, url) {
 }
 
 async function handleCanvas(req, res, url) {
-  const body = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method || '') ? await readBody(req) : undefined;
+  const parsed = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method || '') ? await readBody(req) : { value: undefined };
+  if (bodyErrorResponse(res, parsed)) return;
+  const body = parsed.value;
   const result = await canvasService.handle({
     method: req.method || 'GET',
     path: url.pathname + url.search,
@@ -200,13 +204,60 @@ async function serveFile(res, root, requestPath, prefix, rewriteHtml = false) {
   }
 }
 
+// 画布改图会把参考图以 base64 塞进请求体，正常也有十几 MB，所以上限不能定太小；
+// 但必须有上限，否则一个不断发数据的连接就能把内存吃光。
+const MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024;
+
+/**
+ * 读请求体。返回 { value } 或 { error }。
+ *
+ * 两个坑：
+ * 1. JSON.parse 原来直接写在 'end' 监听器里，请求体不是合法 JSON 时抛出的异常
+ *    没有任何人接——在事件回调里抛就是未捕获异常，整个进程当场退出。
+ *    随便发一段 `{` 就能把服务打挂。
+ * 2. 没有体积上限，一直发数据就能把内存撑爆。
+ */
 function readBody(req) {
   return new Promise((resolve) => {
     const chunks = [];
-    req.on('data', (c) => chunks.push(c));
-    req.on('end', () => resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8') || 'null') : undefined));
-    req.on('error', () => resolve(undefined));
+    let size = 0;
+    let done = false;
+    const finish = (result) => { if (!done) { done = true; resolve(result); } };
+
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_REQUEST_BODY_BYTES) {
+        finish({ error: 'too_large' });
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      if (!chunks.length) return finish({ value: undefined });
+      try {
+        finish({ value: JSON.parse(Buffer.concat(chunks).toString('utf8') || 'null') });
+      } catch {
+        finish({ error: 'invalid_json' });
+      }
+    });
+    req.on('error', () => finish({ error: 'stream_error' }));
   });
+}
+
+/** 把 readBody 的结果转成响应；没问题时返回 undefined。 */
+function bodyErrorResponse(res, parsed) {
+  if (!parsed || !parsed.error) return false;
+  if (parsed.error === 'too_large') {
+    sendJson(res, 413, { success: false, error: `请求体超过上限 ${MAX_REQUEST_BODY_BYTES / 1024 / 1024}MB。` });
+    return true;
+  }
+  if (parsed.error === 'invalid_json') {
+    sendJson(res, 400, { success: false, error: '请求体不是合法 JSON。' });
+    return true;
+  }
+  sendJson(res, 400, { success: false, error: '读取请求体失败。' });
+  return true;
 }
 
 function authHeader(headers) {

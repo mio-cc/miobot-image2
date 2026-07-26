@@ -54,8 +54,16 @@ export interface ModelClientLogger {
 }
 
 export interface ModelClientOptions {
-  nodes: ModelNode[];
-  registry?: CapabilityRegistry;
+  /**
+   * 节点表。传函数则**每次访问都现读**——配置热重载后立刻生效。
+   *
+   * 传数组等于把装配那一刻的值定死：换 key、改 baseUrl、增删节点后
+   * 客户端仍然用旧值发请求，而面板还会显示「配置已热重载生效」。
+   * 全新部署最惨——快照下来的是空 baseUrl 和空 key，填完节点保存后依旧必然失败。
+   */
+  nodes: ModelNode[] | (() => ModelNode[]);
+  /** 同理：传函数可让 capabilityOverrides 的改动即时生效。 */
+  registry?: CapabilityRegistry | (() => CapabilityRegistry);
   transport?: Transport;
   timeoutMs?: number;
   retries?: number;
@@ -83,8 +91,12 @@ export interface InterrogateRequest {
 const DEFAULT_INTERROGATE_PROMPT = '请分析这张图片，并反推一段适合图像生成模型复现它的提示词。';
 
 export class ModelClient {
-  private readonly nodes: ModelNode[];
-  private readonly registry: CapabilityRegistry;
+  private readonly nodesSource: () => ModelNode[];
+  private readonly registrySource: () => CapabilityRegistry;
+
+  // 用 getter 包一层，下面十几处 this.nodes / this.registry 的写法一个字都不用改。
+  private get nodes(): ModelNode[] { return this.nodesSource() || []; }
+  private get registry(): CapabilityRegistry { return this.registrySource(); }
   private readonly transport: Transport;
   private readonly timeoutMs: number;
   private readonly retries: number;
@@ -96,8 +108,15 @@ export class ModelClient {
   private readonly gate = new NodeConcurrencyGate();
 
   constructor(options: ModelClientOptions) {
-    this.nodes = options.nodes || [];
-    this.registry = options.registry || createCapabilityRegistry();
+    const nodes = options.nodes;
+    this.nodesSource = typeof nodes === 'function' ? nodes : () => nodes || [];
+    const registry = options.registry;
+    if (typeof registry === 'function') {
+      this.registrySource = registry;
+    } else {
+      const fixed = registry || createCapabilityRegistry();
+      this.registrySource = () => fixed;
+    }
     this.transport = options.transport || defaultFetchTransport;
     this.timeoutMs = Math.max(1, Math.trunc(options.timeoutMs ?? 60000));
     this.retries = Math.max(0, Math.trunc(options.retries ?? 0));
@@ -319,6 +338,7 @@ export class ModelClient {
       return await this.execute(op, primary, model, timeoutMs, build, parse);
     } catch (error) {
       if (!this.failover || !shouldFailover(error)) throw error;
+      if (isGenerationTimeout(op, error)) throw error;
       const candidates = this.failoverCandidates(primary, model);
       let lastError = error;
       for (const idx of candidates) {
@@ -512,6 +532,19 @@ function looksLikeShapeRejection(error: unknown): boolean {
   if (![400, 404, 405, 415, 422].includes(status)) return false;
   const text = error instanceof Error ? error.message : String(error);
   return /multipart|form-?data|content[- ]type|unsupported media|invalid.*image|image.*required|unknown parameter|unsupported parameter/i.test(text);
+}
+
+/**
+ * 出图类操作超时后**不要**换节点重试。
+ *
+ * 超时基本意味着上游还在算——它并没有拒绝你，只是比客户端的耐心久。
+ * 这时候换个节点重试，只会在另一把 key 上再触发一次真实生成：
+ * 用户多等一倍时间，最后还是一句超时，而两边的图都已经生成、都已经计费。
+ * 网络类错误（连接被拒、DNS 失败）仍然值得换节点，所以只挡 timeout。
+ */
+function isGenerationTimeout(op: ModelOperation, error: unknown): boolean {
+  if (op !== 'image.generate' && op !== 'image.edit' && op !== 'video.generate') return false;
+  return error instanceof ModelError && error.category === 'timeout';
 }
 
 function shouldFailover(error: unknown): boolean {

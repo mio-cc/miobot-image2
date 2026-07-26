@@ -17,7 +17,8 @@ export interface BotEngineOptions {
   deps: BotEngineDeps;
   /** 返回当前配置切片（每次 handle 读取，支持热重载）。 */
   getConfig: () => EngineRoutingConfig;
-  registry?: CapabilityRegistry;
+  /** 传函数则每次现读，能力覆盖改动即时生效。 */
+  registry?: CapabilityRegistry | (() => CapabilityRegistry);
   planner?: PlannerClient;
   /** 可选日志器（用于诊断意图路由的 gate/caps 决策）。 */
   log?: { info(message: string, data?: Record<string, unknown>): void; warn(message: string, data?: Record<string, unknown>): void; error(message: string, data?: Record<string, unknown>): void };
@@ -47,14 +48,21 @@ export interface BotEngineResult {
 export class BotEngine {
   private readonly deps: BotEngineDeps;
   private readonly getConfig: () => EngineRoutingConfig;
-  private readonly registry: CapabilityRegistry;
+  private readonly registrySource: () => CapabilityRegistry;
+  private get registry(): CapabilityRegistry { return this.registrySource(); }
   private readonly planner?: PlannerClient;
   private readonly log?: { info(message: string, data?: Record<string, unknown>): void; warn(message: string, data?: Record<string, unknown>): void; error(message: string, data?: Record<string, unknown>): void };
 
   constructor(options: BotEngineOptions) {
     this.deps = options.deps;
     this.getConfig = options.getConfig;
-    this.registry = options.registry || createCapabilityRegistry();
+    const registry = options.registry;
+    if (typeof registry === 'function') {
+      this.registrySource = registry;
+    } else {
+      const fixed = registry || createCapabilityRegistry();
+      this.registrySource = () => fixed;
+    }
     this.planner = options.planner;
     this.log = options.log;
   }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { RateLimiter, checkCanvasAccess, isCostlyCanvasRoute, isLocalClient, createCanvasService } from '../dist/packages/canvas-service/src/index.js';
+import { RateLimiter, canvasRouteGuard, checkCanvasAccess, isCostlyCanvasRoute, isLocalClient, createCanvasService } from '../dist/packages/canvas-service/src/index.js';
 import { normalizeConfig } from '../dist/packages/config/src/index.js';
 
 /**
@@ -147,4 +147,113 @@ test('normalizeConfig 给出访问控制默认值并夹住非法值', () => {
   const weird = normalizeConfig({ canvas: { access: 'whatever', rateLimitPerMinute: -5 } });
   assert.equal(weird.canvas.access, 'public');
   assert.equal(weird.canvas.rateLimitPerMinute, 0);
+});
+
+/* ── 写路由也要设防（复查确认：原来只挡 POST） ────────────────── */
+
+test('canvasRouteGuard: 读放行、写设防、只有花钱的路由计配额', () => {
+  const g = (m, p) => canvasRouteGuard(m, p);
+
+  // 读路由一律不拦——否则前台刷新列表就被限流打断
+  assert.equal(g('GET', '/gallery').guarded, false);
+  assert.equal(g('GET', '/assets/x/download').guarded, false);
+  assert.equal(g('HEAD', '/project').guarded, false);
+  assert.equal(g('OPTIONS', '/anything').guarded, false);
+
+  // 花钱的三条：设防 + 计配额
+  for (const p of ['/images/generate', '/images/edit', '/interrogate']) {
+    assert.deepEqual(g('POST', p), { guarded: true, countsAgainstLimit: true }, p);
+  }
+
+  // 改状态但不花钱：设防，但不该占用生图配额
+  assert.deepEqual(g('DELETE', '/gallery/abc'), { guarded: true, countsAgainstLimit: false });
+  assert.deepEqual(g('PATCH', '/gallery/abc/favorite'), { guarded: true, countsAgainstLimit: false });
+  assert.deepEqual(g('PUT', '/project'), { guarded: true, countsAgainstLimit: false });
+  assert.deepEqual(g('DELETE', '/interrogations/abc'), { guarded: true, countsAgainstLimit: false });
+
+  // bot 回写画廊有自己的鉴权，且不该被画布开关影响
+  assert.equal(g('POST', '/bot/gallery').guarded, false);
+});
+
+test('画布关闭后，外网既不能生成也不能删除', async () => {
+  const store = { deleted: [] };
+  const service = createCanvasService({
+    getConfig: () => normalizeConfig({ canvas: { enabled: false } }),
+    generator: {
+      generate: async () => { throw new Error('不该被调用'); },
+      edit: async () => { throw new Error('不该被调用'); },
+      interrogate: async () => { throw new Error('不该被调用'); },
+    },
+    isAuthorized: deny,
+  });
+
+  const gen = await service.handle({ method: 'POST', path: '/images/generate', headers: { 'x-client-ip': '203.0.113.9' }, body: { prompt: 'x' } });
+  assert.equal(gen.status, 403);
+  assert.equal(gen.body.error.code, 'canvas_disabled');
+
+  const del = await service.handle({ method: 'DELETE', path: '/gallery/whatever', headers: { 'x-client-ip': '203.0.113.9' } });
+  assert.equal(del.status, 403, '删除也必须被挡住——它会连带删磁盘资产');
+  assert.equal(del.body.error.code, 'canvas_disabled');
+  void store;
+});
+
+test('仅管理员模式下，匿名不能删画廊、不能改项目', async () => {
+  const service = createCanvasService({
+    getConfig: () => normalizeConfig({ canvas: { access: 'admin' } }),
+    generator: { generate: async () => ({ images: [] }), edit: async () => ({ images: [] }), interrogate: async () => ({ text: '' }) },
+    isAuthorized: deny,
+  });
+
+  const del = await service.handle({ method: 'DELETE', path: '/gallery/x', headers: { 'x-client-ip': '127.0.0.1' } });
+  assert.equal(del.status, 401);
+
+  const put = await service.handle({ method: 'PUT', path: '/project', headers: { 'x-client-ip': '127.0.0.1' }, body: { name: 'hacked' } });
+  assert.equal(put.status, 401);
+
+  // 读仍然放行（既定设计）
+  const gallery = await service.handle({ method: 'GET', path: '/gallery', headers: { 'x-client-ip': '127.0.0.1' } });
+  assert.equal(gallery.status, 200);
+});
+
+test('删记录不占生图配额', async () => {
+  const service = createCanvasService({
+    getConfig: () => normalizeConfig({ canvas: { access: 'public', rateLimitPerMinute: 2 } }),
+    generator: { generate: async () => ({ images: [] }), edit: async () => ({ images: [] }), interrogate: async () => ({ text: '' }) },
+    isAuthorized: deny,
+  });
+  const headers = { 'x-client-ip': '1.2.3.4' };
+  // 连删 10 次都不该消耗配额
+  for (let i = 0; i < 10; i += 1) {
+    const r = await service.handle({ method: 'DELETE', path: `/gallery/x${i}`, headers });
+    assert.notEqual(r.status, 429, '删除不该被生图配额挡住');
+  }
+});
+
+test('PUT /project 只改名字时不会把快照抹掉', async () => {
+  const service = createCanvasService({
+    getConfig: () => normalizeConfig({}),
+    generator: { generate: async () => ({ images: [] }), edit: async () => ({ images: [] }), interrogate: async () => ({ text: '' }) },
+  });
+  await service.handle({ method: 'PUT', path: '/project', body: { snapshot: { layers: [1, 2, 3] } } });
+  const before = await service.handle({ method: 'GET', path: '/project' });
+  assert.deepEqual(before.body.snapshot, { layers: [1, 2, 3] });
+
+  await service.handle({ method: 'PUT', path: '/project', body: { name: '换个名字' } });
+  const after = await service.handle({ method: 'GET', path: '/project' });
+  assert.equal(after.body.name, '换个名字');
+  assert.deepEqual(after.body.snapshot, { layers: [1, 2, 3] }, '只改名字不该清空整个画布内容');
+});
+
+test('超大项目快照被拒绝，不会常驻内存并反复落盘', async () => {
+  const service = createCanvasService({
+    getConfig: () => normalizeConfig({}),
+    generator: { generate: async () => ({ images: [] }), edit: async () => ({ images: [] }), interrogate: async () => ({ text: '' }) },
+  });
+  const huge = { blob: 'x'.repeat(9 * 1024 * 1024) };
+  const r = await service.handle({ method: 'PUT', path: '/project', body: { snapshot: huge } });
+  assert.equal(r.status, 413);
+  assert.equal(r.body.error.code, 'snapshot_too_large');
+
+  const after = await service.handle({ method: 'GET', path: '/project' });
+  assert.notEqual(after.body.snapshot?.blob?.length, huge.blob.length, '不该被存进去');
 });

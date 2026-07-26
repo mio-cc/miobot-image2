@@ -69,3 +69,30 @@ export class CapabilityRegistry {
 export function createCapabilityRegistry(options: CapabilityRegistryOptions = {}): CapabilityRegistry {
   return new CapabilityRegistry(options);
 }
+
+/**
+ * 随配置热重载的能力注册表。
+ *
+ * 每次访问都重建太浪费（注册表要编译一堆正则），所以按 overrides 的内容做记忆化：
+ * 内容没变就复用同一个实例，变了才重建。
+ */
+export function createReloadableRegistry(
+  getOverrides: () => CapabilityOverride[] | undefined,
+): () => CapabilityRegistry {
+  let cachedKey: string | undefined;
+  let cached: CapabilityRegistry | undefined;
+  return () => {
+    const overrides = getOverrides() || [];
+    let key: string;
+    try {
+      key = JSON.stringify(overrides);
+    } catch {
+      key = String(overrides.length);
+    }
+    if (!cached || key !== cachedKey) {
+      cachedKey = key;
+      cached = createCapabilityRegistry({ overrides });
+    }
+    return cached;
+  };
+}

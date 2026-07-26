@@ -1,5 +1,5 @@
 import { createBotEngine, type BotEngine, type BotEngineInput, type BotEngineResult } from '../../../packages/bot-engine/src/index.js';
-import { createCapabilityRegistry, createModelClient, type CapabilityRegistry, type ModelClient } from '../../../packages/model/src/index.js';
+import { createModelClient, createReloadableRegistry, type CapabilityRegistry, type ModelClient } from '../../../packages/model/src/index.js';
 import { createSessionStore, type SessionStore } from '../../../packages/core/src/index.js';
 import type { PlannerClient } from '../../../packages/intent-router/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
@@ -39,15 +39,21 @@ export interface BotApp {
  * 组装 bot 应用：bot-engine(编排) + model(统一模型层) + 会话记忆 + 规划器 + 配置桥接。
  * 这是 bot-runtime.mjs 里"failover/能力/分发/会话"内联逻辑的去向——现在全在可测的包里。
  *
- * 热重载说明：路由(nodeIndex)与引擎配置每次 handle 都重新读取；但 ModelClient 的"节点表"
- * 在构造时固定。若节点列表本身变化（增删/改 baseUrl/方言），需由 main 重新 createBotApp。
+ * 热重载说明：路由(nodeIndex)、引擎配置、节点表、能力注册表**全部**每次现读，
+ * 面板保存后即时生效，不需要重建 app，也不需要重启进程。
  */
 export function createBotApp(options: BotAppOptions): BotApp {
-  const registry = options.registry || createCapabilityRegistry({ overrides: toCapabilityOverrides(options.getConfig().llm.capabilityOverrides) });
+  // 节点表、能力注册表、并发上限全部现读：面板保存后立刻生效，不需要重启。
+  // 传快照的话，换 key / 改 baseUrl / 加节点全都不会被这个客户端看到，
+  // 而面板还会明确告诉用户「配置已热重载生效」。
+  const injected = options.registry;
+  const getRegistry = injected
+    ? () => injected
+    : createReloadableRegistry(() => toCapabilityOverrides(options.getConfig().llm.capabilityOverrides));
+  const registry = getRegistry();
   const client = options.client || createModelClient({
-    nodes: toModelNodes(options.getConfig()),
-    registry,
-    // 并发上限每次请求现读，后台改完立刻生效（节点表本身仍是构造时快照）。
+    nodes: () => toModelNodes(options.getConfig()),
+    registry: getRegistry,
     getNodeConcurrency: (i) => options.getConfig().llm.apiKeys?.[i]?.concurrency,
   });
   const initial = options.getConfig();
@@ -69,7 +75,7 @@ export function createBotApp(options: BotAppOptions): BotApp {
   const engine = createBotEngine({
     deps,
     getConfig: () => toEngineRoutingConfig(options.getConfig()),
-    registry,
+    registry: getRegistry,
     planner,
     log: options.log,
   });

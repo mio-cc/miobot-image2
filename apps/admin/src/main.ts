@@ -31,9 +31,28 @@ export interface AdminApp {
  */
 export function createAdminApp(options: AdminAppOptions = {}): AdminApp {
   const configStore = options.configFilePath
-    ? new ConfigStore<AppConfig>(options.configFilePath, { defaultValue: createDefaultConfig(), normalize: normalizeConfig })
+    ? new ConfigStore<AppConfig>(options.configFilePath, {
+        defaultValue: createDefaultConfig(),
+        normalize: normalizeConfig,
+        onCorrupted: (info) => {
+          console.error(`[admin] config.json 解析失败：${info.reason}`);
+          if (info.backupPath) console.error(`[admin] 原文件已备份到 ${info.backupPath}`);
+        },
+      })
     : undefined;
   const initialConfig = configStore ? configStore.load() : createDefaultConfig();
+
+  // config.json 存在但解析不了时，**必须拒绝启动**。
+  // 以前是静默用默认配置继续跑，后果是：白名单变成空数组（对 bot-router 来说等于全放行）、
+  // 面板密码回落成公开的默认种子、画布访问模式回落 public——
+  // 一个语法错误就能让整台机器从「有门禁」变成「全开放」，而健康检查照样 200。
+  // 宁可 crash-loop 让进程管理器报警，也不能带着 fail-open 的默认配置上线。
+  if (configStore?.isCorrupted()) {
+    throw new Error(
+      `config.json 解析失败，已拒绝启动：${configStore.corruptionReason()}。`
+      + '原文件未被覆盖，修好 JSON 语法后重启即可；若要从零开始，删掉该文件再启动。',
+    );
+  }
   const logs = options.systemLogFile && options.canvasLogFile
     ? createFileLogStore(options.systemLogFile, options.canvasLogFile)
     : createInMemoryLogStore();
@@ -51,8 +70,10 @@ export function createAdminApp(options: AdminAppOptions = {}): AdminApp {
 
   // 配置热重载 → 原子回存到文件。
   if (configStore) {
+    // 这里**不要**吞异常：web-api 会逐个收集监听器的错误，
+    // 并把 persisted:false + 原因如实返回给面板。吞掉的话用户会以为已经保存了。
     service.repository.onReload((_event, config) => {
-      try { configStore.save(config); } catch { /* 落盘失败不阻塞热重载 */ }
+      configStore.save(config);
     });
   }
 

@@ -9,7 +9,7 @@ import {
   type ExportedConfigFile,
 } from '../../config/src/index.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
-import { maskConfigSecrets, unmaskConfigSecrets } from './secrets.js';
+import { findUnresolvedSecrets, maskConfigSecrets, unmaskConfigSecrets } from './secrets.js';
 
 export const WEB_API_PACKAGE: PackageDescriptor = {
   name: '@miobot-v2/web-api',
@@ -42,6 +42,10 @@ export interface ConfigSaveResult {
   revision: number;
   hotReload: HotReloadEvent;
   auth: PanelAuthSnapshot;
+  /** 是否真的写进了磁盘。false 表示只在内存生效，重启即丢——前端据此**不要**清脏标记。 */
+  persisted: boolean;
+  /** persisted 为 false 时的具体原因（磁盘满 / 无权限 / config.json 处于损坏保护状态等）。 */
+  persistErrors?: string[];
 }
 
 export interface ConfigImportSaveResult extends ConfigSaveResult {
@@ -146,6 +150,7 @@ export class ConfigRepository {
     // 还原只在「值恰好等于当前值的打码结果」时生效，两种来源都安全。
     const imported = importAppConfig(payload);
     const restored = unmaskConfigSecrets(imported.config, this.config);
+    assertSecretsResolved(restored, '导入的配置');
     const saved = this.saveFullConfig(restored, '配置已导入并热重载');
     return { ...saved, importResult: imported };
   }
@@ -154,6 +159,7 @@ export class ConfigRepository {
     // 面板拿到的是打码后的配置，原样提交回来时要先还原成真实密钥，
     // 否则一次「只改了别的字段」的保存就会把密钥写成一串圆点。
     const restored = unmaskConfigSecrets(objectOrEmpty(patchOrConfig), this.config);
+    assertSecretsResolved(restored, '提交的配置');
     const merged = mergeConfigPatch(this.config, objectOrEmpty(restored));
     return this.saveFullConfig(merged, '配置已热重载生效，无需重启');
   }
@@ -181,11 +187,27 @@ export class ConfigRepository {
       reloadedAt: this.now().toISOString(),
     };
 
-    for (const listener of this.listeners) listener(hotReload, this.getConfig());
+    // 落盘由监听器完成。以前监听器里的异常被 apps 层空 catch 吞掉，
+    // 面板照样收到「配置已热重载生效」，前端还会据此清掉脏标记——
+    // 用户确信改动已保存，实际磁盘上一个字节都没变，进程一重启全没了。
+    // 现在逐个收集异常，如实报给调用方。
+    const persistErrors: string[] = [];
+    for (const listener of this.listeners) {
+      try {
+        listener(hotReload, this.getConfig());
+      } catch (error) {
+        persistErrors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    const persisted = persistErrors.length === 0;
 
     return {
       success: true,
-      message,
+      persisted,
+      persistErrors: persisted ? undefined : persistErrors,
+      message: persisted
+        ? message
+        : `配置已在内存生效，但写入磁盘失败，重启后会丢失：${persistErrors.join('；')}`,
       config: this.getMaskedConfig(),
       revision: this.revisionValue,
       hotReload,
@@ -240,6 +262,22 @@ export class WebApi {
       return json(500, { success: false, error: message });
     }
   }
+}
+
+/**
+ * 凭据里还带着打码哨兵就直接拒绝，绝不落盘。
+ * 典型场景是导入了别人机器上打码过的配置——那串圆点对不上本机任何旧值，
+ * 一旦写进去，上游调用全 401、NapCat 掉线、面板密码变成圆点，且原值再也找不回来。
+ */
+function assertSecretsResolved(config: unknown, what: string): void {
+  const unresolved = findUnresolvedSecrets(config);
+  if (!unresolved.length) return;
+  throw new WebApiError(
+    400,
+    `${what}里有 ${unresolved.length} 项凭据仍是打码值，未保存：${unresolved.join('、')}。`
+    + '这通常是因为导入了别处面板导出的配置——打码值只能在生成它的那台机器上还原。'
+    + '请在对应字段填入真实凭据后再保存。',
+  );
 }
 
 export function createConfigRepository(options: ConfigRepositoryOptions = {}): ConfigRepository {

@@ -8,18 +8,52 @@ import type { AppConfig } from '../../config/src/index.js';
  * 所以任何能访问这个端口的人都能消耗额度。默认放行是为了本机自用方便，
  * 但必须让用户能一键收紧，并且总有一层限流兜底。
  *
- * 只保护「花钱」的路由：读画廊、取资产、查任务状态一律不拦，
- * 否则前台刷新列表都会被限流打断。
+ * 保护范围：所有会**改变状态**的请求。读路由（GET/HEAD）一律不拦——
+ * 否则前台刷新列表都会被限流打断；这一点在后台画布页的说明文字里也写明了。
+ * 只有真正调上游的三条路由计入每分钟配额，删记录/改项目要鉴权但不占额度。
  */
 
 export type CanvasAccessDecision =
   | { allowed: true }
   | { allowed: false; status: 401 | 403 | 429; code: string; message: string };
 
-/** 会真正调用上游的路由（不含 GET 类读取）。 */
+/** 会真正调用上游、要花钱的三条路由。 */
+const COSTLY_PATHS = new Set(['/images/generate', '/images/edit', '/interrogate']);
+
+/** bot 往画廊回写自己的生成记录，走的是它自己的面板令牌校验，且不该被画布开关影响。 */
+const SELF_GUARDED_PATHS = new Set(['/bot/gallery']);
+
+export interface CanvasRouteGuard {
+  /** 是否要过访问控制。 */
+  guarded: boolean;
+  /** 是否计入每分钟生成配额。只有真正花钱的路由才计。 */
+  countsAgainstLimit: boolean;
+}
+
+/**
+ * 哪些路由要过闸门。
+ *
+ * 最初这里写的是「只拦 POST」——这是个范围错误。画布的写操作里
+ * DELETE /gallery/:id 会连带 fs.rmSync 真删磁盘资产，PUT /project 能把任意 JSON
+ * 灌进内存并反复全量落盘，两者都不是 POST，于是「关闭画布」和「仅管理员」
+ * 对它们完全无效——任何能连到端口的人都能把画廊删空。
+ *
+ * 现在按「是否改变状态」判定：GET/HEAD/OPTIONS 放行（读路由不拦是既定设计，
+ * 见文件头注释与后台 UI 上的说明），其余方法一律过闸门。
+ * 写路由过闸门但不占生图配额——删一条记录不该消耗用户的每分钟生成额度。
+ */
+export function canvasRouteGuard(method: string, path: string): CanvasRouteGuard {
+  const verb = String(method || 'GET').toUpperCase();
+  if (verb === 'GET' || verb === 'HEAD' || verb === 'OPTIONS') {
+    return { guarded: false, countsAgainstLimit: false };
+  }
+  if (SELF_GUARDED_PATHS.has(path)) return { guarded: false, countsAgainstLimit: false };
+  return { guarded: true, countsAgainstLimit: verb === 'POST' && COSTLY_PATHS.has(path) };
+}
+
+/** 会真正调用上游的路由（保留给既有调用方与测试）。 */
 export function isCostlyCanvasRoute(method: string, path: string): boolean {
-  if (String(method || '').toUpperCase() !== 'POST') return false;
-  return path === '/images/generate' || path === '/images/edit' || path === '/interrogate';
+  return String(method || '').toUpperCase() === 'POST' && COSTLY_PATHS.has(path);
 }
 
 const LOCAL_ADDRESSES = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1', 'localhost', '']);
@@ -90,6 +124,8 @@ export interface CanvasAccessOptions {
   /** 面板会话校验；admin 模式下用它判断是不是管理员。 */
   isAuthorized: (headers?: Record<string, string | undefined>) => boolean;
   limiter: RateLimiter;
+  /** 是否计入每分钟配额。写操作（删记录、改项目）要鉴权但不该占生图额度。 */
+  countsAgainstLimit?: boolean;
 }
 
 export function checkCanvasAccess(options: CanvasAccessOptions): CanvasAccessDecision {
@@ -109,6 +145,8 @@ export function checkCanvasAccess(options: CanvasAccessOptions): CanvasAccessDec
 
   // 管理员不受限流约束——他就是额度的主人，被自己的限流挡住只会莫名其妙。
   if (options.isAuthorized(options.headers)) return { allowed: true };
+
+  if (options.countsAgainstLimit === false) return { allowed: true };
 
   const key = clientAddress(options.headers) || 'unknown';
   if (!options.limiter.take(key, Number(canvas.rateLimitPerMinute))) {

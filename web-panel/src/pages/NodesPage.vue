@@ -38,7 +38,7 @@ const NODE_INDEX_FIELDS: Array<[string, string]> = [
     ['canvas', 'imageNodeIndex'], ['canvas', 'editNodeIndex'],
     ['canvas', 'interrogateNodeIndex'], ['canvas', 'interrogateTemplateNodeIndex'],
     ['freeMode', 'nodeIndex'], ['promptsChat', 'smartNodeIndex'],
-    ['bot', 'tts'], // 占位：tts.preprocess.nodeIndex 单独处理
+    // bot.tts.preprocess.nodeIndex 藏在第三层，这个两级遍历够不到，在下面单独处理。
 ];
 
 const PROVIDERS = [

@@ -246,3 +246,77 @@ test('被停用或为 0 的旧限制不参与折叠', () => {
   });
   assert.equal(result.config.llm.apiKeys[0].concurrency, 0);
 });
+
+/* ── 节点表热重载（复查确认：原来是装配时刻的快照） ────────────── */
+
+test('nodes 传函数时每次现读——换 key / 改 baseUrl 立刻生效', async () => {
+  let nodes = [{ baseUrl: 'https://old.example/v1', apiKey: 'old-key', dialect: 'openai' }];
+  const seen = [];
+  const client = createModelClient({
+    nodes: () => nodes,
+    registry: createCapabilityRegistry({ fallback: CHAT_PROFILE }),
+    transport: async (req) => {
+      seen.push({ url: req.url, auth: req.headers?.Authorization });
+      return { status: 200, data: { choices: [{ message: { content: 'ok' } }] } };
+    },
+  });
+
+  await client.chat(0, { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'x' }] });
+  assert.match(seen[0].url, /old\.example/);
+  assert.equal(seen[0].auth, 'Bearer old-key');
+
+  // 模拟面板保存后配置热重载
+  nodes = [{ baseUrl: 'https://new.example/v1', apiKey: 'new-key', dialect: 'openai' }];
+
+  await client.chat(0, { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'x' }] });
+  assert.match(seen[1].url, /new\.example/, '改了 baseUrl 必须立刻生效，不能等重启');
+  assert.equal(seen[1].auth, 'Bearer new-key', '换了 key 必须立刻生效');
+});
+
+test('全新部署场景：装配时节点是空的，填好后立刻可用', async () => {
+  // 默认配置的 baseUrl 和 key 都是空串——这正是快照写法的致命场景
+  let nodes = [{ baseUrl: '', apiKey: '', dialect: 'openai' }];
+  let lastUrl = '';
+  const client = createModelClient({
+    nodes: () => nodes,
+    registry: createCapabilityRegistry({ fallback: CHAT_PROFILE }),
+    transport: async (req) => {
+      lastUrl = req.url;
+      return { status: 200, data: { choices: [{ message: { content: 'ok' } }] } };
+    },
+  });
+
+  nodes = [{ baseUrl: 'https://filled.example/v1', apiKey: 'k', dialect: 'openai' }];
+  await client.chat(0, { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'x' }] });
+  assert.match(lastUrl, /filled\.example/, '运维填完节点保存后应当立刻能用');
+});
+
+test('新增节点后可以直接路由过去，不必重启', async () => {
+  let nodes = [{ baseUrl: 'https://a.example/v1', apiKey: 'ka', dialect: 'openai' }];
+  let lastUrl = '';
+  const client = createModelClient({
+    nodes: () => nodes,
+    registry: createCapabilityRegistry({ fallback: CHAT_PROFILE }),
+    transport: async (req) => { lastUrl = req.url; return { status: 200, data: { choices: [{ message: { content: 'ok' } }] } }; },
+  });
+
+  nodes = [...nodes, { baseUrl: 'https://b.example/v1', apiKey: 'kb', dialect: 'openai' }];
+  await client.chat(1, { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'x' }] });
+  assert.match(lastUrl, /b\.example/, '新节点的下标必须立刻可用，否则会静默回落到节点 0');
+});
+
+test('createReloadableRegistry: 覆盖变了才重建，没变就复用', async () => {
+  const { createReloadableRegistry } = await import('../dist/packages/model/src/index.js');
+  let overrides = [{ model: 'my-relay', operations: ['chat'] }];
+  const getRegistry = createReloadableRegistry(() => overrides);
+
+  const first = getRegistry();
+  assert.equal(getRegistry(), first, '内容没变应当复用同一实例');
+  assert.equal(first.can('my-relay', 'chat'), true);
+  assert.equal(first.can('my-relay', 'image.generate'), false);
+
+  overrides = [{ model: 'my-relay', operations: ['chat', 'image.generate'] }];
+  const second = getRegistry();
+  assert.notEqual(second, first, '覆盖改了应当重建');
+  assert.equal(second.can('my-relay', 'image.generate'), true, '能力覆盖的改动要即时生效');
+});
