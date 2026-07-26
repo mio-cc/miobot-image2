@@ -70,7 +70,7 @@ export function createModelCanvasGenerator(client: ModelClient, getConfig?: () =
       return { images: artifactsToGeneration(res) };
     },
     async edit(input) {
-      const res = await client.editImage(input.nodeIndex, { model: input.model, prompt: input.prompt, images: input.images, size: input.size, quality: input.quality, ...(canvas()?.imageTimeoutMs ? { timeoutMs: canvas()!.imageTimeoutMs } : {}) });
+      const res = await client.editImage(input.nodeIndex, { model: input.model, prompt: input.prompt, images: input.images, size: input.size, quality: input.quality, ...(canvas()?.imageTimeoutMs ? { timeoutMs: canvas()!.imageTimeoutMs } : {}), ...(canvas()?.imageEditRequestMode ? { requestMode: canvas()!.imageEditRequestMode } : {}) });
       return { images: artifactsToGeneration(res) };
     },
     async interrogate(input) {

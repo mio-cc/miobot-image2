@@ -149,3 +149,49 @@ test('非形态问题的错误不会触发退回（避免掩盖真实故障）',
   await assert.rejects(() => client.editImage(0, { model: 'gpt-image-2', prompt: 'p', images: [PNG_DATA_URL] }), /Invalid API key/);
   assert.equal(seen.length, 1, '鉴权失败不应再试 JSON');
 });
+
+/* ── requestMode 手动挡（捞验证确认：面板下拉框对 ModelClient 完全无效） ── */
+
+test('requestMode=multipart 强制走 multipart，即便模型档案偏好 JSON', async () => {
+  let seen;
+  const client = makeClient(GROK_IMAGINE_IMAGE_PROFILE, (r) => { seen = r; });
+  await client.editImage(0, { model: 'grok-imagine-image-quality', prompt: 'p', images: [PNG_DATA_URL], requestMode: 'multipart' });
+  assert.equal(seen.multipart, true, '用户点了 multipart 就该发 multipart');
+});
+
+test('requestMode=json-images 强制走 JSON，即便模型是官方 gpt-image', async () => {
+  let seen;
+  const client = makeClient(GPT_IMAGE_PROFILE, (r) => { seen = r; });
+  await client.editImage(0, { model: 'gpt-image-2', prompt: 'p', images: [PNG_DATA_URL], requestMode: 'json-images' });
+  assert.notEqual(seen.multipart, true, '用户点了 JSON 就不该先试 multipart');
+});
+
+test('强制 multipart 时不做 JSON 回退——否则「我就要 multipart」失去意义', async () => {
+  const seen = [];
+  const client = createModelClient({
+    nodes: [NODE],
+    registry: createCapabilityRegistry({ fallback: GPT_IMAGE_PROFILE }),
+    transport: async (request) => {
+      seen.push(request);
+      return { status: 415, data: { error: { message: 'multipart/form-data not accepted' } } };
+    },
+  });
+  await assert.rejects(() => client.editImage(0, { model: 'gpt-image-2', prompt: 'p', images: [PNG_DATA_URL], requestMode: 'multipart' }));
+  assert.equal(seen.length, 1, '强制模式下失败就该直接报错，不要再悄悄试一次 JSON 掩盖原因');
+});
+
+test('auto（默认）仍然保持原有的自动排序与回退', async () => {
+  const seen = [];
+  const client = createModelClient({
+    nodes: [NODE],
+    registry: createCapabilityRegistry({ fallback: GPT_IMAGE_PROFILE }),
+    transport: async (request) => {
+      seen.push(request);
+      if (request.multipart) return { status: 415, data: { error: { message: 'multipart not accepted' } } };
+      return { status: 200, data: { data: [{ b64_json: 'AAA' }] } };
+    },
+  });
+  const result = await client.editImage(0, { model: 'gpt-image-2', prompt: 'p', images: [PNG_DATA_URL], requestMode: 'auto' });
+  assert.equal(result.images.length, 1);
+  assert.equal(seen.length, 2, 'auto 下仍应先 multipart 再回退 JSON');
+});

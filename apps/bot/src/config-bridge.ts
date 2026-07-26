@@ -24,6 +24,8 @@ export interface BotRouting {
   /** 生图失败重试（面板上原本是个死输入框）。 */
   imageRetryCount?: number;
   imageRetryDelayMs?: number;
+  /** 改图请求形态的手动挡。面板上这个下拉框以前对 ModelClient 完全无效。 */
+  imageEditRequestMode?: 'auto' | 'json-images' | 'json-image' | 'multipart';
 }
 
 const KNOWN_DIALECTS: ProviderDialect[] = ['openai', 'anthropic', 'gemini', 'huggingface', 'custom'];
@@ -100,6 +102,7 @@ export function toBotRouting(cfg: AppConfig): BotRouting {
     interrogateTimeoutMs: cfg.llm.interrogateTimeoutMs,
     imageRetryCount: cfg.llm.imageRetryCount,
     imageRetryDelayMs: cfg.llm.imageRetryDelayMs,
+    imageEditRequestMode: cfg.llm.imageEditRequestMode,
   };
 }
 

@@ -84,6 +84,11 @@ export interface ImageEditRequest {
   aspectRatio?: string;
   resolution?: string;
   timeoutMs?: number;
+  /**
+   * 用户在后台强制指定的请求形态。auto = 按模型自动排序（默认）。
+   * 中转的兼容性千奇百怪，自动判断必然有猜错的时候，得给用户一个手动挡。
+   */
+  requestMode?: 'auto' | 'json-images' | 'json-image' | 'multipart';
 }
 
 /**

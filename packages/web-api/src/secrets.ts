@@ -30,6 +30,7 @@ const SECRET_PATHS = [
   'napcat.token',
   'promptsChat.apiKey',
   'bot.tts.apiKey',
+  'huggingFace.token',
 ] as const;
 
 export function maskSecretValue(value: unknown): string {

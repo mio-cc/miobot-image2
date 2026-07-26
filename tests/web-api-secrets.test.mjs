@@ -231,3 +231,51 @@ test('findUnresolvedSecrets 指名道姓地列出问题字段', () => {
   assert.ok(bad.some((x) => x.includes('好用的中转')), '要带上节点名，用户才知道去哪改');
   assert.equal(bad.length, 2);
 });
+
+/* ── 打码口子（捞验证确认：HF token 与导入响应绕过了打码） ────────────── */
+
+test('huggingFace.token 也要打码', () => {
+  const repo = createConfigRepository({
+    initialConfig: { huggingFace: { token: 'hf_realtokenvalue1234' } },
+  });
+  const masked = repo.getMaskedConfig();
+  assert.ok(masked.huggingFace.token.includes('••••'), 'HF token 不能明文发给浏览器');
+  assert.equal(repo.getConfig().huggingFace.token, 'hf_realtokenvalue1234', '内部消费者仍要拿真值');
+
+  // 原样提交回来不能把真 token 写坏
+  repo.saveConfig(JSON.parse(JSON.stringify(masked)));
+  assert.equal(repo.getConfig().huggingFace.token, 'hf_realtokenvalue1234');
+});
+
+test('导入接口的响应体里不能出现任何明文凭据', () => {
+  const repo = createConfigRepository({
+    initialConfig: {
+      panel: { passwordSeed: 'my-real-password-1234' },
+      napcat: { wsUrl: 'ws://localhost:3001', token: 'napcat-real-token-9876' },
+      huggingFace: { token: 'hf_realtokenvalue1234' },
+      llm: { apiKeys: [{ name: 'n0', baseUrl: 'https://a/v1', key: 'sk-real-key-abcdefgh' }] },
+    },
+  });
+
+  // 导入一份新配置（带真实凭据，模拟本机导出的备份）
+  const result = repo.importAndSave({
+    config: {
+      panel: { passwordSeed: 'imported-password-5555' },
+      napcat: { wsUrl: 'ws://localhost:3001', token: 'imported-napcat-7777' },
+      huggingFace: { token: 'hf_importedtoken8888' },
+      llm: { apiKeys: [{ name: 'n0', baseUrl: 'https://b/v1', key: 'sk-imported-key-9999' }] },
+    },
+  });
+
+  const wire = JSON.stringify(result);
+  for (const secret of ['imported-password-5555', 'imported-napcat-7777', 'hf_importedtoken8888', 'sk-imported-key-9999']) {
+    assert.ok(!wire.includes(secret), `响应体里出现了明文凭据：${secret}`);
+  }
+  assert.ok(result.importResult.config.panel.passwordSeed.includes('••••'), 'importResult.config 也必须是打码版');
+  // 迁移信息要保留
+  assert.ok(Array.isArray(result.importResult.migrations));
+
+  // 真值确实写进去了
+  assert.equal(repo.getConfig().panel.passwordSeed, 'imported-password-5555');
+  assert.equal(repo.getConfig().huggingFace.token, 'hf_importedtoken8888');
+});

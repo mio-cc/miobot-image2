@@ -106,7 +106,7 @@ export function checkCapabilityBindings(config: unknown): CapabilityBinding[] {
       enabled,
       operations,
       source: hasOverride ? 'override' : 'inferred',
-      learned: describeLearned(healingKey(nodeIndex, model)),
+      learned: describeLearned(healingKey(node, model)),
     };
 
     if (!model || model === 'none') {
@@ -138,6 +138,6 @@ export function resolveModelCapabilities(config: unknown, nodeIndex: number, mod
     nodeIndex,
     model,
     operations: model ? registry.operationsOf(model) : [],
-    learned: describeLearned(healingKey(nodeIndex, model)),
+    learned: describeLearned(healingKey((cfg?.llm?.apiKeys || [])[nodeIndex], model)),
   };
 }

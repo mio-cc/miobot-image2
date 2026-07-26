@@ -38,8 +38,24 @@ interface Learned {
 
 const learned = new Map<string, Learned>();
 
-export function healingKey(nodeIndex: number, model: string): string {
-  return `${Number(nodeIndex)}::${String(model || '').trim()}`;
+/** 能唯一标识一个上游的最小信息。用它而不是数组下标做 key。 */
+export interface HealingNodeRef {
+  baseUrl?: string;
+  dialect?: string;
+}
+
+/**
+ * 自愈结论的缓存键。
+ *
+ * 原来是「数组下标 + 模型名」。下标是配置里的位置，不是身份：
+ * 用户删掉中间一个节点、或把节点 1 的 baseUrl 换成另一家服务商之后，
+ * 下标 1 仍然命中之前学到的结论——于是在新服务商上继续静默剔除
+ * 它其实支持的参数（比如 temperature），而且永远不会自我纠正。
+ * 现在绑到 dialect + baseUrl，换服务商自然换 key。
+ */
+export function healingKey(node: HealingNodeRef | undefined, model: string): string {
+  const base = String(node?.baseUrl || '').trim().replace(/\/+$/, '').toLowerCase();
+  return `${node?.dialect || 'openai'}|${base}::${String(model || '').trim()}`;
 }
 
 function getLearned(key: string): Learned {

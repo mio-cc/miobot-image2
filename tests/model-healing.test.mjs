@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { applyFix, diagnose, describeLearned, healingKey, resetLearned } from '../dist/packages/model/src/capability/healing.js';
+import { applyFix, diagnose, describeLearned, healingKey, rememberFix, resetLearned } from '../dist/packages/model/src/capability/healing.js';
 import { createModelClient } from '../dist/packages/model/src/client.js';
 import { createCapabilityRegistry } from '../dist/packages/model/src/capability/registry.js';
 import { CHAT_PROFILE } from '../dist/packages/model/src/capability/profiles.js';
@@ -71,9 +71,11 @@ function makeTransport(reject) {
   return { transport, seen };
 }
 
+const NODE = { name: 'n', baseUrl: 'https://api.example.com/v1', apiKey: 'k', dialect: 'openai' };
+
 function makeClient(transport) {
   return createModelClient({
-    nodes: [{ name: 'n', baseUrl: 'https://api.example.com/v1', apiKey: 'k', dialect: 'openai' }],
+    nodes: [NODE],
     registry: createCapabilityRegistry({ fallback: CHAT_PROFILE }),
     transport,
   });
@@ -89,7 +91,7 @@ test('自愈: 按提示改名后重试成功, 并记住结论', async () => {
   assert.equal(result.text, 'ok');
   assert.equal(seen.length, 2, '第一轮被拒, 第二轮改名后成功');
   assert.equal(seen[1].max_completion_tokens, 2000);
-  assert.deepEqual(describeLearned(healingKey(0, 'mystery-model')).renamed, { max_tokens: 'max_completion_tokens' });
+  assert.deepEqual(describeLearned(healingKey(NODE, 'mystery-model')).renamed, { max_tokens: 'max_completion_tokens' });
 });
 
 test('自愈: 学到之后第二次请求一轮直达', async () => {
@@ -178,4 +180,38 @@ test('响应校验: 输出被 token 上限截断有专门提示', () => {
 test('响应校验: 正文在 reasoning_content 里时能兜底取到', () => {
   const result = parseOpenAiText({ choices: [{ message: { content: '', reasoning_content: '推理正文' } }] });
   assert.equal(result.text, '推理正文');
+});
+
+/* ── 自愈结论绑定节点身份（捞验证确认：原来绑数组下标会串味） ────────── */
+
+test('换了服务商就不该继承上一家的自愈结论', () => {
+  resetLearned();
+  const oldNode = { baseUrl: 'https://old-relay.com/v1', dialect: 'openai' };
+  const newNode = { baseUrl: 'https://new-relay.com/v1', dialect: 'openai' };
+
+  // 在旧服务商上学到「这个模型不认 temperature」
+  rememberFix(healingKey(oldNode, 'gpt-4o'), { action: 'drop', param: 'temperature' });
+  assert.deepEqual(describeLearned(healingKey(oldNode, 'gpt-4o')).dropped, ['temperature']);
+
+  // 用户把节点的 baseUrl 换成另一家——不该继承。
+  // describeLearned 对未知 key 返回 undefined，这比空数组更强：连条目都没建。
+  assert.equal(describeLearned(healingKey(newNode, 'gpt-4o')), undefined,
+    '换服务商后还沿用旧结论，会在新家继续静默剔除它其实支持的参数，且永不自我纠正');
+});
+
+test('同一节点同一模型仍然共享结论（缓存要有效）', () => {
+  resetLearned();
+  const node = { baseUrl: 'https://relay.com/v1/', dialect: 'openai' };
+  const sameNodeDifferentSlash = { baseUrl: 'https://Relay.com/v1', dialect: 'openai' };
+  rememberFix(healingKey(node, 'm'), { action: 'drop', param: 'top_p' });
+  assert.deepEqual(describeLearned(healingKey(sameNodeDifferentSlash, 'm')).dropped, ['top_p'],
+    '尾斜杠与大小写差异不该被当成两个节点');
+});
+
+test('方言不同视为不同上游', () => {
+  resetLearned();
+  const a = { baseUrl: 'https://x.com/v1', dialect: 'openai' };
+  const b = { baseUrl: 'https://x.com/v1', dialect: 'anthropic' };
+  rememberFix(healingKey(a, 'm'), { action: 'drop', param: 'p' });
+  assert.equal(describeLearned(healingKey(b, 'm')), undefined);
 });

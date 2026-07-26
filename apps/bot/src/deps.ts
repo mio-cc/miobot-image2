@@ -132,6 +132,7 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       const res = await client.editImage(routing.editNodeIndex, {
         model: req.model, prompt: req.prompt, images: req.images, size: req.size, quality: req.quality,
         ...(routing.imageTimeoutMs ? { timeoutMs: routing.imageTimeoutMs } : {}),
+        ...(routing.imageEditRequestMode ? { requestMode: routing.imageEditRequestMode } : {}),
       });
       return { images: artifactsToStrings(res) };
     },

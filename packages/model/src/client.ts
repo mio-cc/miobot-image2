@@ -162,15 +162,27 @@ export class ModelClient {
    */
   async editImage(nodeIndex: number, req: ImageEditRequest): Promise<ImageResult> {
     const shaped = this.shapeImageEdit(req);
-    const node = this.nodes[this.resolveIndex(nodeIndex)];
+    // 解析一次并一路用下去：闸门必须记在**真正会发请求的那个节点**上，
+    // 否则传进来的下标指向停用节点时，闸门记到了一个根本不发请求的槽上，
+    // 目标节点的并发上限被完全绕过。
+    const primary = this.resolveIndex(nodeIndex);
+    const node = this.nodes[primary];
     const dialect = node ? dialectFor(node) : undefined;
 
     // 只有 OpenAI 兼容方言存在 JSON / multipart 之分；其它方言（gemini 原生等）走自己的实现。
-    const wantsMultipartFirst = dialect?.id === 'openai' && imageEditTransportsFor(shaped.model)[0] === 'multipart';
+    // requestMode 是用户在后台的手动挡：面板上那个下拉框以前对这里完全无效，
+    // 中转把形态猜错时用户没有任何办法纠正。
+    const mode = shaped.requestMode || 'auto';
+    const wantsMultipartFirst = dialect?.id === 'openai'
+      && (mode === 'multipart' || (mode === 'auto' && imageEditTransportsFor(shaped.model)[0] === 'multipart'));
+
     if (wantsMultipartFirst && node) {
       try {
-        return await this.editImageMultipart(nodeIndex, shaped, node);
+        return await this.editImageMultipart(primary, shaped, node);
       } catch (error) {
+        // 用户明确点了 multipart 就别自作主张退回——那会让「我就要 multipart」失去意义，
+        // 也会把真正的失败原因掩盖在一次 JSON 重试后面。
+        if (mode === 'multipart') throw error;
         // multipart 明确不被接受时退回 JSON；其余错误照常上抛。
         if (!looksLikeShapeRejection(error)) throw error;
         this.logger?.warn?.('image edit multipart rejected, falling back to JSON', {
@@ -371,7 +383,7 @@ export class ModelClient {
     }
     const plan = build(dialect, node);
     const resolvedTimeout = Math.max(1, Math.trunc(timeoutMs ?? this.timeoutMs));
-    const healKey = healingKey(nodeIndex, model);
+    const healKey = healingKey(node, model);
 
     // 先套用之前学到的结论：这个「节点 + 模型」已知不认识哪些参数、哪些要改名。
     // multipart 的 body 是 FormData，不参与自愈。

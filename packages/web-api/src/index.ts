@@ -152,7 +152,10 @@ export class ConfigRepository {
     const restored = unmaskConfigSecrets(imported.config, this.config);
     assertSecretsResolved(restored, '导入的配置');
     const saved = this.saveFullConfig(restored, '配置已导入并热重载');
-    return { ...saved, importResult: imported };
+    // imported.config 是被 unmaskConfigSecrets **就地**还原成真实凭据的那个对象，
+    // 原样回给浏览器等于绕过打码——面板密码、napcat token、全部节点密钥都会明文出现在
+    // 导入接口的响应体里。换成 saved.config（已 getMaskedConfig 且已归一化）。
+    return { ...saved, importResult: { ...imported, config: saved.config } };
   }
 
   saveConfig(patchOrConfig: unknown): ConfigSaveResult {
