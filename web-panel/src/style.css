@@ -251,4 +251,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--ink); }
 .dot-good { background: var(--good); }
 .dot-warn { background: var(--warning); }
 .dot-crit { background: var(--critical); }
+/* 结论待定：改了配置还没保存，旧体检结果已作废，新的还没算。 */
+.dot-idle { background: var(--ink-3); opacity: .45; }
 .mono { font-family: var(--mono); }

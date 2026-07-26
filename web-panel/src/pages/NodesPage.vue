@@ -111,8 +111,18 @@ async function fetchModels(index: number) {
     try {
         // 后端要明文 key；面板上是打码值，所以只在用户刚改过（不含圆点）时才带上。
         const key = String(node.key || '').includes('••••') ? '' : node.key;
-        const res = await client.post('/fetch-models', { baseUrl: node.baseUrl, key, nodeIndex: index });
-        node.models = res.data.models || [];
+        // keyRef 是打码那一刻的下标，挂在节点对象上，删除/重排时跟着一起走。
+        // 发实时下标会漂：删掉一个节点还没保存时，后端会按下标取到别的节点的密钥。
+        const keyRef = Number.isInteger((node as any).keyRef) ? (node as any).keyRef : index;
+        const res = await client.post('/fetch-models', { baseUrl: node.baseUrl, key, keyRef, nodeIndex: keyRef });
+        const fetched = res.data.models || [];
+        // 上游 200 但一个都没解析出来时，后端会带 warning。这时保留原列表——
+        // 直接覆盖成空的话，用户看到的是「点了一下，模型全没了」。
+        if (!fetched.length && res.data.warning) {
+            fetchError.value = `「${node.name || index + 1}」${res.data.warning}`;
+            return;
+        }
+        node.models = fetched;
         node.modelsFetchedAt = new Date().toISOString();
         capabilities.refresh();
     } catch (error: any) {

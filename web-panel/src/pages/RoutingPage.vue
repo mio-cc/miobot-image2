@@ -7,6 +7,8 @@ import SectionCard from '../components/SectionCard.vue';
 import ModelPicker from '../components/ModelPicker.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+// 体检快照 vs 实时配置的取舍规则抽在这里，好单测。
+import { isBindingFresh, resolveNodeName, resolveRowStatus } from '../../../packages/web-panel/src/routing-binding';
 
 /**
  * 能力分工——本次重构的核心页。
@@ -84,8 +86,49 @@ const rows: Row[] = [
 const get = (path: string) => configStore.get(path);
 const set = (path: string, value: any) => configStore.set(path, value);
 
+/**
+ * 体检结果是后端按【已保存的配置】算出来的快照。
+ *
+ * 用户在展开区改了节点或模型之后，改动只存在本地（要点保存才回后端），
+ * 这份快照就对不上了——继续拿它当事实，界面会显示上一个节点的名字、
+ * 上一次的能力徽标，以及一条已经不成立的红色报错。
+ * 所以先比一遍节点和模型：对不上就当没有体检结果，让调用方回落到实时配置。
+ */
+function stateOf(row: Row) {
+    return { nodeIndex: Number(get(row.node)) || 0, model: String(get(row.model) || '') };
+}
+
 function bindingFor(key: string) {
-    return capabilities.bindings.find(item => item.key === key);
+    const binding = capabilities.bindings.find(item => item.key === key);
+    const row = rows.find(item => item.key === key);
+    if (!binding || !row) return binding;
+    return isBindingFresh(binding, stateOf(row)) ? binding : undefined;
+}
+
+/** 体检结果与当前配置对不上（改了还没保存）。此时只报「待保存」，不报旧结论。 */
+function verdictStale(row: Row) { return statusOf(row) === 'stale'; }
+
+/**
+ * 表格里那一列「节点」。
+ * 实时配置优先——它才是「现在选的是哪个节点」的唯一事实来源；
+ * 体检快照里的 nodeName 只是后端的一次回显，放在前面会把刚改的选择盖掉。
+ */
+function nodeNameOf(row: Row) {
+    const names = (config.value?.llm?.apiKeys || []).map((node: any) => node?.name);
+    return resolveNodeName(names, stateOf(row), capabilities.bindings.find(item => item.key === row.key));
+}
+
+function statusOf(row: Row) {
+    const binding = capabilities.bindings.find(item => item.key === row.key);
+    return resolveRowStatus(binding, stateOf(row), { enabled: row.toggle ? get(row.toggle) !== false : true });
+}
+
+/** 徽标按模型名查：能力是模型的属性，跟选哪个节点无关，所以换节点不该让徽标消失。 */
+function capsOf(row: Row) {
+    const model = String(get(row.model) || '').trim();
+    if (!model) return [];
+    const live = capabilities.capabilitiesOf(model);
+    return live.length ? live : (bindingFor(row.key)?.operations || []);
 }
 
 function toggleRow(key: string) {
@@ -196,15 +239,16 @@ onMounted(() => {
                 <div class="mono text-[11px] text-[color:var(--ink-3)]">{{ row.trigger }}</div>
               </td>
               <td class="px-4 py-3 truncate">
-                {{ bindingFor(row.key)?.nodeName || config.llm.apiKeys?.[get(row.node)]?.name || '—' }}
+                {{ nodeNameOf(row) }}
               </td>
               <td class="px-4 py-3">
                 <div class="flex flex-wrap items-center gap-1.5">
                   <span class="mono font-medium">{{ get(row.model) || '—' }}</span>
-                  <span v-for="cap in bindingFor(row.key)?.operations || []" :key="cap" class="tag">
+                  <span v-for="cap in capsOf(row)" :key="cap" class="tag">
                     {{ capabilities.labels[cap] || cap }}
                   </span>
                   <span v-if="bindingFor(row.key)?.source === 'override'" class="tag">人工指定</span>
+                  <span v-if="verdictStale(row)" class="tag">待保存后体检</span>
                 </div>
                 <div v-if="bindingFor(row.key) && !bindingFor(row.key)!.ok" class="status-crit text-[11px] mt-1">
                   {{ bindingFor(row.key)!.reason }}
@@ -212,7 +256,7 @@ onMounted(() => {
               </td>
               <td class="px-4 py-3 text-right">
                 <span class="dot"
-                  :class="row.toggle && get(row.toggle) === false ? 'dot-warn' : (bindingFor(row.key)?.ok ? 'dot-good' : 'dot-crit')"></span>
+                  :class="{ disabled: 'dot-warn', stale: 'dot-idle', ok: 'dot-good', broken: 'dot-crit' }[statusOf(row)]"></span>
               </td>
             </tr>
 

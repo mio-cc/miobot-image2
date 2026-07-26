@@ -1,10 +1,17 @@
-import { createCapabilityRegistry, createModelClient, type CapabilityOverride, type ModelNode, type ModelOperation, type ProviderDialect } from '../../../packages/model/src/index.js';
+import { createModelClient, createReloadableRegistry, type CapabilityOverride, type ModelNode, type ModelOperation, type ProviderDialect } from '../../../packages/model/src/index.js';
 import { NapcatAdapter } from '../../../packages/napcat/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { AdminResponse, AdminServiceDeps } from '../../../packages/admin-service/src/index.js';
 
 const KNOWN: ProviderDialect[] = ['openai', 'anthropic', 'gemini', 'huggingface', 'custom'];
 
+/**
+ * OpenAI 兼容 Base URL 的清洗。
+ *
+ * 规则必须与 config 里的 cleanupApiBaseUrl 一致——那边是落盘用的，这边是探测用的。
+ * 两边不一致时，「探测通过的地址」和「实际存下来的地址」会是两个东西，
+ * 于是「获取模型成功了，但发消息还是连不上」。
+ */
 export function cleanBaseUrl(value: string): string {
   return String(value || '').trim()
     .replace(/[\s,，;；]+$/g, '')
@@ -18,11 +25,23 @@ function joinUrl(base: string, path: string): string {
 
 /** 从 /models 响应里抽取模型 id(兼容 {data:[{id}]} / {models:[...]} / 字符串数组)。 */
 export function extractModelIds(data: unknown): string[] {
-  const root = data as Record<string, any>;
-  const list: any[] = Array.isArray(root?.data) ? root.data
-    : Array.isArray(root?.models) ? root.models
-    : Array.isArray(root) ? (root as any[]) : [];
-  const ids = list.map((item) => typeof item === 'string' ? item : String(item?.id || item?.name || '')).map((s) => s.trim()).filter(Boolean);
+  // new-api / one-api 一类网关会在外面再包一层业务信封：
+  //   { code: 0, msg: 'ok', data: { object: 'list', data: [...] } }
+  // 只认最外层的话会静默拿到 0 个模型，界面还显示成功。
+  const unwrap = (value: unknown, depth = 0): any[] => {
+    if (Array.isArray(value)) return value;
+    if (!value || typeof value !== 'object' || depth > 2) return [];
+    const node = value as Record<string, any>;
+    for (const key of ['data', 'models', 'result', 'items']) {
+      const found = unwrap(node[key], depth + 1);
+      if (found.length) return found;
+    }
+    return [];
+  };
+  const ids = unwrap(data)
+    .map((item) => typeof item === 'string' ? item : String(item?.id || item?.model || item?.name || ''))
+    .map((s) => s.trim())
+    .filter(Boolean);
   return Array.from(new Set(ids)).sort();
 }
 
@@ -56,6 +75,31 @@ function toCapabilityOverrides(cfg: AppConfig): CapabilityOverride[] {
     });
 }
 
+/** 面板上的密钥是打码值（含 ••••）。收到打码值等于「用户没改过」，要用存量真值。 */
+const MASK_SENTINEL = '••••';
+function isMasked(value: string): boolean { return value.includes(MASK_SENTINEL); }
+
+/**
+ * 上游失败时把响应正文里的原因带出来。
+ *
+ * 只报 `HTTP 403` 等于什么都没说：中转站几乎都会在 body 里写明真正原因
+ * （余额不足、key 无权限、模型不存在、区域限制），丢掉它用户根本没法排查。
+ * 正文可能是 JSON 也可能是 HTML 错误页，两种都收，并且截断——
+ * 有的网关直接返回整页 HTML，糊到面板上没有意义。
+ */
+async function upstreamDetail(res: Response): Promise<string> {
+  let text = '';
+  try { text = await res.text(); } catch { return ''; }
+  if (!text.trim()) return '';
+  try {
+    const json = JSON.parse(text);
+    const msg = json?.error?.message ?? json?.message ?? json?.error ?? json?.detail;
+    if (typeof msg === 'string' && msg.trim()) return ` · ${msg.trim().slice(0, 300)}`;
+  } catch { /* 不是 JSON，往下当纯文本处理 */ }
+  const plain = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  return plain ? ` · ${plain.slice(0, 300)}` : '';
+}
+
 function ok(body: unknown): AdminResponse { return { status: 200, body }; }
 function fail(status: number, error: string): AdminResponse { return { status, body: { success: false, error } }; }
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
@@ -70,18 +114,47 @@ type SaveConfigFn = (patch: unknown) => { config: AppConfig } | Promise<{ config
  * @param saveConfig 把配置 patch 回存(走 web-api repository.saveConfig → 触发 onReload 落盘)。
  */
 export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConfigFn): AdminServiceDeps {
-  const registry = createCapabilityRegistry({ overrides: toCapabilityOverrides(getConfig()) });
+  // 不能在这里求值一次：createAdminApp 调用本函数时 svc 还是 null，getConfig() 返回的是
+  // 进程启动时的磁盘快照。用户在「能力分工」页加了能力覆盖、面板提示「已热重载」、
+  // 体检表也转绿了（那条路每次请求新建 registry），可「测试生图」这里仍然用开机快照，
+  // 于是同一个页面上「体检说能用」和「测试说不支持」自相矛盾，重启才一致。
+  const getRegistry = createReloadableRegistry(() => toCapabilityOverrides(getConfig()));
 
   async function fetchModels(body: unknown): Promise<AdminResponse> {
     const b = (body || {}) as Record<string, any>;
-    const baseUrl = cleanBaseUrl(String(b.baseUrl || ''));
-    const key = String(b.key || '').trim();
+    // 面板对已保存的节点发的是空 key（界面上只有打码值），指望后端凭 nodeIndex
+    // 自己去取真值。之前这里只读 b.key，于是请求不带 Authorization 头就发出去了，
+    // 上游一律 401——表现就是「已经配好的节点，一点获取模型就失败」。
+    // 面板发来的是打码时写进节点对象的 keyRef（见 web-api/secrets.ts），不是当前列表下标。
+    // 用实时下标会漂：用户删掉一个节点但还没保存，后面每个节点的下标都往前挪了一位，
+    // 后端按下标取到的就是**别的节点**的密钥——轻则 401，重则把 A 账号的模型列表写进 B。
+    const nodes = getConfig().llm?.apiKeys || [];
+    const rawIndex = Number(b.keyRef ?? b.nodeIndex);
+    const stored = Number.isInteger(rawIndex) && rawIndex >= 0 && rawIndex < nodes.length ? nodes[rawIndex] : undefined;
+
+    const submittedKey = String(b.key || '').trim();
+    const key = (!submittedKey || isMasked(submittedKey)) ? String(stored?.key || '').trim() : submittedKey;
+    const baseUrl = cleanBaseUrl(String(b.baseUrl || stored?.baseUrl || ''));
+
     if (!baseUrl) return fail(400, '请填写 OpenAI 兼容 Base URL，例如 https://anyrouter.top/v1');
     try {
       const res = await fetch(joinUrl(baseUrl, '/models'), { headers: key ? { Authorization: `Bearer ${key}` } : {} });
-      if (!res.ok) return fail(502, `获取模型列表失败: HTTP ${res.status}`);
+      if (!res.ok) {
+        const hint = !key && res.status === 401 ? '（该节点还没有密钥）' : '';
+        return fail(502, `获取模型列表失败: HTTP ${res.status}${hint}${await upstreamDetail(res)}`);
+      }
       const data = await res.json();
       const models = extractModelIds(data);
+      // 上游 200 但一个都解析不出来，通常是响应形状不认识，而不是真没有模型。
+      // 以前这里照样报成功，面板拿到空数组把已有列表清空了——用户会以为节点坏了。
+      if (!models.length) {
+        return ok({
+          success: true,
+          models,
+          warning: '上游返回了 200，但没能从响应里解析出任何模型（可能是响应格式不认识）。已保留原有列表。',
+          normalized: { baseUrl, keyDetected: Boolean(key) },
+        });
+      }
       return ok({ success: true, models, normalized: { baseUrl, keyDetected: Boolean(key) } });
     } catch (e) {
       return fail(502, errMsg(e));
@@ -93,7 +166,11 @@ export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConf
     const b = (body || {}) as Record<string, any>;
     const hf = { ...(cfg.huggingFace || {}), ...(b.huggingFace || {}) };
     const filters = { ...(cfg.huggingFace?.filters || {}), ...(b.huggingFace?.filters || {}), ...(b.filters || {}) };
-    const hub = cleanBaseUrl(String(hf.hubApiUrl || 'https://huggingface.co/api/models')).replace(/\/models$/, '/models');
+    // 不能用 cleanBaseUrl：它的白名单里有 models，会把 HF hub 正确的 /api/models 尾巴剥掉，
+    // 剥完再 .replace(/\/models$/, '/models') 是个自我替换、匹配不上，等于没写——
+    // 最终打到 https://huggingface.co/api，稳定 404。
+    const hubRaw = String(hf.hubApiUrl || 'https://huggingface.co/api/models').trim().replace(/[\s,，;；]+$/g, '').replace(/\/+$/, '');
+    const hub = /\/models$/i.test(hubRaw) ? hubRaw : `${hubRaw}/models`;
     const params = new URLSearchParams();
     if (filters.search) params.set('search', String(filters.search));
     if (filters.author) params.set('author', String(filters.author));
@@ -103,7 +180,7 @@ export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConf
     try {
       const url = `${hub}?${params.toString()}`;
       const res = await fetch(url, { headers: hf.token ? { Authorization: `Bearer ${hf.token}` } : {} });
-      if (!res.ok) return fail(502, `Hugging Face 列表失败: HTTP ${res.status}`);
+      if (!res.ok) return fail(502, `Hugging Face 列表失败: HTTP ${res.status}${await upstreamDetail(res)}`);
       const data = await res.json();
       const models = Array.isArray(data) ? data.map((m: any) => ({ id: String(m?.id || m?.modelId || ''), pipelineTag: String(m?.pipeline_tag || ''), downloads: Number(m?.downloads || 0), likes: Number(m?.likes || 0) })).filter((m) => m.id) : [];
       return ok({ success: true, models });
@@ -120,7 +197,7 @@ export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConf
     if (!model) return fail(400, '未配置生图模型。');
     const prompt = String(b.prompt || 'a small red apple on a white table, studio lighting').trim();
     try {
-      const client = createModelClient({ nodes: toModelNodes(cfg), registry });
+      const client = createModelClient({ nodes: toModelNodes(cfg), registry: getRegistry });
       const result = await client.generateImages(nodeIndex, { model, prompt, size: b.size ? String(b.size) : undefined });
       const first = result.images[0];
       const preview = first ? (first.kind === 'url' ? first.data : `data:${first.mimeType || 'image/png'};base64,${first.data}`) : '';
@@ -155,7 +232,10 @@ export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConf
     const cfg = getConfig();
     const b = (body || {}) as Record<string, any>;
     const wsUrl = String(b.wsUrl || cfg.napcat.wsUrl || '').trim();
-    const token = String(b.token || cfg.napcat.token || '').trim() || undefined;
+    // 打码值等于「用户没改过」，要用磁盘上的真 token；
+    // 直接 String(b.token || ...) 会把 abc••••••••wxyz 当成真 token 发给 NapCat。
+    const submittedToken = String(b.token || '').trim();
+    const token = (submittedToken && !isMasked(submittedToken) ? submittedToken : String(cfg.napcat.token || '').trim()) || undefined;
     if (!wsUrl) return fail(400, '请填写 Napcat WebSocket 地址。');
     const adapter = new NapcatAdapter({ wsUrl, token, autoReconnect: false, actionTimeoutMs: 8000 });
     const startedAt = Date.now();

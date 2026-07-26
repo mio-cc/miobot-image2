@@ -26,7 +26,13 @@ async function testNapcat() {
     napcatTesting.value = true;
     napcatResult.value = null;
     try {
-        const res = await client.post('/test-napcat', { wsUrl: config.value.napcat.wsUrl });
+        // token 只在用户刚改过（不含圆点）时才发；发打码值等于拿一串圆点去连 NapCat。
+        // 不发的话后端会回落到磁盘上的旧 token——刚粘上的新 token 根本测不到。
+        const typedToken = String(config.value.napcat.token || '');
+        const res = await client.post('/test-napcat', {
+            wsUrl: config.value.napcat.wsUrl,
+            ...(typedToken.includes('••••') ? {} : { token: typedToken }),
+        });
         napcatResult.value = res.data;
     } catch (error: any) {
         napcatResult.value = error?.response?.data || { success: false, error: errorMessage(error) };

@@ -249,3 +249,8 @@ function deepMerge(base: Record<string, unknown>, patch: Record<string, unknown>
   }
   return output;
 }
+
+// 「能力分工」表格的取舍规则（体检快照 vs 实时配置）。抽出来是为了能单测——
+// 这类「显示的是上一份配置」的 bug 从渲染结果上很难看出来。
+export { isBindingFresh, resolveNodeName, resolveRowStatus } from './routing-binding.js';
+export type { CapabilityBindingSnapshot, RoutingRowState, RoutingRowStatus } from './routing-binding.js';
