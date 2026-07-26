@@ -168,3 +168,60 @@ test('一个监听器炸了不影响其它监听器', () => {
   assert.deepEqual(ran, ['a', 'c'], '中间那个抛错不该阻断后面的');
   assert.equal(result.persisted, false);
 });
+
+/* ── bot 进程跨进程热重载（web 与 bot 是两个进程，只共享 config.json） ───── */
+
+function tempConfigFile(initial) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'miobot-reload-'));
+  const file = path.join(dir, 'config.json');
+  fs.writeFileSync(file, JSON.stringify(initial), 'utf8');
+  return file;
+}
+
+function writeConfig(file, value) {
+  fs.writeFileSync(file, JSON.stringify(value), 'utf8');
+  // 同一毫秒内写两次时 mtimeMs 可能不变，显式往前推一点保证能被检测到
+  const later = new Date(Date.now() + 10);
+  fs.utimesSync(file, later, later);
+}
+
+test('loadIfChanged: 文件没变时复用缓存，变了立刻取到新值', () => {
+  const file = tempConfigFile({ bot: { botQqId: '111' } });
+  const store = new ConfigStore(file, { defaultValue: normalizeConfig({}), normalize: normalizeConfig });
+
+  const first = store.loadIfChanged();
+  assert.equal(first.bot.botQqId, '111');
+  assert.equal(store.loadIfChanged(), first, '文件没动就该复用同一个对象，避免每条消息都 normalize 一遍');
+
+  writeConfig(file, { bot: { botQqId: '222' } });
+  const second = store.loadIfChanged();
+  assert.equal(second.bot.botQqId, '222', '面板保存后，bot 下一条消息就要用上新配置');
+  assert.notEqual(second, first);
+});
+
+test('loadIfChanged: 文件中途读不到时继续用旧配置，绝不回落默认值', () => {
+  const file = tempConfigFile({ bot: { botQqId: '111', whitelistGroups: ['123'] } });
+  const store = new ConfigStore(file, { defaultValue: normalizeConfig({}), normalize: normalizeConfig });
+
+  const good = store.loadIfChanged();
+  assert.deepEqual(good.bot.whitelistGroups, ['123']);
+
+  fs.rmSync(file);
+  const after = store.loadIfChanged();
+  assert.deepEqual(after.bot.whitelistGroups, ['123'],
+    '文件读不到时若回落默认值，白名单会突然清空——对 bot-router 来说等于全放行');
+});
+
+test('loadIfChanged: 文件被写坏时同样保留旧配置', () => {
+  const file = tempConfigFile({ bot: { botQqId: '111', whitelistGroups: ['123'] } });
+  const store = new ConfigStore(file, { defaultValue: normalizeConfig({}), normalize: normalizeConfig });
+  store.loadIfChanged();
+
+  fs.writeFileSync(file, '{ 这不是合法 JSON', 'utf8');
+  const later = new Date(Date.now() + 10);
+  fs.utimesSync(file, later, later);
+
+  const after = store.loadIfChanged();
+  assert.deepEqual(after.bot.whitelistGroups, ['123'], '解析失败不能 fail-open');
+  assert.equal(after.bot.botQqId, '111');
+});

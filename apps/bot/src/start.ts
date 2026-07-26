@@ -44,7 +44,10 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   if (store?.isCorrupted()) {
     throw new Error(`config.json 解析失败，bot 拒绝启动：${store.corruptionReason()}。原文件未被覆盖，修好语法后重启。`);
   }
-  const getConfig = (): AppConfig => config;
+  // 每次用配置都问一次文件；mtime 没变时 loadIfChanged 直接给缓存，代价只有一次 stat。
+  // 这样面板保存后，bot 进程下一条消息就用上新配置，不需要重启——
+  // 否则 web 和 bot 是两个进程，面板那句「无需重启」对机器人是假的。
+  const getConfig = (): AppConfig => (store ? store.loadIfChanged() : config);
 
   const getRegistry = createReloadableRegistry(() => toCapabilityOverrides(getConfig().llm.capabilityOverrides));
   const registry = getRegistry();
