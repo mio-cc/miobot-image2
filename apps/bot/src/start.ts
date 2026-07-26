@@ -130,7 +130,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     },
     owner: {
       ownerQQs: () => getConfig().bot.ownerQQs,
-      handle: (command, ownerCtx) => handleOwnerCommand(command, ownerCtx, { config, store }),
+      handle: (command, ownerCtx) => handleOwnerCommand(command, ownerCtx, { getConfig, store }),
     },
   });
   runtime.attach(adapter);
@@ -165,14 +165,21 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   return { adapter, getConfig, stop: () => { if (cleanupTimer) clearInterval(cleanupTimer); adapter.disconnect(); } };
 }
 
-interface OwnerHandlerDeps { config: AppConfig; store?: ConfigStore<AppConfig> }
+/**
+ * owner 指令要改并回存配置。这里必须收 getConfig 而不是一个 config 快照——
+ * store.save 是**整文件覆盖**，拿启动快照去写等于把用户此后在面板上做的
+ * 所有改动静默回滚掉，而且回滚发生在 bot 进程里，面板上完全看不出来。
+ */
+interface OwnerHandlerDeps { getConfig: () => AppConfig; store?: ConfigStore<AppConfig> }
 
 async function handleOwnerCommand(
   command: OwnerCommand,
   ctx: { chatType: 'group' | 'private'; groupId?: number | string; userId?: number | string; messageId?: number | string },
   deps: OwnerHandlerDeps,
 ): Promise<string | null> {
-  const { config, store } = deps;
+  const { store } = deps;
+  // 每条指令都从当前磁盘配置起步，改完再整份写回。
+  const config = deps.getConfig();
   const persist = () => { try { store?.save(config); } catch { /* best-effort */ } };
   switch (command.command) {
     case 'modelList':

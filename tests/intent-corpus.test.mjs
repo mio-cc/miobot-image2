@@ -95,3 +95,18 @@ test('信号层直判覆盖率：别把什么都推给规划器', async () => {
     `直判覆盖率只有 ${(rate * 100).toFixed(0)}%（${hit.length}/${positives.length}），以下需要规划器兜底：\n${lines(missed)}`);
   console.log(`      信号层直判覆盖率 ${(rate * 100).toFixed(0)}%（${hit.length}/${positives.length}），其余落到规划器`);
 });
+
+test('信号层对超长输入不能有二次方回溯（一条消息卡死全部群聊）', async () => {
+  const { detectIntentSignals } = await import('../dist/packages/intent-router/src/signals.js');
+  const { parseImageCommand } = await import('../dist/packages/image/src/index.js');
+
+  // 最坏输入：命中动词前缀、后面全是空白、永远匹配不到量词
+  for (const n of [20000, 100000]) {
+    const text = `画${' '.repeat(n)}`;
+    const params = parseImageCommand(text, {});
+    const started = process.hrtime.bigint();
+    detectIntentSignals({ text }, params, {});
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.ok(ms < 200, `${n} 个空白字符耗时 ${ms.toFixed(0)}ms —— 信号层是同步的，这段时间整个 bot 停止响应`);
+  }
+});
