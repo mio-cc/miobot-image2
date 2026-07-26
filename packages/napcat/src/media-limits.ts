@@ -25,6 +25,18 @@ export const VIDEO_MAX_BYTES = 100 * 1024 * 1024;
  */
 export const WS_BASE64_SAFE_BYTES = 8 * 1024 * 1024;
 
+/**
+ * 单个 WebSocket 帧的安全上限。
+ *
+ * NapCat 侧 maxPayload 是 50MB，超过会**直接断连**——不是报错，是整条连接没了，
+ * bot 表现为"忽然掉线又重连"，日志里看不出跟哪条消息有关。
+ * 留 10MB 余量给协议开销与多段消息的累加。
+ *
+ * 逐个方法加护栏挡不住这个：合并转发是把 N 条消息拼进同一帧，
+ * 每条单独看都不超标，加起来就炸了。所以必须在**发帧那一刻**兜一次底。
+ */
+export const WS_FRAME_SAFE_BYTES = 40 * 1024 * 1024;
+
 export type MediaPayloadKind = 'base64' | 'local-file' | 'remote-url' | 'unknown';
 
 export interface MediaPayloadInfo {

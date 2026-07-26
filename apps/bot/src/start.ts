@@ -74,6 +74,12 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     imageSendTimeoutMs: nap.imageSendTimeoutMs,
     forwardSendTimeoutMs: nap.forwardSendTimeoutMs,
     getMessageTimeoutMs: nap.getMessageTimeoutMs,
+    // 这三个面板上能改、config 里也归一化了，但以前压根没传给适配器，
+    // 于是「文件发送超时/重试次数/重试间隔」改了重启也不生效。
+    // videoSendTimeoutMs 的 fallback 链也依赖 fileSendTimeoutMs。
+    fileSendTimeoutMs: nap.fileSendTimeoutMs,
+    fileSendRetryCount: nap.fileSendRetryCount,
+    fileSendRetryDelayMs: nap.fileSendRetryDelayMs,
     logger,
   });
 

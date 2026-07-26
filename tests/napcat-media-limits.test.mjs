@@ -97,3 +97,68 @@ test('describeBytes 输出可读单位', () => {
   assert.equal(describeBytes(2 * 1024 * 1024), '2.0MB');
   assert.equal(describeBytes(2048), '2KB');
 });
+
+/* ── 帧级兜底（捞验证确认：逐方法护栏挡不住合并转发的累加） ────────── */
+
+test('单帧超过安全上限时中止发送，而不是让对端断连', async () => {
+  const { NapcatAdapter, WS_FRAME_SAFE_BYTES } = await import('../dist/packages/napcat/src/index.js');
+
+  const sent = [];
+  let readyHandler;
+  const fakeSocket = {
+    readyState: 1,
+    on(event, cb) { if (event === 'open') readyHandler = cb; },
+    once() {},
+    send(payload, cb) { sent.push(payload.length); cb?.(); },
+    close() {},
+    removeAllListeners() {},
+  };
+
+  const adapter = new NapcatAdapter({
+    wsUrl: 'ws://localhost:1',
+    autoReconnect: false,
+    actionTimeoutMs: 500,
+    socketFactory: () => fakeSocket,
+  });
+  adapter.connect();
+  readyHandler?.();
+
+  // 合并转发常见形态：每条都不超标，加起来炸掉
+  const chunk = 'A'.repeat(3 * 1024 * 1024);
+  const nodes = Array.from({ length: 20 }, () => ({ type: 'node', data: { content: chunk } }));
+
+  await assert.rejects(
+    () => adapter.callAction('send_group_forward_msg', { group_id: 1, messages: nodes }),
+    /超过安全上限/,
+    '应当在发帧前中止，而不是发出去让 NapCat 断连',
+  );
+  assert.equal(sent.length, 0, '不该真的发出去');
+  assert.ok(WS_FRAME_SAFE_BYTES > 0);
+
+  adapter.disconnect();
+});
+
+test('正常大小的帧照常发送', async () => {
+  const { NapcatAdapter } = await import('../dist/packages/napcat/src/index.js');
+  const sent = [];
+  let readyHandler;
+  const fakeSocket = {
+    readyState: 1,
+    on(event, cb) { if (event === 'open') readyHandler = cb; },
+    once() {},
+    send(payload, cb) { sent.push(payload.length); cb?.(); },
+    close() {},
+    removeAllListeners() {},
+  };
+  const adapter = new NapcatAdapter({
+    wsUrl: 'ws://localhost:1', autoReconnect: false, actionTimeoutMs: 200,
+    socketFactory: () => fakeSocket,
+  });
+  adapter.connect();
+  readyHandler?.();
+
+  const call = adapter.callAction('send_group_msg', { group_id: 1, message: '一句正常的话' });
+  await call.catch(() => {});   // 没有回包，超时即可，这里只关心有没有发出去
+  assert.equal(sent.length, 1, '正常消息必须照常发送');
+  adapter.disconnect();
+});

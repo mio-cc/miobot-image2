@@ -1,5 +1,5 @@
 import { normalizeError } from '../../core/src/index.js';
-import { guardVideoPayload, guardWebSocketPayload } from './media-limits.js';
+import { describeBytes, guardVideoPayload, guardWebSocketPayload, WS_FRAME_SAFE_BYTES } from './media-limits.js';
 import type { StructuredLogger } from '../../logger/src/index.js';
 import type { PackageDescriptor, SerializableError } from '@miobot-v2/shared';
 import * as fs from 'node:fs';
@@ -245,7 +245,18 @@ export class NapcatAdapter {
     const echo = this.requestIdFactory(action);
     const startedAt = Date.now();
     const resolvedTimeoutMs = positiveInt(timeoutMs, this.options.actionTimeoutMs);
-    this.logger?.info('napcat action send', { action, echo, timeoutMs: resolvedTimeoutMs, params });
+    this.logger?.info('napcat action send', { action, echo, timeoutMs: resolvedTimeoutMs, params: summarizeLogValue(params) });
+
+    // 帧级兜底：超过 maxPayload 时 NapCat 会直接断连，bot 表现为莫名其妙掉线重连。
+    // 逐个方法的护栏挡不住合并转发这种「单条都不超、加起来就炸」的情况，
+    // 只有在真正要发帧的这一刻量一次才靠得住。
+    const payload = JSON.stringify({ action, params, echo });
+    const frameBytes = Buffer.byteLength(payload);
+    if (frameBytes > WS_FRAME_SAFE_BYTES) {
+      const message = `Napcat 单帧 ${describeBytes(frameBytes)} 超过安全上限 ${describeBytes(WS_FRAME_SAFE_BYTES)}，已中止发送（继续发会被对端直接断连）。请改用本地文件路径，或拆分成多条发送。`;
+      this.logger?.error('napcat frame too large', { action, echo, frameBytes });
+      return Promise.reject(new Error(message));
+    }
 
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -273,7 +284,7 @@ export class NapcatAdapter {
         reject: (error) => { if (cleanup()) reject(error); },
       });
 
-      socket.send(JSON.stringify({ action, params, echo }), (error?: Error) => {
+      socket.send(payload, (error?: Error) => {
         if (!error) return;
         const pending = this.pendingActions.get(echo);
         this.logger?.error('napcat action write failed', { action, echo, error: normalizeError(error) });
@@ -660,7 +671,7 @@ export function buildVideoForwardNodes(fileUrls: string[], options: { botName?: 
  * 支持 http(s)、file 路径、base64://、data:video/...;base64,。
  * data URL 会规范为 Napcat 更易识别的 base64:// 或原样 file。
  */
-export { guardVideoPayload, guardWebSocketPayload, inspectMediaPayload, VIDEO_MAX_BYTES, WS_BASE64_SAFE_BYTES, describeBytes } from './media-limits.js';
+export { guardVideoPayload, guardWebSocketPayload, inspectMediaPayload, VIDEO_MAX_BYTES, WS_BASE64_SAFE_BYTES, WS_FRAME_SAFE_BYTES, describeBytes } from './media-limits.js';
 
 export function buildVideoSegment(fileUrl: string): NapcatMessageSegment | undefined {
   const file = normalizeVideoFilePayload(fileUrl);
@@ -889,4 +900,35 @@ function reasonToString(reason: unknown): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
+/** 日志里字符串的最大长度。超过就摘要，只影响日志，实际发送仍是原始值。 */
+const MAX_LOG_STRING = 256;
+
+/**
+ * 把要写进日志的值裁短。
+ *
+ * 之前是把完整 params 直接扔进结构化日志——而 params 里带的是整段 base64：
+ * 一张普通图片就产生 1.33MB 的一行日志，几张图就能把 5MB 的轮转窗口冲干净，
+ * 真正需要的诊断信息全被挤掉。发送用的仍是原始 params，只有日志走这里。
+ */
+export function summarizeLogValue(value: unknown, depth = 0): unknown {
+  if (depth > 6) return '<深层嵌套已省略>';
+  if (typeof value === 'string') {
+    if (value.length <= MAX_LOG_STRING) return value;
+    const dataUrl = /^data:([^;]+);base64,/i.exec(value);
+    const bytes = Math.floor((value.length * 3) / 4);
+    if (dataUrl) return `<${dataUrl[1]} base64 约 ${Math.round(bytes / 1024)}KB>`;
+    if (/^base64:\/\//i.test(value)) return `<base64 约 ${Math.round(bytes / 1024)}KB>`;
+    return `${value.slice(0, MAX_LOG_STRING)}…<共 ${value.length} 字符>`;
+  }
+  if (Array.isArray(value)) return value.map((item) => summarizeLogValue(item, depth + 1));
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = summarizeLogValue(item, depth + 1);
+    }
+    return out;
+  }
+  return value;
 }
