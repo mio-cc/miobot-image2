@@ -114,7 +114,11 @@ canvasStoreRef = canvasService.getStore();
 // —— HTTP 层(对齐单体 send/sendJson/serveFile/mime，但路由走 service.handle) ——
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === 'OPTIONS') return sendJson(res, 200, { ok: true });
+  if (req.method === 'OPTIONS') {
+    // 预检只对白名单来源放行；不在白名单时不回 CORS 头，浏览器自己会拦下后续请求。
+    res.writeHead(204, corsHeadersFor(req));
+    return res.end();
+  }
   let url;
   try {
     url = new URL(req.url || '/', `http://${req.headers.host || `${host}:${port}`}`);
@@ -207,13 +211,32 @@ async function handleCanvas(req, res, url) {
   sendJson(res, result.status, result.body);
 }
 
-function send(res, status, body, headers = {}) {
-  res.writeHead(status, {
-    'access-control-allow-origin': '*',
+/**
+ * 允许跨源访问的来源白名单。默认空 = 只允许同源。
+ *
+ * 原来是对所有响应无条件回 access-control-allow-origin: *，等于把
+ * 「画布仅本机/内网可用」这个访问模式变成一句空话——攻击者只要诱导内网里的人
+ * 打开一个网页，那个页面就能用受害者的身份读走整个画廊、甚至删记录，
+ * 因为请求是从受害者的浏览器（内网地址）发出去的。
+ * 前台走的是相对路径 /canvas-api，同源，本来就不需要 CORS。
+ */
+const corsOrigins = String(process.env.MIOBOT_CORS_ORIGINS || '')
+  .split(',').map((x) => x.trim()).filter(Boolean);
+
+function corsHeadersFor(req) {
+  const origin = req?.headers?.origin;
+  if (!origin || !corsOrigins.includes(origin)) return {};
+  return {
+    'access-control-allow-origin': origin,
     'access-control-allow-headers': 'authorization,content-type',
     'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-    ...headers,
-  });
+    'access-control-allow-credentials': 'true',
+    vary: 'Origin',
+  };
+}
+
+function send(res, status, body, headers = {}) {
+  res.writeHead(status, { ...headers });
   res.end(body);
 }
 function sendJson(res, status, body) { send(res, status, JSON.stringify(body, null, 2), { 'content-type': 'application/json; charset=utf-8' }); }
@@ -240,7 +263,14 @@ async function serveFile(res, root, requestPath, prefix, rewriteHtml = false) {
     }
     return send(res, 200, data, { 'content-type': mime(file) });
   } catch {
-    if (requestPath.startsWith(prefix)) {
+    // 带扩展名的请求（.js/.css/.png…）缺失时必须如实 404。
+    // 回退 index.html 会让浏览器拿到 text/html 冒充 JS 模块，报
+    // 「Expected a JavaScript module script but the server responded with
+    // a MIME type of text/html」然后整页白屏——而且是在用户构建更新、
+    // 老页面还在请求旧 hash 文件时发生，最难诊断。
+    // 只有看起来像页面路由的无扩展名路径才走 SPA 回退。
+    const looksLikeFile = path.extname(requestPath) !== '';
+    if (!looksLikeFile && requestPath.startsWith(prefix)) {
       const index = path.join(root, 'index.html');
       if (fssync.existsSync(index)) return serveFile(res, root, `${prefix}/index.html`, prefix, rewriteHtml);
     }

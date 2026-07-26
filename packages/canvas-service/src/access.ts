@@ -83,9 +83,17 @@ export function isLocalClient(headers?: Record<string, string | undefined>): boo
   return isPrivateAddress(clientAddress(headers));
 }
 
+/**
+ * 单个进程内最多跟踪多少个来源。
+ * 来源地址由传输层从 socket 覆写、不可伪造，正常用量远到不了这个数；
+ * 但没有上界的话，一个 IPv6 段就能生成海量不同来源，把这张表撑爆。
+ */
+const MAX_TRACKED_KEYS = 10_000;
+
 /** 固定窗口限流：每个来源每分钟允许 N 次。窗口固定而非滑动——够用且不用存时间戳数组。 */
 export class RateLimiter {
   private readonly hits = new Map<string, { windowStart: number; count: number }>();
+  private lastPrunedWindow = -1;
 
   constructor(private readonly now: () => number = () => Date.now()) {}
 
@@ -105,11 +113,28 @@ export class RateLimiter {
     return true;
   }
 
-  /** 丢掉过期窗口，否则长期运行会按来源数无限增长。 */
+  /**
+   * 丢掉过期窗口，并给同一窗口内的条数封顶。
+   *
+   * 原来只清「非当前窗口」，于是同一分钟内来源数没有任何上界；
+   * 而且每插入一个新来源就全表扫一次，N 个来源的总扫描量是 O(N²)。
+   */
   private prune(currentWindow: number): void {
-    if (this.hits.size < 512) return;
-    for (const [key, entry] of this.hits) {
-      if (entry.windowStart !== currentWindow) this.hits.delete(key);
+    // 过期窗口的全量清扫每个窗口只做一次。
+    if (this.lastPrunedWindow !== currentWindow) {
+      this.lastPrunedWindow = currentWindow;
+      for (const [key, entry] of this.hits) {
+        if (entry.windowStart !== currentWindow) this.hits.delete(key);
+      }
+    }
+    // 同窗口内仍然超限，说明来源数异常，按插入顺序丢掉最早的那批。
+    // Map 保持插入序，直接迭代即可。
+    if (this.hits.size <= MAX_TRACKED_KEYS) return;
+    const excess = this.hits.size - MAX_TRACKED_KEYS;
+    let dropped = 0;
+    for (const key of this.hits.keys()) {
+      this.hits.delete(key);
+      if (++dropped >= excess) break;
     }
   }
 

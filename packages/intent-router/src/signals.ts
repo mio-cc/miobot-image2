@@ -126,8 +126,20 @@ const VISUAL_TARGET = /天空|云朵|背景|前景|人物|脸部|表情|头发|�
  * 自带「图」字的弱词等于自己给自己作证，旁证机制形同虚设
  * （「图里这个我也有」会被判成反推）。
  */
+/**
+ * 剔词要和 matchesTerm 用同一套大小写策略：中文精确，英文忽略大小写。
+ * 否则用户写 "An image of a cat" 时，命中的弱词 'an image of' 剔不掉，
+ * 剩下的文本里仍有 image，等于自己给自己作证。
+ * 用空格而不是空串替换，避免把前后词粘成一个新词。
+ */
+function stripTerm(text: string, term: string): string {
+  if (hasCjk(term)) return text.split(term).join(' ');
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(escaped, 'gi'), ' ');
+}
+
 function hasVisualContext(text: string, matchedTerm?: string): boolean {
-  const rest = matchedTerm ? text.split(matchedTerm).join('') : text;
+  const rest = matchedTerm ? stripTerm(text, matchedTerm) : text;
   return IMAGE_NOUN.test(rest) || VISUAL_TARGET.test(rest);
 }
 
@@ -142,26 +154,34 @@ const VIDEO_CONSUME_VERB = /(看|刷|发|转|下载|上传|录|剪|传|收藏|�
 
 /** 取「视频」之前那一小段里，最后出现的生成类动词——且它必须比消费类动词更靠后。 */
 function videoMakeVerbBefore(text: string): string | undefined {
-  const at = text.search(/视频|video/i);
-  if (at < 0) return undefined;
-  // 只看同一小句：跨过标点就不是在说同一件事了。
-  const head = text.slice(Math.max(0, at - 24), at);
-  const clause = head.split(/[，。！？!?；;、\n]/).pop() || '';
-  const lastIndexOf = (re: RegExp) => {
+  const lastIndexOf = (re: RegExp, clause: string) => {
     let last = -1;
     let hit;
     const rx = new RegExp(re.source, 'g');
     while ((hit = rx.exec(clause)) !== null) last = hit.index;
     return last;
   };
-  const make = lastIndexOf(VIDEO_MAKE_VERB);
-  const consume = lastIndexOf(VIDEO_CONSUME_VERB);
-  if (make < 0) return undefined;
-  if (consume > make) return undefined;
-  // 「我手机拍的视频」：动词紧跟「的」是定语从句，在描述一个已经存在的视频，
-  // 而不是让机器人去做一个。「做个猫跑步的视频」里「的」前面是「步」，不受影响。
-  if (/(生成|制作|创作|做|拍|搞|整|来|出|画|弄)的$/.test(clause)) return undefined;
-  return clause.slice(make).trim() + '视频';
+
+  // 「视频」的**每一次**出现都要判。只看第一次的话，
+  // 「刚看完那个视频，帮我做个猫跳舞的视频」会被前半句的「看」否掉，
+  // 后半句真正的请求整条漏掉。
+  const scan = /视频|video/gi;
+  let match: RegExpExecArray | null;
+  while ((match = scan.exec(text)) !== null) {
+    const at = match.index;
+    // 只看同一小句：跨过标点就不是在说同一件事了。
+    const head = text.slice(Math.max(0, at - 24), at);
+    const clause = head.split(/[，。！？!?；;、\n]/).pop() || '';
+    const make = lastIndexOf(VIDEO_MAKE_VERB, clause);
+    if (make < 0) continue;
+    const consume = lastIndexOf(VIDEO_CONSUME_VERB, clause);
+    if (consume > make) continue;
+    // 「我手机拍的视频」：动词紧跟「的」是定语从句，在描述一个已经存在的视频，
+    // 而不是让机器人去做一个。「做个猫跑步的视频」里「的」前面是「步」，不受影响。
+    if (/(生成|制作|创作|做|拍|搞|整|来|出|画|弄)的$/.test(clause)) continue;
+    return clause.slice(make).trim() + '视频';
+  }
+  return undefined;
 }
 /**
  * 「让这张图动起来」「搞成动的」——要的是视频，只是没说出「视频」两个字。

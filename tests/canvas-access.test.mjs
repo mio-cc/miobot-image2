@@ -311,3 +311,24 @@ test('收藏/删除用 outputId 也能命中', async () => {
   const del = await service.handle({ method: 'DELETE', path: `/gallery/${encodeURIComponent(target.outputId)}` });
   assert.equal(del.status, 200);
 });
+
+test('限流表在同一分钟内也有上界（否则海量伪造来源能撑爆内存）', () => {
+  const limiter = new RateLimiter(() => 0);   // 时间冻住 = 全在同一个窗口
+  for (let i = 0; i < 12000; i += 1) limiter.take(`src-${i}`, 5);
+  // 内部上界是 10000，允许一点余量，但绝不能等于插入数
+  const size = limiter.snapshotSize ? limiter.snapshotSize() : undefined;
+  void size;
+  // 没有暴露 size 的话，用行为验证：最早的来源应当已被丢弃并重新计数
+  assert.equal(limiter.take('src-0', 1), true, '被丢弃的来源重新出现时应当当作新来源');
+});
+
+test('过期窗口的清扫每个窗口只做一次（避免 O(n²) 全表扫描）', () => {
+  let now = 0;
+  const limiter = new RateLimiter(() => now);
+  for (let i = 0; i < 2000; i += 1) limiter.take(`a-${i}`, 5);
+  now += 60_000;
+  const started = process.hrtime.bigint();
+  for (let i = 0; i < 2000; i += 1) limiter.take(`b-${i}`, 5);
+  const ms = Number(process.hrtime.bigint() - started) / 1e6;
+  assert.ok(ms < 200, `换窗口后插入 2000 个来源耗时 ${ms.toFixed(0)}ms，疑似每次都在全表扫描`);
+});

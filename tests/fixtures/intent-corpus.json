@@ -971,5 +971,26 @@
   "expected": "image.edit",
   "why": "有图 + 要求提升画质，属于在原图上处理",
   "trap": "全句没有任何改图关键词，只有一个「高清一下」"
+ },
+ {
+  "text": "刚看完那个视频 帮我做个猫跳舞的视频",
+  "hasImages": false,
+  "expected": "video.generate",
+  "why": "前半句是闲聊，后半句才是真请求",
+  "trap": "前半句先提到视频，只看第一次出现会整条漏掉"
+ },
+ {
+  "text": "这视频不错 再来个日落海边的视频",
+  "hasImages": false,
+  "expected": "video.generate",
+  "why": "同上，请求在后半句",
+  "trap": "同上"
+ },
+ {
+  "text": "刚下载的视频 帮我剪一下视频开头",
+  "hasImages": false,
+  "expected": "chat",
+  "why": "两处都是在说已有视频，剪辑是咨询",
+  "trap": "扫到第二处也不能误判"
  }
 ]
