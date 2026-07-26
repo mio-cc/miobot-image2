@@ -57,7 +57,6 @@ const SPECS: BindingSpec[] = [
   { key: 'enhance', label: '提示词润色', trigger: '画 润色 …', operation: 'chat', nodePath: 'llm.enhanceNodeIndex', modelPath: 'llm.enhanceModel', enabledPath: 'llm.enhanceEnabled' },
   { key: 'template', label: '本地模板填充', trigger: 'mb_1!', operation: 'chat', nodePath: 'llm.templateNodeIndex', modelPath: 'llm.templateModel', alwaysEnabled: true },
   { key: 'referencedTemplate', label: '引用模板填充', trigger: '套模板 / rt', operation: 'chat', nodePath: 'llm.referencedTemplateNodeIndex', modelPath: 'llm.referencedTemplateModel', alwaysEnabled: true },
-  { key: 'templateConvert', label: 'AI 转模板', trigger: '后台模板库', operation: 'chat', nodePath: 'llm.templateConvertNodeIndex', modelPath: 'llm.templateConvertModel', alwaysEnabled: true },
   { key: 'translation', label: '远程库翻译', trigger: 'pp / spp', operation: 'chat', nodePath: 'llm.translationNodeIndex', modelPath: 'llm.translationModel', alwaysEnabled: true },
   { key: 'freeMode', label: '自由模式规划', trigger: '@bot 直接说话', operation: 'chat', nodePath: 'freeMode.nodeIndex', modelPath: 'freeMode.model', enabledPath: 'freeMode.enabled' },
   { key: 'promptsChat', label: '远程库智能选模板', trigger: 'spp', operation: 'chat', nodePath: 'promptsChat.smartNodeIndex', modelPath: 'promptsChat.smartModel', enabledPath: 'promptsChat.enabled' },

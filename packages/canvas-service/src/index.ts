@@ -37,3 +37,10 @@ export {
   type AssetStore,
   type StoredAsset,
 } from './assets.js';
+export {
+  clampPreviewWidth,
+  createSharpPreviewResizer,
+  isResizable,
+  DEFAULT_PREVIEW_WIDTH,
+  type PreviewResizer,
+} from './preview.js';

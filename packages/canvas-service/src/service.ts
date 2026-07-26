@@ -5,6 +5,7 @@ import { InMemoryAssetStore, parseDataUrl, extensionFor, type AssetStore, type S
 
 export interface CanvasResponse<T = unknown> { status: number; body: T; binary?: { contentType: string; base64: string } }
 import { RateLimiter, canvasRouteGuard, checkCanvasAccess } from './access.js';
+import { clampPreviewWidth, createSharpPreviewResizer, type PreviewResizer } from './preview.js';
 
 export interface CanvasRequest { method: string; path: string; headers?: Record<string, string | undefined>; body?: unknown }
 
@@ -38,6 +39,11 @@ export interface CanvasServiceOptions {
   idFactory?: () => string;
   /** 鉴权回调(/bot/gallery 需要)；默认不鉴权(单体对 /canvas-api 其余路由也不鉴权)。 */
   isAuthorized?: (headers?: Record<string, string | undefined>) => boolean;
+  /**
+   * 缩略图生成器。不传则自动尝试 sharp（可选依赖），装不上就回退原图。
+   * 传 null 可显式关闭（测试用）。
+   */
+  previewResizer?: PreviewResizer | null;
 }
 
 export const CANVAS_SERVICE_PACKAGE: PackageDescriptor = {
@@ -159,6 +165,7 @@ export class CanvasService {
   private readonly idFactory: () => string;
   private readonly isAuthorized: (headers?: Record<string, string | undefined>) => boolean;
   private readonly limiter = new RateLimiter();
+  private readonly previewResizer?: PreviewResizer;
   private readonly imageJobs = new Map<string, CanvasJob>();
   private readonly interrogationJobs = new Map<string, CanvasJob>();
 
@@ -170,6 +177,11 @@ export class CanvasService {
     this.now = options.now || (() => new Date());
     this.idFactory = options.idFactory || defaultIdFactory();
     this.isAuthorized = options.isAuthorized || (() => true);
+    // 传 null 显式关闭（测试用）；否则用 sharp 版本，
+    // 它在 sharp 装不上时每次返回 undefined，路由会回退原图。
+    this.previewResizer = options.previewResizer === null
+      ? undefined
+      : (options.previewResizer ?? createSharpPreviewResizer());
     // 记录被裁剪时，对应的资产文件也要删掉。
     this.store.setAssetReaper((ids) => {
       for (const id of ids) {
@@ -316,8 +328,21 @@ export class CanvasService {
       const mode = assetMatch[2];
       const asset = this.assets.get(id);
       if (!asset) return notFound('Asset not found');
-      // preview 暂等同 download(未做缩略图，与 monolith 无 sharp 时回退一致)。
-      void mode;
+
+      // preview 真的按 width 缩。以前这里直接吐原图，画廊一屏十几张全尺寸，
+      // 几千张作品攒起来光打开列表就要下几百 MB。
+      if (mode === 'preview' && this.previewResizer) {
+        const width = clampPreviewWidth(query.width);
+        const thumb = await this.previewResizer(id, asset, width);
+        if (thumb) {
+          return {
+            status: 200,
+            body: null,
+            binary: { contentType: thumb.contentType, base64: thumb.base64 },
+          };
+        }
+        // 缩不了（格式不支持 / 缩完反而更大 / sharp 不可用）就回退原图。
+      }
       return { status: 200, body: null, binary: { contentType: asset.contentType, base64: asset.base64 } };
     }
 
@@ -583,7 +608,7 @@ function splitPath(rawPath: string): { path: string; query: Record<string, strin
   const search = String(rawPath || '').split('?')[1] || '';
   const params = new URLSearchParams(search);
   const query: Record<string, string> = {};
-  for (const key of ['async', 'limit', 'favorite', 'query', 'status', 'recover']) {
+  for (const key of ['async', 'limit', 'favorite', 'query', 'status', 'recover', 'width']) {
     const v = params.get(key);
     if (v !== null) query[key] = v;
   }

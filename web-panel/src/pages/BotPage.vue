@@ -172,22 +172,6 @@ const commandFields = [
         </FormField>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
-        <ToggleField v-model="config.bot.imageCompression.mergedPreviewEnabled" label="多图合并预览" />
-        <FormField label="预览缩放">
-          <input type="number" min="0.1" max="1" step="0.05" v-model.number="config.bot.imageCompression.mergedPreviewScale"
-            :disabled="!config.bot.imageCompression.mergedPreviewEnabled" class="input-field" />
-        </FormField>
-        <FormField label="预览质量">
-          <input type="number" min="1" max="100" step="1" v-model.number="config.bot.imageCompression.mergedPreviewQuality"
-            :disabled="!config.bot.imageCompression.mergedPreviewEnabled" class="input-field" />
-        </FormField>
-        <FormField label="预览最大宽度" hint="降低上传耗时">
-          <input type="number" min="512" max="4096" step="64" v-model.number="config.bot.imageCompression.mergedPreviewMaxWidth"
-            :disabled="!config.bot.imageCompression.mergedPreviewEnabled" class="input-field" />
-        </FormField>
-      </div>
-
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
         <ToggleField v-model="config.bot.autoRecallImages" label="发图后自动撤回"
           hint="只撤回群里由机器人发出的图片" />

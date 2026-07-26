@@ -197,9 +197,6 @@ onMounted(loadCards);
         <FormField label="内存上限">
           <input v-model.number="config.canvas.logs.maxMemoryEntries" type="number" min="100" max="5000" step="100" class="input-field" />
         </FormField>
-        <FormField label="数据目录" hint="留空使用运行时默认目录">
-          <input v-model="config.canvas.dataDir" class="input-field font-mono" placeholder="留空使用默认" />
-        </FormField>
       </div>
     </SectionCard>
 

@@ -32,7 +32,7 @@ const bulkStatus = ref('');
  */
 const NODE_INDEX_FIELDS: Array<[string, string]> = [
     ['llm', 'activeNodeIndex'], ['llm', 'chatNodeIndex'], ['llm', 'enhanceNodeIndex'],
-    ['llm', 'templateNodeIndex'], ['llm', 'templateConvertNodeIndex'], ['llm', 'referencedTemplateNodeIndex'],
+    ['llm', 'templateNodeIndex'], ['llm', 'referencedTemplateNodeIndex'],
     ['llm', 'translationNodeIndex'], ['llm', 'imageNodeIndex'], ['llm', 'editNodeIndex'],
     ['llm', 'interrogateNodeIndex'], ['llm', 'videoNodeIndex'],
     ['canvas', 'imageNodeIndex'], ['canvas', 'editNodeIndex'],

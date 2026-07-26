@@ -140,41 +140,11 @@ const statusIsError = computed(() => /失败|为空|请先/.test(convertStatus.v
       </template>
       <textarea v-model="convertSource" rows="5" class="input-field font-mono text-xs mb-3"
         placeholder="粘贴一段完整提示词，一次性的主体、场景会被抽象成含 {{prompt}} 的模板"></textarea>
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <FormField label="转化提示词" hint="可用占位符 {{rawPrompt}}">
-          <div class="flex justify-end mb-1">
-            <button class="text-xs hover:underline" @click="configStore.resetPrompt('llm.templateConvertPromptTemplate', 'templateConvertPromptTemplate')">恢复默认</button>
-          </div>
-          <textarea v-model="config.llm.templateConvertPromptTemplate" rows="6" class="input-field font-mono text-xs"></textarea>
-        </FormField>
-        <FormField label="自动命名提示词" hint="可用占位符 {{templatePrompt}}">
-          <div class="flex justify-end mb-1">
-            <button class="text-xs hover:underline" @click="configStore.resetPrompt('llm.templateTitlePromptTemplate', 'templateTitlePromptTemplate')">恢复默认</button>
-          </div>
-          <textarea v-model="config.llm.templateTitlePromptTemplate" rows="6" class="input-field font-mono text-xs"></textarea>
-        </FormField>
-      </div>
       <p v-if="convertStatus" class="text-xs mt-3" :class="statusIsError ? 'status-crit' : 'status-good'">
         {{ convertStatus }}
       </p>
     </SectionCard>
 
-    <SectionCard title="模板填充提示词" hint="决定用户提示词怎么填进模板" class="mb-4">
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <FormField label="本地模板填充" hint="占位符 {{templatePrompt}}、{{rawPrompt}}">
-          <div class="flex justify-end mb-1">
-            <button class="text-xs hover:underline" @click="configStore.resetPrompt('llm.templatePromptTemplate', 'templatePromptTemplate')">恢复默认</button>
-          </div>
-          <textarea v-model="config.llm.templatePromptTemplate" rows="7" class="input-field font-mono text-xs"></textarea>
-        </FormField>
-        <FormField label="引用模板填充" hint="rt / 套模板 用这套">
-          <div class="flex justify-end mb-1">
-            <button class="text-xs hover:underline" @click="configStore.resetPrompt('llm.referencedTemplatePromptTemplate', 'referencedTemplatePromptTemplate')">恢复默认</button>
-          </div>
-          <textarea v-model="config.llm.referencedTemplatePromptTemplate" rows="7" class="input-field font-mono text-xs"></textarea>
-        </FormField>
-      </div>
-    </SectionCard>
 
     <SectionCard title="prompts.chat 远程库" hint="pp 负责中文友好的远程搜索；spp 会先取候选再让模型融合">
       <template #actions>
@@ -210,8 +180,6 @@ const statusIsError = computed(() => /失败|为空|请先/.test(convertStatus.v
         </FormField>
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
-        <ToggleField v-model="config.promptsChat.translateSearchQuery" label="中文转英文搜索" />
-        <ToggleField v-model="config.promptsChat.translateResults" label="结果说明翻译中文" />
         <ToggleField v-model="config.promptsChat.queryRewriteEnabled" label="启用查询词改写" />
         <ToggleField v-model="config.promptsChat.fallbackToRawPrompt" label="选不出模板时用原文" />
       </div>

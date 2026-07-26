@@ -7,6 +7,7 @@ import {
   CONFIG_SCHEMA_VERSION,
   createDefaultConfig,
   exportConfig,
+  getDefaultPrompts,
   importConfig,
   normalizeConfig,
 } from '../dist/packages/config/src/index.js';
@@ -73,7 +74,9 @@ test('config regression: old example-like export imports with all required v2 se
   assert.equal(result.sourceFormat, 'export-wrapper-v1');
   assert.equal(result.config.panel.passwordSeed, 'legacy-test-password');
   assert.equal(result.config.napcat.wsUrl, 'ws://localhost:3001');
-  assert.equal(result.config.napcat.mountOutputDir, 'C:/miobot/output');
+  // mountOutputDir 是 v1 遗留的 Docker 路径映射，v2 两条运行时都不读，已从配置里删除。
+  // 旧导出里仍带着它，导入后不该再冒出来（否则面板又会多一个改了没用的框）。
+  assert.equal(result.config.napcat.mountOutputDir, undefined);
   assert.equal(result.config.freeMode.enabled, false);
   assert.equal(result.config.freeMode.model, 'gpt-4o-mini');
   assert.deepEqual(result.config.bot.replyStrategies, { text: 'quote', image: 'quote', multiImage: 'quote' });
@@ -121,7 +124,7 @@ test('config regression: enum, timeout, node index, and canvas path normalizatio
   assert.equal(result.config.canvas.defaultQuality, 'high');
   assert.equal(result.config.canvas.defaultOutputFormat, 'png');
   assert.equal(result.config.canvas.maxHistory, 500);
-  assert.equal(result.config.canvas.dataDir, 'D:/canvas-data');
+  assert.equal(result.config.canvas.dataDir, undefined, 'canvas.dataDir 已删除，画布实际用 DATA_DIR 环境变量');
   assert.equal(result.config.canvas.imageNodeIndex, 1);
   assert.equal(result.config.freeMode.nodeIndex, 1);
   assert.equal(result.config.freeMode.timeoutMs, 30000);
@@ -181,4 +184,64 @@ test('config regression: aliases from arrays are deduped and keep default fallba
   const result = importConfig({ bot: { commands: { genImage: ['draw', 'Draw', '画图'] } } });
   assert.equal(result.config.bot.commands.genImage, 'draw, 画图, 生图, 画');
   assert.match(result.config.bot.commands.help, /\/help/);
+});
+
+test('config regression: 退役字段不会从旧 config.json 里漏回来', () => {
+  // llm / canvas / bot 是 { ...默认值, ...用户对象 } 展开的，未知键本来会原样穿过去
+  // 再被写回磁盘——只删接口声明是拦不住的。
+  const result = importConfig({
+    napcat: { mountOutputDir: '/app/napcat/output' },
+    canvas: { dataDir: 'D:/canvas-data' },
+    freeMode: { maxReferencedMessages: 33 },
+    promptsChat: { translateSearchQuery: true, translateResults: true },
+    llm: {
+      autoNewConversation: false,
+      templateConvertNodeIndex: 2, templateConvertModel: 'x',
+      templatePromptTemplate: 'a', templateConvertPromptTemplate: 'b', templateTitlePromptTemplate: 'c',
+      referencedTemplatePromptTemplate: 'd', referencedTemplateTimeoutMs: 999999,
+      translationPromptTemplate: 'e',
+    },
+    bot: { imageCompression: { mergedPreviewEnabled: true, mergedPreviewScale: 0.9, mergedPreviewQuality: 90, mergedPreviewMaxWidth: 2000 } },
+    huggingFace: { filters: { includePrivate: true } },
+  });
+  const cfg = result.config;
+  const retired = [
+    ['napcat.mountOutputDir', cfg.napcat.mountOutputDir],
+    ['canvas.dataDir', cfg.canvas.dataDir],
+    ['freeMode.maxReferencedMessages', cfg.freeMode.maxReferencedMessages],
+    ['promptsChat.translateSearchQuery', cfg.promptsChat.translateSearchQuery],
+    ['promptsChat.translateResults', cfg.promptsChat.translateResults],
+    ['llm.autoNewConversation', cfg.llm.autoNewConversation],
+    ['llm.templateConvertNodeIndex', cfg.llm.templateConvertNodeIndex],
+    ['llm.templateConvertModel', cfg.llm.templateConvertModel],
+    ['llm.templatePromptTemplate', cfg.llm.templatePromptTemplate],
+    ['llm.templateConvertPromptTemplate', cfg.llm.templateConvertPromptTemplate],
+    ['llm.templateTitlePromptTemplate', cfg.llm.templateTitlePromptTemplate],
+    ['llm.referencedTemplatePromptTemplate', cfg.llm.referencedTemplatePromptTemplate],
+    ['llm.referencedTemplateTimeoutMs', cfg.llm.referencedTemplateTimeoutMs],
+    ['llm.translationPromptTemplate', cfg.llm.translationPromptTemplate],
+    ['bot.imageCompression.mergedPreviewEnabled', cfg.bot.imageCompression.mergedPreviewEnabled],
+    ['bot.imageCompression.mergedPreviewScale', cfg.bot.imageCompression.mergedPreviewScale],
+    ['bot.imageCompression.mergedPreviewQuality', cfg.bot.imageCompression.mergedPreviewQuality],
+    ['bot.imageCompression.mergedPreviewMaxWidth', cfg.bot.imageCompression.mergedPreviewMaxWidth],
+    ['huggingFace.filters.includePrivate', cfg.huggingFace.filters.includePrivate],
+  ];
+  for (const [path, value] of retired) assert.equal(value, undefined, `${path} 不该复活`);
+
+  // 同段里活着的字段不能被误伤
+  assert.equal(cfg.bot.imageCompression.enabled, true);
+  assert.equal(typeof cfg.bot.imageCompression.scale, 'number');
+  assert.equal(typeof cfg.freeMode.maxInputImages, 'number');
+  assert.equal(typeof cfg.llm.templateNodeIndex, 'number');
+  assert.equal(typeof cfg.huggingFace.filters.limit, 'number');
+});
+
+test('config regression: getDefaultPrompts 只吐还能编辑的提示词', () => {
+  // 面板的「恢复默认」按钮按 key 取值；配置里已经没有的键继续吐出来只会让人以为还能改。
+  const prompts = getDefaultPrompts();
+  for (const gone of ['templatePromptTemplate', 'templateConvertPromptTemplate', 'templateTitlePromptTemplate',
+    'referencedTemplatePromptTemplate', 'translationPromptTemplate'])
+    assert.equal(prompts[gone], undefined, `${gone} 已退役`);
+  for (const alive of ['enhancePromptTemplate', 'interrogatePromptTemplate', 'safeRewritePromptTemplate', 'freeModePromptTemplate'])
+    assert.equal(typeof prompts[alive], 'string', `${alive} 还在用`);
 });

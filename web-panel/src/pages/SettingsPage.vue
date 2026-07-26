@@ -101,9 +101,6 @@ function applyPassword() {
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
         <FormField label="文件发送重试次数"><input v-model.number="config.napcat.fileSendRetryCount" type="number" min="0" max="10" class="input-field" /></FormField>
         <FormField label="文件重试间隔 (ms)"><input v-model.number="config.napcat.fileSendRetryDelayMs" type="number" min="0" step="200" class="input-field" /></FormField>
-        <FormField label="Docker 路径映射" hint="NapCat 在容器内看到的输出目录；留空则用 base64 传输">
-          <input v-model="config.napcat.mountOutputDir" class="input-field font-mono" placeholder="/app/napcat/output" />
-        </FormField>
       </div>
 
       <p class="text-[color:var(--ink-3)] text-[11px] mt-3 leading-relaxed">

@@ -26,5 +26,8 @@
   },
   "dependencies": {
     "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "sharp": "^0.35.3"
   }
 }

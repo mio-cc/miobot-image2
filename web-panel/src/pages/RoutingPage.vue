@@ -13,7 +13,7 @@ import ToggleField from '../components/ToggleField.vue';
  *
  * 这些配置散在十几个字段里（chatNodeIndex / imageNodeIndex / editNodeIndex /
  * interrogateNodeIndex / templateNodeIndex / referencedTemplateNodeIndex /
- * templateConvertNodeIndex / translationNodeIndex / videoNodeIndex /
+ * translationNodeIndex / videoNodeIndex /
  * freeMode.nodeIndex / promptsChat.smartNodeIndex / canvas.* / bot.tts.preprocess.* …），
  * 分散在各个页面时用户根本无法一眼看出"我这台机器人现在谁在干什么活"。
  * 现在收成一张表：一行一项能力，展开才是详细配置。
@@ -60,9 +60,6 @@ const rows: Row[] = [
       node: 'llm.templateNodeIndex', model: 'llm.templateModel' },
     { key: 'referencedTemplate', label: '引用模板填充', trigger: '套模板 / rt', capability: 'chat',
       node: 'llm.referencedTemplateNodeIndex', model: 'llm.referencedTemplateModel' },
-    { key: 'templateConvert', label: 'AI 转模板', trigger: '后台模板库', capability: 'chat',
-      node: 'llm.templateConvertNodeIndex', model: 'llm.templateConvertModel',
-      detailLink: { to: '/templates', text: '模板库页' } },
     { key: 'translation', label: '远程库翻译', trigger: 'pp / spp', capability: 'chat',
       node: 'llm.translationNodeIndex', model: 'llm.translationModel' },
     { key: 'freeMode', label: '自由模式规划', trigger: '@bot 直接说话', capability: 'chat',
@@ -263,10 +260,6 @@ onMounted(() => {
                   <FormField label="会话保留（分钟）" hint="超过这个时间没说话就当新会话">
                     <input v-model.number="config.llm.sessionTtlMinutes" type="number" min="1" max="1440" class="input-field" />
                   </FormField>
-                  <div class="md:col-span-2">
-                    <ToggleField v-model="config.llm.autoNewConversation" label="超限自动开新会话"
-                      hint="关掉的话会一直堆上下文，直到模型报超长" />
-                  </div>
                 </div>
 
                 <div v-if="row.key === 'image'" class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
@@ -342,32 +335,10 @@ onMounted(() => {
                   </FormField>
                 </div>
 
-                <div v-if="row.key === 'template'" class="mt-4">
-                  <FormField label="本地模板填充提示词" hint="占位符 {{templatePrompt}}、{{rawPrompt}}">
-                    <textarea v-model="config.llm.templatePromptTemplate" rows="5" class="input-field font-mono text-xs"></textarea>
-                  </FormField>
-                </div>
-
-                <div v-if="row.key === 'referencedTemplate'" class="grid grid-cols-1 md:grid-cols-[200px_minmax(0,1fr)] gap-4 mt-4">
-                  <FormField label="超时 (ms)">
-                    <input v-model.number="config.llm.referencedTemplateTimeoutMs" type="number" min="30000" step="30000" class="input-field" />
-                  </FormField>
-                  <FormField label="引用模板填充提示词" hint="占位符 {{templatePrompt}}、{{rawPrompt}}">
-                    <textarea v-model="config.llm.referencedTemplatePromptTemplate" rows="4" class="input-field font-mono text-xs"></textarea>
-                  </FormField>
-                </div>
-
-                <div v-if="row.key === 'translation'" class="mt-4">
-                  <FormField label="翻译提示词" hint="占位符 {{mode}}、{{input}}">
-                    <textarea v-model="config.llm.translationPromptTemplate" rows="4" class="input-field font-mono text-xs"></textarea>
-                  </FormField>
-                </div>
-
                 <div v-if="row.key === 'freeMode'" class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
                   <FormField label="规划超时 (ms)"><input v-model.number="config.freeMode.timeoutMs" type="number" min="30000" step="30000" class="input-field" /></FormField>
                   <FormField label="最多输入图"><input v-model.number="config.freeMode.maxInputImages" type="number" min="0" max="12" class="input-field" /></FormField>
-                  <FormField label="最多引用消息"><input v-model.number="config.freeMode.maxReferencedMessages" type="number" min="0" max="80" class="input-field" /></FormField>
-                  <FormField label="最多输出图"><input v-model.number="config.freeMode.maxOutputImages" type="number" min="1" max="4" class="input-field" /></FormField>
+                  <FormField label="最多输出图" class="md:col-span-2"><input v-model.number="config.freeMode.maxOutputImages" type="number" min="1" max="4" class="input-field" /></FormField>
                   <div class="md:col-span-2"><ToggleField v-model="config.freeMode.includeQuotedMessage" label="读取被引用的消息" /></div>
                   <div class="md:col-span-2"><ToggleField v-model="config.freeMode.preferEditWhenImagePresent" label="有图时优先按改图处理" /></div>
                   <div class="md:col-span-4">
