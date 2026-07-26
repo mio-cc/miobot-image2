@@ -14,7 +14,13 @@ export interface BotAppOptions {
   getConfig: () => AppConfig;
   /** 可注入自定义 ModelClient（测试用 fake）；不传则按当前配置节点表自动构造。 */
   client?: ModelClient;
-  registry?: CapabilityRegistry;
+  /**
+   * 能力注册表。**传实例等于关掉能力覆盖的热重载**——一旦收到实例，下面就退化成
+   * `() => 该实例`，把可热重载那条分支整个绕过去，于是用户在面板上加了能力覆盖、
+   * 提示热重载成功，bot 那边照旧回「当前模型不支持」。所以这里也接受一个解析器，
+   * 调用方想复用自己那份 createReloadableRegistry 时传函数即可。
+   */
+  registry?: CapabilityRegistry | (() => CapabilityRegistry);
   /** 自定义规划器；不传则用 ModelClient 后端(freeMode 节点)。 */
   planner?: PlannerClient;
   /** 会话记忆；不传则按 config.llm.maxConversationRounds/Chars 自动创建。 */
@@ -31,6 +37,8 @@ export interface BotApp {
   engine: BotEngine;
   client: ModelClient;
   sessions: SessionStore;
+  /** 现读的能力注册表。每次调用返回当前配置对应的实例——能力覆盖改了不必重启。 */
+  registry: () => CapabilityRegistry;
   /** 处理一条入站消息（自动意图路由 + 能力门控分发）。 */
   handle(input: BotEngineInput): Promise<BotEngineResult>;
 }
@@ -47,20 +55,20 @@ export function createBotApp(options: BotAppOptions): BotApp {
   // 传快照的话，换 key / 改 baseUrl / 加节点全都不会被这个客户端看到，
   // 而面板还会明确告诉用户「配置已热重载生效」。
   const injected = options.registry;
-  const getRegistry = injected
-    ? () => injected
+  const getRegistry = typeof injected === 'function' ? injected
+    : injected ? () => injected
     : createReloadableRegistry(() => toCapabilityOverrides(options.getConfig().llm.capabilityOverrides));
-  const registry = getRegistry();
   const client = options.client || createModelClient({
     nodes: () => toModelNodes(options.getConfig()),
     registry: getRegistry,
     getNodeConcurrency: (i) => options.getConfig().llm.apiKeys?.[i]?.concurrency,
   });
-  const initial = options.getConfig();
+  // 上限传函数而不是数字：这一段里其余依赖（节点表、注册表、并发、路由）全是现读的，
+  // 只有会话上限是开机快照，属实现不一致——面板上改了轮数/TTL 却要重启才认。
   const sessions = options.sessions || createSessionStore({
-    maxRounds: initial.llm.maxConversationRounds,
-    maxChars: initial.llm.maxConversationChars,
-    ttlMs: Math.max(0, (initial.llm.sessionTtlMinutes ?? 0) * 60_000),
+    maxRounds: () => options.getConfig().llm.maxConversationRounds,
+    maxChars: () => options.getConfig().llm.maxConversationChars,
+    ttlMs: () => Math.max(0, (options.getConfig().llm.sessionTtlMinutes ?? 0) * 60_000),
   });
   const planner = options.planner || createModelPlanner(client, () => toBotRouting(options.getConfig()).freeModeNodeIndex);
   const pipeline = options.pipeline || createImagePromptPipeline(client, options.getConfig);
@@ -83,6 +91,7 @@ export function createBotApp(options: BotAppOptions): BotApp {
     engine,
     client,
     sessions,
+    registry: getRegistry,
     handle: (input) => engine.handleAuto(input),
   };
 }

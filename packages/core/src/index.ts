@@ -210,13 +210,22 @@ export interface SessionMessage {
   content: unknown;
 }
 
+/**
+ * 三个上限都可以传函数。
+ *
+ * 传数字的话就是构造那一刻冻住：用户在面板上把「对话轮数」从 8 改成 30、
+ * 面板明确提示「已热重载生效」，可 bot 进程里的会话仍然只留 8 轮，
+ * 要重启才认——而且从头到尾没有任何提示。
+ */
+export type SessionLimit = number | (() => number | undefined);
+
 export interface SessionStoreOptions {
   /** 保留的最大对话轮数(1 轮 = user+assistant)。 */
-  maxRounds?: number;
+  maxRounds?: SessionLimit;
   /** 历史 JSON 序列化后的最大字符数,超出则从最旧丢弃。 */
-  maxChars?: number;
+  maxChars?: SessionLimit;
   /** 会话空闲超时(毫秒)，超时未访问的会话在 cleanup() 时删除。0 = 永不超时。 */
-  ttlMs?: number;
+  ttlMs?: SessionLimit;
   /** 时钟注入(测试用)。 */
   clock?: () => number;
 }
@@ -227,17 +236,23 @@ export interface SessionStoreOptions {
  * 支持空闲 TTL 清理:超时未访问的会话由 cleanup() 删除，避免长期运行内存堆积。
  */
 export class SessionStore {
-  private readonly maxRounds: number;
-  private readonly maxChars: number;
-  private readonly ttlMs: number;
+  private readonly getMaxRounds: () => number;
+  private readonly getMaxChars: () => number;
+  private readonly getTtlMs: () => number;
   private readonly clock: () => number;
   private readonly store = new Map<string, SessionMessage[]>();
   private readonly accessedAt = new Map<string, number>();
 
   constructor(options: SessionStoreOptions = {}) {
-    this.maxRounds = Math.max(1, Math.trunc(options.maxRounds ?? 8));
-    this.maxChars = Math.max(1000, Math.trunc(options.maxChars ?? 12000));
-    this.ttlMs = Math.max(0, Math.trunc(options.ttlMs ?? 0));
+    // 每次用的时候现算，所以面板改了上限立刻生效，不必重启 bot。
+    const resolver = (limit: SessionLimit | undefined, fallback: number, floor: number) => () => {
+      const raw = typeof limit === 'function' ? limit() : limit;
+      const value = Math.trunc(Number(raw));
+      return Number.isFinite(value) ? Math.max(floor, value) : fallback;
+    };
+    this.getMaxRounds = resolver(options.maxRounds, 8, 1);
+    this.getMaxChars = resolver(options.maxChars, 12000, 1000);
+    this.getTtlMs = resolver(options.ttlMs, 0, 0);
     this.clock = options.clock || (() => Date.now());
   }
 
@@ -268,11 +283,12 @@ export class SessionStore {
 
   /** 删除空闲超时的会话，返回清理数量。ttlMs=0 时直接返回 0。 */
   cleanup(now?: number): number {
-    if (this.ttlMs <= 0) return 0;
+    const ttlMs = this.getTtlMs();
+    if (ttlMs <= 0) return 0;
     const t = now ?? this.clock();
     let removed = 0;
     for (const [key, at] of this.accessedAt) {
-      if (t - at > this.ttlMs) {
+      if (t - at > ttlMs) {
         this.store.delete(key);
         this.accessedAt.delete(key);
         removed++;
@@ -282,8 +298,9 @@ export class SessionStore {
   }
 
   private prune(messages: SessionMessage[]): SessionMessage[] {
-    let items = messages.slice(-this.maxRounds * 2);
-    while (JSON.stringify(items).length > this.maxChars && items.length > 2) items = items.slice(2);
+    let items = messages.slice(-this.getMaxRounds() * 2);
+    const maxChars = this.getMaxChars();
+    while (JSON.stringify(items).length > maxChars && items.length > 2) items = items.slice(2);
     return items;
   }
 }

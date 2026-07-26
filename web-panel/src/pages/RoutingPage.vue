@@ -181,9 +181,14 @@ async function testImage() {
     imageTestLoading.value = true;
     imageTestResult.value = null;
     try {
+        // keyRef 是打码那一刻写进节点对象的下标，随删除/重排一起走。
+        // 发实时下标会漂：删了节点还没保存时，后端会拿别的节点的凭据去测。
+        const nodeIndex = config.value.llm.imageNodeIndex;
+        const node = config.value.llm.apiKeys?.[nodeIndex] as any;
         const res = await client.post('/test-image', {
             prompt: imageTestPrompt.value,
-            nodeIndex: config.value.llm.imageNodeIndex,
+            nodeIndex,
+            keyRef: Number.isInteger(node?.keyRef) ? node.keyRef : nodeIndex,
             model: config.value.llm.imageModel,
         });
         imageTestResult.value = res.data;

@@ -176,6 +176,60 @@ export class NapcatAdapter {
     this.requestIdFactory = options.requestIdFactory || ((action) => `v2_${action}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`);
   }
 
+  /**
+   * 把面板上改过的 napcat 配置推给已经在跑的适配器。
+   *
+   * 这些选项以前在构造时冻死：用户改了「图片上传超时」或「文件发送重试次数」，
+   * 面板提示「已热重载生效」，可 bot 进程里的适配器还拿着开机时的值——
+   * 表现是「按我配的超时应该够，怎么还是超时失败」。
+   *
+   * wsUrl / token 不能就地改：连接就是照着它们建立的。这里只更新字段并把
+   * reconnectRequired 报给调用方，由调用方挑时机断开重连——在这里直接重连
+   * 会打断正在进行的发送。
+   */
+  applyOptions(patch: Partial<NapcatAdapterOptions>): { reconnectRequired: boolean } {
+    const numeric: Array<[string, number]> = [
+      ['actionTimeoutMs', 15000],
+      ['textSendTimeoutMs', 15000],
+      ['imageSendTimeoutMs', 120000],
+      ['forwardSendTimeoutMs', 300000],
+      ['getMessageTimeoutMs', 10000],
+    ];
+    const raw = patch as Record<string, any>;
+    for (const [key, fallback] of numeric) {
+      if (raw[key] === undefined) continue;
+      (this.options as Record<string, any>)[key] = positiveInt(raw[key], fallback);
+    }
+    // file/video 的默认值互相依赖，单独算——别让「只改了 file」把 video 的回退链弄断。
+    if (patch.fileSendTimeoutMs !== undefined) {
+      this.options.fileSendTimeoutMs = positiveInt(patch.fileSendTimeoutMs, positiveInt(patch.forwardSendTimeoutMs, 300000));
+    }
+    if (patch.videoSendTimeoutMs !== undefined || patch.fileSendTimeoutMs !== undefined) {
+      this.options.videoSendTimeoutMs = positiveInt(patch.videoSendTimeoutMs, this.options.fileSendTimeoutMs);
+    }
+    if (patch.fileSendRetryCount !== undefined) {
+      this.options.fileSendRetryCount = Math.max(0, Math.trunc(Number(patch.fileSendRetryCount) || 0));
+    }
+    if (patch.fileSendRetryDelayMs !== undefined) {
+      this.options.fileSendRetryDelayMs = Math.max(0, Math.trunc(Number(patch.fileSendRetryDelayMs) || 0));
+    }
+
+    let reconnectRequired = false;
+    const nextUrl = String(patch.wsUrl ?? '').trim();
+    if (nextUrl && nextUrl !== this.options.wsUrl) {
+      this.options.wsUrl = nextUrl;
+      reconnectRequired = true;
+    }
+    if (patch.token !== undefined) {
+      const nextToken = String(patch.token || '') || undefined;
+      if (nextToken !== this.options.token) {
+        this.options.token = nextToken;
+        reconnectRequired = true;
+      }
+    }
+    return { reconnectRequired };
+  }
+
   connect(): void {
     this.manualClose = false;
     this.clearReconnectTimer();

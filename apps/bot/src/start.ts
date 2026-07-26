@@ -61,9 +61,12 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     : undefined;
 
   const getRegistry = createReloadableRegistry(() => toCapabilityOverrides(getConfig().llm.capabilityOverrides));
-  const registry = getRegistry();
   const client = createModelClient({ nodes: () => toModelNodes(getConfig()), registry: getRegistry, getNodeConcurrency: (i) => getConfig().llm.apiKeys?.[i]?.concurrency });
-  const app = createBotApp({ getConfig, client, registry, log: logger });
+  // 注意别传 registry：createBotApp 一旦收到实例就退化成 `() => 该实例`，
+  // 把它自己那条可热重载的分支整个绕过去。BotEngine 判断「这个模型支不支持生图/视频」
+  // 用的就是这份注册表，于是用户在面板上加了能力覆盖、提示热重载成功，
+  // bot 那边照旧回「当前模型不支持」，重启才认。
+  const app = createBotApp({ getConfig, client, log: logger });
 
   const nap = config.napcat;
   const adapter = new NapcatAdapter({
@@ -83,10 +86,37 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     logger,
   });
 
+  /**
+   * 把面板上改过的 napcat 配置推给适配器。
+   *
+   * 每条消息前调一次：getConfig 是 store.loadIfChanged（带 mtime+size 门控），
+   * 文件没变时根本不会重读；applyOptions 也只是几个字段赋值，开销可忽略。
+   * wsUrl / token 变了必须重连——连接就是照着它们建的。
+   */
+  const syncNapcat = () => {
+    const next = getConfig().napcat;
+    const { reconnectRequired } = adapter.applyOptions({
+      wsUrl: next.wsUrl,
+      token: next.token || undefined,
+      actionTimeoutMs: next.actionTimeoutMs,
+      textSendTimeoutMs: next.textSendTimeoutMs,
+      imageSendTimeoutMs: next.imageSendTimeoutMs,
+      forwardSendTimeoutMs: next.forwardSendTimeoutMs,
+      getMessageTimeoutMs: next.getMessageTimeoutMs,
+      fileSendTimeoutMs: next.fileSendTimeoutMs,
+      fileSendRetryCount: next.fileSendRetryCount,
+      fileSendRetryDelayMs: next.fileSendRetryDelayMs,
+    });
+    if (!reconnectRequired) return;
+    logger.info('napcat 连接参数已变更，重连中', { wsUrl: next.wsUrl });
+    adapter.disconnect();
+    adapter.connect();
+  };
+
   const runtime = createBotMessageRuntime({
     app,
     reply: adapter,
-    getConfig,
+    getConfig: () => { syncNapcat(); return getConfig(); },
     selfId: () => adapter.selfQqId || undefined,
     botName: options.botName || 'Miobot',
     logger,

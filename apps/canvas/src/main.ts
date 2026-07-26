@@ -114,7 +114,7 @@ export function createCanvasApp(options: CanvasAppOptions): CanvasApp {
   const getRegistry = injected
     ? () => injected
     : createReloadableRegistry(() => toCapabilityOverrides(options.getConfig()));
-  const registry = getRegistry();
+
   const client = options.client || createModelClient({
     nodes: () => toModelNodes(options.getConfig()),
     registry: getRegistry,
@@ -124,7 +124,11 @@ export function createCanvasApp(options: CanvasAppOptions): CanvasApp {
     getNodeConcurrency: (i) => options.getConfig().llm.apiKeys?.[i]?.concurrency,
   });
   const generator = createModelCanvasGenerator(client, options.getConfig);
-  const store = new CanvasStore({ filePath: options.stateFilePath, maxHistory: options.maxHistory ?? options.getConfig().canvas?.maxHistory });
+  const store = new CanvasStore({
+    filePath: options.stateFilePath,
+    // 现读：同一个文件里 createModelCanvasGenerator 的其余画布配置都是每次现取的，唯独这个漏了。
+    maxHistory: () => options.maxHistory ?? options.getConfig().canvas?.maxHistory,
+  });
   const assets: AssetStore = options.assetDir ? new FileAssetStore(options.assetDir) : new InMemoryAssetStore();
   const service = createCanvasService({ getConfig: options.getConfig, generator, store, assets, isAuthorized: options.isAuthorized });
   return { service, client };

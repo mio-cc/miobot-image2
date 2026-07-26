@@ -104,11 +104,17 @@ export function defaultCanvasData(): CanvasData {
  */
 export class CanvasStore {
   private readonly store: CanvasStateStore<CanvasData>;
-  private readonly maxHistory: number;
+  private readonly getMaxHistory: () => number;
   private readonly maxGallery: number;
 
-  constructor(options: { filePath?: string; maxHistory?: number; maxGallery?: number; debounceMs?: number } = {}) {
-    this.maxHistory = Math.max(1, Math.trunc(options.maxHistory ?? 200));
+  constructor(options: { filePath?: string; maxHistory?: number | (() => number | undefined); maxGallery?: number; debounceMs?: number } = {}) {
+    // 传函数就是现读。传数字的话，用户在画布页把「历史上限」从 50 调到 500、
+    // 面板说已热重载，之后每次生成仍按 50 截断，超出的记录直接没了、不可恢复。
+    const raw = options.maxHistory;
+    this.getMaxHistory = () => {
+      const value = Math.trunc(Number(typeof raw === 'function' ? raw() : raw));
+      return Number.isFinite(value) ? Math.max(1, value) : 200;
+    };
     this.maxGallery = Math.max(1, Math.trunc(options.maxGallery ?? 500));
     this.store = new CanvasStateStore<CanvasData>(options.filePath || ':memory:', {
       defaultValue: defaultCanvasData(),
@@ -151,7 +157,7 @@ export class CanvasStore {
   /** store 实际保留的画廊条数上限。API 的分页上限不能低于它，否则后面的条目永远取不到。 */
   galleryCapacity(): number { return this.maxGallery; }
   /** 历史与反推共用 maxHistory。 */
-  historyCapacity(): number { return this.maxHistory; }
+  historyCapacity(): number { return this.getMaxHistory(); }
 
   project(): ProjectState { return this.store.get().project; }
   gallery(): GalleryItem[] { return this.store.get().gallery; }
@@ -169,7 +175,7 @@ export class CanvasStore {
     let before: Set<string> | undefined;
     this.store.update((d) => {
       before = this.liveAssetIds(d);
-      d.project.history = [record, ...d.project.history].slice(0, this.maxHistory);
+      d.project.history = [record, ...d.project.history].slice(0, this.getMaxHistory());
       d.project.updatedAt = record.createdAt;
       const items: GalleryItem[] = record.outputs
         .filter((o) => o.status === 'succeeded' && o.asset)
@@ -198,7 +204,7 @@ export class CanvasStore {
   addInterrogation(item: InterrogationItem): void {
     this.store.update((d) => {
       const before = this.liveAssetIds(d);
-      d.interrogations = [item, ...d.interrogations].slice(0, this.maxHistory);
+      d.interrogations = [item, ...d.interrogations].slice(0, this.getMaxHistory());
       d.project.interrogations = d.interrogations;
       d.project.updatedAt = item.createdAt;
       this.reapOrphans(before, d);

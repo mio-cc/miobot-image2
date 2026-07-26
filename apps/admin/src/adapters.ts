@@ -120,17 +120,28 @@ export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConf
   // 于是同一个页面上「体检说能用」和「测试说不支持」自相矛盾，重启才一致。
   const getRegistry = createReloadableRegistry(() => toCapabilityOverrides(getConfig()));
 
+  /**
+   * 面板发来的节点定位。
+   *
+   * 优先用 keyRef——它是打码那一刻写进节点对象的下标（见 web-api/secrets.ts），
+   * 挂在对象上、随 splice 一起走。用实时下标会漂：用户删掉一个节点但还没保存时，
+   * 后面每个节点的下标都往前挪一位，按下标取到的是**别的节点**。
+   * 取模型时表现为跨家 401（更糟的是请求成功、把 A 账号的模型列表写进 B），
+   * 测试生图时表现为「拿 B 的凭据去测 C 的模型」。
+   */
+  function resolveNode(body: Record<string, any>, fallbackIndex?: number) {
+    const nodes = getConfig().llm?.apiKeys || [];
+    const raw = Number(body.keyRef ?? body.nodeIndex ?? fallbackIndex);
+    const index = Number.isInteger(raw) && raw >= 0 && raw < nodes.length ? raw : -1;
+    return { nodes, index, node: index >= 0 ? nodes[index] : undefined };
+  }
+
   async function fetchModels(body: unknown): Promise<AdminResponse> {
     const b = (body || {}) as Record<string, any>;
     // 面板对已保存的节点发的是空 key（界面上只有打码值），指望后端凭 nodeIndex
     // 自己去取真值。之前这里只读 b.key，于是请求不带 Authorization 头就发出去了，
     // 上游一律 401——表现就是「已经配好的节点，一点获取模型就失败」。
-    // 面板发来的是打码时写进节点对象的 keyRef（见 web-api/secrets.ts），不是当前列表下标。
-    // 用实时下标会漂：用户删掉一个节点但还没保存，后面每个节点的下标都往前挪了一位，
-    // 后端按下标取到的就是**别的节点**的密钥——轻则 401，重则把 A 账号的模型列表写进 B。
-    const nodes = getConfig().llm?.apiKeys || [];
-    const rawIndex = Number(b.keyRef ?? b.nodeIndex);
-    const stored = Number.isInteger(rawIndex) && rawIndex >= 0 && rawIndex < nodes.length ? nodes[rawIndex] : undefined;
+    const { node: stored } = resolveNode(b);
 
     const submittedKey = String(b.key || '').trim();
     const key = (!submittedKey || isMasked(submittedKey)) ? String(stored?.key || '').trim() : submittedKey;
@@ -192,13 +203,29 @@ export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConf
   async function testImage(body: unknown): Promise<AdminResponse> {
     const cfg = getConfig();
     const b = (body || {}) as Record<string, any>;
-    const nodeIndex = Number.isFinite(Number(b.nodeIndex)) ? Number(b.nodeIndex) : cfg.canvas.imageNodeIndex;
+    const resolved = resolveNode(b, cfg.canvas.imageNodeIndex);
+    const nodeIndex = resolved.index >= 0 ? resolved.index : cfg.canvas.imageNodeIndex;
     const model = String(b.model || cfg.canvas.imageModel || cfg.llm.imageModel || '').trim();
     if (!model) return fail(400, '未配置生图模型。');
     const prompt = String(b.prompt || 'a small red apple on a white table, studio lighting').trim();
+    // 超时/重试以前一个都没传，ModelClient 一律按默认 60s 走。
+    // 生图模型动辄 90–180 秒，于是「面板上把超时调到 300s、测试生图仍然 60 秒就失败，
+    // 群里发同一张图却能成」，用户会照着这个错误结论去改 baseUrl 和 key，越改越乱。
+    const timeoutMs = cfg.canvas.imageTimeoutMs || cfg.llm.imageTimeoutMs;
     try {
-      const client = createModelClient({ nodes: toModelNodes(cfg), registry: getRegistry });
-      const result = await client.generateImages(nodeIndex, { model, prompt, size: b.size ? String(b.size) : undefined });
+      const client = createModelClient({
+        nodes: () => toModelNodes(getConfig()),
+        registry: getRegistry,
+        retries: cfg.llm.imageRetryCount,
+        retryDelayMs: cfg.llm.imageRetryDelayMs,
+        getNodeConcurrency: (i) => getConfig().llm.apiKeys?.[i]?.concurrency,
+      });
+      const result = await client.generateImages(nodeIndex, {
+        model,
+        prompt,
+        size: b.size ? String(b.size) : undefined,
+        ...(timeoutMs ? { timeoutMs } : {}),
+      });
       const first = result.images[0];
       const preview = first ? (first.kind === 'url' ? first.data : `data:${first.mimeType || 'image/png'};base64,${first.data}`) : '';
       return ok({ success: true, model, image: preview, count: result.images.length });
