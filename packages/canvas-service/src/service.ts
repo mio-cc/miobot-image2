@@ -170,6 +170,12 @@ export class CanvasService {
     this.now = options.now || (() => new Date());
     this.idFactory = options.idFactory || defaultIdFactory();
     this.isAuthorized = options.isAuthorized || (() => true);
+    // 记录被裁剪时，对应的资产文件也要删掉。
+    this.store.setAssetReaper((ids) => {
+      for (const id of ids) {
+        try { this.assets.delete(id); } catch { /* 删不掉不影响主流程，下次还会再试 */ }
+      }
+    });
   }
 
   getStore(): CanvasStore { return this.store; }
@@ -236,11 +242,11 @@ export class CanvasService {
     }
 
     if (method === 'GET' && path === '/gallery') {
-      const items = filterGallery(this.store.gallery(), query).map(this.publicGalleryItem);
+      const items = filterGallery(this.store.gallery(), query, this.store.galleryCapacity()).map(this.publicGalleryItem);
       return { status: 200, body: { items, total: this.store.gallery().length } };
     }
     if (method === 'GET' && path === '/interrogations') {
-      const items = filterInterrogations(this.store.interrogations(), query).map(this.publicInterrogationItem);
+      const items = filterInterrogations(this.store.interrogations(), query, this.store.historyCapacity()).map(this.publicInterrogationItem);
       return { status: 200, body: { items, total: this.store.interrogations().length } };
     }
 
@@ -584,17 +590,20 @@ function splitPath(rawPath: string): { path: string; query: Record<string, strin
   return { path, query };
 }
 
-function collectionQuery(query: Record<string, string>) {
+function collectionQuery(query: Record<string, string>, max = 240) {
   return {
     query: String(query.query || '').trim().toLowerCase(),
     favorite: ['1', 'true'].includes(String(query.favorite || '').toLowerCase()),
     status: ['done', 'failed'].includes(query.status || '') ? query.status : 'all',
-    limit: Math.max(1, Math.min(240, Number.parseInt(query.limit || '120', 10) || 120)),
+    // 天花板取 store 的实际容量，不能写死。
+    // 写死 240 而 store 保留 500 时，第 241 张之后的作品在画布里永远看不到——
+    // 前台请求的是 limit=2000，被这里悄悄夹掉了。
+    limit: Math.max(1, Math.min(max, Number.parseInt(query.limit || '120', 10) || 120)),
   };
 }
 
-function filterGallery(items: GalleryItem[], query: Record<string, string>): GalleryItem[] {
-  const q = collectionQuery(query);
+function filterGallery(items: GalleryItem[], query: Record<string, string>, max?: number): GalleryItem[] {
+  const q = collectionQuery(query, max);
   if (q.status === 'failed') return [];
   return items
     .filter((item) => !q.favorite || item.favorite)
@@ -602,8 +611,8 @@ function filterGallery(items: GalleryItem[], query: Record<string, string>): Gal
     .slice(0, q.limit);
 }
 
-function filterInterrogations(items: InterrogationItem[], query: Record<string, string>): InterrogationItem[] {
-  const q = collectionQuery(query);
+function filterInterrogations(items: InterrogationItem[], query: Record<string, string>, max?: number): InterrogationItem[] {
+  const q = collectionQuery(query, max);
   if (q.status === 'failed') return [];
   return items
     .filter((item) => !q.favorite || item.favorite)

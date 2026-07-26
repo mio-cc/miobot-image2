@@ -332,3 +332,48 @@ test('过期窗口的清扫每个窗口只做一次（避免 O(n²) 全表扫描
   const ms = Number(process.hrtime.bigint() - started) / 1e6;
   assert.ok(ms < 200, `换窗口后插入 2000 个来源耗时 ${ms.toFixed(0)}ms，疑似每次都在全表扫描`);
 });
+
+/* ── 资产回收与分页上限（捞验证确认） ────────────────────────────── */
+
+test('画廊裁剪时对应资产也被删掉，不留孤儿文件', async () => {
+  const { CanvasStore } = await import('../dist/packages/canvas-service/src/index.js');
+  const store = new CanvasStore({ maxGallery: 3, maxHistory: 3 });
+  const deleted = [];
+  store.setAssetReaper((ids) => deleted.push(...ids));
+
+  const mkRecord = (n) => ({
+    id: `gen-${n}`, mode: 'generate', prompt: 'p', effectivePrompt: 'p', presetId: 'auto',
+    size: { width: 1, height: 1 }, quality: 'auto', outputFormat: 'png', createdAt: new Date(2020, 0, n).toISOString(),
+    outputs: [{ id: `out-${n}`, status: 'succeeded', asset: { id: `asset-${n}`, url: 'data:image/png;base64,AA' } }],
+  });
+
+  for (let n = 1; n <= 5; n += 1) store.addRecord(mkRecord(n));
+
+  assert.equal(store.gallery().length, 3, '容量是 3');
+  assert.ok(deleted.includes('asset-1'), '被挤出去的记录，资产必须回收');
+  assert.ok(deleted.includes('asset-2'));
+  assert.ok(!deleted.includes('asset-5'), '还在画廊里的不能删');
+});
+
+test('分页上限跟随 store 容量，不再写死 240', async () => {
+  const { CanvasStore, createCanvasService } = await import('../dist/packages/canvas-service/src/index.js');
+  const store = new CanvasStore({ maxGallery: 500, maxHistory: 200 });
+  assert.equal(store.galleryCapacity(), 500);
+
+  const service = createCanvasService({
+    getConfig: () => normalizeConfig({}),
+    generator: { generate: async () => ({ images: [] }), edit: async () => ({ images: [] }), interrogate: async () => ({ text: '' }) },
+    store,
+  });
+
+  for (let n = 1; n <= 300; n += 1) {
+    store.addRecord({
+      id: `g-${n}`, mode: 'generate', prompt: 'p', effectivePrompt: 'p', presetId: 'auto',
+      size: { width: 1, height: 1 }, quality: 'auto', outputFormat: 'png', createdAt: new Date(2020, 0, 1, 0, n).toISOString(),
+      outputs: [{ id: `o-${n}`, status: 'succeeded', asset: { id: `a-${n}`, url: 'data:image/png;base64,AA' } }],
+    });
+  }
+
+  const res = await service.handle({ method: 'GET', path: '/gallery?limit=2000' });
+  assert.equal(res.body.items.length, 300, `第 241 张之后的作品以前永远取不到，实际返回 ${res.body.items.length}`);
+});

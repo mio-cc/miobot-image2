@@ -457,9 +457,12 @@ install_dependencies() {
 
   log "安装画布前端依赖"
   if [ "$STRICT_LOCKFILE" = "1" ] || [ "$STRICT_LOCKFILE" = "true" ]; then
-    (cd "$APP_DIR/web-canvas" && pnpm install --frozen-lockfile)
+    # 排除 @gpt-image-canvas/api：v2 从不启动它（画布后端已由 packages/canvas-service 取代），
+    # 但它带着 sharp / better-sqlite3 这类原生依赖，装不上就等于整个画布部署失败。
+    # 用排除式过滤而不是正向 --filter，后者会把 root 一起排掉，shared 的 tsc 会找不到。
+    (cd "$APP_DIR/web-canvas" && pnpm install --frozen-lockfile --filter '!@gpt-image-canvas/api')
   else
-    (cd "$APP_DIR/web-canvas" && pnpm install --no-frozen-lockfile)
+    (cd "$APP_DIR/web-canvas" && pnpm install --no-frozen-lockfile --filter '!@gpt-image-canvas/api')
   fi
 }
 

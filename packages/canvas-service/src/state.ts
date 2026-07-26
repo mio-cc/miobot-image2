@@ -119,6 +119,40 @@ export class CanvasStore {
   }
 
   data(): CanvasData { return this.store.get(); }
+  /**
+   * 资产回收钩子。由 service 注入，负责真正删磁盘/内存里的文件。
+   *
+   * 画廊、历史、反推都有条数上限，超了就 slice 掉——但对应的资产文件一直留着。
+   * 结果是磁盘无上界增长，而且那些孤儿文件在 UI 里再也看不到、也就再也删不掉。
+   */
+  private reaper?: (ids: string[]) => void;
+  setAssetReaper(fn: (ids: string[]) => void): void { this.reaper = fn; }
+
+  /** 收集当前仍被引用的全部资产 id。 */
+  private liveAssetIds(d: CanvasData): Set<string> {
+    const ids = new Set<string>();
+    const take = (asset: { id?: string } | undefined) => { if (asset?.id) ids.add(asset.id); };
+    for (const item of d.gallery || []) take(item.asset);
+    for (const item of d.interrogations || []) take(item.asset);
+    for (const record of d.project?.history || []) {
+      for (const output of record.outputs || []) take(output.asset);
+    }
+    return ids;
+  }
+
+  /** 裁剪之后调一次：把不再被任何记录引用的资产交给 reaper 删掉。 */
+  private reapOrphans(before: Set<string>, d: CanvasData): void {
+    if (!this.reaper) return;
+    const after = this.liveAssetIds(d);
+    const orphans = [...before].filter((id) => !after.has(id));
+    if (orphans.length) this.reaper(orphans);
+  }
+
+  /** store 实际保留的画廊条数上限。API 的分页上限不能低于它，否则后面的条目永远取不到。 */
+  galleryCapacity(): number { return this.maxGallery; }
+  /** 历史与反推共用 maxHistory。 */
+  historyCapacity(): number { return this.maxHistory; }
+
   project(): ProjectState { return this.store.get().project; }
   gallery(): GalleryItem[] { return this.store.get().gallery; }
   interrogations(): InterrogationItem[] { return this.store.get().interrogations; }
@@ -132,7 +166,9 @@ export class CanvasStore {
 
   /** 落库一条生成记录：写 history 头部 + 把 outputs 平铺进 gallery 头部(对齐 galleryItemsForRecord)。 */
   addRecord(record: GenerationRecord): void {
+    let before: Set<string> | undefined;
     this.store.update((d) => {
+      before = this.liveAssetIds(d);
       d.project.history = [record, ...d.project.history].slice(0, this.maxHistory);
       d.project.updatedAt = record.createdAt;
       const items: GalleryItem[] = record.outputs
@@ -153,14 +189,19 @@ export class CanvasStore {
           asset: o.asset,
         }));
       d.gallery = items.concat(d.gallery).slice(0, this.maxGallery);
+      // 裁剪掉的那些记录，资产也要跟着回收，否则磁盘只涨不减，
+      // 而且孤儿文件在 UI 里再也看不到、也就再也删不掉。
+      if (before) this.reapOrphans(before, d);
     });
   }
 
   addInterrogation(item: InterrogationItem): void {
     this.store.update((d) => {
+      const before = this.liveAssetIds(d);
       d.interrogations = [item, ...d.interrogations].slice(0, this.maxHistory);
       d.project.interrogations = d.interrogations;
       d.project.updatedAt = item.createdAt;
+      this.reapOrphans(before, d);
     });
   }
 

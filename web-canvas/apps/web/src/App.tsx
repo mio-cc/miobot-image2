@@ -1003,6 +1003,10 @@ export function App() {
   async function resumePendingGeneration(entry: StoredPendingGeneration) {
     const pendingItem = entry.pendingItem;
     updatePendingGalleryItem(pendingItem.outputId, { clientStatus: "running", progress: Math.max(pendingItem.progress ?? 12, 12) });
+    // 恢复轮询只做一次。try 里失败后抛出的哨兵异常会落进 catch，
+    // 而 catch 里又调了一次 recoverCompletedGeneration——于是刷新一次页面
+    // 就是两轮 3 分钟的空转，用户以为卡死了。
+    let recoveryAttempted = false;
     try {
       let record: GenerationRecord | null = null;
       if (entry.jobId) {
@@ -1019,6 +1023,7 @@ export function App() {
         removeStoredPendingGeneration(pendingItem.outputId);
         return;
       }
+      recoveryAttempted = true;
       const recovered = await recoverCompletedGeneration(entry.snapshot, pendingItem);
       if (recovered) {
         removeStoredPendingGeneration(pendingItem.outputId);
@@ -1050,7 +1055,9 @@ export function App() {
         scheduleRemovePendingGalleryItem(pendingItem.outputId);
         return;
       }
-      const recovered = await recoverCompletedGeneration(entry.snapshot, pendingItem);
+      const recovered = recoveryAttempted
+        ? false
+        : await recoverCompletedGeneration(entry.snapshot, pendingItem);
       if (recovered) {
         removeStoredPendingGeneration(pendingItem.outputId);
         return;
@@ -2515,18 +2522,27 @@ function mergeFetchedGalleryItems(fetchedItems: GalleryImageItem[], currentItems
   // 现在以 fetched 为权威更新已存在项,同时保留 current 里多余的已完成卡(用户本地仍可见)。
   const seen = new Set<string>();
   const merged: GalleryCardItem[] = [];
-  // 1) 后端拉回的条目优先入列,记录其 outputId
+  // 1) 正在生成的占位卡放最前。
+  //    以前是排在 fetched 之后，于是后台刷新一到，用户刚点的那张就被几百张旧作品
+  //    挤到列表尾部、掉出首屏的渲染窗口——看上去像"点了没反应"。
+  //    这里也和 mergeFetchedInterrogationItems 的顺序保持一致。
+  const pendingItems = currentItems.filter(isPendingGalleryItem);
+  for (const item of pendingItems) {
+    const id = item.outputId;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(item);
+  }
+  // 2) 后端拉回的条目为权威。
   for (const item of fetchedItems) {
     const id = item.outputId;
     if (seen.has(id)) continue;
     seen.add(id);
     merged.push(item);
   }
-  // 2) current 里多余的条目(pending 占位卡 + 后端这一页没返回的旧已完成卡)接在后面,
-  //    对已在 fetched 里的 id 不重复追加。pending 卡优先保留在最前。
-  const pendingItems = currentItems.filter(isPendingGalleryItem);
-  const extraDoneItems = currentItems.filter((item) => !isPendingGalleryItem(item) && !seen.has(item.outputId));
-  for (const item of [...pendingItems, ...extraDoneItems]) {
+  // 3) current 里后端这一页没返回的旧已完成卡接在后面，避免"新图顶掉旧图"。
+  for (const item of currentItems) {
+    if (isPendingGalleryItem(item)) continue;
     const id = item.outputId;
     if (seen.has(id)) continue;
     seen.add(id);
@@ -2562,9 +2578,34 @@ function readStoredPendingInterrogations(): StoredPendingInterrogation[] {
   return readStoredPendingList<StoredPendingInterrogation>(PENDING_INTERROGATION_STORAGE_KEY).filter(isStoredPendingInterrogation);
 }
 
+/**
+ * 落 localStorage 之前把参考图/遮罩的 base64 剥掉。
+ *
+ * 改图的参考图动辄几 MB，而 localStorage 的配额通常只有 5MB——
+ * 写超了 setItem 直接抛 QuotaExceededError，被外层吞掉，
+ * 于是改图任务根本没被记下来，刷新后无法恢复；更糟的是配额一旦占满，
+ * 连生图任务的记录也一起写不进去了。
+ * 恢复流程只需要 jobId + 提示词，图片本身在服务端。
+ */
+function sanitizeStoredPendingGeneration(entry: StoredPendingGeneration): StoredPendingGeneration {
+  const body = entry.snapshot.body;
+  if (!body.referenceImages?.length && !body.maskImage) return entry;
+  return {
+    ...entry,
+    snapshot: {
+      ...entry.snapshot,
+      body: {
+        ...body,
+        ...(body.referenceImages ? { referenceImages: [] } : {}),
+        ...(body.maskImage ? { maskImage: undefined } : {}),
+      },
+    },
+  };
+}
+
 function upsertStoredPendingGeneration(entry: StoredPendingGeneration) {
   const entries = readStoredPendingGenerations().filter((item) => item.pendingItem.outputId !== entry.pendingItem.outputId);
-  writeStoredPendingList(PENDING_GENERATION_STORAGE_KEY, [entry, ...entries]);
+  writeStoredPendingList(PENDING_GENERATION_STORAGE_KEY, [sanitizeStoredPendingGeneration(entry), ...entries]);
 }
 
 function upsertStoredPendingInterrogation(entry: StoredPendingInterrogation) {
