@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue';
+import { computed, onBeforeUnmount, watch } from 'vue';
 import { useConfigStore } from '../stores/config';
 import { useCapabilityStore } from '../stores/capabilities';
 
@@ -47,12 +47,22 @@ const models = computed(() => {
 const detected = computed(() => capabilityStore.capabilitiesOf(props.model));
 
 // 体检表里没有的模型（用户刚敲进去的）单独问一次后端，徽标才不会一直空着。
+// 必须防抖：手输模型名时每敲一个字符都会触发 watch，
+// 「gpt-4o-mini」十一个字符就是十一次 POST /api/capabilities/resolve，
+// 而中间那十次查的都是不存在的模型前缀。
+let resolveTimer: number | undefined;
 watch(() => props.model, value => {
+    if (resolveTimer) window.clearTimeout(resolveTimer);
     const key = String(value || '').trim();
-    if (key && key !== 'none' && !capabilityStore.capabilitiesOf(key).length) {
-        capabilityStore.resolve(Number(props.nodeIndex) || 0, key);
-    }
+    if (!key || key === 'none' || capabilityStore.capabilitiesOf(key).length) return;
+    const nodeIndex = Number(props.nodeIndex) || 0;
+    resolveTimer = window.setTimeout(() => {
+        resolveTimer = undefined;
+        capabilityStore.resolve(nodeIndex, key);
+    }, 400);
 }, { immediate: true });
+
+onBeforeUnmount(() => { if (resolveTimer) window.clearTimeout(resolveTimer); });
 </script>
 
 <template>

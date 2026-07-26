@@ -279,3 +279,13 @@ test('导入接口的响应体里不能出现任何明文凭据', () => {
   assert.equal(repo.getConfig().panel.passwordSeed, 'imported-password-5555');
   assert.equal(repo.getConfig().huggingFace.token, 'hf_importedtoken8888');
 });
+
+test('默认密码的判断由后端下结论——前端拿到的是打码值，比不出来', () => {
+  const fresh = createConfigRepository({});
+  assert.equal(fresh.getAuthSnapshot().usingDefaultPassword, true, '全新部署必须报警');
+  assert.ok(fresh.getMaskedConfig().panel.passwordSeed.includes('••••'),
+    '前端手里的种子是打码的，它自己跟默认值永远不相等——所以这个判断只能由后端做');
+
+  const changed = createConfigRepository({ initialConfig: { panel: { passwordSeed: '我改过了-longer-than-8' } } });
+  assert.equal(changed.getAuthSnapshot().usingDefaultPassword, false);
+});

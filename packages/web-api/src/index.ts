@@ -25,6 +25,8 @@ export interface PanelAuthSnapshot {
   tokenVersion: number;
   passwordSeedHash: string;
   passwordSeedChanged?: boolean;
+  /** 面板密码是否还是出厂默认。前端拿到的是打码值，自己比不出来。 */
+  usingDefaultPassword: boolean;
 }
 
 export interface HotReloadEvent {
@@ -121,6 +123,9 @@ export class ConfigRepository {
       tokenVersion: this.tokenVersionValue,
       passwordSeedHash: hashPasswordSeed(this.config.panel.passwordSeed),
       passwordSeedChanged,
+      // 前端拿到的 passwordSeed 是打码后的（'cha••••••••ogin'），
+      // 它自己没法跟默认种子比对——这个判断只能由能看到真值的这边下。
+      usingDefaultPassword: this.config.panel.passwordSeed === createDefaultConfig().panel.passwordSeed,
     };
   }
 

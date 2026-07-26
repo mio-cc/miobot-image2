@@ -2,22 +2,25 @@
 import { computed, ref } from 'vue';
 import client, { errorMessage } from '../api/client';
 import { useConfigStore } from '../stores/config';
+import { useAuthStore } from '../stores/auth';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import AppIcon from '../components/AppIcon.vue';
 
 const configStore = useConfigStore();
+const auth = useAuthStore();
 const config = computed(() => configStore.config);
 
 const napcatTesting = ref(false);
 const napcatResult = ref<any>(null);
 const newPassword = ref('');
 
-/** 后端把密码打码回显；等于默认种子说明用户从没改过。 */
-const usingDefaultPassword = computed(() => {
-    const seed = String(config.value?.panel?.passwordSeed || '');
-    return !seed || seed === 'change-me-on-first-login';
-});
+/**
+ * 用后端给的结论，别自己比。
+ * 面板拿到的 passwordSeed 是打码后的（'cha••••••••ogin'），
+ * 跟默认种子永远不相等——这个红条从打码上线那天起就再没显示过。
+ */
+const usingDefaultPassword = computed(() => auth.usingDefaultPassword);
 
 async function testNapcat() {
     napcatTesting.value = true;
@@ -130,7 +133,7 @@ function applyPassword() {
         <p>· 所有 AI 能力发给你自己配置的节点，支持官方直连、NewAPI/One-API 中转，以及 CLIProxyAPI 这类把 CLI 订阅包装成 API 的反代。</p>
         <p>· 已适配 OpenAI / Anthropic / Google / xAI / DeepSeek / Kimi / 智谱 等的参数差异，由适配层自动处理。</p>
         <p>· 上游拒绝某个参数时会自动剔除或改名并记住（按节点+模型），换网关无需手工调整。</p>
-        <p>· 配置改动即时热重载，除监听端口外都不需要重启进程。</p>
+        <p>· 绝大多数配置改动即时热重载。<b>需要重启进程</b>的只有三项：面板监听端口、NapCat 的 WebSocket 地址与 Token（连接在启动时建立）。</p>
       </div>
     </SectionCard>
   </div>

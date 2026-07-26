@@ -27,18 +27,31 @@ export const useConfigStore = defineStore('config', () => {
     const saving = ref(false);
     const revision = ref(0);
 
+    /** 保存那一刻每个顶层区块的序列化快照。 */
+    const savedSections = ref<Record<string, string>>({});
+
     const loaded = computed(() => Boolean(config.value));
+
+    /**
+     * 改动落在哪几个顶层区块。
+     *
+     * 只按区块比，不再每次按键把整份配置 stringify 一遍、再 parse 一遍——
+     * 顶栏一直在读这两个 computed，等于每敲一个字符就把几百 KB 的配置
+     * 序列化两次，节点和模板多了以后输入会明显发涩。
+     */
+    const dirtySections = computed(() => {
+        if (!loaded.value || !savedSnapshot.value) return [];
+        return Object.keys(SECTION_LABELS)
+            .filter(key => JSON.stringify(config.value?.[key]) !== savedSections.value[key])
+            .map(key => SECTION_LABELS[key]);
+    });
+
     // savedSnapshot 为空串时 dirty 恒为 true：这既覆盖「还没加载完」，
     // 也覆盖「保存了但没落盘」——后者必须继续显示未保存，不能骗用户。
-    const dirty = computed(() => loaded.value && JSON.stringify(config.value) !== savedSnapshot.value);
-
-    /** 改动落在哪几个顶层区块，给用户一个"改了什么"的实感。 */
-    const dirtySections = computed(() => {
-        if (!dirty.value || !savedSnapshot.value) return [];
-        const saved = JSON.parse(savedSnapshot.value);
-        return Object.keys(SECTION_LABELS)
-            .filter(key => JSON.stringify(config.value?.[key]) !== JSON.stringify(saved?.[key]))
-            .map(key => SECTION_LABELS[key]);
+    const dirty = computed(() => {
+        if (!loaded.value) return false;
+        if (!savedSnapshot.value) return true;
+        return dirtySections.value.length > 0;
     });
 
     /** 只兜底数组/对象容器，真正的默认值由后端 normalizeConfig 负责。 */
@@ -69,7 +82,10 @@ export const useConfigStore = defineStore('config', () => {
     }
 
     function markSaved() {
-        savedSnapshot.value = JSON.stringify(config.value);
+        savedSnapshot.value = 'saved';
+        savedSections.value = Object.fromEntries(
+            Object.keys(SECTION_LABELS).map(key => [key, JSON.stringify(config.value?.[key])]),
+        );
     }
 
     /**
@@ -88,8 +104,13 @@ export const useConfigStore = defineStore('config', () => {
         }
         // 改密码后派生出的 token 会变，服务端在同一响应里给了新的，直接换掉，
         // 免得用户刚保存完就被踢回登录页。
+        const auth = useAuthStore();
         const nextToken = payload?.auth?.token;
-        if (nextToken) useAuthStore().setToken(nextToken);
+        if (nextToken) auth.setToken(nextToken);
+        // 默认密码的判断只能由后端做——前端手里的 passwordSeed 是打码值。
+        if (typeof payload?.auth?.usingDefaultPassword === 'boolean') {
+            auth.usingDefaultPassword = payload.auth.usingDefaultPassword;
+        }
     }
 
     async function fetchConfig() {

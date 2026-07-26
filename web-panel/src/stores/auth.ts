@@ -10,7 +10,7 @@ export const useAuthStore = defineStore('auth', () => {
     const token = ref(localStorage.getItem('miobot_token') || '');
     const isAuthenticated = ref(false);
     const loginError = ref('');
-    /** 后端认为仍是默认密码时置位，设置页会显红条。 */
+    /** 后端认为仍是默认密码时置位，设置页会显红条。由 config store 在每次拿到 auth 快照时更新。 */
     const usingDefaultPassword = ref(false);
 
     function setToken(value: string) {

@@ -27,7 +27,15 @@ const loading = ref(false);
 const error = ref('');
 const autoRefresh = ref(true);
 const copyStatus = ref('');
-const expanded = ref<Record<number, boolean>>({});
+/**
+ * 展开状态按日志**身份**记，不能用数组下标。
+ * 5 秒自动刷新会在头部插入新日志，下标全体后移——
+ * 用户展开的那条会突然变成另一条，看着像日志在乱跳。
+ */
+const expanded = ref<Record<string, boolean>>({});
+function keyOf(entry: LogEntry) {
+    return `${entry.timestamp}|${entry.scope}|${entry.level}|${entry.message}`;
+}
 let timer: number | undefined;
 
 const basePath = computed(() => (source.value === 'canvas' ? '/canvas/logs' : '/logs'));
@@ -168,7 +176,7 @@ onBeforeUnmount(stopTimer);
       <div v-if="loading && !entries.length" class="px-4 py-10 text-center text-[color:var(--ink-3)] text-sm">正在加载...</div>
       <div v-else-if="!entries.length" class="px-4 py-10 text-center text-[color:var(--ink-3)] text-sm">暂无日志</div>
       <div v-else class="max-h-[calc(100vh-260px)] overflow-y-auto mono text-xs">
-        <div v-for="(entry, index) in entries" :key="index"
+        <div v-for="entry in entries" :key="keyOf(entry)"
           class="border-b border-[color:var(--hairline-2)] last:border-b-0 px-4 py-2 hover:bg-[color:var(--surface-2)]">
           <div class="grid grid-cols-[64px_46px_auto_1fr_auto] gap-3 items-baseline">
             <span class="text-[color:var(--ink-3)] text-[10.5px]">{{ String(entry.timestamp).slice(11, 19) }}</span>
@@ -176,12 +184,12 @@ onBeforeUnmount(stopTimer);
             <span class="text-[10.5px]" style="color: var(--series-1)">[{{ entry.scope }}]</span>
             <span class="min-w-0 truncate text-[color:var(--ink-2)]" style="font-family: var(--sans); font-size: 12.5px">{{ entry.message }}</span>
             <button v-if="detailsOf(entry)" class="text-[10.5px] text-[color:var(--ink-3)] hover:underline whitespace-nowrap"
-              @click="expanded[index] = !expanded[index]">
-              {{ expanded[index] ? '收起' : '详情' }}
+              @click="expanded[keyOf(entry)] = !expanded[keyOf(entry)]">
+              {{ expanded[keyOf(entry)] ? '收起' : '详情' }}
             </button>
             <span v-else></span>
           </div>
-          <div v-if="expanded[index]" class="mt-2 rounded-md bg-[color:var(--surface-2)] p-3">
+          <div v-if="expanded[keyOf(entry)]" class="mt-2 rounded-md bg-[color:var(--surface-2)] p-3">
             <div class="flex justify-end mb-1">
               <button class="text-[10.5px] text-[color:var(--ink-3)] hover:underline"
                 @click="copyText(formatEntry(entry), '已复制该条')">复制整条</button>

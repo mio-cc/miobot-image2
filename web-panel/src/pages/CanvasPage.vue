@@ -76,7 +76,8 @@ onMounted(loadCards);
         </div>
       </div>
       <p class="text-[color:var(--ink-3)] text-[11px] mt-3 leading-relaxed">
-        只有生图、改图、反推这三条会真正调用上游的路由受此约束；看画廊、取图片不受影响。
+        所有会改变状态的请求都受此约束（生图/改图/反推、删记录、改项目）；看画廊、取图片不受影响。
+        其中只有生图、改图、反推这三条计入每分钟配额——删条记录不该消耗你的生成额度。
         「仅本机 / 内网」按 TCP 连接的实际来源地址判定，不看 X-Forwarded-For——那个头客户端可以随便写。
         如果你把画布挂在反向代理后面，请在反代那一层限制来源。
       </p>
@@ -221,7 +222,7 @@ onMounted(loadCards);
       <div v-else class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 p-4">
         <div v-for="card in visibleCards" :key="`${card.kind}-${card.id}`"
           class="rounded-lg border border-[color:var(--hairline-2)] overflow-hidden bg-[color:var(--surface)]">
-          <img v-if="card.asset" :src="card.asset" :alt="card.title"
+          <img v-if="card.asset?.url" :src="card.asset.url" :alt="card.title"
             class="w-full aspect-square object-cover bg-[color:var(--surface-2)]" loading="lazy" />
           <div v-else class="w-full aspect-square bg-[color:var(--surface-2)] flex items-center justify-center text-[color:var(--ink-3)] text-xs">
             无图
