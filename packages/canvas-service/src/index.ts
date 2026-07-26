@@ -20,6 +20,15 @@ export {
   type CanvasAsset,
 } from './state.js';
 export {
+  RateLimiter,
+  checkCanvasAccess,
+  clientAddress,
+  isCostlyCanvasRoute,
+  isLocalClient,
+  type CanvasAccessDecision,
+  type CanvasAccessOptions,
+} from './access.js';
+export {
   InMemoryAssetStore,
   parseDataUrl,
   extensionFor,

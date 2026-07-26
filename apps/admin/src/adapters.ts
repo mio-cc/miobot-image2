@@ -45,7 +45,9 @@ function toModelNodes(cfg: AppConfig): ModelNode[] {
 function toCapabilityOverrides(cfg: AppConfig): CapabilityOverride[] {
   const overrides = cfg.llm?.capabilityOverrides || [];
   if (!Array.isArray(overrides) || !overrides.length) return [];
-  const ALLOWED: ModelOperation[] = ['chat', 'vision', 'interrogate', 'image.generate', 'image.edit'];
+  // 必须包含 video.generate：视频模型名（Veo / CogVideoX / Vidu…）最没规律，
+  // 恰恰是最需要手动指定能力的一类，漏掉它等于覆盖功能对视频不生效。
+  const ALLOWED: ModelOperation[] = ['chat', 'vision', 'interrogate', 'image.generate', 'image.edit', 'video.generate'];
   return overrides
     .filter((o) => o && String(o.model || '').trim())
     .map((o) => {
@@ -156,6 +158,7 @@ export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConf
     const token = String(b.token || cfg.napcat.token || '').trim() || undefined;
     if (!wsUrl) return fail(400, '请填写 Napcat WebSocket 地址。');
     const adapter = new NapcatAdapter({ wsUrl, token, autoReconnect: false, actionTimeoutMs: 8000 });
+    const startedAt = Date.now();
     try {
       const connected = await new Promise<boolean>((resolve) => {
         const timer = setTimeout(() => resolve(false), Number(b.timeoutMs) || 8000);
@@ -164,9 +167,26 @@ export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConf
         adapter.connect();
       });
       const snapshot = adapter.getConnectionSnapshot();
-      return connected
-        ? ok({ success: true, message: '已连接 Napcat。', snapshot })
-        : fail(502, `连接失败或超时(${wsUrl})。请检查地址/Token/防火墙。`);
+      if (!connected) return fail(502, `连接失败或超时(${wsUrl})。请检查地址/Token/防火墙。`);
+
+      // 握手成功只说明端口通了。再要一次登录信息，才能证明 token 也对——
+      // 鉴权失败的连接同样会 open，随后才被服务端关掉。
+      let selfQqId = '';
+      let nickname = '';
+      try {
+        const info = await adapter.callAction<{ user_id?: number | string; nickname?: string }>('get_login_info', {}, 5000);
+        selfQqId = String(info?.data?.user_id ?? '');
+        nickname = String(info?.data?.nickname ?? '');
+      } catch { /* 拿不到账号信息不影响"连上了"这个结论 */ }
+
+      return ok({
+        success: true,
+        message: selfQqId ? `已连接 NapCat，登录账号 ${nickname || selfQqId}。` : '已连接 NapCat（未取到账号信息）。',
+        latencyMs: Date.now() - startedAt,
+        selfQqId,
+        nickname,
+        snapshot,
+      });
     } catch (e) {
       return fail(502, errMsg(e));
     } finally {

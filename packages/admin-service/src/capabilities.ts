@@ -64,7 +64,8 @@ const SPECS: BindingSpec[] = [
   { key: 'canvasImage', label: '画布文生图', trigger: '画布前台', operation: 'image.generate', nodePath: 'canvas.imageNodeIndex', modelPath: 'canvas.imageModel', enabledPath: 'canvas.enabled' },
   { key: 'canvasEdit', label: '画布改图', trigger: '画布前台', operation: 'image.edit', nodePath: 'canvas.editNodeIndex', modelPath: 'canvas.editModel', enabledPath: 'canvas.enabled' },
   { key: 'canvasInterrogate', label: '画布反推', trigger: '画布前台', operation: 'interrogate', nodePath: 'canvas.interrogateNodeIndex', modelPath: 'canvas.interrogateModel', enabledPath: 'canvas.enabled' },
-  { key: 'tts', label: '语音合成', trigger: '自动朗读 / 语音', operation: 'chat', nodePath: 'bot.tts.preprocess.nodeIndex', modelPath: 'bot.tts.preprocess.model', enabledPath: 'bot.tts.enabled' },
+  // 绑的是朗读前的文本改写模型，不是语音合成本身（合成走 bot.tts 的第三方服务，不是节点里的模型）。
+  { key: 'tts', label: '语音文本前处理', trigger: '自动朗读前改写', operation: 'chat', nodePath: 'bot.tts.preprocess.nodeIndex', modelPath: 'bot.tts.preprocess.model', enabledPath: 'bot.tts.enabled' },
 ];
 
 function getPath(target: unknown, dotted: string): unknown {

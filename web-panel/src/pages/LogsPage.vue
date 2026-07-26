@@ -1,109 +1,195 @@
-<script lang="ts">
-import { defineComponent, inject } from 'vue';
-export default defineComponent({
-  setup() {
-    return { ...(inject('panelStore', {}) as Record<string, any>) };
-  },
-});
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import client, { errorMessage } from '../api/client';
+import SectionCard from '../components/SectionCard.vue';
+
+/**
+ * 日志页。主进程日志和画布日志放在一个来源开关下——
+ * 分成两个页面时，同一次排障要来回切。
+ */
+
+interface LogEntry {
+    timestamp: string;
+    level: 'debug' | 'info' | 'warn' | 'error';
+    scope: string;
+    message: string;
+    data?: unknown;
+    error?: unknown;
+}
+
+const source = ref<'main' | 'canvas'>('main');
+const level = ref('all');
+const search = ref('');
+const limit = ref(300);
+const entries = ref<LogEntry[]>([]);
+const total = ref(0);
+const loading = ref(false);
+const error = ref('');
+const autoRefresh = ref(true);
+const copyStatus = ref('');
+const expanded = ref<Record<number, boolean>>({});
+let timer: number | undefined;
+
+const basePath = computed(() => (source.value === 'canvas' ? '/canvas/logs' : '/logs'));
+
+async function fetchLogs(showLoading = true) {
+    if (showLoading) loading.value = true;
+    error.value = '';
+    try {
+        const params: Record<string, unknown> = { limit: limit.value };
+        if (level.value !== 'all') params.level = level.value;
+        if (search.value.trim()) params.contains = search.value.trim();
+        const res = await client.get(basePath.value, { params });
+        // 后端按时间正序返回；界面要最新的在最上面。
+        entries.value = [...(res.data.items || [])].reverse();
+        total.value = res.data.total || 0;
+    } catch (e: any) {
+        error.value = errorMessage(e, '日志加载失败');
+    } finally {
+        if (showLoading) loading.value = false;
+    }
+}
+
+async function clearLogs() {
+    if (!window.confirm(`确定清空${source.value === 'canvas' ? '画布' : '运行'}日志吗？`)) return;
+    loading.value = true;
+    try {
+        const res = await client.post(`${basePath.value}/clear`, {});
+        entries.value = [...(res.data.items || [])].reverse();
+        total.value = res.data.total || 0;
+    } catch (e: any) {
+        error.value = errorMessage(e, '清空失败');
+    } finally {
+        loading.value = false;
+    }
+}
+
+function startTimer() {
+    stopTimer();
+    if (!autoRefresh.value) return;
+    timer = window.setInterval(() => fetchLogs(false), 5000);
+}
+function stopTimer() {
+    if (timer !== undefined) { window.clearInterval(timer); timer = undefined; }
+}
+
+function detailsOf(entry: LogEntry) {
+    const payload: Record<string, unknown> = {};
+    if (entry.data !== undefined && entry.data !== null) payload.data = entry.data;
+    if (entry.error !== undefined && entry.error !== null) payload.error = entry.error;
+    if (!Object.keys(payload).length) return '';
+    try { return JSON.stringify(payload, null, 2); } catch { return String(payload); }
+}
+
+function formatEntry(entry: LogEntry) {
+    const details = detailsOf(entry);
+    return [
+        `${entry.timestamp} [${String(entry.level).toUpperCase()}] [${entry.scope}] ${entry.message}`,
+        details ? `details:\n${details}` : '',
+    ].filter(Boolean).join('\n');
+}
+
+async function copyText(text: string, label: string) {
+    try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+        else {
+            // 非 HTTPS 下 clipboard API 不可用，面板经常就是 http://内网:3018。
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+        }
+        copyStatus.value = label;
+        window.setTimeout(() => { if (copyStatus.value === label) copyStatus.value = ''; }, 1800);
+    } catch (e: any) {
+        copyStatus.value = `复制失败：${e?.message || e}`;
+    }
+}
+
+function levelClass(value: string) {
+    if (value === 'error') return 'status-crit';
+    if (value === 'warn') return 'status-warn';
+    if (value === 'debug') return 'text-[color:var(--ink-3)]';
+    return 'status-good';
+}
+
+watch([source, level, limit], () => fetchLogs());
+watch(autoRefresh, startTimer);
+
+onMounted(() => { fetchLogs(); startTimer(); });
+onBeforeUnmount(stopTimer);
 </script>
+
 <template>
-          <div class="animate-fadein">
+  <div>
+    <header class="mb-4">
+      <h1 class="page-title mb-0.5">运行日志</h1>
+      <p class="text-[color:var(--ink-3)] text-xs">
+        {{ total ? `当前条件命中 ${total} 条` : '主进程与画布双日志源' }}
+      </p>
+    </header>
 
-            <header class="page-head">
-              <h1 class="page-head__title">运行日志</h1>
-              <p class="page-head__desc">实时监控机器人运行系统日志与消息处理链路。支持级别筛选、全文检索与自动刷新。</p>
-              <div class="page-head__actions">
-                <button @click="fetchLogs()" :disabled="logLoading" class="btn-outline text-sm">{{ logLoading ? '读取中' : '刷新' }}</button>
-                <button @click="copyVisibleLogs" :disabled="!logEntries.length" class="btn-outline text-sm">复制当前</button>
-                <button @click="clearLogs" :disabled="logLoading" class="btn-danger text-sm">清空</button>
-              </div>
-            </header>
+    <div class="flex flex-wrap items-center gap-2 mb-3">
+      <div class="segmented">
+        <button v-for="opt in [{ v: 'main', t: '主进程' }, { v: 'canvas', t: '画布' }]" :key="opt.v"
+          :class="source === opt.v ? 'on' : ''" @click="source = opt.v as any">{{ opt.t }}</button>
+      </div>
 
-            <div class="metric-grid">
-              <div class="metric" v-if="logStats">
-                <p class="metric__label">内存条数</p>
-                <p class="metric__value">{{ logStats.memoryTotal ?? logStats.total }}<span style="font-size: 0.8rem; color: var(--muted-light);"> / {{ logStats.maxMemoryEntries }}</span></p>
-              </div>
-              <div class="metric metric--primary" v-if="logStats">
-                <p class="metric__label">总记录数</p>
-                <p class="metric__value">{{ logStats.total }}</p>
-              </div>
-              <div class="metric metric--success">
-                <p class="metric__label">当前显示</p>
-                <p class="metric__value">{{ logEntries.length }}</p>
-                <p class="metric__hint">条级别记录</p>
-              </div>
-            </div>
+      <div class="segmented">
+        <button v-for="opt in ['all', 'info', 'warn', 'error', 'debug']" :key="opt"
+          :class="level === opt ? 'on' : ''" @click="level = opt">{{ opt === 'all' ? '全部' : opt }}</button>
+      </div>
 
-            <div class="card p-5">
-              <div class="group-grid group-grid--3" style="grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));">
-                <div>
-                  <label class="label-sm">级别</label>
-                  <select v-model="logLevel" @change="fetchLogs()" class="input-field font-mono">
-                    <option value="all">全部</option>
-                    <option value="debug">调试</option>
-                    <option value="info">信息</option>
-                    <option value="warn">警告</option>
-                    <option value="error">错误</option>
-                  </select>
-                </div>
-                <div class="log-limit-field">
-                  <label class="label-sm">显示条数</label>
-                  <input v-model.number="logLimit" @change="applySystemLogLimit" @keyup.enter="applySystemLogLimit" type="number" min="1" max="5000" step="50" class="input-field font-mono" placeholder="300" />
-                  <span class="log-limit-hint">1-5000</span>
-                </div>
-                <div class="log-search-field">
-                  <label class="label-sm">全文检索</label>
-                  <input v-model="logSearch" @keyup.enter="fetchLogs()" class="input-field" placeholder="报错词 / 范围..." />
-                </div>
-                <label class="log-auto-refresh" style="margin-top: auto;">
-                  <input type="checkbox" v-model="logAutoRefresh" class="rounded accent-indigo-500 h-4.5 w-4.5" />
-                  <span>自动刷新</span>
-                </label>
-              </div>
-              <p v-if="logError" class="log-inline-status log-inline-status--error animate-fadein" style="margin-top: 14px;">{{ logError }}</p>
-              <p v-if="logCopyStatus" class="log-inline-status log-inline-status--success animate-fadein" style="margin-top: 14px;">{{ logCopyStatus }}</p>
-              <p v-if="logStats" class="log-file-path" style="margin-top: 12px; color: var(--muted); font-size: 0.72rem; font-family: var(--font-mono);">文件: <code>{{ logStats.logFile }}</code></p>
-            </div>
+      <input v-model="search" @keyup.enter="fetchLogs()" class="input-field !w-auto flex-1 min-w-[200px]"
+        placeholder="搜索 scope / 关键字，回车生效" />
 
-            <div class="card log-terminal log-terminal--system">
-              <div class="log-terminal__bar">
-                <div>
-                  <span class="log-terminal__title">系统日志输出</span>
-                  <small>{{ logEntries.length }} 条级别记录</small>
-                </div>
-                <button @click="copyVisibleLogs" :disabled="!logEntries.length" class="log-copy-button log-copy-button--bar">复制全部</button>
-              </div>
+      <select v-model.number="limit" class="input-field !w-auto">
+        <option :value="100">100 条</option><option :value="300">300 条</option>
+        <option :value="500">500 条</option><option :value="1000">1000 条</option>
+      </select>
 
-              <div v-if="logLoading && !logEntries.length" class="log-empty-state animate-pulse">
-                正在连接系统日志缓冲区...
-              </div>
-              <div v-else-if="!logEntries.length" class="log-empty-state">
-                当前日志流为空，等待机器人交互。
-              </div>
-              <div v-else class="log-terminal__list">
-                <article v-for="(entry, idx) in logEntries" :key="entry.id ?? `${entry.timestamp}-${entry.scope}-${idx}`" class="log-entry">
-                  <div class="log-entry__main">
-                    <header class="log-entry__meta">
-                      <span :class="['log-level-badge', levelBadgeClass(entry.level)]">{{ logLevelText(entry.level) }}</span>
-                      <time>{{ entry.timestamp }}</time>
-                      <span class="log-entry__scope">{{ entry.scope }}</span>
-                      <span class="log-entry__id">#{{ entry.id ?? '-' }}</span>
-                      <button @click="copyLogEntry(entry)" class="log-copy-button">复制本条</button>
-                    </header>
-                    <p class="log-entry__message selectable-log-text">{{ entry.message }}</p>
-                  </div>
+      <label class="flex items-center gap-1.5 text-xs text-[color:var(--ink-3)]">
+        <input type="checkbox" v-model="autoRefresh" />自动刷新
+      </label>
+      <button class="btn-outline text-xs" :disabled="loading" @click="fetchLogs()">{{ loading ? '刷新中...' : '刷新' }}</button>
+      <button class="btn-outline text-xs" :disabled="!entries.length"
+        @click="copyText(entries.map(formatEntry).join('\n\n'), `已复制 ${entries.length} 条`)">复制当前</button>
+      <button class="btn-danger text-xs" :disabled="loading" @click="clearLogs">清空</button>
+    </div>
 
-                  <div v-if="formatLogDetails(entry.details || entry.data)" class="log-entry__details-panel">
-                    <div class="log-entry__details-head">
-                      <span>原始堆栈 / 结构化数据</span>
-                      <button @click="copyLogDetails(entry)" class="log-copy-button">复制详情</button>
-                    </div>
-                    <pre class="log-entry__details selectable-log-text">{{ formatLogDetails(entry.details || entry.data) }}</pre>
-                  </div>
-                </article>
-              </div>
-            </div>
+    <p v-if="error" class="status-crit text-xs mb-2">{{ error }}</p>
+    <p v-if="copyStatus" class="status-good text-xs mb-2">{{ copyStatus }}</p>
 
+    <SectionCard no-padding>
+      <div v-if="loading && !entries.length" class="px-4 py-10 text-center text-[color:var(--ink-3)] text-sm">正在加载...</div>
+      <div v-else-if="!entries.length" class="px-4 py-10 text-center text-[color:var(--ink-3)] text-sm">暂无日志</div>
+      <div v-else class="max-h-[calc(100vh-260px)] overflow-y-auto mono text-xs">
+        <div v-for="(entry, index) in entries" :key="index"
+          class="border-b border-[color:var(--hairline-2)] last:border-b-0 px-4 py-2 hover:bg-[color:var(--surface-2)]">
+          <div class="grid grid-cols-[64px_46px_auto_1fr_auto] gap-3 items-baseline">
+            <span class="text-[color:var(--ink-3)] text-[10.5px]">{{ String(entry.timestamp).slice(11, 19) }}</span>
+            <span class="text-[10px] font-bold uppercase" :class="levelClass(entry.level)">{{ entry.level }}</span>
+            <span class="text-[10.5px]" style="color: var(--series-1)">[{{ entry.scope }}]</span>
+            <span class="min-w-0 truncate text-[color:var(--ink-2)]" style="font-family: var(--sans); font-size: 12.5px">{{ entry.message }}</span>
+            <button v-if="detailsOf(entry)" class="text-[10.5px] text-[color:var(--ink-3)] hover:underline whitespace-nowrap"
+              @click="expanded[index] = !expanded[index]">
+              {{ expanded[index] ? '收起' : '详情' }}
+            </button>
+            <span v-else></span>
           </div>
+          <div v-if="expanded[index]" class="mt-2 rounded-md bg-[color:var(--surface-2)] p-3">
+            <div class="flex justify-end mb-1">
+              <button class="text-[10.5px] text-[color:var(--ink-3)] hover:underline"
+                @click="copyText(formatEntry(entry), '已复制该条')">复制整条</button>
+            </div>
+            <pre class="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-[color:var(--ink-2)] max-h-72 overflow-auto">{{ detailsOf(entry) }}</pre>
+          </div>
+        </div>
+      </div>
+    </SectionCard>
+  </div>
 </template>

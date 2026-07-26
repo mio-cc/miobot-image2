@@ -474,10 +474,11 @@ build_project() {
     (cd "$APP_DIR" && npm test)
   fi
 
+  # 后台前端的 vite outDir 直接就是 apps/panel/static/admin（见 web-panel/vite.config.ts），
+  # 不再需要构建完再 rsync 一次——少一步也就少一个「构建了但线上还是旧版」的坑。
   log "构建后台前端"
-  (cd "$APP_DIR/web-panel" && npm run build)
   install -d -m 0755 "$APP_DIR/apps/panel/static/admin"
-  rsync -a --delete "$APP_DIR/web-panel/dist/" "$APP_DIR/apps/panel/static/admin/"
+  (cd "$APP_DIR/web-panel" && npm run build)
 
   log "构建画布前端"
   (cd "$APP_DIR/web-canvas" && pnpm --filter @gpt-image-canvas/shared build)

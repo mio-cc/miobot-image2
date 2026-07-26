@@ -1,14 +1,13 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/x-icon" href="/admin/favicon.ico" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#fafaf9" />
+    <!-- 面板部署在内网/无外网的服务器上，外链 Google Fonts 会在加载时白等一轮超时。
+         排版一律用系统字体栈，见 style.css 的 --sans / --mono。 -->
+    <meta name="color-scheme" content="light dark" />
     <title>MioBot Console</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
   </head>
   <body>
     <div id="app"></div>

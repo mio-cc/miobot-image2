@@ -143,7 +143,10 @@ async function handleCanvas(req, res, url) {
   const result = await canvasService.handle({
     method: req.method || 'GET',
     path: url.pathname + url.search,
-    headers: req.headers,
+    // x-client-ip 由这里覆写成 socket 的真实来源地址。
+    // 不能用客户端送来的 x-forwarded-for——那个头谁都能写，
+    // 拿它做「仅本机可用」的判定等于没做。
+    headers: { ...req.headers, 'x-client-ip': req.socket?.remoteAddress || '' },
     body,
   });
   if (result.binary) {

@@ -4,6 +4,8 @@ import { CanvasStore, type CanvasAsset, type GenerationOutput, type GenerationRe
 import { InMemoryAssetStore, parseDataUrl, extensionFor, type AssetStore, type StoredAsset } from './assets.js';
 
 export interface CanvasResponse<T = unknown> { status: number; body: T; binary?: { contentType: string; base64: string } }
+import { RateLimiter, checkCanvasAccess, isCostlyCanvasRoute } from './access.js';
+
 export interface CanvasRequest { method: string; path: string; headers?: Record<string, string | undefined>; body?: unknown }
 
 /**
@@ -136,6 +138,7 @@ export class CanvasService {
   private readonly now: () => Date;
   private readonly idFactory: () => string;
   private readonly isAuthorized: (headers?: Record<string, string | undefined>) => boolean;
+  private readonly limiter = new RateLimiter();
   private readonly imageJobs = new Map<string, CanvasJob>();
   private readonly interrogationJobs = new Map<string, CanvasJob>();
 
@@ -156,6 +159,20 @@ export class CanvasService {
     const method = String(req.method || 'GET').toUpperCase();
     const { path, query } = splitPath(req.path);
     const body = req.body as Record<string, any> | undefined;
+
+    // 花钱的路由先过访问控制与限流：画布前台没有登录态，
+    // 不拦的话任何能访问端口的人都能消耗上游额度。
+    if (isCostlyCanvasRoute(method, path)) {
+      const decision = checkCanvasAccess({
+        config: this.getConfig(),
+        headers: req.headers,
+        isAuthorized: this.isAuthorized,
+        limiter: this.limiter,
+      });
+      if (!decision.allowed) {
+        return { status: decision.status, body: { error: { code: decision.code, message: decision.message } } };
+      }
+    }
 
     if (method === 'GET' && path === '/health') return { status: 200, body: { status: 'ok' } };
     if (method === 'GET' && path === '/config') return { status: 200, body: this.configView() };
