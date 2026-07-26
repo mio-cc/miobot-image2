@@ -154,41 +154,6 @@ async function testImage() {
     }
 }
 
-/* ── 并发限制 ─────────────────────────────────────────────── */
-
-const limitRows = computed(() => {
-    const llm = config.value?.llm;
-    if (!llm) return [];
-    return (llm.apiKeys || []).flatMap((node: any, idx: number) => {
-        const models = new Set<string>(node.models || []);
-        for (const row of rows) {
-            if (Number(get(row.node)) === idx && get(row.model)) models.add(String(get(row.model)));
-        }
-        return [...models].map(model => ({ node, idx, model }));
-    });
-});
-
-function findLimit(idx: number, model: string) {
-    return (config.value?.llm?.modelLimits || []).find((rule: any) =>
-        Number(rule.nodeIndex) === Number(idx) && rule.model === model);
-}
-
-function ensureLimit(idx: number, model: string) {
-    config.value.llm.modelLimits ||= [];
-    let rule = findLimit(idx, model);
-    if (!rule) {
-        rule = { nodeIndex: Number(idx), model, enabled: false, concurrency: 0 };
-        config.value.llm.modelLimits.push(rule);
-    }
-    return rule;
-}
-
-function setLimitConcurrency(idx: number, model: string, value: number) {
-    const rule = ensureLimit(idx, model);
-    rule.concurrency = Math.max(0, Number(value || 0));
-    rule.enabled = rule.concurrency > 0;
-}
-
 onMounted(() => {
     if (!capabilities.bindings.length) capabilities.refresh();
 });
@@ -459,31 +424,10 @@ onMounted(() => {
       <p v-else class="text-[color:var(--ink-3)] text-xs mt-4">还没有任何覆盖，所有能力都按模型 ID 自动推断。</p>
     </SectionCard>
 
-    <SectionCard title="并发限制" hint="对慢模型排队，避免打爆上游。并发 0 表示不限制" no-padding>
-      <table v-if="limitRows.length" class="w-full text-[12.5px]">
-        <thead>
-          <tr>
-            <th class="th">节点 / 模型</th>
-            <th class="th w-[140px]">并发数</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="item in limitRows" :key="`${item.idx}-${item.model}`" class="border-b border-[color:var(--hairline-2)] last:border-b-0">
-            <td class="px-4 py-2.5">
-              <div class="text-[color:var(--ink-3)] text-[11px]">{{ item.node.name || `节点 ${item.idx + 1}` }}</div>
-              <div class="mono">{{ item.model }}</div>
-            </td>
-            <td class="px-4 py-2.5">
-              <input type="number" min="0" step="1" class="input-field"
-                :value="findLimit(item.idx, item.model)?.concurrency || 0"
-                @input="setLimitConcurrency(item.idx, item.model, Number(($event.target as HTMLInputElement).value))" />
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-else class="p-4 text-[color:var(--ink-3)] text-sm">
-        还没有已保存模型。先去「API 节点」页点「获取模型」。
-      </p>
-    </SectionCard>
+    <p class="text-[color:var(--ink-3)] text-xs mt-4">
+      并发上限按节点设置，在「API 节点」页每行直接改——上游的额度是跟着 key 发的，
+      同一个 key 上开 8 个对话和开 8 个生图对上游是一回事，按模型拆只会摊出一张没人敢填的大表。
+    </p>
+
   </div>
 </template>

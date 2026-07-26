@@ -44,7 +44,12 @@ export interface BotApp {
  */
 export function createBotApp(options: BotAppOptions): BotApp {
   const registry = options.registry || createCapabilityRegistry({ overrides: toCapabilityOverrides(options.getConfig().llm.capabilityOverrides) });
-  const client = options.client || createModelClient({ nodes: toModelNodes(options.getConfig()), registry });
+  const client = options.client || createModelClient({
+    nodes: toModelNodes(options.getConfig()),
+    registry,
+    // 并发上限每次请求现读，后台改完立刻生效（节点表本身仍是构造时快照）。
+    getNodeConcurrency: (i) => options.getConfig().llm.apiKeys?.[i]?.concurrency,
+  });
   const initial = options.getConfig();
   const sessions = options.sessions || createSessionStore({
     maxRounds: initial.llm.maxConversationRounds,

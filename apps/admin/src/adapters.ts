@@ -37,7 +37,7 @@ function inferDialect(node: Record<string, unknown>): ProviderDialect {
 function toModelNodes(cfg: AppConfig): ModelNode[] {
   return (cfg.llm?.apiKeys || []).map((n) => {
     const raw = n as unknown as Record<string, unknown>;
-    return { name: n.name, dialect: inferDialect(raw), baseUrl: n.baseUrl, apiKey: n.key, headers: n.headers, models: n.models, enabled: n.enabled };
+    return { name: n.name, dialect: inferDialect(raw), baseUrl: n.baseUrl, apiKey: n.key, headers: n.headers, models: n.models, enabled: n.enabled, concurrency: n.concurrency };
   });
 }
 

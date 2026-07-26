@@ -1,6 +1,7 @@
 import { CapabilityRegistry, createCapabilityRegistry } from './capability/registry.js';
 import { applyFix, applyLearned, diagnose, healingKey, rememberFix } from './capability/healing.js';
 import { imageEditTransportsFor } from './capability/params.js';
+import { NodeConcurrencyGate } from './gate.js';
 import { buildMultipartImageEdit, resolveImageBytes } from './dialects/multipart.js';
 import { anthropicDialect } from './dialects/anthropic.js';
 import { customDialect } from './dialects/custom.js';
@@ -63,6 +64,12 @@ export interface ModelClientOptions {
   /** failover 选中其它节点后是否回调（用于上层记录，但不强制持久化）。 */
   onFailover?: (info: { op: ModelOperation; model: string; fromIndex: number; toIndex: number; error: unknown }) => void;
   logger?: ModelClientLogger;
+  /**
+   * 实时读取某节点的并发上限（0/undefined = 不限制）。
+   * 单独给一个函数而不是只读 node.concurrency：节点表是构造时的快照，
+   * 用户在后台把并发从 4 改成 1 后必须立刻生效，不能等到进程重启。
+   */
+  getNodeConcurrency?: (nodeIndex: number) => number | undefined;
 }
 
 export interface InterrogateRequest {
@@ -85,6 +92,8 @@ export class ModelClient {
   private readonly failover: boolean;
   private readonly onFailover?: ModelClientOptions['onFailover'];
   private readonly logger?: ModelClientLogger;
+  private readonly getNodeConcurrency?: ModelClientOptions['getNodeConcurrency'];
+  private readonly gate = new NodeConcurrencyGate();
 
   constructor(options: ModelClientOptions) {
     this.nodes = options.nodes || [];
@@ -96,6 +105,7 @@ export class ModelClient {
     this.failover = options.failover !== false;
     this.onFailover = options.onFailover;
     this.logger = options.logger;
+    this.getNodeConcurrency = options.getNodeConcurrency;
   }
 
   capabilitiesOf(model: string): ModelOperation[] {
@@ -164,7 +174,7 @@ export class ModelClient {
     const mask = req.mask ? await resolveImageBytes(req.mask) : undefined;
     const plan = buildMultipartImageEdit(node, req, images, mask);
 
-    const response = await this.transport({ ...plan, timeoutMs: Math.max(1, Math.trunc(req.timeoutMs ?? this.timeoutMs)) });
+    const response = await this.gated(nodeIndex, () => this.transport({ ...plan, timeoutMs: Math.max(1, Math.trunc(req.timeoutMs ?? this.timeoutMs)) }));
     if (response.status >= 400) throw errorFromResponse(response);
     return requireImageParser(dialectFor(node), response.data);
   }
@@ -221,7 +231,7 @@ export class ModelClient {
         : buildOpenAiVideoStatus(node, requestId);
 
       try {
-        const response = await this.transport({ ...plan, timeoutMs: httpTimeoutMs });
+        const response = await this.gated(primary, () => this.transport({ ...plan, timeoutMs: httpTimeoutMs }));
         if (response.status >= 400) {
           // 404/429/5xx 短暂可恢复；4xx 其它直接失败。
           const err = errorFromResponse(response);
@@ -351,7 +361,7 @@ export class ModelClient {
 
     for (;;) {
       try {
-        const response = await this.transport({ ...plan, body, timeoutMs: resolvedTimeout });
+        const response = await this.gated(nodeIndex, () => this.transport({ ...plan, body, timeoutMs: resolvedTimeout }));
         if (response.status >= 400) {
           // 参数问题：剔除或按上游提示改名后重试，并记住结论，之后不再犯同样的错。
           const fix = plan.multipart ? undefined : diagnose(response.status, response.data, body);
@@ -379,6 +389,23 @@ export class ModelClient {
         throw error;
       }
     }
+  }
+
+  /** 所有真正发出去的请求都从这里过一遍节点并发闸门。 */
+  private gated<T>(nodeIndex: number, task: () => Promise<T>): Promise<T> {
+    // 传解析器而不是当下的数值：请求可能在队列里等很久，期间用户改了上限也要跟着生效。
+    return this.gate.run(nodeIndex, () => this.concurrencyOf(nodeIndex), task);
+  }
+
+  private concurrencyOf(nodeIndex: number): number {
+    const live = this.getNodeConcurrency?.(nodeIndex);
+    if (live !== undefined && live !== null) return Number(live) || 0;
+    return Number(this.nodes[nodeIndex]?.concurrency) || 0;
+  }
+
+  /** 当前各节点的在飞/排队情况，用于排障。 */
+  queueSnapshot() {
+    return this.gate.snapshot();
   }
 
   private resolveIndex(index: number): number {

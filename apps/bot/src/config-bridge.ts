@@ -44,6 +44,7 @@ export function toModelNodes(cfg: AppConfig): ModelNode[] {
       headers: node.headers,
       models: node.models,
       enabled: node.enabled,
+      concurrency: node.concurrency,
     };
     if (raw.requestMode !== undefined) mapped.requestMode = raw.requestMode as ModelNode['requestMode'];
     if (raw.custom !== undefined) mapped.custom = raw.custom as ModelNode['custom'];

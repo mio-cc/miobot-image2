@@ -102,7 +102,14 @@ export interface CanvasApp {
  */
 export function createCanvasApp(options: CanvasAppOptions): CanvasApp {
   const registry = options.registry || createCapabilityRegistry({ overrides: toCapabilityOverrides(options.getConfig()) });
-  const client = options.client || createModelClient({ nodes: toModelNodes(options.getConfig()), registry });
+  const client = options.client || createModelClient({
+    nodes: toModelNodes(options.getConfig()),
+    registry,
+    // 画布和 bot 各自持有 ModelClient，因此闸门也是各自一套：
+    // 两边同时打满时上游看到的是 2×limit。这是刻意的——把它们合成一个全局闸门
+    // 会让画布的一次批量生成把群里的对话堵死。
+    getNodeConcurrency: (i) => options.getConfig().llm.apiKeys?.[i]?.concurrency,
+  });
   const generator = createModelCanvasGenerator(client);
   const store = new CanvasStore({ filePath: options.stateFilePath, maxHistory: options.maxHistory ?? options.getConfig().canvas?.maxHistory });
   const assets: AssetStore = options.assetDir ? new FileAssetStore(options.assetDir) : new InMemoryAssetStore();
@@ -118,7 +125,7 @@ function toModelNodes(cfg: AppConfig) {
     const explicit = String(raw.dialect || '').trim().toLowerCase();
     const provider = String(raw.provider || '').trim().toLowerCase();
     const dialect = (known.includes(explicit) ? explicit : known.includes(provider) ? provider : 'openai') as 'openai' | 'anthropic' | 'gemini' | 'huggingface' | 'custom';
-    return { name: node.name, dialect, baseUrl: node.baseUrl, apiKey: node.key, headers: node.headers, models: node.models, enabled: node.enabled };
+    return { name: node.name, dialect, baseUrl: node.baseUrl, apiKey: node.key, headers: node.headers, models: node.models, enabled: node.enabled, concurrency: node.concurrency };
   });
 }
 

@@ -37,7 +37,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   const getConfig = (): AppConfig => config;
 
   const registry = createCapabilityRegistry({ overrides: toCapabilityOverrides(config.llm.capabilityOverrides) });
-  const client = createModelClient({ nodes: toModelNodes(config), registry });
+  const client = createModelClient({ nodes: toModelNodes(config), registry, getNodeConcurrency: (i) => getConfig().llm.apiKeys?.[i]?.concurrency });
   const app = createBotApp({ getConfig, client, registry, log: logger });
 
   const nap = config.napcat;
