@@ -257,6 +257,62 @@ test('non-message post_type ignored', async () => {
   assert.equal(r.reason, 'not-a-message');
 });
 
+test('self-message: user_id === selfId(botQqId) -> 忽略, 不回复', async () => {
+  const { reply, rt } = setup(); // botQqId = '10000'
+  const r = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 10000, message_id: 40, raw_message: '自己发的' });
+  assert.equal(r.handled, false);
+  assert.equal(r.reason, 'self-message');
+  assert.equal(reply.sent.length, 0);
+});
+
+test('stale-message: 事件时间超过阈值 -> 丢弃不回复', async () => {
+  const { reply, rt } = setup();
+  const oldTime = Math.floor(Date.now() / 1000) - 600; // 10 分钟前, 默认阈值 90s
+  const r = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 41, time: oldTime, raw_message: '在吗' });
+  assert.equal(r.handled, false);
+  assert.equal(r.reason, 'stale-message');
+  assert.equal(reply.sent.length, 0);
+});
+
+test('stale-message: 新消息(带 time)正常处理', async () => {
+  const { reply, rt } = setup();
+  const r = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 42, time: Math.floor(Date.now() / 1000), raw_message: '在吗' });
+  assert.equal(r.handled, true);
+  assert.equal(r.kind, 'chat');
+  assert.deepEqual(reply.sent[0], ['privateText', 5, 'CHAT']);
+});
+
+test('empty-mention: 群里纯 @bot 无内容 -> 快捷回复, 不进引擎', async () => {
+  const { client, reply, rt } = setup();
+  const r = await rt.handleMessageEvent({
+    post_type: 'message', message_type: 'group', group_id: 9, user_id: 5, message_id: 43,
+    raw_message: '[CQ:at,qq=10000]',
+    message: [{ type: 'at', data: { qq: '10000' } }],
+  });
+  assert.equal(r.handled, true);
+  assert.equal(r.kind, 'empty-mention');
+  assert.equal(client.calls.length, 0); // 没有调用任何模型能力
+  assert.equal(reply.sent[0][0], 'groupText');
+});
+
+test('voice: record 发送失败 -> 回退文本', async () => {
+  const client = makeModelClient();
+  const getConfig = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; return c; };
+  const app = createBotApp({ getConfig, client });
+  const sent = [];
+  const reply = {
+    sendGroupText: async () => ({ success: true }),
+    sendPrivateText: async (u, t) => { sent.push(['text', u, t]); return { success: true }; },
+    sendGroupImage: async () => ({ success: true }),
+    sendPrivateImage: async () => ({ success: true }),
+    sendPrivateRecord: async () => ({ success: false, error: 'codec failed' }),
+  };
+  const rt = createBotMessageRuntime({ app, reply, getConfig, botName: 'Mio', voice: async () => 'base64://VOICE' });
+  const r = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 44, raw_message: '在吗' });
+  assert.equal(r.kind, 'chat');
+  assert.deepEqual(sent[0], ['text', 5, 'CHAT']); // record 失败 -> 文本兜底
+});
+
 test('private /clear 命令 -> 清会话并确认', async () => {
   const { reply, rt } = setup();
   const r = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 10, raw_message: '/clear' });

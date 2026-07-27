@@ -17,6 +17,8 @@ export interface NapcatMessageEvent {
   group_id?: number | string;
   user_id?: number | string;
   self_id?: number | string;
+  /** OneBot 事件时间戳(秒)，用于陈旧消息丢弃。 */
+  time?: number;
   raw_message?: string;
   message?: Array<{ type: string; data: Record<string, any> }> | string;
   sender?: { user_id?: number | string; nickname?: string };
@@ -71,6 +73,10 @@ const DEFAULT_CLEAR_ALIASES = '/clear, 新对话, 清除对话, 清空对话, cl
  */
 export function createBotMessageRuntime(options: BotRuntimeOptions) {
   const log = options.logger;
+  // 会话内“只回最新”：记录每个会话最后一条已进入处理的消息序号，
+  // chat 文本结果发送前若已有更新消息，则丢弃这份迟到回复（图/视频等昂贵产物不丢）。
+  let messageSeq = 0;
+  const latestSessionSeq = new Map<string, number>();
   async function handleMessageEvent(event: NapcatMessageEvent): Promise<BotRuntimeResult> {
     if (event.post_type && event.post_type !== 'message') return { handled: false, reason: 'not-a-message' };
     const cfg = options.getConfig();
@@ -83,6 +89,23 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const userId = event.user_id ?? event.sender?.user_id;
     const sessionId = chatType === 'group' ? `group:${event.group_id}:${userId}` : `private:${userId}`;
     log?.info('收到消息', { chatType, groupId: event.group_id, userId, rawMessage: rawMessage.slice(0, 100), images: baseImages.length, videos: baseVideos.length });
+
+    // 自身消息过滤：Napcat 开了「上报自身消息」时 bot 自己的发言也会推过来，不拦会自问自答。
+    const selfIdRaw = String(options.selfId?.() ?? cfg.bot.botQqId ?? '').trim();
+    if (selfIdRaw && String(userId ?? '').trim() === selfIdRaw) {
+      log?.info('消息被忽略', { reason: 'self-message' });
+      return { handled: false, reason: 'self-message' };
+    }
+
+    // 陈旧消息丢弃：积压/重连补推的老消息不再回复，避免“两分钟前的问题现在才答”扎堆刷屏。
+    const maxAgeSec = cfg.bot.staleMessageMaxAgeSeconds;
+    if (maxAgeSec > 0 && typeof event.time === 'number' && event.time > 0) {
+      const ageMs = Date.now() - event.time * 1000;
+      if (ageMs > maxAgeSec * 1000) {
+        log?.info('消息被忽略', { reason: 'stale-message', ageSeconds: Math.round(ageMs / 1000), maxAgeSeconds: maxAgeSec });
+        return { handled: false, reason: 'stale-message' };
+      }
+    }
 
     // 主人命令优先于普通路由。
     if (options.owner && isOwner(userId, options.owner.ownerQQs())) {
@@ -132,6 +155,10 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       return { handled: false, reason: decision.reason };
     }
     log?.info('路由决策', { kind: decision.kind, commandText: (decision as any).commandText?.slice(0, 80) });
+
+    // 本会话的最新消息序号——迟到的 chat 回复发送前会核对，被更新消息取代则不发。
+    const seq = ++messageSeq;
+    latestSessionSeq.set(sessionId, seq);
 
     const replyCtx: ReplyContext = {
       chatType,
@@ -209,6 +236,14 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     let result: BotEngineResult | null = null;
     try {
       if (decision.kind === 'chat' || decision.kind === 'freeMode') {
+        // 纯用户文本送意图路由(不污染 edit/generate prompt);引用/转发文本由 engine 仅在 chat 路径注入。
+        const cleanText = stripNonTextCqSegments(decision.commandText);
+        // 空 @（无文本/图/视频/引用）不值得跑完整 LLM 流水线，直接快捷回复。
+        if (!cleanText && !enrichedImages.length && !enrichedVideos.length && !referenceText && !forwardText) {
+          await engine.replyText(replyCtx, '我在。直接说需求就行，比如提问、「生图 一只猫」，或发「帮助」看指令。', 'quote');
+          log?.info('回复发送完成', { kind: 'empty-mention' });
+          return { handled: true, kind: 'empty-mention' };
+        }
         // 群聊上下文注入：@bot 时拉取最近群聊记录，让 bot 知道在聊什么。
         let context: string | undefined;
         const gc = cfg.bot.groupContext;
@@ -228,8 +263,6 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           });
           if (context) log?.info('群上下文已注入', { groupId: event.group_id, contextChars: context.length });
         }
-        // 纯用户文本送意图路由(不污染 edit/generate prompt);引用/转发文本由 engine 仅在 chat 路径注入。
-        const cleanText = stripNonTextCqSegments(decision.commandText);
         result = await options.app.handle({
           text: cleanText, images: enrichedImages, videos: enrichedVideos,
           hasReferencedImage, hasReferencedVideo, chatType, sessionId, context, referenceText, forwardText,
@@ -248,7 +281,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       const errMsg = String((error as Error)?.message || error);
       metrics?.record('error');
       log?.error('引擎处理失败', { error: errMsg, kind: decision.kind, chatModel: cfg.llm.chatModel, chatNodeIndex: cfg.llm.chatNodeIndex, imageNodeIndex: cfg.llm.imageNodeIndex, freeModeNodeIndex: cfg.freeMode.nodeIndex });
-      try { await engine.replyText(replyCtx, `处理失败: ${errMsg.slice(0, 200)}`); } catch { /* best-effort */ }
+      try { await engine.replyText(replyCtx, `处理失败: ${errMsg.slice(0, 200)}`, 'quote'); } catch { /* best-effort */ }
       return { handled: false, reason: 'engine-error' };
     }
     if (!result) return { handled: false, reason: 'no-result' };
@@ -266,6 +299,13 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       metrics?.recordDuration('image', elapsed);
     } else if (result.kind === 'video.generate') { metrics?.record('video'); metrics?.recordDuration('video', elapsed); }
     else if (result.kind === 'image.interrogate') { metrics?.recordDuration('interrogate', elapsed); }
+
+    // 只回最新：chat 文本是对话性的，被同会话更新消息取代后不再迟到刷屏；
+    // 图片/视频/反推产物昂贵且用户明确在等，照发。
+    if (result.kind === 'chat' && latestSessionSeq.get(sessionId) !== seq) {
+      log?.info('回复已被更新消息取代，不再发送', { sessionId, elapsedMs: elapsed });
+      return { handled: result.handled, kind: 'chat-superseded' };
+    }
 
     await sendResult(engine, replyCtx, result, options.voice, options.reply);
     log?.info('回复发送完成', { kind: result.kind });
@@ -349,8 +389,14 @@ async function sendResult(
       try {
         const file = await voice(result.text);
         if (file) {
-          if (ctx.chatType === 'group' && reply.sendGroupRecord && ctx.groupId !== undefined) { await reply.sendGroupRecord(ctx.groupId, file); return; }
-          if (ctx.chatType === 'private' && reply.sendPrivateRecord && ctx.userId !== undefined) { await reply.sendPrivateRecord(ctx.userId, file); return; }
+          // record 发送失败(如 Napcat 编码/风控失败)不能静默吞掉回复，落到文本兑底。
+          if (ctx.chatType === 'group' && reply.sendGroupRecord && ctx.groupId !== undefined) {
+            const rec = await reply.sendGroupRecord(ctx.groupId, file);
+            if (rec?.success) return;
+          } else if (ctx.chatType === 'private' && reply.sendPrivateRecord && ctx.userId !== undefined) {
+            const rec = await reply.sendPrivateRecord(ctx.userId, file);
+            if (rec?.success) return;
+          }
         }
       } catch {
         // 语音失败,回退到文本。
