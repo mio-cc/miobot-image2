@@ -6,6 +6,12 @@ Miobot Image Bot v2 是一个面向 Napcat / QQ 场景的图像机器人与 Web 
 > 默认 Linux 服务名：`miobot-v2`  
 > 默认配置文件：`/var/lib/miobot-v2/config.json`
 
+## 协议与端到端文档
+
+QQ/Napcat 消息格式、模型 API、生图/语音、引用/合并转发、完整闭环和已知缺口见：
+
+[docs/PROTOCOL-MATRIX.md](docs/PROTOCOL-MATRIX.md)
+
 ## 功能概览
 
 - **后台管理**：节点、模型、Bot、自由模式、提示词模板、画布日志和卡片管理。
