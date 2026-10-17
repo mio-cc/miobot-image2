@@ -464,3 +464,50 @@ test('v2 genImage: 图库同步异常时回退原图，不阻断 QQ 回复', asy
   assert.equal(r.kind, 'image.generate');
   assert.deepEqual(reply.sent[0], ['privateImage', 5, 'data:image/png;base64,AAA']);
 });
+
+test('v2 收图: 远程图片先内联成 data URL 再送意图路由和模型', async () => {
+  const reply = makeReply();
+  const getConfig = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; return c; };
+  let captured;
+  let preparedFrom;
+  const app = {
+    engine: {},
+    sessions: { clear() {} },
+    handle: async (input) => {
+      captured = input;
+      return {
+        kind: 'chat',
+        decision: { kind: 'chat', params: {} },
+        text: 'ok',
+        handled: true,
+      };
+    },
+  };
+  const rt = createBotMessageRuntime({
+    app,
+    reply,
+    getConfig,
+    botName: 'Mio',
+    prepareInputImages: async (images) => {
+      preparedFrom = images;
+      return ['data:image/png;base64,AAAA'];
+    },
+  });
+
+  const r = await rt.handleMessageEvent({
+    post_type: 'message',
+    message_type: 'private',
+    user_id: 5,
+    message_id: 79,
+    raw_message: '这张图是什么[CQ:image,file=https://example.test/qq-image]',
+    message: [
+      { type: 'text', data: { text: '这张图是什么' } },
+      { type: 'image', data: { url: 'https://example.test/qq-image' } },
+    ],
+  });
+
+  assert.equal(r.handled, true);
+  assert.deepEqual(preparedFrom, ['https://example.test/qq-image']);
+  assert.deepEqual(captured.images, ['data:image/png;base64,AAAA']);
+  assert.deepEqual(reply.sent[0], ['privateText', 5, 'ok']);
+});

@@ -9,6 +9,7 @@ import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 import { fetchGroupContext, type GroupContextOptions, type NapcatHistoryMessage } from './group-context.js';
 import { extractForwardIds, extractReferenceText, formatForwardMessages, isReferencedFromBot } from './message-enrichment.js';
 import type { CanvasGallerySyncInput } from './canvas-gallery.js';
+import { describeImageReference, type ImageInputPreparer } from './image-input.js';
 
 /** Napcat(OneBot) 上报的消息事件(只取本环需要的字段)。 */
 export interface NapcatMessageEvent {
@@ -48,6 +49,11 @@ export interface BotRuntimeOptions {
    * start.ts 注入 Canvas 图库同步器；失败时必须回退原图，不能影响回复。
    */
   syncImagesToGallery?: (input: CanvasGallerySyncInput) => Promise<string[]>;
+  /**
+   * 送入意图路由/模型前的图片预处理(可选)。start.ts 注入后会把 QQ 远程图片
+   * 下载并转成 data URL，兼容不接受签名 URL 的多模态网关。
+   */
+  prepareInputImages?: ImageInputPreparer;
   /**
    * 运行指标（可选）。写在 bot 进程，面板在 web 进程读同一个文件。
    * 不注入时所有埋点都是空操作。
@@ -94,7 +100,12 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const baseVideos = extractVideos(event);
     const userId = event.user_id ?? event.sender?.user_id;
     const sessionId = chatType === 'group' ? `group:${event.group_id}:${userId}` : `private:${userId}`;
-    log?.info('收到消息', { chatType, groupId: event.group_id, userId, rawMessage: rawMessage.slice(0, 100), images: baseImages.length, videos: baseVideos.length });
+    log?.info('收到消息', {
+      chatType, groupId: event.group_id, userId, rawMessage: rawMessage.slice(0, 100),
+      images: baseImages.length,
+      imageRefs: baseImages.slice(0, 3).map(describeImageReference),
+      videos: baseVideos.length,
+    });
 
     // 自身消息过滤：Napcat 开了「上报自身消息」时 bot 自己的发言也会推过来，不拦会自问自答。
     const selfIdRaw = String(options.selfId?.() ?? cfg.bot.botQqId ?? '').trim();
@@ -218,6 +229,15 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     ]).slice(0, maxInputImages);
     const hasReferencedImage = includeQuoted && (referencedImages.length > 0 || forwardImages.length > 0);
     const hasReferencedVideo = includeQuoted && (referencedVideos.length > 0 || forwardVideos.length > 0);
+    const modelImages = options.prepareInputImages && enrichedImages.length
+      ? await options.prepareInputImages(enrichedImages)
+      : enrichedImages;
+    if (enrichedImages.length) {
+      log?.info('模型输入图片准备完成', {
+        imageCount: modelImages.length,
+        imageRefs: modelImages.slice(0, 3).map(describeImageReference),
+      });
+    }
     if (referenced || forwardNodes.length || baseVideos.length) {
       log?.info('消息内容已富化', {
         replyId: replyId || null,
@@ -270,13 +290,13 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           if (context) log?.info('群上下文已注入', { groupId: event.group_id, contextChars: context.length });
         }
         result = await options.app.handle({
-          text: cleanText, images: enrichedImages, videos: enrichedVideos,
+          text: cleanText, images: modelImages, videos: enrichedVideos,
           hasReferencedImage, hasReferencedVideo, chatType, sessionId, context, referenceText, forwardText,
         });
       } else if (decision.kind === 'command') {
         // 命令类:图片用富化后的(引用图片可达改图/反推),提示词保持原始 args 不注入引用文本。
         result = await runCommand(options.app, decision, {
-          text: stripNonTextCqSegments(decision.args), images: enrichedImages, videos: enrichedVideos,
+          text: stripNonTextCqSegments(decision.args), images: modelImages, videos: enrichedVideos,
           hasReferencedImage, hasReferencedVideo, chatType, sessionId,
         });
         if (!result) return { handled: false, reason: `command-unsupported:${decision.command}` };

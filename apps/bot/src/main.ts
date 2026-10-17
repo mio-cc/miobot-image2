@@ -17,6 +17,12 @@ export {
   type CanvasGallerySyncInput,
   type CanvasGallerySyncOptions,
 } from './canvas-gallery.js';
+export {
+  createImageInputPreparer,
+  describeImageReference,
+  type ImageInputPreparer,
+  type ImageInputPreparerOptions,
+} from './image-input.js';
 export { buildTtsRequest, synthesizeSpeech, shouldUseTts, activeFishVoiceId, type TtsRequestPlan, type TtsAudio } from './tts.js';
 export { parseOwnerCommand, isOwner, type OwnerCommand, type OwnerParseContext } from './owner.js';
 export { toModelNodes, toEngineRoutingConfig, toBotRouting, type BotRouting } from './config-bridge.js';

@@ -123,6 +123,35 @@ POST /canvas-api/bot/gallery
 GET  /canvas-api/assets/<assetId>/download
 ```
 
+
+### QQ 输入图片内联
+
+部分 OpenAI 兼容网关不接受 QQ 多媒体签名 URL，会报：
+
+```text
+Unsupported image_url format
+```
+
+v2 Bot 默认会先把 QQ 消息中的 http(s) 图片下载并转成 `data:image/...;base64,...`，再交给意图路由和视觉模型。默认上限：
+
+```bash
+MIOBOT_INLINE_REMOTE_IMAGES=1
+MIOBOT_INLINE_IMAGE_MAX_BYTES=20971520
+MIOBOT_INLINE_IMAGE_TIMEOUT_MS=15000
+```
+
+如果上游模型可以直接读取远程 URL，可设置 `MIOBOT_INLINE_REMOTE_IMAGES=0` 关闭内联。下载失败、超时或不是图片时会保留原 URL，不阻断消息处理。
+
+排查图片输入时，日志会给出脱敏后的引用类型：
+
+```text
+收到消息 ... imageRefs: [ "https://multimedia.nt.qq.com.cn" ]
+输入图片已内联为 data URL
+模型输入图片准备完成 ... imageRefs: [ "data-url" ]
+```
+
+如果 `imageRefs` 显示 `local:xxx.image`，说明 Napcat 没有提供可访问的图片 URL，需要检查 Napcat 的图片上报格式。
+
 ### 配置 Napcat 可访问的图片 URL
 
 Miobot 和 Napcat 不在同一个容器/网络命名空间时，必须配置一个 **Napcat 容器能够访问的 Miobot 地址**：
