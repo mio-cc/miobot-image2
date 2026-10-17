@@ -31,6 +31,8 @@ const SECRET_PATHS = [
   'promptsChat.apiKey',
   'bot.tts.apiKey',
   'huggingFace.token',
+  'search.apiKey',
+  'search.jinaApiKey',
 ] as const;
 
 export function maskSecretValue(value: unknown): string {

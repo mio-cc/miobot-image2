@@ -1,0 +1,14 @@
+﻿{
+  "name": "@miobot-v2/search",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "../../dist/packages/search/src/index.js",
+  "types": "../../dist/packages/search/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "../../dist/packages/search/src/index.d.ts",
+      "default": "../../dist/packages/search/src/index.js"
+    }
+  }
+}

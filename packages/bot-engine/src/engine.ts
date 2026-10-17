@@ -5,7 +5,7 @@ import { resolveImageCapabilities, type EngineRoutingConfig } from './capabiliti
 
 /** 下游能力（由 apps/bot 用 model/image/reply 实现；测试可注入 fake）。 */
 export interface BotEngineDeps {
-  chat(req: { model: string; text: string; images?: string[]; videos?: string[]; sessionId?: string; nodeIndex?: number; context?: string; timeoutMs?: number; maxTokens?: number; reasoningEffort?: ReasoningEffort }): Promise<{ text: string }>;
+  chat(req: { model: string; text: string; images?: string[]; videos?: string[]; sessionId?: string; nodeIndex?: number; context?: string; timeoutMs?: number; maxTokens?: number; reasoningEffort?: ReasoningEffort; forceSearch?: boolean }): Promise<{ text: string }>;
   generateImages(req: { model: string; prompt: string; size?: string; count?: number; quality?: string; templateId?: string }): Promise<{ images: string[] }>;
   editImage(req: { model: string; prompt: string; images: string[]; size?: string; quality?: string }): Promise<{ images: string[] }>;
   interrogate(req: { model: string; images: string[]; prompt?: string }): Promise<{ text: string }>;
@@ -29,6 +29,8 @@ export interface BotEngineOptions {
 export interface BotEngineInput extends IntentInput {
   /** 显式命令对应的功能 ID。 */
   featureId?: string;
+  /** 显式联网搜索命令，跳过自动关键词判断。 */
+  forceSearch?: boolean;
   /** 功能限额上下文（群/用户/输入长度）。 */
   featureContext?: { chatType?: 'group' | 'private'; groupId?: string | number; userId?: string | number; promptChars?: number };
   /** 会话键(group:xxx / private:xxx),供 chat 取用对话记忆。 */
@@ -164,7 +166,7 @@ export class BotEngine {
         const chatText = composeChatText(baseText, input.referenceText, input.forwardText);
         const { text } = await this.deps.chat({
           model: chatModel, text: chatText, images, videos, sessionId: input.sessionId,
-          nodeIndex: chatNode, context: input.context, timeoutMs: cfg.plannerTimeoutMs, reasoningEffort: cfg.reasoningEffort,
+          nodeIndex: chatNode, context: input.context, timeoutMs: cfg.plannerTimeoutMs, reasoningEffort: cfg.reasoningEffort, forceSearch: input.forceSearch,
         });
         return { kind: 'chat', decision, text, handled: true };
       }

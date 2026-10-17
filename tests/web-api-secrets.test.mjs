@@ -301,3 +301,15 @@ test('secret mask: sensitive API node headers are masked and restored', () => {
   assert.equal(restored.llm.apiKeys[0].headers.Authorization, 'Bearer header-secret-123456');
   assert.deepEqual(findUnresolvedSecrets(masked), []);
 });
+
+
+test('secret mask: search and jina keys are masked', () => {
+  const config = makeConfig();
+  config.search = { apiKey: 'search-secret-key-123456', jinaApiKey: 'jina-secret-key-123456' };
+  const masked = maskConfigSecrets(config);
+  assert.notEqual(masked.search.apiKey, config.search.apiKey);
+  assert.notEqual(masked.search.jinaApiKey, config.search.jinaApiKey);
+  const restored = unmaskConfigSecrets(masked, config);
+  assert.equal(restored.search.apiKey, config.search.apiKey);
+  assert.equal(restored.search.jinaApiKey, config.search.jinaApiKey);
+});

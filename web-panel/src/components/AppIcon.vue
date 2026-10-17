@@ -9,7 +9,11 @@ defineProps<{ name: string; size?: number }>();
 <template>
   <svg :width="size || 15" :height="size || 15" viewBox="0 0 15 15" fill="none"
        stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-    <template v-if="name === 'grid'">
+    <template v-if="name === 'search'">
+      <circle cx="6.7" cy="6.7" r="4.2" /><path d="M9.8 9.8l3.1 3.1" />
+    </template>
+    <template v-else-if="name === 'grid'">
+
       <rect x="1.5" y="1.5" width="5" height="5" rx="1" /><rect x="8.5" y="1.5" width="5" height="5" rx="1" />
       <rect x="1.5" y="8.5" width="5" height="5" rx="1" /><rect x="8.5" y="8.5" width="5" height="5" rx="1" />
     </template>

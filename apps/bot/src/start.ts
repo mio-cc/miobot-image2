@@ -13,6 +13,7 @@ import type { NapcatHistoryMessage } from './group-context.js';
 import { normalizeForwardPayload } from './message-enrichment.js';
 import { FeatureGate } from './feature-gate.js';
 import { createOutboundImageCompressor } from './image-output.js';
+import { createWebSearchService } from '../../../packages/search/src/index.js';
 import { PendingFileIndex, DEFAULT_FILE_PARSE_LIMITS } from '../../../packages/file-ingest/src/index.js';
 import { derivePanelToken } from '../../../packages/web-api/src/index.js';
 import { promises as fs } from 'node:fs';
@@ -196,9 +197,11 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // 用的就是这份注册表，于是用户在面板上加了能力覆盖、提示热重载成功，
   // bot 那边照旧回「当前模型不支持」，重启才认。
   const featureGate = new FeatureGate({ getConfig });
+  const searchService = createWebSearchService({ getConfig, logger });
   const app = createBotApp({
     getConfig,
     client,
+    search: searchService,
     log: logger,
     beforeDispatch: async (decision, input) => {
       const featureId = input.featureId || (decision.kind === 'image.generate' ? 'image.generate'

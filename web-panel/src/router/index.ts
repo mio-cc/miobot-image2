@@ -51,6 +51,18 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '命令与意图', group: '对话', icon: 'template' },
     },
     {
+        path: '/search',
+        name: 'search',
+        component: () => import('../pages/WebSearchPage.vue'),
+        meta: { title: '联网搜索', group: '工具', icon: 'search' },
+    },
+    {
+        path: '/search',
+        name: 'search',
+        component: () => import('../pages/WebSearchPage.vue'),
+        meta: { title: '联网搜索', group: '工具', icon: 'search' },
+    },
+    {
         path: '/voice',
         name: 'voice',
         component: () => import('../pages/VoicePage.vue'),

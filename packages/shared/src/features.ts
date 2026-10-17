@@ -1,4 +1,4 @@
-export type FeatureCategory = 'basic' | 'image' | 'file' | 'video' | 'template' | 'system';
+export type FeatureCategory = 'basic' | 'image' | 'file' | 'video' | 'template' | 'web' | 'system';
 export type FeatureScope = 'private' | 'group';
 export type FeatureGroupActivation = 'direct' | 'mention' | 'reply' | 'mention-or-reply';
 export interface FeatureLimitField {
@@ -35,7 +35,8 @@ export type FeatureLegacyCommand =
   | 'interrogate'
   | 'fileList'
   | 'fileRead'
-  | 'fileGenerate';
+  | 'fileGenerate'
+  | 'webSearch';
 
 export type FeatureIntentKind =
   | 'chat'
@@ -160,6 +161,11 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
   {
     id: 'file.generate', label: '生成文件', category: 'file', implemented: true,
     legacyCommand: 'fileGenerate', defaultAliases: ['生成文件', '生成文档', '导出文件'],
+    defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
+  },
+  {
+    id: 'search.web', label: '联网搜索', category: 'web', implemented: true,
+    legacyCommand: 'webSearch', defaultAliases: ['搜索', '联网搜索', '查一下', '搜一下', 'websearch'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
 ];

@@ -754,6 +754,8 @@ async function runCommand(
       return app.engine.handleExplicit('image.edit', input, { prompt: input.text });
     case 'interrogate':
       return app.engine.handleExplicit('image.interrogate', input, { prompt: input.text });
+    case 'webSearch':
+      return app.engine.handleExplicit('chat', { ...input, forceSearch: true }, { prompt: input.text });
     default:
       // templateLibrary/originalImage*/remotePrompt* 需要额外子系统,后续批次接入。
       return null;
@@ -855,6 +857,7 @@ function buildHelpText(cfg: AppConfig): string {
   add('file.list');
   add('file.read');
   add('file.generate');
+  add('search.web');
   add('help');
   add('clear');
   lines.push('群里需 @机器人 或 回复机器人 触发；私聊直接说话即可。');

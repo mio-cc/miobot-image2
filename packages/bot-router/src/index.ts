@@ -23,7 +23,8 @@ export type BotCommandName =
   | 'interrogate'
   | 'fileList'
   | 'fileRead'
-  | 'fileGenerate';
+  | 'fileGenerate'
+  | 'webSearch';
 
 export type BotRouteKind = 'ignored' | 'command' | 'freeMode' | 'chat';
 
@@ -43,6 +44,7 @@ export interface BotCommandAliases {
   fileList?: CommandAliasInput;
   fileRead?: CommandAliasInput;
   fileGenerate?: CommandAliasInput;
+  webSearch?: CommandAliasInput;
   originalImage?: CommandAliasInput;
   imageCount?: CommandAliasInput;
   referencedTemplateImage?: CommandAliasInput;
@@ -527,6 +529,8 @@ export function matchExplicitCommand(
   if (fileRead) return fileRead;
   const fileGenerate = commandNameMatch('fileGenerate', text, commands);
   if (fileGenerate) return fileGenerate;
+  const webSearch = commandNameMatch('webSearch', text, commands);
+  if (webSearch) return webSearch;
   const genImage = commandNameMatch('genImage', text, commands);
   if (genImage) {
     const enhance = parseEnhanceMode(genImage.args, commands);

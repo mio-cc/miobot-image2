@@ -263,6 +263,7 @@ Napcat → QQ
 - 对话：命令与意图（别名、私聊/群聊、群聊触发方式、FreeMode 自然语言开关）
 - 对话：命令与意图（限额、冷却、并发、发送延迟）
 - 对话：文件读取（索引保留、大小、文本/PDF/表格/PPT/压缩包上限）
+- 工具：联网搜索（服务商、自动触发、抓取、限额、测试）
 - 媒体：语音/TTS、画布/图库
 - 系统：运行日志、系统设置
 
@@ -282,3 +283,47 @@ Napcat → QQ
 - DeepSeek Vision: https://api-docs.deepseek.com/guides/vision
 - Fish Audio TTS: https://docs.fish.audio/api-reference/endpoint/openapi-v1/text-to-speech
 - Napcat OneBot 11 segment/action 定义。
+
+
+## 13. 联网搜索
+
+### 支持的服务
+
+- DeepSeek 自研 Search / Fetch：`POST /v1/tools/search`、`POST /v1/tools/fetch`
+- Tavily
+- Brave Search
+- Serper.dev
+- Bing Web Search
+- Google Custom Search JSON API
+- SearXNG
+- Exa
+
+### 触发方式
+
+- 自动模式：新闻、实时信息、价格、版本、官网、文档、天气、比赛、政策等关键词触发；普通闲聊不搜索
+- 每次聊天都搜索
+- 关闭自动搜索，只执行显式命令：搜索、联网搜索、查一下
+- 文件内容分析默认不自动联网，避免把整份文件内容当搜索词
+
+### DeepSeek Search / Fetch
+
+- Search 参数：query、count(1~50)、ori_question、localization、need_content
+- 返回字段：rerank_score、title、url、snippet、summary、content、site_name、site_icon、date、authority
+- 支持 site:、-site:、-短语、精确短语、lang:、before:、after:
+- 官方 QPS：Search 和 Fetch 各自 5 QPS
+- 408/429/5xx 会重试
+- 计费按成功请求，空结果不计费；count 不影响单价
+- 后台 DeepSeek Key 留空时，会尝试复用聊天节点的 DeepSeek 官方 Key
+
+### 安全与注入
+
+- 搜索结果作为不可信外部资料注入，网页中的指令不能被执行
+- 网页正文会做 HTML 清洗、长度截断和总字符预算
+- 抓取 URL 禁止 localhost、私有 IP、内网域名、file://、带用户名密码的 URL
+- 搜索查询不包含聊天历史、系统提示词或密钥
+- 搜索失败不会让主聊天失败，而是注入搜索失败提示，避免编造来源
+- 结果缓存默认 300 秒，只按服务商和查询缓存，不按用户身份
+
+### 后台
+
+工具 -> 联网搜索：服务商、API 地址、API Key、自动模式、结果数量、正文请求、Jina/DeepSeek 抓取、超时、重试、QPS、缓存、正文和总注入字符上限、测试搜索。

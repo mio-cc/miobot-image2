@@ -39,6 +39,7 @@ export interface AdminServiceDeps {
   fetchHuggingFaceModels?: AdminHandler;
   testNapcat?: AdminHandler;
   testImage?: AdminHandler;
+  testSearch?: AdminHandler;
   templatesConvert?: AdminHandler;
   codex?: CodexService;
   /** 画布卡片视图(跨域读 canvas 画廊/反推)。未注入 → /api/canvas/cards 返回 501。 */

@@ -4,6 +4,7 @@ import type { PlannerClient } from '../../../packages/intent-router/src/index.js
 import type { SessionStore } from '../../../packages/core/src/index.js';
 import type { BotRouting } from './config-bridge.js';
 import type { ImagePromptPipeline } from './image-pipeline.js';
+import type { WebSearchService } from '../../../packages/search/src/index.js';
 
 /** 把 model 层的图像产物统一成可直接发送/压缩的字符串（url 原样、base64 转 data URL）。 */
 export function artifactToString(artifact: ImageArtifact): string {
@@ -38,6 +39,8 @@ export interface ModelDepsOptions {
   /** 生图提示词流水线(可选)：模板渲染 + 润色 + 失败安全改写。 */
   pipeline?: ImagePromptPipeline;
   /** 结构化日志器(可选)：记录图片被丢弃等诊断信息。 */
+  /** 联网搜索服务；不传则不注入搜索结果。 */
+  search?: WebSearchService;
   logger?: { info(message: string, data?: Record<string, unknown>): void; warn(message: string, data?: Record<string, unknown>): void; error(message: string, data?: Record<string, unknown>): void };
 }
 
@@ -69,7 +72,7 @@ export function sanitizeModelImageReferences(images: string[]): { images: string
 }
 
 export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps {
-  const { client, getRouting, sessions, chatSystemPrompt, pipeline, logger } = options;
+  const { client, getRouting, sessions, chatSystemPrompt, pipeline, search, logger } = options;
   return {
     async chat(req) {
       const routing = getRouting();
@@ -83,6 +86,17 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       const contextSystem = req.context
         ? { role: 'system', content: `【群内最近对话上下文】\n${req.context}\n（请根据@你的消息判断是否与上述上下文相关：相关则结合上下文回复，无关则正常回复用户，不要生硬搬运上下文内容）` }
         : null;
+      let searchSystem: { role: 'system'; content: string } | null = null;
+      if (search?.shouldSearch(req.text, req.forceSearch)) {
+        try {
+          const response = await search.search({ query: req.text.slice(0, 128), oriQuestion: req.text.slice(0, 128), count: undefined });
+          searchSystem = { role: 'system', content: search.formatContext(response) };
+          logger?.info('已注入联网搜索结果', { provider: response.provider, resultCount: response.results.length, cached: response.cached, durationMs: response.durationMs });
+        } catch (error) {
+          logger?.warn('联网搜索失败，继续无搜索回答', { error: String((error as Error)?.message || error) });
+          searchSystem = { role: 'system', content: '【联网搜索失败】本次没有取得可靠的外部资料。不要编造最新信息或来源；如用户询问实时信息，请明确说明搜索失败。' };
+        }
+      }
       // 推理模型(gpt-5/o1/o3/o4/codex)需要 reasoning_effort 字段, 否则部分上游代理
       // (如 chatgpt2api) 转发到 /backend-anon/conversation 时会被 OpenAI 拒(403)。
       // 对齐历史 monolith 的 shouldSendReasoningEffort + max_tokens=2000 默认值。
@@ -94,7 +108,7 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
         : '';
       // 带图对话走 vision，不进会话记忆(图片上下文不便持久化)。
       if (images.length > 0 && client.can(req.model, 'vision')) {
-        const promptBase = contextSystem ? `${contextSystem.content}\n\n${req.text}` : req.text;
+        const promptBase = [contextSystem?.content, searchSystem?.content, req.text].filter(Boolean).join('\n\n');
         const prompt = `${promptBase}${videoNote}`;
         const visionReq: { model: string; prompt: string; imageUrls: string[]; maxTokens: number; reasoningEffort?: ReasoningEffort } = { model: req.model, prompt, imageUrls: images, maxTokens };
         if (reasoningEffort) visionReq.reasoningEffort = reasoningEffort;
@@ -112,6 +126,7 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       const messages: Array<{ role: string; content: unknown }> = [];
       if (chatSystemPrompt) messages.push({ role: 'system', content: chatSystemPrompt });
       if (contextSystem) messages.push(contextSystem);
+      if (searchSystem) messages.push(searchSystem);
       for (const m of history) messages.push({ role: m.role, content: m.content });
       messages.push({ role: 'user', content: `${req.text}${videoNote}` });
       const chatReq: { model: string; messages: typeof messages; maxTokens: number; reasoningEffort?: ReasoningEffort; timeoutMs?: number } = { model: req.model, messages, maxTokens };

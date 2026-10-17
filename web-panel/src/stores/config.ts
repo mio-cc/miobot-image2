@@ -81,6 +81,7 @@ export const useConfigStore = defineStore('config', () => {
         c.napcat ||= {};
         c.panel ||= {};
         c.huggingFace ||= {};
+        c.search ||= {};
     }
 
     function markSaved() {

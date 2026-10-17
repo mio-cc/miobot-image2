@@ -123,6 +123,7 @@ export class AdminService {
     if (method === 'POST' && path === '/api/huggingface/models') return this.viaDep(this.deps.fetchHuggingFaceModels, req.body, 'huggingface/models');
     if (method === 'POST' && path === '/api/test-napcat') return this.viaDep(this.deps.testNapcat, req.body, 'test-napcat');
     if (method === 'POST' && path === '/api/test-image') return this.viaDep(this.deps.testImage, req.body, 'test-image');
+    if (method === 'POST' && path === '/api/search/test') return this.viaDep(this.deps.testSearch, req.body, 'search/test');
 
     // 画布卡片视图：admin 面板展示/删除画布画廊+反推记录，数据归属 canvas 域(经 canvasCards 注入)。
     if (method === 'GET' && path === '/api/canvas/cards') {

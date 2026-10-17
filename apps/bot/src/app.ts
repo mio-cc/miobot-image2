@@ -2,6 +2,7 @@ import { createBotEngine, type BotEngine, type BotEngineInput, type BotEngineRes
 import { createModelClient, createReloadableRegistry, type CapabilityRegistry, type ModelClient } from '../../../packages/model/src/index.js';
 import { createSessionStore, type SessionStore } from '../../../packages/core/src/index.js';
 import type { PlannerClient } from '../../../packages/intent-router/src/index.js';
+import type { WebSearchService } from '../../../packages/search/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import { toBotRouting, toEngineRoutingConfig, toModelNodes, toCapabilityOverrides } from './config-bridge.js';
 import { createModelBackedDeps, createModelPlanner } from './deps.js';
@@ -31,6 +32,8 @@ export interface BotAppOptions {
   pipeline?: ImagePromptPipeline;
   /** 动作执行前的功能限额/并发钩子。 */
   beforeDispatch?: BotEngineOptions['beforeDispatch'];
+  /** 联网搜索服务；不传则关闭搜索注入。 */
+  search?: WebSearchService;
   /** 可选日志器（透传给 BotEngine，用于诊断意图路由的 gate/caps 决策）。 */
   log?: { info(message: string, data?: Record<string, unknown>): void; warn(message: string, data?: Record<string, unknown>): void; error(message: string, data?: Record<string, unknown>): void };
 }
@@ -80,6 +83,7 @@ export function createBotApp(options: BotAppOptions): BotApp {
     sessions,
     chatSystemPrompt: options.chatSystemPrompt ?? DEFAULT_CHAT_SYSTEM_PROMPT,
     pipeline,
+    search: options.search,
     logger: options.log,
   });
   const engine = createBotEngine({

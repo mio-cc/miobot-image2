@@ -2,6 +2,7 @@ import { createModelClient, createReloadableRegistry, type CapabilityOverride, t
 import { NapcatAdapter } from '../../../packages/napcat/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { AdminResponse, AdminServiceDeps } from '../../../packages/admin-service/src/index.js';
+import { createWebSearchService } from '../../../packages/search/src/index.js';
 
 const KNOWN: ProviderDialect[] = ['openai', 'anthropic', 'gemini', 'huggingface', 'custom'];
 
@@ -315,5 +316,17 @@ export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConf
     }
   }
 
-  return { fetchModels, fetchHuggingFaceModels, testImage, templatesConvert, testNapcat };
+  async function testSearch(body: unknown): Promise<AdminResponse> {
+    const query = String((body as any)?.query || '').trim();
+    if (!query) return fail(400, '请填写测试搜索内容');
+    const service = createWebSearchService({ getConfig });
+    try {
+      const response = await service.search({ query, force: true });
+      return ok({ success: true, response, context: service.formatContext(response) });
+    } catch (e) {
+      return fail(502, errMsg(e));
+    }
+  }
+
+  return { fetchModels, fetchHuggingFaceModels, testImage, testSearch, templatesConvert, testNapcat };
 }

@@ -171,3 +171,22 @@ test('model image sanitizer: never forwards QQ CDN or local refs upstream', () =
   assert.deepEqual(result.images, ['data:image/png;base64,AAAA', 'https://example.com/public.png']);
   assert.equal(result.dropped, 3);
 });
+
+
+test('admin api: search test endpoint is wired through injected dependency', async () => {
+  const service = createAdminService({
+    initialConfig: normalizeConfig({}),
+    deps: {
+      testSearch: async () => ({ status: 200, body: { success: true, response: { provider: 'deepseek', results: [] } } }),
+    },
+  });
+  const res = await service.handle({
+    method: 'POST',
+    path: '/api/search/test',
+    headers: { authorization: `Bearer ${service.repository.getAuthSnapshot(false).token}` },
+    body: { query: 'test' },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.success, true);
+  assert.equal(res.body.response.provider, 'deepseek');
+});
