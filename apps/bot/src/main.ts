@@ -8,6 +8,15 @@ export const BOT_APP: PackageDescriptor = {
 export { createBotApp, DEFAULT_CHAT_SYSTEM_PROMPT, type BotApp, type BotAppOptions } from './app.js';
 export { createModelBackedDeps, createModelPlanner, artifactToString, artifactsToStrings, videoArtifactToString, videoArtifactsToStrings, type ModelDepsOptions } from './deps.js';
 export { createImagePromptPipeline, type ImagePromptPipeline } from './image-pipeline.js';
+export {
+  createCanvasGallerySync,
+  resolveCanvasSyncEndpoint,
+  resolvePublicImageBaseUrl,
+  type CanvasGallerySync,
+  type CanvasGallerySyncContext,
+  type CanvasGallerySyncInput,
+  type CanvasGallerySyncOptions,
+} from './canvas-gallery.js';
 export { buildTtsRequest, synthesizeSpeech, shouldUseTts, activeFishVoiceId, type TtsRequestPlan, type TtsAudio } from './tts.js';
 export { parseOwnerCommand, isOwner, type OwnerCommand, type OwnerParseContext } from './owner.js';
 export { toModelNodes, toEngineRoutingConfig, toBotRouting, type BotRouting } from './config-bridge.js';

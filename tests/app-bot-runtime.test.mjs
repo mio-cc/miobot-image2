@@ -399,3 +399,68 @@ test('owner: 非 owner 不触发 owner 通道', async () => {
   await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 999, message_id: 31, raw_message: '/模型' });
   assert.equal(handled.length, 0); // 非 owner,owner.handle 不被调用
 });
+
+test('v2 genImage: 图库同步成功后用图库 URL 交给 Napcat 发送', async () => {
+  const client = makeModelClient();
+  const reply = makeReply();
+  const getConfig = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; return c; };
+  const app = createBotApp({ getConfig, client });
+  const syncCalls = [];
+  const rt = createBotMessageRuntime({
+    app,
+    reply,
+    getConfig,
+    botName: 'Mio',
+    syncImagesToGallery: async (input) => {
+      syncCalls.push(input);
+      return ['http://host.docker.internal:3018/canvas-api/assets/a1/download'];
+    },
+  });
+
+  const r = await rt.handleMessageEvent({
+    post_type: 'message',
+    message_type: 'private',
+    user_id: 5,
+    message_id: 77,
+    raw_message: '画 cat',
+    message: [{ type: 'text', data: { text: '画 cat' } }],
+  });
+
+  assert.equal(r.kind, 'image.generate');
+  assert.equal(syncCalls.length, 1);
+  assert.equal(syncCalls[0].mode, 'generate');
+  assert.equal(syncCalls[0].prompt, 'cat');
+  assert.deepEqual(syncCalls[0].context, { chatType: 'private', groupId: undefined, userId: 5 });
+  assert.deepEqual(syncCalls[0].images, ['data:image/png;base64,AAA']);
+  assert.deepEqual(reply.sent[0], [
+    'privateImage',
+    5,
+    'http://host.docker.internal:3018/canvas-api/assets/a1/download',
+  ]);
+});
+
+test('v2 genImage: 图库同步异常时回退原图，不阻断 QQ 回复', async () => {
+  const client = makeModelClient();
+  const reply = makeReply();
+  const getConfig = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; return c; };
+  const app = createBotApp({ getConfig, client });
+  const rt = createBotMessageRuntime({
+    app,
+    reply,
+    getConfig,
+    botName: 'Mio',
+    syncImagesToGallery: async () => { throw new Error('canvas unavailable'); },
+  });
+
+  const r = await rt.handleMessageEvent({
+    post_type: 'message',
+    message_type: 'private',
+    user_id: 5,
+    message_id: 78,
+    raw_message: '画 cat',
+    message: [{ type: 'text', data: { text: '画 cat' } }],
+  });
+
+  assert.equal(r.kind, 'image.generate');
+  assert.deepEqual(reply.sent[0], ['privateImage', 5, 'data:image/png;base64,AAA']);
+});

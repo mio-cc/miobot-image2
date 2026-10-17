@@ -8,6 +8,7 @@ import { isOwner, parseOwnerCommand, type OwnerCommand } from './owner.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 import { fetchGroupContext, type GroupContextOptions, type NapcatHistoryMessage } from './group-context.js';
 import { extractForwardIds, extractReferenceText, formatForwardMessages, isReferencedFromBot } from './message-enrichment.js';
+import type { CanvasGallerySyncInput } from './canvas-gallery.js';
 
 /** Napcat(OneBot) 上报的消息事件(只取本环需要的字段)。 */
 export interface NapcatMessageEvent {
@@ -42,6 +43,11 @@ export interface BotRuntimeOptions {
   fetchGroupHistory?: (groupId: number | string, anchorMessageId: number | string, count: number) => Promise<NapcatHistoryMessage[]>;
   /** 文本回复转语音:返回 record 文件引用则发语音,返回空则发文本。 */
   voice?: (text: string) => Promise<string | null | undefined>;
+  /**
+   * 生图/改图结果入库回调(可选)。返回用于 Napcat 发送的图片引用。
+   * start.ts 注入 Canvas 图库同步器；失败时必须回退原图，不能影响回复。
+   */
+  syncImagesToGallery?: (input: CanvasGallerySyncInput) => Promise<string[]>;
   /**
    * 运行指标（可选）。写在 bot 进程，面板在 web 进程读同一个文件。
    * 不注入时所有埋点都是空操作。
@@ -305,6 +311,27 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     if (result.kind === 'chat' && latestSessionSeq.get(sessionId) !== seq) {
       log?.info('回复已被更新消息取代，不再发送', { sessionId, elapsedMs: elapsed });
       return { handled: result.handled, kind: 'chat-superseded' };
+    }
+
+    if (options.syncImagesToGallery && result.images?.length && (result.kind === 'image.generate' || result.kind === 'image.edit')) {
+      const originalImages = result.images;
+      const prompt = String((result.decision?.params as { prompt?: unknown } | undefined)?.prompt || (decision.kind === 'command' ? decision.args : '')).trim();
+      try {
+        const syncedImages = await options.syncImagesToGallery({
+          mode: result.kind === 'image.edit' ? 'edit' : 'generate',
+          prompt,
+          images: originalImages,
+          context: { chatType, groupId: event.group_id, userId },
+        });
+        if (Array.isArray(syncedImages) && syncedImages.length === originalImages.length) {
+          result.images = syncedImages;
+        } else {
+          log?.warn('生图图库同步返回数量不匹配，回退原图', { original: originalImages.length, synced: Array.isArray(syncedImages) ? syncedImages.length : 0 });
+        }
+      } catch (error) {
+        log?.warn('生图图库同步失败，回退原图', { error: String((error as Error)?.message || error) });
+        result.images = originalImages;
+      }
     }
 
     await sendResult(engine, replyCtx, result, options.voice, options.reply);

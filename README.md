@@ -97,10 +97,84 @@ PORT=3018 HOST=0.0.0.0 bash deploy-linux.sh install
 | 应用目录 | `/opt/miobot-v2` |
 | 数据目录 | `/var/lib/miobot-v2` |
 | 配置文件 | `/var/lib/miobot-v2/config.json` |
+| 画布/图库状态 | `/var/lib/miobot-v2/canvas-state.json` |
+| 图库图片资产 | `/var/lib/miobot-v2/canvas-assets/` |
 | 日志目录 | `/var/log/miobot-v2` |
 | 环境文件 | `/etc/miobot-v2.env` |
 | systemd 服务 | `miobot-v2` |
 | Web 端口 | `3018` |
+
+
+## Bot 生图回图与图库（Napcat 容器）
+
+v2 Bot 生图/改图成功后会先把结果写入 Canvas 图库，再把图库里的图片 URL 交给 Napcat。这样图片可以同时出现在前端图库和 QQ 回复中，并避免通过 WebSocket 传输很大的 base64 图片帧。
+
+图库数据默认位于：
+
+```text
+/var/lib/miobot-v2/canvas-state.json
+/var/lib/miobot-v2/canvas-assets/
+```
+
+图库同步和图片下载由 Miobot 自身提供：
+
+```text
+POST /canvas-api/bot/gallery
+GET  /canvas-api/assets/<assetId>/download
+```
+
+### 配置 Napcat 可访问的图片 URL
+
+Miobot 和 Napcat 不在同一个容器/网络命名空间时，必须配置一个 **Napcat 容器能够访问的 Miobot 地址**：
+
+```bash
+# 首次安装时设置
+MIOBOT_PUBLIC_BASE_URL=http://host.docker.internal:3018 bash deploy-linux.sh install
+
+# 已安装后拉取更新时一并写入环境文件并重启
+MIOBOT_PUBLIC_BASE_URL=http://host.docker.internal:3018 bash deploy-linux.sh git-update
+```
+
+或者编辑 `/etc/miobot-v2.env`：
+
+```bash
+MIOBOT_PUBLIC_BASE_URL=http://host.docker.internal:3018
+MIOBOT_SYNC_BOT_GALLERY=1
+MIOBOT_CANVAS_SYNC_TIMEOUT_MS=15000
+```
+
+然后重启：
+
+```bash
+bash deploy-linux.sh restart
+```
+
+Napcat Compose 需要让容器能解析宿主机地址：
+
+```yaml
+services:
+  napcat:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
+
+也可以把 `MIOBOT_PUBLIC_BASE_URL` 换成宿主机内网 IP，例如：
+
+```text
+http://192.168.1.10:3018
+```
+
+不要使用 `http://127.0.0.1:3018`：在 Napcat 容器内部，`127.0.0.1` 指的是 Napcat 容器自己。
+
+如果 Miobot Web 和 Bot 不在同一个网络里，还可以单独指定图库同步接口：
+
+```bash
+MIOBOT_CANVAS_SYNC_URL=http://miobot-web:3018/canvas-api/bot/gallery
+```
+
+部署后发一次 `画 一只猫`，Miobot 日志应出现 `Bot images synced to canvas gallery`，前端画布图库应出现新图，Napcat 日志应出现 `send_group_msg`，且图片字段是 HTTP URL。
+
+`MIOBOT_SYNC_BOT_GALLERY=0` 可以关闭生图自动入库。未配置 `MIOBOT_PUBLIC_BASE_URL` 时，图片仍会尝试写入图库，但回复会回退到原始 base64 图片；大图可能仍会遇到 Napcat WebSocket 帧限制。
 
 ## 本地开发 / 验证
 

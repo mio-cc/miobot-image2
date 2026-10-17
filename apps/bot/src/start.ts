@@ -11,6 +11,7 @@ import { shouldUseTts, synthesizeSpeech } from './tts.js';
 import type { OwnerCommand } from './owner.js';
 import type { NapcatHistoryMessage } from './group-context.js';
 import { normalizeForwardPayload } from './message-enrichment.js';
+import { createCanvasGallerySync } from './canvas-gallery.js';
 
 export interface StartBotOptions {
   /** 配置文件(JSON);不给则用默认配置(无可用节点,仅供连通性冒烟)。 */
@@ -68,6 +69,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // bot 那边照旧回「当前模型不支持」，重启才认。
   const app = createBotApp({ getConfig, client, log: logger });
 
+  const canvasGallerySync = createCanvasGallerySync({ getConfig, logger });
+
   const nap = config.napcat;
   const adapter = new NapcatAdapter({
     wsUrl: nap.wsUrl,
@@ -119,6 +122,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     getConfig: () => { syncNapcat(); return getConfig(); },
     selfId: () => adapter.selfQqId || undefined,
     botName: options.botName || 'Miobot',
+    syncImagesToGallery: canvasGallerySync.syncImages,
     logger,
     // 群聊上下文：@bot 时通过 napcat get_group_msg_history 拉取最近群聊记录。
     fetchGroupHistory: async (groupId, anchorMessageId, count): Promise<NapcatHistoryMessage[]> => {
