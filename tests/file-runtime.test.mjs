@@ -44,7 +44,7 @@ test('runtime file: same-message file read downloads, parses, and asks chat mode
     sessions: { clear() {}, append() {}, get() { return []; } },
     registry: () => ({ can: () => true }),
     handle: async () => { throw new Error('should not call app.handle'); },
-    client: {},
+    client: { async chat() { return { text: '{"intent":"file.generate","args":"生成一个 DeepSeek 的 md 介绍文档","fileType":"md","confidence":0.96}' }; } },
     engine: {
       async handleExplicit(kind, input, params) {
         modelPrompt = input.text;
@@ -220,4 +220,38 @@ test('runtime file: natural-language md request produces a real .md file instead
   assert.equal(filesSent.length, 1);
   assert.match(filesSent[0].file, /deepseek-intro\.md|deepseek-intro/);
   await fs.rm(dir, { recursive: true, force: true });
+});
+
+
+test('runtime intent: model chat intent bypasses freeMode planner and calls explicit chat', async () => {
+  const cfg = normalizeConfig(createDefaultConfig());
+  cfg.bot.botQqId = '100';
+  cfg.freeMode.enabled = true;
+  cfg.intentRecognition.enabled = true;
+  const texts = [];
+  let plannerCalls = 0;
+  const app = {
+    sessions: { clear() {}, append() {}, get() { return []; } },
+    registry: () => ({ can: () => true }),
+    handle: async () => { plannerCalls += 1; throw new Error('freeMode planner should not run'); },
+    client: { async chat() { return { text: '{"intent":"chat","args":"你好","confidence":0.99}' }; } },
+    engine: {
+      async handleExplicit(kind) {
+        assert.equal(kind, 'chat');
+        return { kind: 'chat', handled: true, text: '普通聊天回复', decision: decision() };
+      },
+    },
+  };
+  const reply = { async sendGroupText(groupId, text) { texts.push({ groupId, text }); return { success: true, messageId: 1 }; } };
+  const runtime = createBotMessageRuntime({ app, reply, getConfig: () => cfg, selfId: () => '100' });
+  const result = await runtime.handleMessageEvent({
+    post_type: 'message', message_type: 'group', message_id: 9011, group_id: 1, user_id: 2,
+    time: Math.floor(Date.now() / 1000),
+    raw_message: '[CQ:at,qq=100] 你好',
+    message: [{ type: 'at', data: { qq: '100' } }, { type: 'text', data: { text: ' 你好' } }],
+  });
+  assert.equal(result.handled, true, JSON.stringify(result));
+  assert.equal(plannerCalls, 0);
+  assert.equal(texts.length, 1);
+  assert.match(texts[0].text, /普通聊天回复/);
 });

@@ -16,7 +16,7 @@ import { DEFAULT_FILE_PARSE_LIMITS, PendingFileIndex, parseFile, formatParsedFil
 import { DEFAULT_FILEGEN_LIMITS, generateFile, generatedFileSpecFromJson, type GeneratedFileSpec, type GeneratedFileType } from '../../../packages/filegen/src/index.js';
 import { FeatureLimitError, type FeatureGate } from './feature-gate.js';
 import { sanitizeModelImageReferences } from './deps.js';
-import { classifyFileIntent } from './file-intent.js';
+import { classifyNaturalLanguageIntent, type IntentCatalogItem, type IntentFallback } from './intent-recognition.js';
 
 /** Napcat(OneBot) 上报的消息事件(只取本环需要的字段)。 */
 export interface NapcatMessageEvent {
@@ -219,6 +219,42 @@ export function detectFileGenerateRequest(text: string): boolean {
   const value = String(text || '').trim();
   if (!value) return false;
   return /(?:生成|创建|制作|导出|写|整理|做|给我).{0,32}(?:md|markdown|word|docx|excel|xlsx|ppt|pptx|pdf|txt|csv|json|zip|文件|文档|表格|幻灯片|演示文稿)/i.test(value);
+}
+
+const NATURAL_INTENT_CATALOG: IntentCatalogItem[] = [
+  { id: 'chat', label: '普通聊天', description: '普通问答、解释、写作、闲聊；不要求生成文件/图片/视频，也不要求联网搜索。' },
+  { id: 'help', label: '帮助', description: '用户询问机器人怎么用、有哪些功能、怎么发命令。' },
+  { id: 'clear', label: '新对话', description: '用户要求清空上下文、重新开始对话。' },
+  { id: 'file.list', label: '文件列表', description: '用户要求查看最近上传或可读取的文件列表。' },
+  { id: 'file.read', label: '读取文件', description: '用户要求读取、总结、分析、翻译或提取当前消息/引用文件里的内容。', requires: 'files' },
+  { id: 'file.generate', label: '生成文件', description: '用户要求创建、生成、导出、整理成可下载的文件、文档、表格、幻灯片、PDF 或压缩包。' },
+  { id: 'search.web', label: '联网搜索', description: '用户要求搜索、查询最新新闻、实时信息、价格、版本、官网或外部资料。' },
+  { id: 'image.generate', label: '文生图', description: '用户要求画图、生成图片、制作海报或视觉素材。' },
+  { id: 'image.edit', label: '改图', description: '用户要求修改、编辑、重绘、换风格已有图片。', requires: 'images' },
+  { id: 'image.interrogate', label: '图片反推', description: '用户要求描述图片、反推图片提示词、分析画面。', requires: 'images' },
+  { id: 'video.generate', label: '视频生成', description: '用户要求生成、制作视频或动画。' },
+  { id: 'template.library', label: '本地模板库', description: '用户要求查看本地生图模板库、模板列表。' },
+];
+
+function availableIntentCatalog(cfg: AppConfig): IntentCatalogItem[] {
+  const settings = cfg.bot.features || {};
+  return NATURAL_INTENT_CATALOG.filter((item) => {
+    if (item.id === 'chat') return true;
+    const def = FEATURE_DEFINITIONS.find((entry) => entry.id === item.id);
+    // 新自然语言意图路由由全局 intentRecognition.enabled 控制；
+    // 旧 naturalLanguage 开关只影响原 FreeMode planner，避免旧配置里默认 false 把新路由一并关掉。
+    return Boolean(def?.implemented) && settings[item.id]?.enabled !== false;
+  });
+}
+
+function fallbackIntent(text: string, hasFiles: boolean, cfg: AppConfig, options: BotRuntimeOptions): IntentFallback {
+  if (options.generatedFileDir && options.uploadFile && cfg.bot.features?.['file.generate']?.enabled !== false && detectFileGenerateRequest(text)) {
+    return { intent: 'file.generate', args: text, fileType: requestedFileType(text), confidence: 1 };
+  }
+  if (hasFiles && cfg.bot.features?.['file.read']?.enabled !== false && /(总结|概括|分析|读取|解析|提取|讲什么|说了什么|内容|翻译|检查)/i.test(text)) {
+    return { intent: 'file.read', args: text, confidence: 0.8 };
+  }
+  return { intent: 'chat', args: text, confidence: 0 };
 }
 
 interface FileGenerateOutcome {
@@ -628,44 +664,104 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           log?.info('回复发送完成', { kind: 'empty-mention' });
           return { handled: true, kind: 'empty-mention' };
         }
-        // 群聊上下文注入：@bot 时拉取最近群聊记录，让 bot 知道在聊什么。
-        // 自然语言文件生成：生成一个 Markdown/Word/Excel/PPT/PDF 文档，
-        // 不能让它落到普通 chat 再被 text reply strategy 当成聊天文本。
-        if (options.generatedFileDir && options.uploadFile && !cleanText.startsWith('你正在分析用户上传的文件') && !cleanText.startsWith('用户请求读取文件')) {
-          const fileIntentCfg = options.getConfig().fileIntent;
-          const regexFallback = {
-            shouldGenerate: detectFileGenerateRequest(cleanText),
-            fileType: detectFileGenerateRequest(cleanText) ? requestedFileType(cleanText) : undefined,
-          };
-          const fileIntent = await classifyFileIntent({
+        const hasFiles = baseFiles.length > 0 || Boolean(referenced && extractFiles(referenced).length > 0);
+        let forceChat = false;
+
+        // 自然语言主入口：模型读取当前可用功能清单，输出一个意图；
+        // 只有模型不可用、超时、低置信度或返回非法 JSON 时才回退正则。
+        if (cleanText && !cleanText.startsWith('你正在分析用户上传的文件') && !cleanText.startsWith('用户请求读取文件')) {
+          const intentConfig = options.getConfig().intentRecognition;
+          const intent = await classifyNaturalLanguageIntent({
             client: options.app.client,
             text: cleanText,
-            config: fileIntentCfg,
-            fallback: regexFallback,
+            config: intentConfig,
+            catalog: availableIntentCatalog(cfg),
+            context: { chatType, hasImages: modelImages.length > 0, hasFiles },
+            fallback: fallbackIntent(cleanText, hasFiles, cfg, options),
             logger: options.logger,
           });
-          options.logger?.info('文件生成意图识别', { shouldGenerate: fileIntent.shouldGenerate, fileType: fileIntent.fileType, confidence: fileIntent.confidence, source: fileIntent.source, reason: fileIntent.reason });
-          if (fileIntent.shouldGenerate) {
-          try {
-            const syntheticDecision = {
-              kind: 'command' as const,
-              command: 'fileGenerate' as const,
-              args: cleanText,
-              commandText: cleanText,
-              trigger: (decision as any).trigger,
-              metadata: { featureId: 'file.generate' },
-            };
-            const outcome = await handleFileGenerateCommand(options, syntheticDecision, event, chatType, sessionId, userId, fileIntent.fileType);
-            if (outcome.message) {
-              await engine.replyText(replyCtx, outcome.message, 'quote');
-              return { handled: true, kind: 'file-generate' };
+          options.logger?.info('自然语言意图识别', {
+            intent: intent.intent,
+            args: intent.args.slice(0, 100),
+            fileType: intent.fileType,
+            confidence: intent.confidence,
+            source: intent.source,
+            reason: intent.reason,
+          });
+          if (intent.source === 'model' && intent.intent === 'chat') forceChat = true;
+
+          const engineFeatureInput = {
+            text: intent.args,
+            images: modelImages,
+            videos: enrichedVideos,
+            hasReferencedImage,
+            hasReferencedVideo,
+            chatType,
+            sessionId,
+            featureId: intent.intent,
+            featureContext: { chatType, groupId: event.group_id, userId, promptChars: intent.args.length },
+          };
+
+          if (intent.intent === 'file.generate') {
+            try {
+              const syntheticDecision = {
+                kind: 'command' as const,
+                command: 'fileGenerate' as const,
+                args: intent.args,
+                commandText: cleanText,
+                trigger: (decision as any).trigger,
+                metadata: { featureId: 'file.generate' },
+              };
+              const outcome = await handleFileGenerateCommand(options, syntheticDecision, event, chatType, sessionId, userId, intent.fileType || requestedFileType(cleanText));
+              if (outcome.message) {
+                await engine.replyText(replyCtx, outcome.message, 'quote');
+                return { handled: true, kind: 'file-generate' };
+              }
+              if (outcome.result) result = outcome.result;
+            } catch (error) {
+              const message = error instanceof FeatureLimitError ? error.message : `文件生成失败：${String((error as Error)?.message || error).slice(0, 300)}`;
+              await engine.replyText(replyCtx, message, 'quote');
+              return { handled: false, reason: 'file-generate-error' };
             }
-            if (outcome.result) result = outcome.result;
-          } catch (error) {
-            const message = error instanceof FeatureLimitError ? error.message : `文件生成失败：${String((error as Error)?.message || error).slice(0, 300)}`;
-            await engine.replyText(replyCtx, message, 'quote');
-            return { handled: false, reason: 'file-generate-error' };
-          }
+          } else if (intent.intent === 'file.read') {
+            try {
+              const syntheticDecision = {
+                kind: 'command' as const,
+                command: 'fileRead' as const,
+                args: intent.args,
+                commandText: cleanText,
+                trigger: (decision as any).trigger,
+                metadata: { featureId: 'file.read' },
+              };
+              const outcome = await handleFileReadCommand(options, syntheticDecision, event, chatType, userId, replyId, referenced, baseFiles, sessionId);
+              if (outcome.message) {
+                await engine.replyText(replyCtx, outcome.message, 'quote');
+                return { handled: true, kind: 'file-read' };
+              }
+              if (outcome.result) result = outcome.result;
+            } catch (error) {
+              const message = error instanceof FeatureLimitError ? error.message : `文件读取失败：${String((error as Error)?.message || error).slice(0, 300)}`;
+              await engine.replyText(replyCtx, message, 'quote');
+              return { handled: false, reason: 'file-read-error' };
+            }
+          } else if (intent.intent === 'search.web') {
+            result = await options.app.engine.handleExplicit('chat', { ...engineFeatureInput, forceSearch: true }, { prompt: intent.args });
+          } else if (intent.intent === 'image.generate' || intent.intent === 'image.edit' || intent.intent === 'image.interrogate' || intent.intent === 'video.generate') {
+            result = await options.app.engine.handleExplicit(intent.intent as any, engineFeatureInput, { prompt: intent.args });
+          } else if (intent.intent === 'help') {
+            await engine.replyText(replyCtx, buildHelpText(cfg));
+            return { handled: true, kind: 'help' };
+          } else if (intent.intent === 'clear') {
+            options.app.sessions.clear(sessionId);
+            await engine.replyText(replyCtx, '已开启新对话，之前的上下文已清除。');
+            return { handled: true, kind: 'clear' };
+          } else if (intent.intent === 'file.list') {
+            const files = options.fileIndex ? options.fileIndex.list(chatType, event.group_id, userId, 10) : [];
+            await engine.replyText(replyCtx, formatFileList(files));
+            return { handled: true, kind: 'file-list' };
+          } else if (intent.intent === 'template.library') {
+            await engine.replyText(replyCtx, buildTemplateLibraryText(cfg));
+            return { handled: true, kind: 'templateLibrary' };
           }
         }
 
@@ -688,11 +784,14 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
             });
             if (context) log?.info('群上下文已注入', { groupId: event.group_id, contextChars: context.length });
           }
-          result = await options.app.handle({
+          const engineInput = {
             text: cleanText, images: modelImages, videos: enrichedVideos,
             hasReferencedImage, hasReferencedVideo, chatType, sessionId, context, referenceText, forwardText,
             featureContext: { chatType, groupId: event.group_id, userId, promptChars: cleanText.length },
-          });
+          };
+          result = forceChat
+            ? await options.app.engine.handleExplicit('chat', engineInput, { prompt: cleanText })
+            : await options.app.handle(engineInput);
         }
       } else if (decision.kind === 'command') {
         // 命令类:图片用富化后的(引用图片可达改图/反推),提示词保持原始 args 不注入引用文本。

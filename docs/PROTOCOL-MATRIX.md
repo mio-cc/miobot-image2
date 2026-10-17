@@ -227,7 +227,9 @@ Napcat → QQ
 
 ### 文件生成
 
-- 自然语言文件生成：先由能力分工里的「文件生成意图」模型判断，模型不可用、超时或低置信度时回退正则；分类模型/节点/超时/置信度/提示词都可在后台配置。
+- 自然语言主路由：能力分工里的「自然语言意图识别」模型读取当前启用功能清单，把普通语言映射到 chat/help/clear/file.list/file.read/file.generate/search.web/image.*/video.generate/template.library；模型输出 intent、args、fileType、confidence，后端校验后分发。
+- 意图模型不可用、超时、返回非法 JSON 或置信度不足时，回退到文件/文件读取正则，再回退到原 FreeMode planner；显式命令始终优先且不经过意图模型。
+- 自然语言文件生成：文件生成只是 file.generate 意图之一，模型可以直接识别用户要生成 Word/Markdown/Excel/PPT/PDF 等文件，不要求用户知道命令别名。
 - 用户使用「生成文件 / 生成文档 / 导出文件」命令，例如：
   - `生成文件 一份 Word 周报`
   - `生成文件 一个 Excel 销售表`

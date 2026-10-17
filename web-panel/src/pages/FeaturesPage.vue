@@ -13,6 +13,7 @@ interface FeatureDefinition {
   category: string;
   implemented: boolean;
   intentKind?: string;
+  defaultNaturalLanguage?: boolean;
   defaultAliases: string[];
   defaultScopes: string[];
   defaultGroupActivation: string;
@@ -53,7 +54,7 @@ function ensureSetting(def: FeatureDefinition): any {
       aliases: [...def.defaultAliases],
       scopes: [...def.defaultScopes],
       groupActivation: def.defaultGroupActivation,
-      naturalLanguage: Boolean(def.intentKind),
+      naturalLanguage: Boolean(def.intentKind || def.defaultNaturalLanguage),
       limits: {},
     };
   }
@@ -145,7 +146,7 @@ async function loadFeatures() {
       if (!Array.isArray(setting.aliases)) setting.aliases = [...def.defaultAliases];
       if (!Array.isArray(setting.scopes) || !setting.scopes.length) setting.scopes = [...def.defaultScopes];
       if (!setting.groupActivation) setting.groupActivation = def.defaultGroupActivation;
-      if (typeof setting.naturalLanguage !== 'boolean') setting.naturalLanguage = Boolean(def.intentKind);
+      if (typeof setting.naturalLanguage !== 'boolean') setting.naturalLanguage = Boolean(def.intentKind || def.defaultNaturalLanguage);
       if (!setting.limits || typeof setting.limits !== 'object') setting.limits = {};
       for (const field of fieldsFor(def)) {
         if (typeof setting.limits[field.key] !== 'number') setting.limits[field.key] = field.default;
@@ -166,7 +167,7 @@ onMounted(loadFeatures);
     <header class="mb-4">
       <h1 class="page-title mb-0.5">命令与意图</h1>
       <p class="text-[color:var(--ink-3)] text-xs">
-        功能目录由后端统一提供；这里修改命令别名、触发方式、私聊/群聊范围和 FreeMode 自然语言识别。保存使用右上角全局保存。
+        功能目录由后端统一提供；显式命令在这里配置别名，普通自然语言由「能力分工 → 自然语言意图识别」模型匹配功能。保存使用右上角全局保存。
       </p>
     </header>
 
@@ -210,7 +211,7 @@ onMounted(loadFeatures);
       <div class="mt-3 text-xs text-[color:var(--ink-3)] leading-5">
         <p>也可以使用显式命令：<code class="font-mono">生成文件 ...</code>、<code class="font-mono">生成文档 ...</code>、<code class="font-mono">导出文件 ...</code>。</p>
         <p>没有明确格式时：提到「Word / 文档」默认生成 docx，提到「Excel / 表格」默认生成 xlsx，提到「PPT / 幻灯片」默认生成 pptx，提到「md / Markdown」优先生成 md；都没有则默认 txt。</p>
-        <p>文件生成意图可以在「能力分工 → 文件生成意图」选择独立模型；模型失败或低置信度时自动回退正则。</p>
+        <p>自然语言意图识别可以在「能力分工 → 自然语言意图识别」选择独立模型；模型失败或低置信度时自动回退正则 / FreeMode。</p>
       </div>
     </SectionCard>
 
@@ -251,7 +252,7 @@ onMounted(loadFeatures);
               </select>
             </FormField>
 
-            <FormField v-if="def.intentKind" label="自然语言识别" hint="关闭后 FreeMode 不再自动路由到该功能，显式命令仍然可用">
+            <FormField v-if="def.intentKind" label="旧 FreeMode 识别" hint="只影响原 FreeMode planner；新自然语言意图路由由能力分工中的总开关控制">
               <ToggleField v-model="setting.naturalLanguage" label="允许 FreeMode 识别" :disabled="!def.implemented || !setting.enabled" />
             </FormField>
           </div>

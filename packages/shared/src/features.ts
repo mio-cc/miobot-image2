@@ -55,6 +55,8 @@ export interface FeatureDefinition {
   legacyCommand?: FeatureLegacyCommand;
   /** Planner intent exposed by this feature. Undefined means command-only. */
   intentKind?: FeatureIntentKind;
+  /** 是否默认允许自然语言意图模型路由到该功能；命令-only 的功能也可开启。 */
+  defaultNaturalLanguage?: boolean;
   defaultAliases: string[];
   defaultScopes: FeatureScope[];
   defaultGroupActivation: FeatureGroupActivation;
@@ -78,12 +80,12 @@ const BOTH: FeatureScope[] = ['private', 'group'];
 
 export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
   {
-    id: 'help', label: '帮助', category: 'basic', implemented: true,
+    id: 'help', label: '帮助', category: 'basic', implemented: true, defaultNaturalLanguage: true,
     legacyCommand: 'help', defaultAliases: ['/help', 'help', '帮助', '使用方法'],
     defaultScopes: BOTH, defaultGroupActivation: 'direct',
   },
   {
-    id: 'clear', label: '新对话', category: 'basic', implemented: true,
+    id: 'clear', label: '新对话', category: 'basic', implemented: true, defaultNaturalLanguage: true,
     legacyCommand: 'clear', defaultAliases: ['/clear', '新对话', '清除对话', '清空对话', 'clear'],
     defaultScopes: BOTH, defaultGroupActivation: 'direct',
   },
@@ -120,7 +122,7 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
     defaultScopes: BOTH, defaultGroupActivation: 'direct',
   },
   {
-    id: 'template.library', label: '本地模板库', category: 'template', implemented: true,
+    id: 'template.library', label: '本地模板库', category: 'template', implemented: true, defaultNaturalLanguage: true,
     legacyCommand: 'templateLibrary',
     defaultAliases: ['本地模板库', '本地模板', '模板库', '模板', 'mb'],
     defaultScopes: BOTH, defaultGroupActivation: 'direct',
@@ -149,22 +151,22 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
   {
-    id: 'file.list', label: '文件列表', category: 'file', implemented: true,
+    id: 'file.list', label: '文件列表', category: 'file', implemented: true, defaultNaturalLanguage: true,
     legacyCommand: 'fileList', defaultAliases: ['文件列表', '最近文件'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
   {
-    id: 'file.read', label: '读取文件', category: 'file', implemented: true,
+    id: 'file.read', label: '读取文件', category: 'file', implemented: true, defaultNaturalLanguage: true,
     legacyCommand: 'fileRead', defaultAliases: ['读取文件', '分析文件'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
   {
-    id: 'file.generate', label: '生成文件', category: 'file', implemented: true,
+    id: 'file.generate', label: '生成文件', category: 'file', implemented: true, defaultNaturalLanguage: true,
     legacyCommand: 'fileGenerate', defaultAliases: ['生成文件', '生成文档', '导出文件'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
   {
-    id: 'search.web', label: '联网搜索', category: 'web', implemented: true,
+    id: 'search.web', label: '联网搜索', category: 'web', implemented: true, defaultNaturalLanguage: true,
     legacyCommand: 'webSearch', defaultAliases: ['搜索', '联网搜索', '查一下', '搜一下', 'websearch'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
@@ -208,7 +210,7 @@ export function defaultFeatureSettings(): FeatureSettings {
       aliases: parseFeatureAliases(def.defaultAliases),
       scopes: [...def.defaultScopes],
       groupActivation: def.defaultGroupActivation,
-      naturalLanguage: Boolean(def.implemented && def.intentKind),
+      naturalLanguage: Boolean(def.implemented && (def.intentKind || def.defaultNaturalLanguage)),
       limits: normalizeFeatureLimits(def, undefined),
     };
   }
@@ -251,7 +253,7 @@ export function normalizeFeatureSettings(
     if (raw && raw.aliases !== undefined) setting.aliases = parseFeatureAliases(raw.aliases);
     if (raw && raw.scopes !== undefined) setting.scopes = normalizeScopes(raw.scopes, def.defaultScopes);
     if (raw && raw.groupActivation !== undefined) setting.groupActivation = normalizeActivation(raw.groupActivation, def.defaultGroupActivation);
-    if (raw && raw.naturalLanguage !== undefined) setting.naturalLanguage = Boolean(raw.naturalLanguage) && Boolean(def.intentKind);
+    if (raw && raw.naturalLanguage !== undefined) setting.naturalLanguage = Boolean(raw.naturalLanguage) && Boolean(def.intentKind || def.defaultNaturalLanguage);
     setting.limits = normalizeFeatureLimits(def, raw?.limits);
   }
 
