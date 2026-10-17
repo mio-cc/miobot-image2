@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createDefaultConfig, normalizeConfig } from '../dist/packages/config/src/index.js';
-import { createBotMessageRuntime, extractFiles } from '../dist/apps/bot/src/runtime.js';
+import { createBotMessageRuntime, detectFileGenerateRequest, extractFiles } from '../dist/apps/bot/src/runtime.js';
 import { PendingFileIndex } from '../dist/packages/file-ingest/src/index.js';
 
 function decision() {
@@ -165,4 +165,59 @@ test('runtime image: schedules auto recall using returned message id', async () 
   assert.equal(result.handled, true, JSON.stringify(result));
   await new Promise((resolve) => setTimeout(resolve, 1150));
   assert.deepEqual(recalled, ['77']);
+});
+
+
+test('runtime file: detects natural-language md/document generation but not image generation', () => {
+  assert.equal(detectFileGenerateRequest('生成 一个 DeepSeek 的 md 介绍文档'), true);
+  assert.equal(detectFileGenerateRequest('帮我做一份 Excel 表格'), true);
+  assert.equal(detectFileGenerateRequest('生成一张猫的图片'), false);
+  assert.equal(detectFileGenerateRequest('你好'), false);
+});
+
+test('runtime file: natural-language md request produces a real .md file instead of chat text', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'miobot-natural-filegen-'));
+  const cfg = normalizeConfig(createDefaultConfig());
+  cfg.bot.botQqId = '100';
+  cfg.freeMode.enabled = true;
+  cfg.bot.replyStrategies.text = 'forward';
+  cfg.bot.replyStrategies.file = 'plain';
+  const filesSent = [];
+  const reply = {
+    async sendGroupText() { return { success: true, messageId: 1 }; },
+    async sendGroupFile(groupId, file, name) { filesSent.push({ file, name }); return { success: true, messageId: 2 }; },
+  };
+  const app = {
+    sessions: { clear() {}, append() {}, get() { return []; } },
+    registry: () => ({ can: () => true }),
+    handle: async () => { throw new Error('should not call app.handle'); },
+    client: {},
+    engine: {
+      async handleExplicit() {
+        return { kind: 'chat', handled: true, text: '{"type":"md","fileName":"deepseek-intro","title":"DeepSeek 介绍","content":"# DeepSeek 介绍正文"}', decision: decision() };
+      },
+      async handle() { throw new Error('should not call app.handle'); },
+    },
+  };
+  const runtime = createBotMessageRuntime({
+    app, reply, getConfig: () => cfg, selfId: () => '100',
+    generatedFileDir: dir,
+    uploadFile: async (localPath, name, mime) => {
+      assert.match(name, /\.md$/);
+      assert.match(mime, /markdown/);
+      const text = await fs.readFile(localPath, 'utf8');
+      assert.match(text, /# DeepSeek/);
+      return `http://example.test/${encodeURIComponent(name)}`;
+    },
+  });
+  const result = await runtime.handleMessageEvent({
+    post_type: 'message', message_type: 'group', message_id: 9010, group_id: 1, user_id: 2,
+    time: Math.floor(Date.now() / 1000),
+    raw_message: '[CQ:at,qq=100] 生成 一个 DeepSeek 的 md 介绍文档',
+    message: [{ type: 'at', data: { qq: '100' } }, { type: 'text', data: { text: ' 生成 一个 DeepSeek 的 md 介绍文档' } }],
+  });
+  assert.equal(result.handled, true, JSON.stringify(result));
+  assert.equal(filesSent.length, 1);
+  assert.match(filesSent[0].file, /deepseek-intro\.md|deepseek-intro/);
+  await fs.rm(dir, { recursive: true, force: true });
 });

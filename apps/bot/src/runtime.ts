@@ -159,14 +159,17 @@ function fileRecordToRef(record: PendingFileRecord): FileReference {
 
 function requestedFileType(text: string): GeneratedFileType {
   const value = String(text || '').toLowerCase();
-  if (/word|docx|文档/.test(value)) return 'docx';
-  if (/excel|xlsx|表格|工作表/.test(value)) return 'xlsx';
-  if (/ppt|pptx|幻灯片|演示/.test(value)) return 'pptx';
-  if (/pdf/.test(value)) return 'pdf';
+  if (/markdown|\bmd\b|\.md\b/.test(value)) return 'md';
+  if (/word|\bdocx?\b|\.docx?\b/.test(value)) return 'docx';
+  if (/excel|\bxlsx?\b|\.xlsx?\b|工作表/.test(value)) return 'xlsx';
+  if (/ppt|pptx|幻灯片|演示文稿|演示/.test(value)) return 'pptx';
+  if (/pdf|\.pdf\b/.test(value)) return 'pdf';
   if (/zip|压缩包/.test(value)) return 'zip';
-  if (/csv/.test(value)) return 'csv';
-  if (/json/.test(value)) return 'json';
-  if (/markdown|md/.test(value)) return 'md';
+  if (/csv|\.csv\b/.test(value)) return 'csv';
+  if (/json|\.json\b/.test(value)) return 'json';
+  if (/txt|纯文本|\.txt\b/.test(value)) return 'txt';
+  if (/文档/.test(value)) return 'docx';
+  if (/表格/.test(value)) return 'xlsx';
   return 'txt';
 }
 
@@ -199,6 +202,12 @@ function filePrompt(userRequest: string, type: GeneratedFileType): string {
     '内容要完整、可直接使用；长内容可分段，但不要输出 JSON 之外的文字。',
     `用户要求：${userRequest}`,
   ].join('\n');
+}
+
+export function detectFileGenerateRequest(text: string): boolean {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  return /(?:生成|创建|制作|导出|写|整理|做|给我).{0,32}(?:md|markdown|word|docx|excel|xlsx|ppt|pptx|pdf|txt|csv|json|zip|文件|文档|表格|幻灯片|演示文稿)/i.test(value);
 }
 
 interface FileGenerateOutcome {
@@ -608,29 +617,56 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           return { handled: true, kind: 'empty-mention' };
         }
         // 群聊上下文注入：@bot 时拉取最近群聊记录，让 bot 知道在聊什么。
-        let context: string | undefined;
-        const gc = cfg.bot.groupContext;
-        if (chatType === 'group' && gc?.enabled && options.fetchGroupHistory && event.message_id && event.group_id) {
-          const ctxOptions: GroupContextOptions = {
-            messageCount: gc.messageCount,
-            skipForward: gc.skipForward,
-            includeImages: gc.includeImages,
-            maxChars: gc.maxChars,
-          };
-          context = await fetchGroupContext({
-            fetchHistory: options.fetchGroupHistory,
-            groupId: event.group_id,
-            anchorMessageId: event.message_id,
-            selfId: options.selfId?.() ?? cfg.bot.botQqId,
-            options: ctxOptions,
-          });
-          if (context) log?.info('群上下文已注入', { groupId: event.group_id, contextChars: context.length });
+        // 自然语言文件生成：生成一个 Markdown/Word/Excel/PPT/PDF 文档，
+        // 不能让它落到普通 chat 再被 text reply strategy 当成聊天文本。
+        if (options.generatedFileDir && options.uploadFile && detectFileGenerateRequest(cleanText)) {
+          try {
+            const syntheticDecision = {
+              kind: 'command' as const,
+              command: 'fileGenerate' as const,
+              args: cleanText,
+              commandText: cleanText,
+              trigger: (decision as any).trigger,
+              metadata: { featureId: 'file.generate' },
+            };
+            const outcome = await handleFileGenerateCommand(options, syntheticDecision, event, chatType, sessionId, userId);
+            if (outcome.message) {
+              await engine.replyText(replyCtx, outcome.message, 'quote');
+              return { handled: true, kind: 'file-generate' };
+            }
+            if (outcome.result) result = outcome.result;
+          } catch (error) {
+            const message = error instanceof FeatureLimitError ? error.message : `文件生成失败：${String((error as Error)?.message || error).slice(0, 300)}`;
+            await engine.replyText(replyCtx, message, 'quote');
+            return { handled: false, reason: 'file-generate-error' };
+          }
         }
-        result = await options.app.handle({
-          text: cleanText, images: modelImages, videos: enrichedVideos,
-          hasReferencedImage, hasReferencedVideo, chatType, sessionId, context, referenceText, forwardText,
-          featureContext: { chatType, groupId: event.group_id, userId, promptChars: cleanText.length },
-        });
+
+        if (!result) {
+          let context: string | undefined;
+          const gc = cfg.bot.groupContext;
+          if (chatType === 'group' && gc?.enabled && options.fetchGroupHistory && event.message_id && event.group_id) {
+            const ctxOptions: GroupContextOptions = {
+              messageCount: gc.messageCount,
+              skipForward: gc.skipForward,
+              includeImages: gc.includeImages,
+              maxChars: gc.maxChars,
+            };
+            context = await fetchGroupContext({
+              fetchHistory: options.fetchGroupHistory,
+              groupId: event.group_id,
+              anchorMessageId: event.message_id,
+              selfId: options.selfId?.() ?? cfg.bot.botQqId,
+              options: ctxOptions,
+            });
+            if (context) log?.info('群上下文已注入', { groupId: event.group_id, contextChars: context.length });
+          }
+          result = await options.app.handle({
+            text: cleanText, images: modelImages, videos: enrichedVideos,
+            hasReferencedImage, hasReferencedVideo, chatType, sessionId, context, referenceText, forwardText,
+            featureContext: { chatType, groupId: event.group_id, userId, promptChars: cleanText.length },
+          });
+        }
       } else if (decision.kind === 'command') {
         // 命令类:图片用富化后的(引用图片可达改图/反推),提示词保持原始 args 不注入引用文本。
         if (!result) {
