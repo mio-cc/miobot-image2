@@ -15,6 +15,7 @@ import { describeImageReference, type ImageInputPreparer } from './image-input.j
 import { DEFAULT_FILE_PARSE_LIMITS, PendingFileIndex, parseFile, formatParsedFileForModel, type FileParseLimits, type PendingFileRecord, type ParsedFileResult } from '../../../packages/file-ingest/src/index.js';
 import { DEFAULT_FILEGEN_LIMITS, generateFile, generatedFileSpecFromJson, type GeneratedFileSpec, type GeneratedFileType } from '../../../packages/filegen/src/index.js';
 import { FeatureLimitError, type FeatureGate } from './feature-gate.js';
+import { sanitizeModelImageReferences } from './deps.js';
 
 /** Napcat(OneBot) 上报的消息事件(只取本环需要的字段)。 */
 export interface NapcatMessageEvent {
@@ -560,7 +561,8 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const preparedImages = options.prepareInputImages && enrichedImages.length
       ? await options.prepareInputImages(enrichedImages)
       : enrichedImages;
-    const modelImages = preparedImages.filter((image) => Boolean(String(image || '').trim()));
+    const sanitizedImages = sanitizeModelImageReferences(preparedImages.filter((image) => Boolean(String(image || '').trim())));
+    const modelImages = sanitizedImages.images;
     const droppedImages = Math.max(0, enrichedImages.length - modelImages.length);
     if (enrichedImages.length) {
       log?.info('模型输入图片准备完成', {
