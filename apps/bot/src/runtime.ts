@@ -557,14 +557,22 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     ]).slice(0, maxInputImages);
     const hasReferencedImage = includeQuoted && (referencedImages.length > 0 || forwardImages.length > 0);
     const hasReferencedVideo = includeQuoted && (referencedVideos.length > 0 || forwardVideos.length > 0);
-    const modelImages = options.prepareInputImages && enrichedImages.length
+    const preparedImages = options.prepareInputImages && enrichedImages.length
       ? await options.prepareInputImages(enrichedImages)
       : enrichedImages;
+    const modelImages = preparedImages.filter((image) => Boolean(String(image || '').trim()));
+    const droppedImages = Math.max(0, enrichedImages.length - modelImages.length);
     if (enrichedImages.length) {
       log?.info('模型输入图片准备完成', {
         imageCount: modelImages.length,
+        droppedImages,
         imageRefs: modelImages.slice(0, 3).map(describeImageReference),
       });
+    }
+    if (droppedImages > 0) log?.warn('部分图片无法读取，已从模型输入移除', { droppedImages, totalImages: enrichedImages.length });
+    if (enrichedImages.length > 0 && modelImages.length === 0) {
+      await engine.replyText(replyCtx, '图片读取失败。QQ 图片 URL 可能已过期，Napcat 也没能返回可用的图片内容。请重新发送图片后再试。', 'quote');
+      return { handled: true, kind: 'image-input-failed' };
     }
     if (referenced || forwardNodes.length || baseVideos.length) {
       log?.info('消息内容已富化', {
@@ -982,8 +990,13 @@ function extractMediaRefs(
     if (typeof body === 'string') {
       for (const m of body.matchAll(cqRe)) {
         const params = m[1] || '';
-        const hit = params.match(/(?:url|file|path)=([^,\]]+)/i);
-        if (hit?.[1]) push(decodeCqValue(hit[1]));
+        const parsed: Record<string, string> = {};
+        for (const part of params.split(',')) {
+          const idx = part.indexOf('=');
+          if (idx > 0) parsed[part.slice(0, idx).trim()] = decodeCqValue(part.slice(idx + 1));
+        }
+        const value = parsed.file || parsed.path || parsed.url;
+        if (value) push(value);
       }
       return;
     }
@@ -993,7 +1006,7 @@ function extractMediaRefs(
       const type = String((seg as { type?: string }).type || '').toLowerCase();
       const data = ((seg as { data?: Record<string, unknown> }).data || {}) as Record<string, unknown>;
       if (typeSet.has(type)) {
-        push(data.url || data.file || data.path);
+        push(data.file || data.path || data.url);
       } else if (type === 'node') {
         visitSegments(data.content ?? data.message ?? (seg as { content?: unknown }).content);
       }

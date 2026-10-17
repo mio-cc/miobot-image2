@@ -511,3 +511,10 @@ test('v2 收图: 远程图片先内联成 data URL 再送意图路由和模型',
   assert.deepEqual(captured.images, ['data:image/png;base64,AAAA']);
   assert.deepEqual(reply.sent[0], ['privateText', 5, 'ok']);
 });
+
+test('extractImages: segment with both file and url prefers Napcat local file for get_image', () => {
+  const imgs = extractImages({
+    message: [{ type: 'image', data: { file: '2F4E9D49282C5B22757A249618A7AE95.jpg', url: 'https://gchat.qpic.cn/download?rkey=secret' } }],
+  });
+  assert.deepEqual(imgs, ['2F4E9D49282C5B22757A249618A7AE95.jpg']);
+});

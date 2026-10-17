@@ -44,7 +44,7 @@ export function createImageInputPreparer(options: ImageInputPreparerOptions = {}
             options.logger?.warn('本地图片引用无法解析，保留原引用', {
               reference: describeImageReference(value),
             });
-            return image;
+            return '';
           }
           value = resolvedLocal;
         } catch (error) {
@@ -52,7 +52,7 @@ export function createImageInputPreparer(options: ImageInputPreparerOptions = {}
             reference: describeImageReference(value),
             error: error instanceof Error ? error.message : String(error),
           });
-          return image;
+          return '';
         }
       }
 
@@ -79,11 +79,12 @@ export function createImageInputPreparer(options: ImageInputPreparerOptions = {}
         if (!mime) throw new Error('响应不是可识别的图片');
         return `data:${mime};base64,${buffer.toString('base64')}`;
       } catch (error) {
-        options.logger?.warn('输入图片内联失败，保留原引用', {
+        const qqHosted = isQqImageHost(value);
+        options.logger?.warn(qqHosted ? 'QQ 图片内联失败，已丢弃，避免上游再次下载签名 URL' : '输入图片内联失败，保留原引用', {
           reference: describeImageReference(value),
           error: error instanceof Error ? error.message : String(error),
         });
-        return image;
+        return qqHosted ? '' : image;
       }
     }));
 
@@ -184,6 +185,15 @@ export function describeImageReference(image: string): string {
     }
   }
   return `local:${value.slice(0, 100)}`;
+}
+
+function isQqImageHost(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === 'gchat.qpic.cn' || host.endsWith('.qpic.cn') || host === 'multimedia.nt.qq.com.cn' || host.endsWith('.nt.qq.com.cn');
+  } catch {
+    return false;
+  }
 }
 
 function isLocalImageReference(value: string): boolean {

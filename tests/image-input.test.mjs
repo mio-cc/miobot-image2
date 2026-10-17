@@ -165,3 +165,21 @@ test('image input: 关闭远程 URL 内联时仍解析 Napcat 本地引用', asy
   const [image] = await prepare(['2F4E9D49282C5B22757A249618A7AE95.jpg']);
   assert.ok(image.startsWith('data:image/png;base64,'));
 });
+
+test('image input: QQ CDN download failure drops the image instead of passing a signed URL upstream', async () => {
+  const prepare = createImageInputPreparer({
+    env: { MIOBOT_INLINE_REMOTE_IMAGES: '1' },
+    fetchImpl: async () => new Response('denied', { status: 400 }),
+  });
+  const [image] = await prepare(['https://gchat.qpic.cn/download?appid=1407&rkey=secret']);
+  assert.equal(image, '');
+});
+
+test('image input: unresolved local Napcat reference is dropped', async () => {
+  const prepare = createImageInputPreparer({
+    env: { MIOBOT_INLINE_REMOTE_IMAGES: '1' },
+    resolveLocalImage: async () => undefined,
+  });
+  const [image] = await prepare(['2F4E9D49282C5B22757A249618A7AE95.jpg']);
+  assert.equal(image, '');
+});
