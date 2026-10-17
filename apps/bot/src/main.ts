@@ -27,7 +27,7 @@ export {
   type NapcatGetImageResponse,
   type NapcatImageReferenceResolverOptions,
 } from './image-input.js';
-export { buildTtsRequest, synthesizeSpeech, shouldUseTts, activeFishVoiceId, type TtsRequestPlan, type TtsAudio } from './tts.js';
+export { buildTtsRequest, synthesizeSpeech, shouldUseTts, activeFishVoiceId, fishVoiceCandidates, type TtsRequestPlan, type TtsAudio, type TtsSynthesizeOptions } from './tts.js';
 export { parseOwnerCommand, isOwner, type OwnerCommand, type OwnerParseContext } from './owner.js';
 export { toModelNodes, toEngineRoutingConfig, toBotRouting, type BotRouting } from './config-bridge.js';
 export {

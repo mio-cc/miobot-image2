@@ -164,7 +164,7 @@ test('migration: bot owner and tts settings are normalized', () => {
   assert.equal(result.config.bot.tts.enabled, true);
   assert.equal(result.config.bot.tts.provider, 'fish-audio');
   assert.equal(result.config.bot.tts.apiUrl, 'https://tts.example/v1');
-  assert.equal(result.config.bot.tts.model, 's2-pro');
+  assert.equal(result.config.bot.tts.model, 's2.1-pro-free');
   assert.equal(result.config.bot.tts.voiceId, 'voice-a');
   assert.deepEqual(result.config.bot.tts.voiceIds, ['voice-a', 'voice-b', 'voice-c']);
   assert.equal(result.config.bot.tts.format, 'mp3');

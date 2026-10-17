@@ -188,7 +188,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         }
       }
       try {
-        const audio = await synthesizeSpeech(tts, speakText);
+        const audio = await synthesizeSpeech(tts, speakText, { logger });
         return audio.file;
       } catch (error) {
         logger.warn('tts synthesize failed', { error: String((error as { message?: string })?.message || error) });

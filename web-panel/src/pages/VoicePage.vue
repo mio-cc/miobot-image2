@@ -65,8 +65,11 @@ const isFish = computed(() => tts.value?.provider === 'fish-audio');
           <input v-model="tts.voice" class="input-field font-mono" placeholder="alloy" />
         </FormField>
 
-        <FormField label="模型" :hint="isFish ? 'Fish Audio 的 model，如 speech-1.6' : '如 gpt-4o-mini-tts / tts-1'">
-          <input v-model="tts.model" class="input-field font-mono" :placeholder="isFish ? 'speech-1.6' : 'tts-1'" />
+        <FormField label="模型" :hint="isFish ? 'Fish Audio 的 model 请求头。当前免费：s2.1-pro-free；付费：s2.1-pro / s2-pro / s1' : '如 gpt-4o-mini-tts / tts-1'">
+          <input v-model="tts.model" class="input-field font-mono" :placeholder="isFish ? 's2.1-pro-free' : 'tts-1'" />
+          <p v-if="isFish" class="text-xs text-[color:var(--ink-3)] mt-1">
+            实际发送的请求头 model：<span class="mono">{{ tts.model || 's2.1-pro-free' }}</span>
+          </p>
         </FormField>
 
         <FormField label="音频格式">

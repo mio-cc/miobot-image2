@@ -1241,7 +1241,7 @@ async function synthesizeSpeech(tts, text) {
   const headers = { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' };
   let body;
   if (provider === 'fish-audio') {
-    headers.model = String(tts.model || 's2-pro').trim() || 's2-pro';
+    headers.model = String(tts.model || 's2.1-pro-free').trim() || 's2.1-pro-free';
     body = {
       text,
       reference_id: activeFishVoiceId(tts),
@@ -1276,7 +1276,7 @@ async function synthesizeSpeech(tts, text) {
   }
   const buffer = Buffer.from(await response.arrayBuffer());
   if (!buffer.length) throw new Error('TTS returned empty audio');
-  logger.info('TTS request completed', { provider, format, chars: text.length, durationMs: Date.now() - startedAt, bytes: buffer.length });
+  logger.info('TTS request completed', { provider, model: provider === 'fish-audio' ? headers.model : body.model, format, chars: text.length, durationMs: Date.now() - startedAt, bytes: buffer.length });
   return { file: `base64://${buffer.toString('base64')}`, format, bytes: buffer.length };
 }
 
