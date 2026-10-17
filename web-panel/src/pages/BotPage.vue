@@ -146,19 +146,19 @@ const commandFields = [
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
-        <FormField label="每段最多字数" hint="0 表示不拆分；建议 1200-2500">
+        <FormField label="每段最多字数（legacy）" hint="0 表示不拆分；建议 1200-2500">
           <input type="number" min="0" max="20000" step="100" v-model.number="config.bot.textReply.maxChars" class="input-field" />
         </FormField>
-        <FormField label="分段间隔 (ms)" hint="发太快会被 QQ 判定刷屏">
+        <FormField label="分段间隔 (ms，legacy)" hint="发太快会被 QQ 判定刷屏">
           <input type="number" min="0" max="10000" step="100" v-model.number="config.bot.textReply.splitDelayMs" class="input-field" />
         </FormField>
         <div class="self-end">
-          <ToggleField v-model="config.bot.textReply.showPartPrefix" label="显示分段序号 (1/3)" />
+          <ToggleField v-model="config.bot.textReply.showPartPrefix" label="显示分段序号（legacy）" />
         </div>
       </div>
     </SectionCard>
 
-    <SectionCard title="图片与撤回" class="mb-4">
+    <SectionCard title="图片与撤回（v2 暂未实现压缩/撤回）" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
         <ToggleField v-model="config.bot.imageCompression.enabled" label="默认发送压缩图"
           hint="保留原图，可引用后发「原图」取回" />

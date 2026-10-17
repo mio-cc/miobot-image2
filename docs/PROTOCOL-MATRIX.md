@@ -218,6 +218,10 @@ Napcat → QQ
 | 未知视觉模型 | 名称推断不到会回退文本 | 手动能力覆盖 |
 | 大媒体 base64 | 有 WS 护栏 | 优先 URL 或共享目录 |
 | 本地图片 | 依赖 get_image/enableLocalFile2Url | 开启并在日志核对 |
+| 图片压缩设置 | UI 有开关，v2 未接线 | 实现图片压缩或标记 legacy-only |
+| 发图后自动撤回 | UI 有开关，v2 未接线 | 发送成功后 delete_msg |
+| 长文本分段 | UI 有配置，v2 未接线 | reply 层按 maxChars 拆分 |
+| TTS 发送前延迟 | UI 有配置，v2 未接线 | voice 回调中 sleep |
 | 其他 segment | poke/dice/rps 等未处理 | 按业务逐个接入 |
 
 ## 10. 后台信息架构

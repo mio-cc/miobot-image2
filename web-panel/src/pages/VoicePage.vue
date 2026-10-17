@@ -125,7 +125,7 @@ const isFish = computed(() => tts.value?.provider === 'fish-audio');
             <input v-model.number="tts.preprocess.timeoutMs" type="number" min="5000" step="5000"
               :disabled="!tts.preprocess.enabled" class="input-field" />
           </FormField>
-          <FormField label="发送前延迟 (ms)" hint="给 QQ 留出处理间隔">
+          <FormField label="发送前延迟 (ms，legacy)" hint="给 QQ 留出处理间隔">
             <input v-model.number="tts.preprocess.delayMs" type="number" min="0" step="100"
               :disabled="!tts.preprocess.enabled" class="input-field" />
           </FormField>
