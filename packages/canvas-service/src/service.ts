@@ -253,6 +253,25 @@ export class CanvasService {
       }
     }
 
+    if (method === 'POST' && path === '/bot/files') {
+      if (!this.isAuthorized(req.headers)) return { status: 401, body: { error: { code: 'unauthorized', message: 'Unauthorized' } } };
+      try {
+        const raw = (body || {}) as Record<string, unknown>;
+        const parsed = parseDataUrl(String(raw.dataUrl || raw.base64 || ''));
+        const base64 = parsed?.base64 || String(raw.base64 || '').replace(/^base64:\/\//, '');
+        if (!base64) return { status: 400, body: { error: { code: 'bot_file_empty', message: '缺少文件内容' } } };
+        const buffer = Buffer.from(base64, 'base64');
+        if (buffer.length > 25 * 1024 * 1024) return { status: 413, body: { error: { code: 'bot_file_too_large', message: '文件超过 25MiB' } } };
+        const mime = String(raw.mime || parsed?.contentType || 'application/octet-stream').slice(0, 200);
+        const name = String(raw.name || 'file.bin').replace(/[\r\n\/\\]/g, '_').slice(0, 200);
+        const id = `file_${this.idFactory()}`;
+        this.assets.put(id, { contentType: mime, base64, createdAt: this.now().toISOString() });
+        return { status: 200, body: { ok: true, file: { id, url: `/canvas-api/assets/${encodeURIComponent(id)}/download`, name, mime, size: buffer.length } } };
+      } catch (error) {
+        return { status: 400, body: { error: { code: 'bot_file_import_failed', message: errMsg(error) } } };
+      }
+    }
+
     if (method === 'GET' && path === '/gallery') {
       const items = filterGallery(this.store.gallery(), query, this.store.galleryCapacity()).map(this.publicGalleryItem);
       return { status: 200, body: { items, total: this.store.gallery().length } };

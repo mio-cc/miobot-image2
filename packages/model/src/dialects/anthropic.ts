@@ -6,7 +6,7 @@ const ANTHROPIC_VERSION = '2023-06-01';
 
 function headers(node: ModelNode): Record<string, string> {
   const out: Record<string, string> = { 'Content-Type': 'application/json', 'anthropic-version': ANTHROPIC_VERSION, ...(node.headers || {}) };
-  if (node.apiKey) out['x-api-key'] = node.apiKey;
+  if (node.apiKey && !Object.keys(out).some((key) => key.toLowerCase() === 'x-api-key' || key.toLowerCase() === 'authorization')) out['x-api-key'] = node.apiKey;
   return out;
 }
 

@@ -21,7 +21,7 @@ export type CanvasAccessDecision =
 const COSTLY_PATHS = new Set(['/images/generate', '/images/edit', '/interrogate']);
 
 /** bot 往画廊回写自己的生成记录，走的是它自己的面板令牌校验，且不该被画布开关影响。 */
-const SELF_GUARDED_PATHS = new Set(['/bot/gallery']);
+const SELF_GUARDED_PATHS = new Set(['/bot/gallery', '/bot/files']);
 
 export interface CanvasRouteGuard {
   /** 是否要过访问控制。 */

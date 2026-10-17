@@ -11,6 +11,7 @@ import { importConfig, normalizeConfig } from '../dist/packages/config/src/index
 import { routeBotMessage } from '../dist/packages/bot-router/src/index.js';
 import { createIntentRouter } from '../dist/packages/intent-router/src/index.js';
 import { createAdminService } from '../dist/packages/admin-service/src/index.js';
+import { toModelNodes } from '../dist/apps/bot/src/config-bridge.js';
 
 test('features: every catalog entry has a stable setting and unimplemented features stay disabled', () => {
   const defaults = defaultFeatureSettings();
@@ -142,4 +143,17 @@ test('admin api: feature catalog is exposed with dynamic settings', async () => 
   assert.ok(res.body.definitions.some((item) => item.id === 'image.generate'));
   assert.deepEqual(res.body.settings['image.generate'].aliases.length > 0, true);
   assert.deepEqual(res.body.collisions, []);
+});
+
+
+test('api node headers: apiKey/env templates expand before request', () => {
+  const config = normalizeConfig({});
+  config.llm.apiKeys[0].key = 'secret-key';
+  config.llm.apiKeys[0].headers = { Authorization: 'Bearer {{apiKey}}', 'X-Test-Env': '{{env:MIOTEST_HEADER_VALUE}}', 'X-None': '{{env:MIOTEST_MISSING_VALUE}}' };
+  process.env.MIOTEST_HEADER_VALUE = 'env-value';
+  const nodes = toModelNodes(config);
+  assert.equal(nodes[0].headers.Authorization, 'Bearer secret-key');
+  assert.equal(nodes[0].headers['X-Test-Env'], 'env-value');
+  assert.equal(nodes[0].headers['X-None'], undefined);
+  delete process.env.MIOTEST_HEADER_VALUE;
 });

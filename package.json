@@ -20,11 +20,24 @@
     "deploy:linux": "bash deploy-linux.sh"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
+    "@types/archiver": "^8.0.0",
     "@types/node": "^20.12.7",
+    "@types/pdfkit": "^0.17.6",
     "@types/ws": "^8.5.13",
     "typescript": "^5.4.5"
   },
   "dependencies": {
+    "adm-zip": "^0.6.1",
+    "app-info-parser": "^1.1.6",
+    "archiver": "^8.0.0",
+    "docx": "^9.12.0",
+    "exceljs": "^4.4.0",
+    "fast-xml-parser": "^5.11.2",
+    "iconv-lite": "^0.7.3",
+    "pdfjs-dist": "^6.4.299",
+    "pdfkit": "^0.20.2",
+    "pptxgenjs": "^4.0.1",
     "ws": "^8.18.0"
   },
   "optionalDependencies": {

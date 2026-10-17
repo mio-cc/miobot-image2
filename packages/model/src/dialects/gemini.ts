@@ -5,7 +5,7 @@ const OPS: ModelOperation[] = ['chat', 'vision', 'interrogate', 'image.generate'
 
 function headers(node: ModelNode): Record<string, string> {
   const out: Record<string, string> = { 'Content-Type': 'application/json', ...(node.headers || {}) };
-  if (node.apiKey) out['x-goog-api-key'] = node.apiKey;
+  if (node.apiKey && !Object.keys(out).some((key) => key.toLowerCase() === 'x-goog-api-key')) out['x-goog-api-key'] = node.apiKey;
   return out;
 }
 

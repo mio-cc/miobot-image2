@@ -19,6 +19,8 @@ export interface ReplyStrategyConfig {
   file?: ReplyStrategy;
   multiFile?: ReplyStrategy;
   mixed?: ReplyStrategy;
+  /** 长文本分段设置；由 AppConfig.bot.textReply 透传。 */
+  textReply?: { maxChars?: number; splitDelayMs?: number; showPartPrefix?: boolean };
   fallbackSequentialOnForwardFailure?: boolean;
 }
 
@@ -76,6 +78,7 @@ export interface ReplyDispatchResult extends Omit<NapcatSendResult, 'attempts'> 
 export class ReplyStrategyEngine {
   private readonly client: ReplyClient;
   private readonly config: Required<ReplyStrategyConfig>;
+  private readonly textReply: { maxChars: number; splitDelayMs: number; showPartPrefix: boolean };
 
   constructor(client: ReplyClient, config: ReplyStrategyConfig = {}) {
     this.client = client;
@@ -89,14 +92,37 @@ export class ReplyStrategyEngine {
       multiFile: normalizeStrategy(config.multiFile, 'forward'),
       mixed: normalizeStrategy(config.mixed, 'forward'),
       fallbackSequentialOnForwardFailure: config.fallbackSequentialOnForwardFailure !== false,
+      textReply: config.textReply || {},
+    };
+    this.textReply = {
+      maxChars: Math.max(0, Number(config.textReply?.maxChars ?? 0)),
+      splitDelayMs: Math.max(0, Number(config.textReply?.splitDelayMs ?? 0)),
+      showPartPrefix: config.textReply?.showPartPrefix !== false,
     };
   }
 
   async replyText(context: ReplyContext, text: string, strategy = this.config.text): Promise<ReplyDispatchResult> {
     const resolved = normalizeStrategy(strategy, this.config.text);
     assertTarget(context);
-    if (context.chatType === 'private') return this.replyPrivateText(context, text, resolved);
-    return this.replyGroupText(context, text, resolved);
+    const chunks = splitLongText(text, this.textReply.maxChars);
+    if (chunks.length <= 1) {
+      if (context.chatType === 'private') return this.replyPrivateText(context, text, resolved);
+      return this.replyGroupText(context, text, resolved);
+    }
+    let last: ReplyDispatchResult | undefined;
+    for (let i = 0; i < chunks.length; i += 1) {
+      const prefix = this.textReply.showPartPrefix ? `(${i + 1}/${chunks.length}) ` : '';
+      const part = `${prefix}${chunks[i]}`;
+      const partContext: ReplyContext = i === 0 ? context : { ...context, replyToMessageId: undefined };
+      last = context.chatType === 'private'
+        ? await this.replyPrivateText(partContext, part, resolved)
+        : await this.replyGroupText(partContext, part, resolved);
+      if (!last.success) return last;
+      if (i < chunks.length - 1 && this.textReply.splitDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, this.textReply.splitDelayMs));
+      }
+    }
+    return last!;
   }
 
   async replyImage(context: ReplyContext, fileUrl: string, strategy = this.config.image): Promise<ReplyDispatchResult> {
@@ -430,6 +456,24 @@ export class ReplyStrategyEngine {
 
 export function createReplyStrategyEngine(client: ReplyClient, config: ReplyStrategyConfig = {}): ReplyStrategyEngine {
   return new ReplyStrategyEngine(client, config);
+}
+
+/** 按段落/句子边界拆分长文本；maxChars <= 0 表示不拆分。 */
+export function splitLongText(text: string, maxChars: number): string[] {
+  const source = String(text || '');
+  if (maxChars <= 0 || source.length <= maxChars) return [source];
+  const chunks: string[] = [];
+  let rest = source;
+  while (rest.length > maxChars) {
+    let cut = rest.lastIndexOf('\n', maxChars);
+    if (cut < Math.floor(maxChars * 0.45)) cut = Math.max(...['。', '！', '？', '；', '.', '!', '?', ';', '\n'].map((char) => rest.lastIndexOf(char, maxChars)));
+    if (cut < Math.floor(maxChars * 0.45)) cut = maxChars;
+    const chunk = rest.slice(0, Math.max(1, cut)).trimEnd();
+    if (chunk) chunks.push(chunk);
+    rest = rest.slice(Math.max(1, cut)).trimStart();
+  }
+  if (rest) chunks.push(rest);
+  return chunks.length ? chunks : [source];
 }
 
 export function normalizeStrategy(value: unknown, fallback: ReplyStrategy = 'plain'): ReplyStrategy {

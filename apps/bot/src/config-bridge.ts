@@ -55,7 +55,7 @@ export function toModelNodes(cfg: AppConfig): ModelNode[] {
       dialect: inferDialect(raw),
       baseUrl: node.baseUrl,
       apiKey: node.key,
-      headers: node.headers,
+      headers: expandApiNodeHeaders(node.headers, node.key),
       models: node.models,
       enabled: node.enabled,
       concurrency: node.concurrency,
@@ -67,6 +67,23 @@ export function toModelNodes(cfg: AppConfig): ModelNode[] {
 }
 
 /** AppConfig → bot-engine 路由切片（模型 + 开关）。每次 handle 读取，支持热重载。 */
+function expandHeaderValue(value: string, apiKey: string): string {
+  return String(value || '')
+    .replace(/\{\{\s*apiKey\s*\}\}/gi, apiKey)
+    .replace(/\{\{\s*env:([A-Z0-9_]+)\s*\}\}/gi, (_, name) => String(process.env[name] || ''))
+    .replace(/^\$ENV:([A-Z0-9_]+)$/i, (_, name) => String(process.env[name] || ''));
+}
+
+function expandApiNodeHeaders(headers: Record<string, string> | undefined, apiKey: string): Record<string, string> | undefined {
+  if (!headers || typeof headers !== 'object') return headers;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    const expanded = expandHeaderValue(value, apiKey);
+    if (expanded) out[key] = expanded;
+  }
+  return out;
+}
+
 export function toEngineRoutingConfig(cfg: AppConfig): EngineRoutingConfig {
   return {
     chatEnabled: cfg.llm.chatEnabled,

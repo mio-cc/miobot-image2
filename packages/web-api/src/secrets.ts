@@ -40,6 +40,13 @@ export function maskSecretValue(value: unknown): string {
   return `${raw.slice(0, 3)}••••••••${raw.slice(-4)}`;
 }
 
+function isSensitiveHeader(name: string): boolean {
+  const key = String(name || '').toLowerCase();
+  return key === 'authorization' || key === 'cookie' || key === 'x-api-key' || key === 'api-key'
+    || key === 'x-goog-api-key' || key === 'anthropic-api-key' || key.includes('token')
+    || key.includes('secret');
+}
+
 function isMaskOf(incoming: unknown, stored: unknown): boolean {
   const raw = String(incoming ?? '');
   if (!raw || !raw.includes('••••')) return false;
@@ -79,6 +86,13 @@ export function maskConfigSecrets<T>(config: T): T {
       } else {
         node.hasKey = false;
       }
+      if (node.headers && typeof node.headers === 'object' && !Array.isArray(node.headers)) {
+        for (const [headerName, headerValue] of Object.entries(node.headers)) {
+          if (typeof headerValue === 'string' && isSensitiveHeader(headerName)) {
+            node.headers[headerName] = maskSecretValue(headerValue);
+          }
+        }
+      }
     });
   }
 
@@ -112,6 +126,14 @@ export function unmaskConfigSecrets(incoming: unknown, stored: unknown): unknown
       delete node.keyRef;
       const storedKey = Array.isArray(storedNodes) ? storedNodes[ref]?.key : undefined;
       if (isMaskOf(node.key, storedKey)) node.key = storedKey;
+      const storedHeaders = Array.isArray(storedNodes) ? storedNodes[ref]?.headers : undefined;
+      if (node.headers && typeof node.headers === 'object' && storedHeaders && typeof storedHeaders === 'object') {
+        for (const [headerName, headerValue] of Object.entries(node.headers)) {
+          if (isSensitiveHeader(headerName) && isMaskOf(headerValue, storedHeaders[headerName])) {
+            node.headers[headerName] = storedHeaders[headerName];
+          }
+        }
+      }
     });
   }
 
@@ -143,6 +165,11 @@ export function findUnresolvedSecrets(config: unknown): string[] {
     nodes.forEach((node: any, index: number) => {
       if (node && typeof node === 'object' && contains(node.key)) {
         bad.push(`llm.apiKeys[${index}].key（${node.name || '未命名节点'}）`);
+      }
+      if (node?.headers && typeof node.headers === 'object') {
+        for (const [headerName, headerValue] of Object.entries(node.headers)) {
+          if (contains(headerValue)) bad.push(`llm.apiKeys[${index}].headers.${headerName}`);
+        }
       }
     });
   }

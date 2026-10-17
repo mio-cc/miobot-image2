@@ -69,10 +69,27 @@ const summary = computed(() => ({
     limited: nodes.value.filter((n: any) => Number(n.concurrency) > 0).length,
 }));
 
+function headersText(headers: Record<string, string> | undefined): string {
+    return Object.entries(headers || {}).map(([key, value]) => `${key}: ${value}`).join('\n');
+}
+
+function commitHeaders(node: any, event: Event) {
+    const raw = (event.target as HTMLTextAreaElement).value;
+    const headers: Record<string, string> = {};
+    for (const line of raw.split(/\r?\n/)) {
+        const idx = line.indexOf(':');
+        if (idx <= 0) continue;
+        const key = line.slice(0, idx).trim();
+        const value = line.slice(idx + 1).trim();
+        if (key) headers[key] = value;
+    }
+    node.headers = headers;
+}
+
 function addNode() {
     nodes.value.push({
         name: `节点 ${nodes.value.length + 1}`,
-        baseUrl: '', key: '', enabled: true, models: [], modelsFetchedAt: '', concurrency: 0,
+        baseUrl: '', key: '', enabled: true, models: [], modelsFetchedAt: '', concurrency: 0, headers: {},
     });
     expanded.value = nodes.value.length - 1;
 }
@@ -114,7 +131,7 @@ async function fetchModels(index: number) {
         // keyRef 是打码那一刻的下标，挂在节点对象上，删除/重排时跟着一起走。
         // 发实时下标会漂：删掉一个节点还没保存时，后端会按下标取到别的节点的密钥。
         const keyRef = Number.isInteger((node as any).keyRef) ? (node as any).keyRef : index;
-        const res = await client.post('/fetch-models', { baseUrl: node.baseUrl, key, keyRef, nodeIndex: keyRef });
+        const res = await client.post('/fetch-models', { baseUrl: node.baseUrl, key, keyRef, nodeIndex: keyRef, headers: node.headers || {} });
         const fetched = res.data.models || [];
         // 上游 200 但一个都没解析出来时，后端会带 warning。这时保留原列表——
         // 直接覆盖成空的话，用户看到的是「点了一下，模型全没了」。
@@ -279,6 +296,12 @@ function formatTime(value: string) {
                   <FormField label="并发上限" hint="0 = 不限制。上游按 key 发额度，所以限流单位是节点">
                     <input v-model.number="node.concurrency" type="number" min="0" max="256" class="input-field" />
                   </FormField>
+                  <div class="md:col-span-2">
+                    <FormField label="自定义请求头" hint="每行 Name: value；支持 apiKey、env:ENV_NAME 和 $ENV:ENV_NAME 占位符">
+                      <textarea :value="headersText(node.headers)" @change="commitHeaders(node, $event)" rows="3"
+                        class="input-field font-mono text-xs" placeholder="X-Custom-Header: value"></textarea>
+                    </FormField>
+                  </div>
                   <FormField label="模型列表" :hint="node.modelsFetchedAt ? `更新于 ${formatTime(node.modelsFetchedAt)}` : '还没获取过'">
                     <button class="btn-outline w-full" :disabled="fetchingNode === idx" @click="fetchModels(idx)">
                       {{ fetchingNode === idx ? '获取中...' : `获取模型（当前 ${(node.models || []).length} 个）` }}

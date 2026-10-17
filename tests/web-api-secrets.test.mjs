@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { ConfigRepository, WebApi, createConfigRepository, derivePanelToken } from '../dist/packages/web-api/src/index.js';
-import { findUnresolvedSecrets, maskSecretValue } from '../dist/packages/web-api/src/secrets.js';
+import { findUnresolvedSecrets, maskConfigSecrets, maskSecretValue, unmaskConfigSecrets } from '../dist/packages/web-api/src/secrets.js';
 
 /**
  * 密钥打码往返。
@@ -288,4 +288,16 @@ test('默认密码的判断由后端下结论——前端拿到的是打码值�
 
   const changed = createConfigRepository({ initialConfig: { panel: { passwordSeed: '我改过了-longer-than-8' } } });
   assert.equal(changed.getAuthSnapshot().usingDefaultPassword, false);
+});
+
+
+test('secret mask: sensitive API node headers are masked and restored', () => {
+  const config = makeConfig();
+  config.llm.apiKeys[0].headers = { Authorization: 'Bearer header-secret-123456', 'X-Custom': 'plain-value' };
+  const masked = maskConfigSecrets(config);
+  assert.notEqual(masked.llm.apiKeys[0].headers.Authorization, 'Bearer header-secret-123456');
+  assert.equal(masked.llm.apiKeys[0].headers['X-Custom'], 'plain-value');
+  const restored = unmaskConfigSecrets(masked, config);
+  assert.equal(restored.llm.apiKeys[0].headers.Authorization, 'Bearer header-secret-123456');
+  assert.deepEqual(findUnresolvedSecrets(masked), []);
 });

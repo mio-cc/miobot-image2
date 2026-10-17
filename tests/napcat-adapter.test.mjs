@@ -337,3 +337,26 @@ test('napcat adapter: sends record segments for group and private voice messages
   sockets[0].message({ echo: privateAction.echo, status: 'ok', retcode: 0, data: { message_id: 779 } });
   assert.equal((await privatePending).messageId, 779);
 });
+
+test('napcat adapter: downloadFileStream writes chunk packets to disk', async () => {
+  const { adapter, sockets } = createHarness({ actionTimeoutMs: 1000 });
+  adapter.connect();
+  sockets[0].open();
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'miobot-stream-'));
+  const outputPath = path.join(dir, 'a.txt');
+  const promise = adapter.downloadFileStream({ file: 'f1', outputPath, timeoutMs: 2000 });
+  await new Promise((resolve) => setImmediate(resolve));
+  const request = sockets[0].sent.find((item) => item.action === 'download_file_stream');
+  assert.ok(request?.echo);
+  sockets[0].message({ status: 'ok', retcode: 0, echo: request.echo, data: { type: 'stream', data_type: 'file_info', file_name: 'a.txt', file_size: 5, chunk_size: 2 } });
+  sockets[0].message({ status: 'ok', retcode: 0, echo: request.echo, data: { type: 'stream', data_type: 'file_chunk', index: 0, data: Buffer.from('he').toString('base64'), size: 2, progress: 40 } });
+  sockets[0].message({ status: 'ok', retcode: 0, echo: request.echo, data: { type: 'stream', data_type: 'file_chunk', index: 1, data: Buffer.from('llo').toString('base64'), size: 3, progress: 100 } });
+  sockets[0].message({ status: 'ok', retcode: 0, echo: request.echo, data: { type: 'response', data_type: 'file_complete', total_chunks: 2, total_bytes: 5 } });
+  const result = await promise;
+  assert.equal(result.totalBytes, 5);
+  assert.equal(fs.readFileSync(outputPath, 'utf8'), 'hello');
+  fs.rmSync(dir, { recursive: true, force: true });
+});

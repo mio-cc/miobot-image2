@@ -1,6 +1,26 @@
 export type FeatureCategory = 'basic' | 'image' | 'file' | 'video' | 'template' | 'system';
 export type FeatureScope = 'private' | 'group';
 export type FeatureGroupActivation = 'direct' | 'mention' | 'reply' | 'mention-or-reply';
+export interface FeatureLimitField {
+  key: string;
+  label: string;
+  min: number;
+  max: number;
+  default: number;
+  unit?: string;
+}
+
+export type FeatureLimits = Record<string, number>;
+
+export const COMMON_FEATURE_LIMIT_FIELDS: FeatureLimitField[] = [
+  { key: 'cooldownSec', label: '冷却时间', min: 0, max: 3600, default: 0, unit: '秒' },
+  { key: 'userDailyLimit', label: '用户每日上限', min: 0, max: 10000, default: 0, unit: '次（0=不限）' },
+  { key: 'groupDailyLimit', label: '群每日上限', min: 0, max: 10000, default: 0, unit: '次（0=不限）' },
+  { key: 'maxPromptChars', label: '最大输入字符', min: 0, max: 50000, default: 0, unit: '字符（0=不限）' },
+  { key: 'sendDelayMs', label: '发送延迟', min: 0, max: 30000, default: 0, unit: '毫秒' },
+  { key: 'concurrency', label: '并发上限', min: 0, max: 16, default: 0, unit: '0=不限' },
+];
+
 export type FeatureLegacyCommand =
   | 'help'
   | 'clear'
@@ -12,7 +32,10 @@ export type FeatureLegacyCommand =
   | 'genImage'
   | 'editImage'
   | 'img2Img'
-  | 'interrogate';
+  | 'interrogate'
+  | 'fileList'
+  | 'fileRead'
+  | 'fileGenerate';
 
 export type FeatureIntentKind =
   | 'chat'
@@ -34,6 +57,9 @@ export interface FeatureDefinition {
   defaultAliases: string[];
   defaultScopes: FeatureScope[];
   defaultGroupActivation: FeatureGroupActivation;
+  /** 功能专属限额字段；公共字段见 COMMON_FEATURE_LIMIT_FIELDS。 */
+  limitFields?: FeatureLimitField[];
+  defaultLimits?: FeatureLimits;
 }
 
 export interface FeatureSetting {
@@ -42,6 +68,7 @@ export interface FeatureSetting {
   scopes: FeatureScope[];
   groupActivation: FeatureGroupActivation;
   naturalLanguage: boolean;
+  limits: FeatureLimits;
 }
 
 export type FeatureSettings = Record<string, FeatureSetting>;
@@ -64,6 +91,8 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
     legacyCommand: 'genImage', intentKind: 'image.generate',
     defaultAliases: ['生图', '画', 'draw'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
+    limitFields: [{ key: 'maxCount', label: '最大生成张数', min: 1, max: 4, default: 4, unit: '张' }],
+    defaultLimits: { maxCount: 4 },
   },
   {
     id: 'image.edit', label: '改图', category: 'image', implemented: true,
@@ -119,18 +148,18 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
   {
-    id: 'file.list', label: '文件列表', category: 'file', implemented: false,
-    defaultAliases: ['文件列表', '最近文件'],
+    id: 'file.list', label: '文件列表', category: 'file', implemented: true,
+    legacyCommand: 'fileList', defaultAliases: ['文件列表', '最近文件'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
   {
-    id: 'file.read', label: '读取文件', category: 'file', implemented: false,
-    defaultAliases: ['读取文件', '分析文件'],
+    id: 'file.read', label: '读取文件', category: 'file', implemented: true,
+    legacyCommand: 'fileRead', defaultAliases: ['读取文件', '分析文件'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
   {
-    id: 'file.generate', label: '生成文件', category: 'file', implemented: false,
-    defaultAliases: ['生成文件', '生成文档'],
+    id: 'file.generate', label: '生成文件', category: 'file', implemented: true,
+    legacyCommand: 'fileGenerate', defaultAliases: ['生成文件', '生成文档', '导出文件'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
 ];
@@ -150,6 +179,21 @@ export function parseFeatureAliases(raw: unknown): string[] {
   return out.sort((a, b) => b.length - a.length);
 }
 
+export function featureLimitFields(def: FeatureDefinition): FeatureLimitField[] {
+  return [...COMMON_FEATURE_LIMIT_FIELDS, ...(def.limitFields || [])];
+}
+
+function normalizeFeatureLimits(def: FeatureDefinition, raw: unknown): FeatureLimits {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const out: FeatureLimits = {};
+  for (const field of featureLimitFields(def)) {
+    const fallback = def.defaultLimits?.[field.key] ?? field.default;
+    const n = Number(source[field.key] ?? fallback);
+    out[field.key] = Number.isFinite(n) ? Math.min(field.max, Math.max(field.min, Math.trunc(n))) : fallback;
+  }
+  return out;
+}
+
 export function defaultFeatureSettings(): FeatureSettings {
   const out: FeatureSettings = {};
   for (const def of FEATURE_DEFINITIONS) {
@@ -159,6 +203,7 @@ export function defaultFeatureSettings(): FeatureSettings {
       scopes: [...def.defaultScopes],
       groupActivation: def.defaultGroupActivation,
       naturalLanguage: Boolean(def.implemented && def.intentKind),
+      limits: normalizeFeatureLimits(def, undefined),
     };
   }
   return out;
@@ -201,6 +246,7 @@ export function normalizeFeatureSettings(
     if (raw && raw.scopes !== undefined) setting.scopes = normalizeScopes(raw.scopes, def.defaultScopes);
     if (raw && raw.groupActivation !== undefined) setting.groupActivation = normalizeActivation(raw.groupActivation, def.defaultGroupActivation);
     if (raw && raw.naturalLanguage !== undefined) setting.naturalLanguage = Boolean(raw.naturalLanguage) && Boolean(def.intentKind);
+    setting.limits = normalizeFeatureLimits(def, raw?.limits);
   }
 
   // First install / old config: inherit the legacy command aliases.

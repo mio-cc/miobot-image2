@@ -20,7 +20,10 @@ export type BotCommandName =
   | 'genImage'
   | 'editImage'
   | 'img2Img'
-  | 'interrogate';
+  | 'interrogate'
+  | 'fileList'
+  | 'fileRead'
+  | 'fileGenerate';
 
 export type BotRouteKind = 'ignored' | 'command' | 'freeMode' | 'chat';
 
@@ -37,6 +40,9 @@ export interface BotCommandAliases {
   img2Img?: CommandAliasInput;
   editImage?: CommandAliasInput;
   interrogate?: CommandAliasInput;
+  fileList?: CommandAliasInput;
+  fileRead?: CommandAliasInput;
+  fileGenerate?: CommandAliasInput;
   originalImage?: CommandAliasInput;
   imageCount?: CommandAliasInput;
   referencedTemplateImage?: CommandAliasInput;
@@ -515,6 +521,12 @@ export function matchExplicitCommand(
   if (remotePromptSearch) return remotePromptSearch;
   const remotePromptSmartImage = commandNameMatch('remotePromptSmartImage', text, commands, true);
   if (remotePromptSmartImage) return remotePromptSmartImage;
+  const fileList = commandNameMatch('fileList', text, commands);
+  if (fileList) return fileList;
+  const fileRead = commandNameMatch('fileRead', text, commands);
+  if (fileRead) return fileRead;
+  const fileGenerate = commandNameMatch('fileGenerate', text, commands);
+  if (fileGenerate) return fileGenerate;
   const genImage = commandNameMatch('genImage', text, commands);
   if (genImage) {
     const enhance = parseEnhanceMode(genImage.args, commands);

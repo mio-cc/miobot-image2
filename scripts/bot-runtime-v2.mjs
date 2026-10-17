@@ -30,7 +30,7 @@ const logger = createLogger({
 
 console.log(`[bot-v2] starting with config: ${configFilePath}`);
 console.log(`[bot-v2] system log: ${systemLogPath}`);
-const bot = startBot({ configFilePath, logger, metricsFilePath });
+const bot = startBot({ configFilePath, logger, metricsFilePath, dataDir: runtimeDir });
 
 function shutdown() {
   try { bot.stop(); } catch { /* ignore */ }

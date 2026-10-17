@@ -16,11 +16,13 @@ interface FeatureDefinition {
   defaultAliases: string[];
   defaultScopes: string[];
   defaultGroupActivation: string;
+  limitFields?: Array<{ key: string; label: string; min: number; max: number; default: number; unit?: string }>;
 }
 
 const configStore = useConfigStore();
 const config = computed(() => configStore.config);
 const definitions = ref<FeatureDefinition[]>([]);
+const commonLimitFields = ref<Array<{ key: string; label: string; min: number; max: number; default: number; unit?: string }>>([]);
 const loading = ref(false);
 const loadError = ref('');
 
@@ -51,6 +53,7 @@ function ensureSetting(def: FeatureDefinition): any {
       scopes: [...def.defaultScopes],
       groupActivation: def.defaultGroupActivation,
       naturalLanguage: Boolean(def.intentKind),
+      limits: {},
     };
   }
   return store[def.id];
@@ -101,18 +104,27 @@ function toggleScope(setting: any, scope: 'private' | 'group') {
   setting.scopes = [...current];
 }
 
+function fieldsFor(def: FeatureDefinition) {
+  return [...commonLimitFields.value, ...(def.limitFields || [])];
+}
+
 async function loadFeatures() {
   loading.value = true;
   loadError.value = '';
   try {
     const res = await client.get('/features');
     definitions.value = res.data?.definitions || [];
+    commonLimitFields.value = res.data?.commonLimitFields || [];
     for (const def of definitions.value) {
       const setting = ensureSetting(def);
       if (!Array.isArray(setting.aliases)) setting.aliases = [...def.defaultAliases];
       if (!Array.isArray(setting.scopes) || !setting.scopes.length) setting.scopes = [...def.defaultScopes];
       if (!setting.groupActivation) setting.groupActivation = def.defaultGroupActivation;
       if (typeof setting.naturalLanguage !== 'boolean') setting.naturalLanguage = Boolean(def.intentKind);
+      if (!setting.limits || typeof setting.limits !== 'object') setting.limits = {};
+      for (const field of fieldsFor(def)) {
+        if (typeof setting.limits[field.key] !== 'number') setting.limits[field.key] = field.default;
+      }
     }
   } catch (error: any) {
     loadError.value = errorMessage(error, '加载功能目录失败');
@@ -182,6 +194,17 @@ onMounted(loadFeatures);
             <FormField v-if="def.intentKind" label="自然语言识别" hint="关闭后 FreeMode 不再自动路由到该功能，显式命令仍然可用">
               <ToggleField v-model="setting.naturalLanguage" label="允许 FreeMode 识别" :disabled="!def.implemented || !setting.enabled" />
             </FormField>
+          </div>
+
+          <div v-if="def.implemented && fieldsFor(def).length" class="mt-4 pt-3 border-t border-[color:var(--hairline-2)]">
+            <div class="text-xs font-medium mb-2">限额与频率</div>
+            <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+              <label v-for="field in fieldsFor(def)" :key="field.key" class="block">
+                <span class="block text-[11px] text-[color:var(--ink-3)] mb-1">{{ field.label }}<template v-if="field.unit">（{{ field.unit }}）</template></span>
+                <input type="number" v-model.number="setting.limits[field.key]" :min="field.min" :max="field.max"
+                  class="input-field !py-1.5 text-xs" />
+              </label>
+            </div>
           </div>
 
           <p v-if="!def.implemented" class="text-[color:var(--ink-3)] text-xs mt-3">

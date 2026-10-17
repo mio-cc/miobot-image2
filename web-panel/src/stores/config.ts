@@ -64,6 +64,7 @@ export const useConfigStore = defineStore('config', () => {
         c.bot ||= {};
         c.bot.commands ||= {};
         c.bot.features ||= {};
+        c.bot.files ||= {};
         c.bot.promptTemplates ||= [];
         c.bot.tts ||= {};
         c.bot.tts.preprocess ||= {};

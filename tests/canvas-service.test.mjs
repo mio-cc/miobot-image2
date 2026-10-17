@@ -202,3 +202,19 @@ test('bot/gallery: 鉴权 + 入库(对齐单体 addBotGalleryRecord)', async () 
   assert.equal(empty.status, 400);
   assert.equal(empty.body.error.code, 'bot_gallery_import_failed');
 });
+
+test('bot files: uploads arbitrary files and serves them from asset download', async () => {
+  const svc = makeService(makeGen());
+  const payload = Buffer.from('hello generated file').toString('base64');
+  const uploaded = await svc.handle({
+    method: 'POST',
+    path: '/canvas-api/bot/files',
+    body: { name: 'report.txt', mime: 'text/plain', base64: payload },
+  });
+  assert.equal(uploaded.status, 200);
+  assert.match(uploaded.body.file.url, /^\/canvas-api\/assets\/.+\/download$/);
+  const download = await svc.handle({ method: 'GET', path: uploaded.body.file.url });
+  assert.equal(download.status, 200);
+  assert.equal(download.binary.contentType, 'text/plain');
+  assert.equal(Buffer.from(download.binary.base64, 'base64').toString('utf8'), 'hello generated file');
+});

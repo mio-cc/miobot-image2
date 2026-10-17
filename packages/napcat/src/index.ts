@@ -124,6 +124,15 @@ interface PendingAction {
   reject: (error: Error) => void;
 }
 
+interface PendingStream {
+  action: string;
+  startedAt: number;
+  timeout: ReturnType<typeof setTimeout>;
+  onPacket: (packet: Record<string, any>, wrapper: NapcatActionResponse) => void;
+  resolve: (packet: Record<string, any>) => void;
+  reject: (error: Error) => void;
+}
+
 export class NapcatActionError extends Error {
   readonly action: string;
   readonly response?: NapcatActionResponse;
@@ -147,6 +156,7 @@ export class NapcatAdapter {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private manualClose = false;
   private readonly pendingActions = new Map<string, PendingAction>();
+  private readonly pendingStreams = new Map<string, PendingStream>();
   private readonly handlers = new Map<string, Set<NapcatEventHandler>>();
   private readonly forwardBridgeTargets = new Map<string, string[]>();
   private forwardBridgeLoaded = false;
@@ -278,9 +288,53 @@ export class NapcatAdapter {
       readyStateText: formatReadyState(readyState),
       selfQqId: this.selfQqId || null,
       lastConnectedAt: this.lastConnectedAt ? new Date(this.lastConnectedAt).toISOString() : null,
-      pendingActions: this.pendingActions.size,
+      pendingActions: this.pendingActions.size + this.pendingStreams.size,
       reconnectScheduled: Boolean(this.reconnectTimer),
     };
+  }
+
+  sendStreamAction(
+    action: string,
+    params: Record<string, unknown> = {},
+    onPacket: (packet: Record<string, any>, wrapper: NapcatActionResponse) => void,
+    timeoutMs = 10 * 60 * 1000,
+  ): Promise<Record<string, any>> {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== NAPCAT_READY_STATE.OPEN) {
+      return Promise.reject(new Error(`Napcat WebSocket 未连接，当前状态 ${formatReadyState(socket?.readyState ?? NAPCAT_READY_STATE.CLOSED)}`));
+    }
+    const echo = this.requestIdFactory(action);
+    const startedAt = Date.now();
+    const resolvedTimeoutMs = positiveInt(timeoutMs, 10 * 60 * 1000);
+    const payload = JSON.stringify({ action, params, echo });
+    const frameBytes = Buffer.byteLength(payload);
+    if (frameBytes > WS_FRAME_SAFE_BYTES) return Promise.reject(new Error(`Napcat 流式 action 帧 ${describeBytes(frameBytes)} 超过安全上限`));
+    this.logger?.info('napcat stream action send', { action, echo, timeoutMs: resolvedTimeoutMs, params: summarizeLogValue(params) });
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        if (settled) return false;
+        settled = true;
+        this.pendingStreams.delete(echo);
+        return true;
+      };
+      const timeout = setTimeout(() => {
+        if (!cleanup()) return;
+        reject(new Error(`Napcat 流式 action ${action} 超时（${resolvedTimeoutMs}ms）`));
+      }, resolvedTimeoutMs);
+      timeout.unref?.();
+      this.pendingStreams.set(echo, {
+        action, startedAt, timeout, onPacket,
+        resolve: (packet) => { if (cleanup()) resolve(packet); },
+        reject: (error) => { if (cleanup()) reject(error); },
+      });
+      socket.send(payload, (error?: Error) => {
+        if (!error) return;
+        const pending = this.pendingStreams.get(echo);
+        if (pending) { clearTimeout(pending.timeout); this.pendingStreams.delete(echo); }
+        reject(error);
+      });
+    });
   }
 
   async callAction<T = unknown>(action: string, params: Record<string, unknown> = {}, timeoutMs = this.options.actionTimeoutMs): Promise<NapcatActionResponse<T>> {
@@ -533,6 +587,52 @@ export class NapcatAdapter {
     return this.sendAndReportResultWithRetry('send_private_forward_msg', { user_id: userId, messages }, this.options.fileSendTimeoutMs, 'mixed-forward');
   }
 
+  async downloadFileStream(options: {
+    file?: string;
+    fileId?: string;
+    outputPath: string;
+    chunkSize?: number;
+    timeoutMs?: number;
+    onProgress?: (progress: { receivedBytes: number; fileSize?: number; progress?: number }) => void;
+  }): Promise<{ filePath: string; fileName?: string; fileSize?: number; totalBytes: number }> {
+    const output = fs.createWriteStream(options.outputPath);
+    let fileName = '';
+    let fileSize = 0;
+    let totalBytes = 0;
+    const finished = new Promise<void>((resolve, reject) => {
+      output.on('finish', resolve);
+      output.on('error', reject);
+    });
+    try {
+      await this.sendStreamAction('download_file_stream', {
+        file: options.file || options.fileId || '',
+        file_id: options.fileId,
+        chunk_size: options.chunkSize || 64 * 1024,
+      }, (packet) => {
+        if (packet.data_type === 'file_info') {
+          fileName = String(packet.file_name || '');
+          fileSize = Number(packet.file_size || 0);
+        } else if (packet.data_type === 'file_chunk' && packet.data) {
+          const chunk = Buffer.from(String(packet.data), 'base64');
+          totalBytes += chunk.length;
+          output.write(chunk);
+          options.onProgress?.({ receivedBytes: totalBytes, fileSize: fileSize || undefined, progress: Number(packet.progress || 0) });
+        } else if (packet.data_type === 'file_complete') {
+          fileName = fileName || String(packet.file_name || '');
+          fileSize = Number(packet.total_bytes || fileSize || totalBytes);
+        }
+      }, options.timeoutMs || 10 * 60 * 1000);
+      output.end();
+      await finished;
+      if (fileSize > 0 && totalBytes !== fileSize) throw new Error(`流式下载字节数不一致：收到 ${totalBytes}，声明 ${fileSize}`);
+      return { filePath: options.outputPath, fileName: fileName || undefined, fileSize: fileSize || totalBytes, totalBytes };
+    } catch (error) {
+      output.destroy();
+      try { fs.unlinkSync(options.outputPath); } catch { /* ignore */ }
+      throw error;
+    }
+  }
+
   async deleteMessage(messageId: number | string, timeoutMs = this.options.actionTimeoutMs): Promise<boolean> {
     const result = await this.sendAndReportResult('delete_msg', { message_id: normalizeMessageId(messageId) }, timeoutMs);
     return result.success;
@@ -666,6 +766,29 @@ export class NapcatAdapter {
   private resolveActionResponse(data: NapcatActionResponse): void {
     const echo = typeof data?.echo === 'string' ? data.echo : '';
     if (!echo) return;
+    const stream = this.pendingStreams.get(echo);
+    if (stream) {
+      const packet = (data?.data && typeof data.data === 'object') ? data.data as Record<string, any> : data as Record<string, any>;
+      if (packet?.type === 'stream') {
+        try { stream.onPacket(packet, data); } catch (error) { stream.reject(error instanceof Error ? error : new Error(String(error))); }
+        return;
+      }
+      if (packet?.type === 'response') {
+        clearTimeout(stream.timeout);
+        this.pendingStreams.delete(echo);
+        this.logger?.info('napcat stream response', { action: stream.action, echo, durationMs: Date.now() - stream.startedAt, status: data.status, retcode: data.retcode });
+        stream.resolve(packet);
+        return;
+      }
+      if (packet?.type === 'error' || (typeof data.retcode === 'number' && data.retcode !== 0)) {
+        clearTimeout(stream.timeout);
+        this.pendingStreams.delete(echo);
+        stream.reject(new NapcatActionError(stream.action, formatActionError(stream.action, data), data));
+        return;
+      }
+      stream.onPacket(packet, data);
+      return;
+    }
     const pending = this.pendingActions.get(echo);
     if (!pending) return;
     this.logger?.info('napcat action response', { action: pending.action, echo, durationMs: Date.now() - pending.startedAt, retcode: data.retcode, status: data.status });
@@ -675,6 +798,8 @@ export class NapcatAdapter {
   private rejectPendingActions(error: Error): void {
     for (const pending of this.pendingActions.values()) pending.reject(error);
     this.pendingActions.clear();
+    for (const pending of this.pendingStreams.values()) pending.reject(error);
+    this.pendingStreams.clear();
   }
 
   private async emit(event: string, data: unknown): Promise<void> {

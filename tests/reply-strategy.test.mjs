@@ -223,3 +223,18 @@ test('reply strategy: 图视混排走 mixed forward', async () => {
   assert.ok(items.some((i) => i.kind === 'video' && i.file === 'vid1'));
   assert.ok(items.some((i) => i.kind === 'image' && i.file === 'img1'));
 });
+
+test('reply strategy: long text splits by maxChars with part prefixes', async () => {
+  const { splitLongText, createReplyStrategyEngine } = await import('../dist/packages/reply/src/index.js');
+  assert.deepEqual(splitLongText('1234567890', 4), ['1234', '5678', '90']);
+  const sent = [];
+  const engine = createReplyStrategyEngine({
+    sendGroupText: async (_groupId, text) => { sent.push(text); return { success: true, messageId: sent.length }; },
+    sendGroupImage: async () => ({ success: true }),
+    sendPrivateImage: async () => ({ success: true }),
+    sendPrivateText: async () => ({ success: true }),
+  }, { text: 'plain', textReply: { maxChars: 5, splitDelayMs: 0, showPartPrefix: true } });
+  const result = await engine.replyText({ chatType: 'group', groupId: '1', userId: '2' }, 'abcdefghijkl');
+  assert.equal(result.success, true);
+  assert.deepEqual(sent, ['(1/3) abcde', '(2/3) fghij', '(3/3) kl']);
+});

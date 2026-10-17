@@ -206,22 +206,53 @@ Napcat → QQ
 - 当前没有 STT：QQ 语音只在历史上下文显示占位，不会自动转文字。
 - 需要新增 Napcat 语音下载 + ASR + 文本注入链路。
 
+## 8.5 文件输入与文件生成
+
+### 文件输入
+
+- 文件消息到达时只登记 `message_id / file_id / name / size / mime`，不主动下载。
+- 用户引用文件消息发送「读取文件」、同条消息带文件发命令，或发送「读取文件 Fxxxxx」时才下载。
+- 索引持久化在 `MIOBOT_RUNTIME_DIR/pending-files.json`，默认保留 24 小时。
+- 小于 8 MiB 走 `get_file`；大文件优先 `download_file_stream`，失败回退 `get_file`。
+- 支持：
+  - txt/md/csv/tsv/json/jsonl/yaml/yml/xml/log/源码：文本读取，GB18030 回退。
+  - PDF：pdfjs-dist 提取文本，限制页数。
+  - DOCX：OOXML 正文/表格文本。
+  - XLSX：sharedStrings + 工作表行，输出 Markdown 表格。
+  - PPTX：按 slide 顺序提取文本。
+  - ZIP：文件树 + 小型文本文件读取。
+  - APK：app-info-parser 解析包名、版本、权限、Activity，并列出 ZIP 条目；不执行、不反编译。
+- 解析上限由 `bot.files.*` 配置，默认单文件 20 MiB、提取文本 100k 字符、压缩包解压 50 MiB。
+- 文件解析在单任务队列中执行，避免 1C2G 机器被多文件并发拖垮。
+
+### 文件生成
+
+- 用户使用「生成文件 / 生成文档 / 导出文件」命令，例如：
+  - `生成文件 一份 Word 周报`
+  - `生成文件 一个 Excel 销售表`
+  - `生成文件 一份 PPT 项目汇报`
+- 模型只输出结构化 JSON，本地渲染器负责生成真实文件，避免要求聊天模型返回 Office 二进制。
+- 支持 txt/md/json/csv/docx/xlsx/pptx/pdf/zip。
+- 生成后上传到 Canvas 的 `/canvas-api/bot/files`，Napcat 通过公开 URL 以 file 段发送。
+- APK 只支持输入分析，不支持从自然语言直接构建可安装 APK。
+
 ## 9. 已知缺口
 
 | 项目 | 现状 | 建议 |
 |---|---|---|
 | QQ 语音输入 | 不支持 ASR | 增加 voice 下载与 STT 节点 |
-| QQ 文件输入 | 不读取内容 | get_file + 文档解析白名单 |
+| QQ 文件输入 | 已支持按需下载与解析 txt/md/csv/json/yaml/xml、PDF 文本、DOCX、XLSX、PPTX、ZIP、APK 元数据 | 扫描 PDF/旧版 Office 可选 OCR/LibreOffice |
 | 视频理解 | 只给引用提示 | 视频模型或抽帧+音频转写 |
 | 嵌套转发 | 深度 3 | 提高需防环和限流 |
 | JSON/XML 卡片 | 只扫转发 ID | 按卡片类型解析正文 |
 | 未知视觉模型 | 名称推断不到会回退文本 | 手动能力覆盖 |
 | 大媒体 base64 | 有 WS 护栏 | 优先 URL 或共享目录 |
 | 本地图片 | 依赖 get_image/enableLocalFile2Url | 开启并在日志核对 |
-| 图片压缩设置 | UI 有开关，v2 未接线 | 实现图片压缩或标记 legacy-only |
-| 发图后自动撤回 | UI 有开关，v2 未接线 | 发送成功后 delete_msg |
-| 长文本分段 | UI 有配置，v2 未接线 | reply 层按 maxChars 拆分 |
 | 命令与意图配置 | 已统一为 Feature Registry，后台动态渲染 | 后续接入冷却、每日上限和并发限制 |
+| 文件生成 | 已支持 txt/md/json/csv/docx/xlsx/pptx/pdf/zip，上传 Canvas 后走 file 段发送 | APK 仅分析输入，不自动构建 |
+| API 节点请求头 | 已支持自定义请求头、apiKey/env 模板、敏感头打码 | 动态 session/project 变量可后续扩展 |
+| 功能限额 | 已支持冷却、用户/群每日上限、最大输入字符、并发、发送延迟 | 计数为进程内状态，重启清零 |
+| OpenCode 绕过式接入 | 未实现 | 不实现伪造 CLI 指纹、工具注入或 FreeTier 绕过 |
 | 其他 segment | poke/dice/rps 等未处理 | 按业务逐个接入 |
 
 ## 10. 后台信息架构
@@ -230,6 +261,8 @@ Napcat → QQ
 - 模型：能力分工、API 节点
 - 对话：对话与触发、提示词模板
 - 对话：命令与意图（别名、私聊/群聊、群聊触发方式、FreeMode 自然语言开关）
+- 对话：命令与意图（限额、冷却、并发、发送延迟）
+- 对话：文件读取（索引保留、大小、文本/PDF/表格/PPT/压缩包上限）
 - 媒体：语音/TTS、画布/图库
 - 系统：运行日志、系统设置
 
@@ -239,6 +272,8 @@ Napcat → QQ
 - 图片：看日志 imageRefs 是 http/data-url/local；local 需 get_image 成功。
 - 生图：看 gallery sync 日志、MIOBOT_PUBLIC_BASE_URL、Napcat 图片 URL。
 - 语音：看 TTS request 的 model、Fish API 200、Napcat silk 转码和 send retcode。
+- 文件：确认 `enableLocalFile2Url`、`download_file_stream` 是否可用、`pending-files.json` 是否有记录、临时目录权限和 MIOBOT_PUBLIC_BASE_URL。
+- 生成文件：确认 Canvas 服务可达、`/canvas-api/bot/files` 返回 200、MIOBOT_PUBLIC_BASE_URL 能被 Napcat 容器访问。
 
 ## 12. 参考
 

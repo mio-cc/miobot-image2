@@ -1,0 +1,14 @@
+﻿{
+  "name": "@miobot-v2/filegen",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "../../dist/packages/filegen/src/index.js",
+  "types": "../../dist/packages/filegen/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "../../dist/packages/filegen/src/index.d.ts",
+      "default": "../../dist/packages/filegen/src/index.js"
+    }
+  }
+}

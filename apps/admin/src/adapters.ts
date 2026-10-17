@@ -149,7 +149,21 @@ export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConf
 
     if (!baseUrl) return fail(400, '请填写 OpenAI 兼容 Base URL，例如 https://anyrouter.top/v1');
     try {
-      const res = await fetch(joinUrl(baseUrl, '/models'), { headers: key ? { Authorization: `Bearer ${key}` } : {} });
+      const submittedHeaders = (b.headers && typeof b.headers === 'object' && !Array.isArray(b.headers)) ? b.headers as Record<string, string> : {};
+      const rawHeaders: Record<string, string> = { ...(stored?.headers || {}) };
+      for (const [name, value] of Object.entries(submittedHeaders)) {
+        rawHeaders[name] = (isMasked(String(value || '')) && stored?.headers?.[name]) ? stored.headers[name] : String(value || '');
+      }
+      const headers: Record<string, string> = {};
+      for (const [name, value] of Object.entries(rawHeaders)) {
+        const expanded = String(value || '')
+          .replace(/\{\{\s*apiKey\s*\}\}/gi, key)
+          .replace(/\{\{\s*env:([A-Z0-9_]+)\s*\}\}/gi, (_, envName) => String(process.env[envName] || ''))
+          .replace(/^\$ENV:([A-Z0-9_]+)$/i, (_, envName) => String(process.env[envName] || ''));
+        if (expanded) headers[name] = expanded;
+      }
+      if (key && !Object.keys(headers).some((name) => ['authorization', 'x-api-key'].includes(name.toLowerCase()))) headers.Authorization = `Bearer ${key}`;
+      const res = await fetch(joinUrl(baseUrl, '/models'), { headers });
       if (!res.ok) {
         const hint = !key && res.status === 401 ? '（该节点还没有密钥）' : '';
         return fail(502, `获取模型列表失败: HTTP ${res.status}${hint}${await upstreamDetail(res)}`);

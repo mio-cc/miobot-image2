@@ -2,7 +2,7 @@ import { createWebApi, type ConfigRepository, type WebApi, type WebApiRequest } 
 import { getDefaultPrompts } from '../../config/src/index.js';
 import type { LogQuery } from '../../logger/src/index.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
-import { FEATURE_DEFINITIONS, featureAliasCollisions, type FeatureSettings } from '../../shared/src/features.js';
+import { COMMON_FEATURE_LIMIT_FIELDS, FEATURE_DEFINITIONS, featureAliasCollisions, type FeatureSettings } from '../../shared/src/features.js';
 import { createInMemoryLogStore, type AdminLogStore } from './logs.js';
 import { OPERATION_LABELS, checkCapabilityBindings, resolveModelCapabilities } from './capabilities.js';
 import { createMetrics, type Metrics } from '../../core/src/metrics.js';
@@ -70,6 +70,7 @@ export class AdminService {
         body: {
           success: true,
           definitions: FEATURE_DEFINITIONS,
+          commonLimitFields: COMMON_FEATURE_LIMIT_FIELDS,
           settings,
           collisions: featureAliasCollisions(settings),
         },

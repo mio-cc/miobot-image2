@@ -20,11 +20,17 @@ export interface BotEngineOptions {
   /** 传函数则每次现读，能力覆盖改动即时生效。 */
   registry?: CapabilityRegistry | (() => CapabilityRegistry);
   planner?: PlannerClient;
+  /** 在真正执行动作前获取功能限额/并发槽位；返回 release 在 finally 释放。 */
+  beforeDispatch?: (decision: IntentDecision, input: BotEngineInput) => Promise<(() => void) | void> | (() => void) | void;
   /** 可选日志器（用于诊断意图路由的 gate/caps 决策）。 */
   log?: { info(message: string, data?: Record<string, unknown>): void; warn(message: string, data?: Record<string, unknown>): void; error(message: string, data?: Record<string, unknown>): void };
 }
 
 export interface BotEngineInput extends IntentInput {
+  /** 显式命令对应的功能 ID。 */
+  featureId?: string;
+  /** 功能限额上下文（群/用户/输入长度）。 */
+  featureContext?: { chatType?: 'group' | 'private'; groupId?: string | number; userId?: string | number; promptChars?: number };
   /** 会话键(group:xxx / private:xxx),供 chat 取用对话记忆。 */
   sessionId?: string;
   /** 群聊上下文(@bot 时拉取的最近群聊记录),以 system 消息注入 chat 模型。 */
@@ -42,6 +48,8 @@ export interface BotEngineResult {
   images?: string[];
   /** 生成的视频 url / data URL，由 reply/napcat 发 type:video。 */
   videos?: string[];
+  /** 生成的文件 URL 或本地引用，由 reply/napcat 走 file 段发送。 */
+  files?: Array<string | { file: string; name?: string }>;
   handled: boolean;
 }
 
@@ -51,6 +59,7 @@ export class BotEngine {
   private readonly registrySource: () => CapabilityRegistry;
   private get registry(): CapabilityRegistry { return this.registrySource(); }
   private readonly planner?: PlannerClient;
+  private readonly beforeDispatch?: BotEngineOptions['beforeDispatch'];
   private readonly log?: { info(message: string, data?: Record<string, unknown>): void; warn(message: string, data?: Record<string, unknown>): void; error(message: string, data?: Record<string, unknown>): void };
 
   constructor(options: BotEngineOptions) {
@@ -64,6 +73,7 @@ export class BotEngine {
       this.registrySource = () => fixed;
     }
     this.planner = options.planner;
+    this.beforeDispatch = options.beforeDispatch;
     this.log = options.log;
   }
 
@@ -89,7 +99,7 @@ export class BotEngine {
       freeModeEnabled: cfg.freeModeEnabled, freeModeModel: cfg.freeModeModel,
       inputText: (input.text || '').slice(0, 80),
     });
-    return this.dispatch(decision, input, cfg);
+    return this.withGate(decision, input, () => this.dispatch(decision, input, cfg));
   }
 
   /**
@@ -117,7 +127,21 @@ export class BotEngine {
       } as IntentParams,
       usedPlanner: false,
     };
-    return this.dispatch(decision, input, cfg);
+    return this.withGate(decision, input, () => this.dispatch(decision, input, cfg));
+  }
+
+  private async withGate(decision: IntentDecision, input: BotEngineInput, run: () => Promise<BotEngineResult>): Promise<BotEngineResult> {
+    const featureId = input.featureId || featureIdForKind(decision.kind);
+    const context = input.featureContext || {};
+    const release = await this.beforeDispatch?.(
+      { ...decision },
+      { ...input, featureId, featureContext: { ...context, chatType: context.chatType || input.chatType, promptChars: context.promptChars ?? String(input.text || '').length } },
+    );
+    try {
+      return await run();
+    } finally {
+      release?.();
+    }
   }
 
   private async dispatch(decision: IntentDecision, input: BotEngineInput, cfg: EngineRoutingConfig): Promise<BotEngineResult> {
@@ -192,4 +216,13 @@ function composeChatText(userText: string, referenceText?: string, forwardText?:
   if (forwardText) parts.push(`【合并转发内容】\n${forwardText}`);
   if (!parts.length) return '请根据引用/转发内容处理。';
   return parts.join('\n\n');
+}
+
+
+function featureIdForKind(kind: IntentKind): string | undefined {
+  if (kind === 'image.generate') return 'image.generate';
+  if (kind === 'image.edit') return 'image.edit';
+  if (kind === 'image.interrogate') return 'image.interrogate';
+  if (kind === 'video.generate') return 'video.generate';
+  return undefined;
 }

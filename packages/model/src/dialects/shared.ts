@@ -14,7 +14,8 @@ export function joinUrl(baseUrl: string, path: string): string {
 
 export function bearerHeaders(apiKey?: string, extra: Record<string, string> = {}): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...extra };
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const hasAuth = Object.keys(headers).some((key) => key.toLowerCase() === 'authorization' || key.toLowerCase() === 'x-api-key');
+  if (apiKey && !hasAuth) headers.Authorization = `Bearer ${apiKey}`;
   return headers;
 }
 

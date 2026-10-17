@@ -1,4 +1,4 @@
-import { createBotEngine, type BotEngine, type BotEngineInput, type BotEngineResult } from '../../../packages/bot-engine/src/index.js';
+import { createBotEngine, type BotEngine, type BotEngineInput, type BotEngineResult, type BotEngineOptions } from '../../../packages/bot-engine/src/index.js';
 import { createModelClient, createReloadableRegistry, type CapabilityRegistry, type ModelClient } from '../../../packages/model/src/index.js';
 import { createSessionStore, type SessionStore } from '../../../packages/core/src/index.js';
 import type { PlannerClient } from '../../../packages/intent-router/src/index.js';
@@ -29,6 +29,8 @@ export interface BotAppOptions {
   chatSystemPrompt?: string;
   /** 生图提示词流水线；不传则用 ModelClient 后端(模板渲染+润色+安全改写)。 */
   pipeline?: ImagePromptPipeline;
+  /** 动作执行前的功能限额/并发钩子。 */
+  beforeDispatch?: BotEngineOptions['beforeDispatch'];
   /** 可选日志器（透传给 BotEngine，用于诊断意图路由的 gate/caps 决策）。 */
   log?: { info(message: string, data?: Record<string, unknown>): void; warn(message: string, data?: Record<string, unknown>): void; error(message: string, data?: Record<string, unknown>): void };
 }
@@ -86,6 +88,7 @@ export function createBotApp(options: BotAppOptions): BotApp {
     registry: getRegistry,
     planner,
     log: options.log,
+    beforeDispatch: options.beforeDispatch,
   });
   return {
     engine,

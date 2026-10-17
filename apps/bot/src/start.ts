@@ -5,12 +5,19 @@ import { createFileMetricsStore, createMetrics } from '../../../packages/core/sr
 import { createDefaultConfig, normalizeConfig, type AppConfig } from '../../../packages/config/src/index.js';
 import { ConsoleLogSink, createLogger, type StructuredLogger } from '../../../packages/logger/src/index.js';
 import { createBotApp } from './app.js';
-import { createBotMessageRuntime, type NapcatMessageEvent } from './runtime.js';
+import { createBotMessageRuntime, type FileReference, type NapcatMessageEvent } from './runtime.js';
 import { toModelNodes, toCapabilityOverrides } from './config-bridge.js';
 import { shouldUseTts, synthesizeSpeech } from './tts.js';
 import type { OwnerCommand } from './owner.js';
 import type { NapcatHistoryMessage } from './group-context.js';
 import { normalizeForwardPayload } from './message-enrichment.js';
+import { FeatureGate } from './feature-gate.js';
+import { createOutboundImageCompressor } from './image-output.js';
+import { PendingFileIndex, DEFAULT_FILE_PARSE_LIMITS } from '../../../packages/file-ingest/src/index.js';
+import { derivePanelToken } from '../../../packages/web-api/src/index.js';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { createCanvasGallerySync } from './canvas-gallery.js';
 import {
   createImageInputPreparer,
@@ -28,6 +35,8 @@ export interface StartBotOptions {
    * 两边只能靠这个文件交换数据——不给就不统计。
    */
   metricsFilePath?: string;
+  /** 运行时数据目录（文件索引/临时文件）。默认取 config.json 所在目录。 */
+  dataDir?: string;
 }
 
 export interface RunningBot {
@@ -60,8 +69,122 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // 这样面板保存后，bot 进程下一条消息就用上新配置，不需要重启——
   // 否则 web 和 bot 是两个进程，面板那句「无需重启」对机器人是假的。
   const getConfig = (): AppConfig => (store ? store.loadIfChanged() : config);
+  const dataDir = options.dataDir || (options.configFilePath ? path.dirname(options.configFilePath) : path.resolve('.runtime'));
+  const tempFileDir = path.join(dataDir, 'tmp-files');
+  const fileIndex = new PendingFileIndex({ filePath: path.join(dataDir, 'pending-files.json'), ttlMs: Math.max(1, config.bot.files.indexTtlMinutes || 1440) * 60_000, maxPerChat: Math.max(10, config.bot.files.maxIndexPerChat || 200) });
+  fileIndex.loadSync();
+  void fs.mkdir(tempFileDir, { recursive: true }).catch(() => undefined);
+
+  async function downloadIncomingFile(ref: FileReference, maxBytes = DEFAULT_FILE_PARSE_LIMITS.maxBytes): Promise<string> {
+    const tempPath = path.join(tempFileDir, `${Date.now()}-${randomUUID()}-${path.basename(ref.name || 'file')}`);
+    if (ref.size > maxBytes) throw new Error(`文件 ${ref.name} 大小 ${ref.size} bytes，超过上限 ${maxBytes} bytes`);
+    if (ref.fileId || ref.file) {
+      if (ref.size > 8 * 1024 * 1024 || String(process.env.MIOBOT_FILE_STREAM || '') === '1') {
+        try {
+          const streamed = await adapter.downloadFileStream({
+            fileId: ref.fileId,
+            file: ref.file,
+            outputPath: tempPath,
+            timeoutMs: 10 * 60 * 1000,
+            onProgress: ({ receivedBytes, fileSize }) => logger.info('文件流式下载进度', { name: ref.name, receivedBytes, fileSize }),
+          });
+          if (streamed.totalBytes > maxBytes) throw new Error(`流式下载文件超过上限 ${maxBytes} bytes`);
+          logger.info('文件流式下载完成', { name: ref.name, bytes: streamed.totalBytes });
+          return tempPath;
+        } catch (error) {
+          logger.warn('文件流式下载失败，回退 get_file', { name: ref.name, error: String((error as Error)?.message || error) });
+          await fs.unlink(tempPath).catch(() => undefined);
+        }
+      }
+    }
+    let response: any = null;
+    if (ref.fileId || ref.file) {
+      const params: Record<string, unknown> = ref.fileId ? { file_id: ref.fileId } : { file: ref.file };
+      response = await adapter.callAction<any>('get_file', params, 120_000);
+    }
+    const data = response?.data || {};
+    let base64 = String(data.base64 || data.data || '').trim();
+    if (base64.startsWith('data:')) base64 = base64.slice(base64.indexOf(',') + 1);
+    if (base64.startsWith('base64://')) base64 = base64.slice('base64://'.length);
+    if (base64) {
+      const buffer = Buffer.from(base64, 'base64');
+      if (buffer.length > maxBytes) throw new Error(`下载文件超过上限 ${maxBytes} bytes`);
+      await fs.writeFile(tempPath, buffer);
+      return tempPath;
+    }
+    const sourceUrl = String(data.url || data.file_url || ref.url || '').trim();
+    if (sourceUrl) {
+      const res = await fetch(sourceUrl, { signal: AbortSignal.timeout(120_000) });
+      if (!res.ok) throw new Error(`下载文件失败 HTTP ${res.status}`);
+      const length = Number(res.headers.get('content-length') || 0);
+      if (length > maxBytes) throw new Error(`下载文件超过上限 ${maxBytes} bytes`);
+      const buffer = Buffer.from(await res.arrayBuffer());
+      if (buffer.length > maxBytes) throw new Error(`下载文件超过上限 ${maxBytes} bytes`);
+      await fs.writeFile(tempPath, buffer);
+      return tempPath;
+    }
+    const localPath = String(data.file || ref.file || '').trim();
+    if (localPath && !/^https?:/i.test(localPath)) {
+      try {
+        const stat = await fs.stat(localPath);
+        if (stat.size > maxBytes) throw new Error(`本地文件超过上限 ${maxBytes} bytes`);
+        await fs.copyFile(localPath, tempPath);
+        return tempPath;
+      } catch (error: any) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+    }
+    throw new Error('Napcat get_file 没有返回 base64、URL 或可访问的本地路径；请确认 enableLocalFile2Url 已开启');
+  }
 
   // 指标写文件，web 进程读同一个文件。不配路径就不统计。
+  const generatedFileDir = path.join(dataDir, 'generated-files');
+  void fs.mkdir(generatedFileDir, { recursive: true }).catch(() => undefined);
+  async function cleanupOldFiles(dir: string, maxAgeMs: number): Promise<void> {
+    try {
+      const entries = await fs.readdir(dir).catch(() => [] as string[]);
+      const now = Date.now();
+      await Promise.all(entries.map(async (name) => {
+        const file = path.join(dir, name);
+        try {
+          const stat = await fs.stat(file);
+          if (stat.isFile() && now - stat.mtimeMs > maxAgeMs) await fs.unlink(file);
+        } catch { /* best effort */ }
+      }));
+    } catch { /* best effort */ }
+  }
+  void cleanupOldFiles(tempFileDir, 60 * 60 * 1000);
+  void cleanupOldFiles(generatedFileDir, 3 * 24 * 60 * 60 * 1000);
+
+  async function uploadGeneratedFile(localPath: string, name: string, mime: string): Promise<string> {
+    const buffer = await fs.readFile(localPath);
+    if (buffer.length > 20 * 1024 * 1024) throw new Error('生成文件超过 20MiB，无法上传');
+    const cfg = getConfig();
+    const syncUrl = String(process.env.MIOBOT_CANVAS_SYNC_URL || '').trim();
+    let uploadEndpoint: string;
+    try {
+      uploadEndpoint = syncUrl
+        ? new URL('/canvas-api/bot/files', new URL(syncUrl).origin).toString()
+        : `http://127.0.0.1:${cfg.panel.port}/canvas-api/bot/files`;
+    } catch {
+      uploadEndpoint = `http://127.0.0.1:${cfg.panel.port}/canvas-api/bot/files`;
+    }
+    const token = derivePanelToken(String(cfg.panel.passwordSeed || ''));
+    const response = await fetch(uploadEndpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name, mime, base64: buffer.toString('base64') }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!response.ok) throw new Error(`文件上传失败 HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+    const body = await response.json() as { file?: { url?: string } };
+    const assetUrl = String(body.file?.url || '').trim();
+    if (!assetUrl) throw new Error('文件上传响应缺少 URL');
+    const publicBase = String(process.env.MIOBOT_PUBLIC_BASE_URL || `http://127.0.0.1:${cfg.panel.port}`).replace(/\/+$/, '');
+    if (!process.env.MIOBOT_PUBLIC_BASE_URL) logger.warn('MIOBOT_PUBLIC_BASE_URL 未配置，生成文件 URL 只能本机访问；Napcat 容器可能下载失败');
+    return assetUrl.startsWith('http://') || assetUrl.startsWith('https://') ? assetUrl : `${publicBase}${assetUrl}`;
+  }
+
   const metrics = options.metricsFilePath
     ? createMetrics({ store: createFileMetricsStore(options.metricsFilePath) })
     : undefined;
@@ -72,7 +195,27 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // 把它自己那条可热重载的分支整个绕过去。BotEngine 判断「这个模型支不支持生图/视频」
   // 用的就是这份注册表，于是用户在面板上加了能力覆盖、提示热重载成功，
   // bot 那边照旧回「当前模型不支持」，重启才认。
-  const app = createBotApp({ getConfig, client, log: logger });
+  const featureGate = new FeatureGate({ getConfig });
+  const app = createBotApp({
+    getConfig,
+    client,
+    log: logger,
+    beforeDispatch: async (decision, input) => {
+      const featureId = input.featureId || (decision.kind === 'image.generate' ? 'image.generate'
+        : decision.kind === 'image.edit' ? 'image.edit'
+          : decision.kind === 'image.interrogate' ? 'image.interrogate'
+            : decision.kind === 'video.generate' ? 'video.generate'
+              : undefined);
+      if (!featureId) return undefined;
+      return featureGate.acquire({
+        featureId,
+        chatType: input.featureContext?.chatType || input.chatType,
+        groupId: input.featureContext?.groupId,
+        userId: input.featureContext?.userId,
+        promptChars: input.featureContext?.promptChars,
+      });
+    },
+  });
 
   const canvasGallerySync = createCanvasGallerySync({ getConfig, logger });
 
@@ -171,6 +314,14 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       }
     },
     metrics,
+    featureGate,
+    fileIndex,
+    generatedFileDir,
+    uploadFile: uploadGeneratedFile,
+    compressImages: createOutboundImageCompressor({ getConfig, uploadFile: uploadGeneratedFile, logger }),
+    deleteMessage: (messageId) => adapter.deleteMessage(messageId),
+    downloadFile: downloadIncomingFile,
+    fileParseLimits: DEFAULT_FILE_PARSE_LIMITS,
     voice: async (text) => {
       const tts = getConfig().bot.tts;
       if (!shouldUseTts(tts, text)) return null;
