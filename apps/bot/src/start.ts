@@ -12,7 +12,11 @@ import type { OwnerCommand } from './owner.js';
 import type { NapcatHistoryMessage } from './group-context.js';
 import { normalizeForwardPayload } from './message-enrichment.js';
 import { createCanvasGallerySync } from './canvas-gallery.js';
-import { createImageInputPreparer } from './image-input.js';
+import {
+  createImageInputPreparer,
+  createNapcatImageReferenceResolver,
+  type NapcatGetImageResponse,
+} from './image-input.js';
 
 export interface StartBotOptions {
   /** 配置文件(JSON);不给则用默认配置(无可用节点,仅供连通性冒烟)。 */
@@ -71,7 +75,6 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   const app = createBotApp({ getConfig, client, log: logger });
 
   const canvasGallerySync = createCanvasGallerySync({ getConfig, logger });
-  const prepareInputImages = createImageInputPreparer({ logger });
 
   const nap = config.napcat;
   const adapter = new NapcatAdapter({
@@ -89,6 +92,15 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     fileSendRetryCount: nap.fileSendRetryCount,
     fileSendRetryDelayMs: nap.fileSendRetryDelayMs,
     logger,
+  });
+
+  const resolveLocalImageReference = createNapcatImageReferenceResolver({
+    callGetImage: (file) => adapter.callAction<NonNullable<NapcatGetImageResponse['data']>>('get_image', { file }),
+    logger,
+  });
+  const prepareInputImages = createImageInputPreparer({
+    logger,
+    resolveLocalImage: resolveLocalImageReference,
   });
 
   /**

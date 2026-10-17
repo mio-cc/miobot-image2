@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createImageInputPreparer, describeImageReference } from '../dist/apps/bot/src/main.js';
+import {
+  createImageInputPreparer,
+  createNapcatImageReferenceResolver,
+  describeImageReference,
+  imageDataUrlFromBase64,
+} from '../dist/apps/bot/src/main.js';
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -94,4 +99,69 @@ test('describeImageReference: 只暴露图片类型/域名', () => {
   assert.equal(describeImageReference('base64://AAAA'), 'base64://');
   assert.equal(describeImageReference('https://multimedia.nt.qq.com.cn/download?token=secret'), 'https://multimedia.nt.qq.com.cn');
   assert.equal(describeImageReference('abc123.image'), 'local:abc123.image');
+});
+
+test('image input: Napcat get_image 返回 base64 时转成 data URL', async () => {
+  const resolver = createNapcatImageReferenceResolver({
+    callGetImage: async (file) => {
+      assert.equal(file, '2F4E9D49282C5B22757A249618A7AE95.jpg');
+      return {
+        data: {
+          base64: PNG_SIGNATURE.toString('base64'),
+          file_name: 'qq-image.png',
+        },
+      };
+    },
+  });
+
+  const image = await resolver('2F4E9D49282C5B22757A249618A7AE95.jpg');
+  assert.ok(image?.startsWith('data:image/png;base64,'));
+});
+
+test('image input: 本地图片引用先走 get_image，再复用远程内联', async () => {
+  const resolver = createNapcatImageReferenceResolver({
+    callGetImage: async () => ({ data: { url: 'https://example.test/get-image' } }),
+  });
+  const calls = [];
+  const prepare = createImageInputPreparer({
+    env: { MIOBOT_INLINE_REMOTE_IMAGES: '1' },
+    resolveLocalImage: resolver,
+    fetchImpl: async (url) => {
+      calls.push(url);
+      return new Response(PNG_SIGNATURE, { status: 200, headers: { 'content-type': 'image/png' } });
+    },
+  });
+
+  const [image] = await prepare(['2F4E9D49282C5B22757A249618A7AE95.jpg']);
+  assert.deepEqual(calls, ['https://example.test/get-image']);
+  assert.ok(image.startsWith('data:image/png;base64,'));
+});
+
+test('image input: get_image 返回 local path 时保留原引用并告警', async () => {
+  let warned = false;
+  const resolver = createNapcatImageReferenceResolver({
+    callGetImage: async () => ({ data: { url: '/app/napcat/cache/a.jpg', file: '/app/napcat/cache/a.jpg' } }),
+    logger: { warn: () => { warned = true; } },
+  });
+
+  assert.equal(await resolver('a.jpg'), undefined);
+  assert.equal(warned, true);
+});
+
+test('imageDataUrlFromBase64: 识别 PNG/JPEG 并拒绝非图片内容', () => {
+  assert.ok(imageDataUrlFromBase64(PNG_SIGNATURE.toString('base64'))?.startsWith('data:image/png;base64,'));
+  assert.equal(imageDataUrlFromBase64('not-an-image'), undefined);
+});
+
+test('image input: 关闭远程 URL 内联时仍解析 Napcat 本地引用', async () => {
+  const prepare = createImageInputPreparer({
+    env: { MIOBOT_INLINE_REMOTE_IMAGES: '0' },
+    resolveLocalImage: async () => `data:image/png;base64,${PNG_SIGNATURE.toString('base64')}`,
+    fetchImpl: async () => {
+      throw new Error('不应请求远程 URL');
+    },
+  });
+
+  const [image] = await prepare(['2F4E9D49282C5B22757A249618A7AE95.jpg']);
+  assert.ok(image.startsWith('data:image/png;base64,'));
 });

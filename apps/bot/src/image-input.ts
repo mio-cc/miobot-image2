@@ -6,6 +6,8 @@ export interface ImageInputPreparerOptions {
   logger?: Pick<StructuredLogger, 'info' | 'warn'>;
   fetchImpl?: typeof fetch;
   env?: NodeJS.ProcessEnv;
+  /** 把 Napcat 本地文件引用(file=xxx.jpg/path)解析成 URL 或 data URL。 */
+  resolveLocalImage?: (reference: string) => Promise<string | undefined>;
 }
 
 const DEFAULT_MAX_BYTES = 20 * 1024 * 1024;
@@ -28,12 +30,40 @@ export function createImageInputPreparer(options: ImageInputPreparerOptions = {}
   const disabled = isFalsy(env.MIOBOT_INLINE_REMOTE_IMAGES);
 
   return async (images) => {
-    if (disabled || !Array.isArray(images) || !images.length) return images;
-    if (typeof fetchImpl !== 'function') return images;
+    if (!Array.isArray(images) || !images.length) return images;
 
     const resolved = await Promise.all(images.map(async (image) => {
-      const value = String(image || '').trim();
-      if (!/^https?:\/\//i.test(value)) return image;
+      let value = String(image || '').trim();
+      if (!value) return image;
+
+      if (isLocalImageReference(value)) {
+        if (!options.resolveLocalImage) return image;
+        try {
+          const resolvedLocal = await options.resolveLocalImage(value);
+          if (!resolvedLocal) {
+            options.logger?.warn('本地图片引用无法解析，保留原引用', {
+              reference: describeImageReference(value),
+            });
+            return image;
+          }
+          value = resolvedLocal;
+        } catch (error) {
+          options.logger?.warn('本地图片引用解析失败，保留原引用', {
+            reference: describeImageReference(value),
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return image;
+        }
+      }
+
+      if (/^base64:\/\//i.test(value)) {
+        return imageDataUrlFromBase64(value) || value;
+      }
+      if (/^data:image\//i.test(value)) return value;
+      if (!/^https?:\/\//i.test(value)) return value;
+      // 关闭远程 URL 内联时，只停掉这一步下载；本地 get_image 解析仍然保留。
+      if (disabled || typeof fetchImpl !== 'function') return value;
+
       try {
         const response = await fetchImpl(value, { signal: AbortSignal.timeout(timeoutMs) });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -68,6 +98,76 @@ export function createImageInputPreparer(options: ImageInputPreparerOptions = {}
   };
 }
 
+export interface NapcatGetImageResponse {
+  data?: {
+    base64?: unknown;
+    url?: unknown;
+    file?: unknown;
+    file_name?: unknown;
+  };
+}
+
+export interface NapcatImageReferenceResolverOptions {
+  callGetImage: (file: string) => Promise<NapcatGetImageResponse>;
+  logger?: Pick<StructuredLogger, 'warn'>;
+}
+
+/**
+ * 兼容 Napcat 只上报 file=xxx.jpg、不附带 url 的场景。
+ *
+ * OneBot get_image 在 enableLocalFile2Url 开启时会返回 base64；否则可能返回
+ * 临时的 QQ URL 或 Napcat 容器内本地路径。这里优先 base64，其次 http/data URL。
+ */
+export function createNapcatImageReferenceResolver(
+  options: NapcatImageReferenceResolverOptions,
+): (reference: string) => Promise<string | undefined> {
+  return async (reference) => {
+    try {
+      const response = await options.callGetImage(reference);
+      const data = response?.data || {};
+      const base64 = String(data.base64 || '').trim();
+      if (base64) {
+        const dataUrl = imageDataUrlFromBase64(base64);
+        if (dataUrl) return dataUrl;
+      }
+      const url = String(data.url || '').trim();
+      if (/^(?:https?:\/\/|data:image\/)/i.test(url)) return url;
+      options.logger?.warn('Napcat get_image 未返回可用图片 URL/base64', {
+        reference: describeImageReference(reference),
+        hasBase64: Boolean(base64),
+        hasUrl: Boolean(url),
+        hasLocalFile: Boolean(data.file),
+        fileName: String(data.file_name || '').slice(0, 80) || undefined,
+      });
+      return undefined;
+    } catch (error) {
+      options.logger?.warn('Napcat get_image 调用失败', {
+        reference: describeImageReference(reference),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  };
+}
+
+/** 把裸 base64 或 base64:// 统一成 data URL；无法识别图片时返回 undefined。 */
+export function imageDataUrlFromBase64(value: string): string | undefined {
+  const raw = String(value || '').trim();
+  if (!raw) return undefined;
+  if (/^data:image\//i.test(raw)) return raw;
+  const body = raw.startsWith('base64://') ? raw.slice('base64://'.length) : raw;
+  if (!body || /[^A-Za-z0-9+/=\s]/.test(body)) return undefined;
+  try {
+    const buffer = Buffer.from(body.replace(/\s+/g, ''), 'base64');
+    if (!buffer.length) return undefined;
+    const mime = detectImageMime(buffer, null);
+    if (!mime) return undefined;
+    return `data:${mime};base64,${buffer.toString('base64')}`;
+  } catch {
+    return undefined;
+  }
+}
+
 /** 日志里只展示图片引用的类型/域名，避免把 QQ 签名 URL 完整打进日志。 */
 export function describeImageReference(image: string): string {
   const value = String(image || '').trim();
@@ -84,6 +184,10 @@ export function describeImageReference(image: string): string {
     }
   }
   return `local:${value.slice(0, 100)}`;
+}
+
+function isLocalImageReference(value: string): boolean {
+  return !/^(?:https?:\/\/|data:|base64:|blob:)/i.test(value);
 }
 
 function detectImageMime(buffer: Buffer, contentType: string | null): string | undefined {

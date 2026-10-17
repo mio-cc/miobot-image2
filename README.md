@@ -150,7 +150,24 @@ MIOBOT_INLINE_IMAGE_TIMEOUT_MS=15000
 模型输入图片准备完成 ... imageRefs: [ "data-url" ]
 ```
 
-如果 `imageRefs` 显示 `local:xxx.image`，说明 Napcat 没有提供可访问的图片 URL，需要检查 Napcat 的图片上报格式。
+如果 `imageRefs` 显示 `local:xxx.jpg` 或 `local:/app/...`，Bot 会自动调用 Napcat 的 `get_image` 接口解析：
+
+```text
+local:xxx.jpg
+→ Napcat get_image
+→ base64 或 http(s) URL
+→ data URL
+```
+
+要让 `get_image` 在只能拿到 Napcat 本地文件时也能返回 base64，请在 Napcat WebUI 的 OneBot 配置中开启：
+
+```text
+启用本地文件到URL / enableLocalFile2Url
+```
+
+然后重启或重载 Napcat。无法解析的本地引用会记录告警并保留，不会导致整个消息处理链崩溃。
+
+这套处理与具体视觉模型无关：DeepSeek、GLM、Claude、GPT、Gemini 等最终拿到的都是 base64 data URL，再由各自方言转换成对应的图片消息结构。
 
 ### 配置 Napcat 可访问的图片 URL
 

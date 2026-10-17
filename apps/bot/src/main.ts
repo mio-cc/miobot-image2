@@ -19,9 +19,13 @@ export {
 } from './canvas-gallery.js';
 export {
   createImageInputPreparer,
+  createNapcatImageReferenceResolver,
   describeImageReference,
+  imageDataUrlFromBase64,
   type ImageInputPreparer,
   type ImageInputPreparerOptions,
+  type NapcatGetImageResponse,
+  type NapcatImageReferenceResolverOptions,
 } from './image-input.js';
 export { buildTtsRequest, synthesizeSpeech, shouldUseTts, activeFishVoiceId, type TtsRequestPlan, type TtsAudio } from './tts.js';
 export { parseOwnerCommand, isOwner, type OwnerCommand, type OwnerParseContext } from './owner.js';

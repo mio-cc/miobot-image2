@@ -266,3 +266,13 @@ test('openai 方言: http 图片 URL 不下载,原样传 image_url', async () =>
     globalThis.fetch = originalFetch;
   }
 });
+
+test('profiles: deepseek-flash 命中 CHAT_PROFILE(官方视觉模型)', () => {
+  const p = inferProfileByName('deepseek-flash');
+  assert.ok(p && p.operations.includes('vision'));
+});
+
+test('profiles: glm-5.3flash 命中 CHAT_PROFILE', () => {
+  const p = inferProfileByName('glm-5.3flash');
+  assert.ok(p && p.operations.includes('vision'));
+});
