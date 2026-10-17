@@ -201,6 +201,7 @@ function filePrompt(userRequest: string, type: GeneratedFileType): string {
   const extra = type === 'docx'
     ? [
         'docx 请根据内容选择最合适的 style.theme（business/modern/academic/minimal/report/tech）。',
+        '如果用户明确指定科技风/学术风/商务风/简洁风/报告风等，请优先匹配对应 theme。',
         '不要所有文档都使用同一套版式：技术介绍用 tech，商务报告用 business 或 report，学术资料用 academic，简洁资料用 minimal。',
         '正文要分段，使用 heading、body、bullets；需要对比或数据时使用 table；重点提示使用 callout。',
       ]
