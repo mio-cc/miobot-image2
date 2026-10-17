@@ -189,6 +189,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       }
       try {
         const audio = await synthesizeSpeech(tts, speakText, { logger });
+        const delayMs = Math.max(0, Math.min(30000, Math.trunc(Number(pre?.delayMs || 0))));
+        if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
         return audio.file;
       } catch (error) {
         logger.warn('tts synthesize failed', { error: String((error as { message?: string })?.message || error) });

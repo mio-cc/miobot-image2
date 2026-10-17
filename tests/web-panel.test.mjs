@@ -57,7 +57,7 @@ test('web panel: legacy imported config missing freeMode/replyStrategies still r
   assert.equal(vm.sections.freeMode.ready, true);
   assert.equal(vm.sections.freeMode.data.enabled, false);
   assert.equal(vm.sections.replyStrategies.ready, true);
-  assert.deepEqual(vm.sections.replyStrategies.data, { text: 'quote', image: 'quote', multiImage: 'quote' });
+  assert.deepEqual(vm.sections.replyStrategies.data, { text: 'quote', image: 'quote', multiImage: 'quote', video: 'plain', multiVideo: 'forward', file: 'forward', multiFile: 'forward', mixed: 'forward' });
   assert.match(renderPanelShell(vm), /ready:freeMode/);
 });
 

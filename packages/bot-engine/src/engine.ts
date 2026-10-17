@@ -80,6 +80,7 @@ export class BotEngine {
       capabilities: caps,
       preferEditWhenImagePresent: cfg.preferEditWhenImagePresent,
       maxCount: cfg.maxOutputImages ?? 4,
+      allowedKinds: cfg.allowedIntents,
     });
     const decision = await router.route(input);
     this.log?.info('意图路由完成', {

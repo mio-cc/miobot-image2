@@ -45,6 +45,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '对话与触发', group: '对话', icon: 'chat' },
     },
     {
+        path: '/features',
+        name: 'features',
+        component: () => import('../pages/FeaturesPage.vue'),
+        meta: { title: '命令与意图', group: '对话', icon: 'template' },
+    },
+    {
         path: '/voice',
         name: 'voice',
         component: () => import('../pages/VoicePage.vue'),

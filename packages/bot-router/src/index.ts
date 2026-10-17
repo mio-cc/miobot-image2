@@ -50,6 +50,21 @@ export interface BotCommandAliases {
   disableEnhance?: CommandAliasInput;
 }
 
+export type BotFeatureGroupActivation = 'direct' | 'mention' | 'reply' | 'mention-or-reply';
+
+/**
+ * 命令/功能注册表在 BotRouter 侧的投影。
+ * command 继续沿用旧 BotCommandName，保证 runtime 的 handler 兼容；
+ * metadata.featureId 用于后台配置、限额和日志关联。
+ */
+export interface BotFeatureCommandConfig {
+  id: string;
+  command: BotCommandName;
+  aliases: CommandAliasInput;
+  scopes?: Array<'private' | 'group'>;
+  groupActivation?: BotFeatureGroupActivation;
+}
+
 export interface BotTriggerModes {
   mention?: boolean;
   replyToBot?: boolean;
@@ -63,6 +78,8 @@ export interface BotRouterConfig {
   blacklistGroupUsers?: string[];
   triggerModes?: BotTriggerModes;
   commands: BotCommandAliases;
+  /** 新命令注册表；存在时优先于 commands/directGroupCommands。 */
+  features?: BotFeatureCommandConfig[];
   freeModeEnabled?: boolean;
   chatEnabled?: boolean;
   directGroupCommands?: BotCommandName[];
@@ -188,10 +205,18 @@ function routeGroupMessage(message: BotMessageContext, config: BotRouterConfig):
   const trigger = resolveGroupTrigger(message, config);
   if (!trigger.triggered) return ignored('group-not-triggered', trigger.commandText, trigger);
 
-  const explicit = matchExplicitCommand(trigger.commandText, config.commands, {
-    replyId: trigger.replyId,
-    originalChoiceAvailable: message.originalChoiceAvailable,
-  });
+  const explicit = config.features !== undefined
+    ? matchFeatureCommand(trigger.commandText, config.features, {
+        chatType: 'group',
+        trigger,
+        commands: config.commands,
+        replyId: trigger.replyId,
+        originalChoiceAvailable: message.originalChoiceAvailable,
+      })
+    : matchExplicitCommand(trigger.commandText, config.commands, {
+        replyId: trigger.replyId,
+        originalChoiceAvailable: message.originalChoiceAvailable,
+      });
   if (explicit) return { kind: 'command', ...explicit, trigger };
 
   if (config.freeModeEnabled && shouldEnterFreeMode(message.chatType, trigger)) {
@@ -209,10 +234,18 @@ function routePrivateMessage(message: BotMessageContext, config: BotRouterConfig
   if (!isAllowedByWhitelist(message.userId, config.whitelistPrivate)) return ignored('private-not-whitelisted', '');
   const trigger = resolvePrivateTrigger(message, config);
 
-  const explicit = matchExplicitCommand(trigger.commandText, config.commands, {
-    replyId: trigger.replyId,
-    originalChoiceAvailable: true,
-  });
+  const explicit = config.features !== undefined
+    ? matchFeatureCommand(trigger.commandText, config.features, {
+        chatType: 'private',
+        trigger,
+        commands: config.commands,
+        replyId: trigger.replyId,
+        originalChoiceAvailable: true,
+      })
+    : matchExplicitCommand(trigger.commandText, config.commands, {
+        replyId: trigger.replyId,
+        originalChoiceAvailable: true,
+      });
   if (explicit) return { kind: 'command', ...explicit, trigger };
 
   if (config.freeModeEnabled) return { kind: 'freeMode', args: trigger.commandText, commandText: trigger.commandText, trigger };
@@ -235,11 +268,13 @@ export function resolveGroupTrigger(message: BotMessageContext, config: BotRoute
     && Boolean(replyId)
     && message.replyToBot === true
     && hasMeaningfulReplyContent(commandText);
-  const commandTriggered = isDirectGroupCommand(commandText, config.commands, {
-    directGroupCommands: config.directGroupCommands,
-    replyId,
-    originalChoiceAvailable: message.originalChoiceAvailable,
-  });
+  const commandTriggered = config.features !== undefined
+    ? isDirectGroupFeature(commandText, config.features)
+    : isDirectGroupCommand(commandText, config.commands, {
+        directGroupCommands: config.directGroupCommands,
+        replyId,
+        originalChoiceAvailable: message.originalChoiceAvailable,
+      });
   return {
     triggered: mentionTriggered || replyTriggered || commandTriggered,
     mentionTriggered,
@@ -389,6 +424,72 @@ export function isDirectGroupCommand(
   if (isOriginalChoiceCommand(commandText, options.replyId, options.originalChoiceAvailable)) return true;
   const names = options.directGroupCommands || LEGACY_DIRECT_GROUP_COMMANDS;
   return names.some((name) => Boolean(commandNameMatch(name, commandText, commands)));
+}
+
+/**
+ * 新 Feature Registry 路径的显式命令匹配。
+ * - group: direct 可直接触发；mention/reply/mention-or-reply 要满足对应触发条件；
+ * - private: 只检查 scope，私聊没有 @/回复门槛。
+ */
+export function matchFeatureCommand(
+  commandText: string,
+  features: BotFeatureCommandConfig[],
+  options: {
+    chatType: BotChatType;
+    trigger?: BotTriggerResolution;
+    commands?: BotCommandAliases;
+    replyId?: string;
+    originalChoiceAvailable?: boolean;
+  },
+): BotCommandMatch | undefined {
+  const text = String(commandText || '').trim();
+  if (!text) return undefined;
+  const candidates: Array<{ feature: BotFeatureCommandConfig; alias: string }> = [];
+  for (const feature of features) {
+    if (!feature || !feature.command || !feature.aliases) continue;
+    const scopes = feature.scopes?.length ? feature.scopes : ['private', 'group'];
+    if (!scopes.includes(options.chatType)) continue;
+    if (options.chatType === 'group' && !featureActivationAllows(feature.groupActivation || 'mention-or-reply', options.trigger)) continue;
+    const alias = findCommandPrefix(text, feature.aliases);
+    if (alias) candidates.push({ feature, alias });
+  }
+  candidates.sort((a, b) => b.alias.length - a.alias.length);
+  const best = candidates[0];
+  if (!best) return undefined;
+  const args = stripCommandPrefix(text, best.alias);
+  const match: BotCommandMatch = {
+    command: best.feature.command,
+    matchedAlias: best.alias,
+    args,
+    commandText: text,
+    metadata: { featureId: best.feature.id },
+  };
+  if (best.feature.command === 'genImage') {
+    const enhance = parseEnhanceMode(args, options.commands || {});
+    return {
+      ...match,
+      args: enhance.prompt,
+      metadata: { ...match.metadata, enhance },
+    };
+  }
+  return match;
+}
+
+export function isDirectGroupFeature(commandText: string, features: BotFeatureCommandConfig[]): boolean {
+  return features.some((feature) => {
+    const scopes = feature.scopes?.length ? feature.scopes : ['private', 'group'];
+    if (!scopes.includes('group')) return false;
+    if ((feature.groupActivation || 'mention-or-reply') !== 'direct') return false;
+    return Boolean(findCommandPrefix(commandText, feature.aliases));
+  });
+}
+
+function featureActivationAllows(activation: BotFeatureGroupActivation, trigger?: BotTriggerResolution): boolean {
+  if (activation === 'direct') return true;
+  if (!trigger) return false;
+  if (activation === 'mention') return trigger.mentionTriggered;
+  if (activation === 'reply') return trigger.replyTriggered;
+  return trigger.mentionTriggered || trigger.replyTriggered;
 }
 
 export function matchExplicitCommand(

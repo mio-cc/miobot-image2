@@ -56,21 +56,11 @@ const strategyOptions = [
     { value: 'plain', label: '普通消息' },
 ];
 
-const commandFields = [
-    { key: 'genImage', label: '文生图', placeholder: '生图, 画, draw', hint: '群里可不 @ 直接使用' },
-    { key: 'img2Img', label: '图生图 / 参考图', placeholder: '图生图, 参考图, i2i', hint: '' },
-    { key: 'editImage', label: '改图 / 编辑', placeholder: '改图, 编辑, edit', hint: '' },
-    { key: 'interrogate', label: '反推提示词', placeholder: '反推, 看图, 描述', hint: '' },
-    { key: 'originalImage', label: '获取原图', placeholder: '原图, original', hint: '引用机器人发的压缩图后使用' },
-    { key: 'templateLibrary', label: '本地模板库', placeholder: '模板库, mb', hint: '' },
-    { key: 'referencedTemplateImage', label: '引用模板生图', placeholder: '套模板, rt', hint: '需要先引用一条模板消息' },
-    { key: 'remotePromptSearch', label: '远程模板库搜索', placeholder: 'pp, 远程模板', hint: '支持中文关键词' },
-    { key: 'remotePromptSmartImage', label: '远程智能套模板', placeholder: 'spp', hint: '' },
-    { key: 'help', label: '帮助', placeholder: '/help, 帮助', hint: '帮助内容自动生成，改指令会同步' },
-    { key: 'toggleEnhance', label: '润色开关', placeholder: '润色, enhance', hint: '写在描述前，例如：画 润色 一只柴犬' },
+const modifierFields = [
+    { key: 'toggleEnhance', label: '润色开关', placeholder: '润色, enhance', hint: '写在描述前，例如：画 润色 一只猫' },
     { key: 'forceEnhance', label: '强制润色', placeholder: '润色, enhance', hint: '' },
     { key: 'disableEnhance', label: '禁用润色', placeholder: '原文, raw, 不润色', hint: '' },
-    { key: 'imageCount', label: '张数后缀', placeholder: 's', hint: '例如 2s! 生成 2 张，最多 4 张' },
+    { key: 'imageCount', label: '张数后缀', placeholder: 's', hint: '例如 2s! 生成 2 张；张数仍受模型能力与功能上限约束' },
 ];
 </script>
 
@@ -158,6 +148,36 @@ const commandFields = [
       </div>
     </SectionCard>
 
+    <SectionCard title="视频与文件回复策略" hint="分别控制视频、文件和多类型混排的发送方式" class="mb-4">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <FormField label="单视频">
+          <select v-model="config.bot.replyStrategies.video" class="input-field">
+            <option v-for="opt in strategyOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+          </select>
+        </FormField>
+        <FormField label="多视频" hint="推荐合并转发">
+          <select v-model="config.bot.replyStrategies.multiVideo" class="input-field">
+            <option v-for="opt in strategyOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+          </select>
+        </FormField>
+        <FormField label="单文件">
+          <select v-model="config.bot.replyStrategies.file" class="input-field">
+            <option v-for="opt in strategyOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+          </select>
+        </FormField>
+        <FormField label="多文件" hint="推荐合并转发">
+          <select v-model="config.bot.replyStrategies.multiFile" class="input-field">
+            <option v-for="opt in strategyOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+          </select>
+        </FormField>
+        <FormField label="图文视频混排" hint="推荐合并转发">
+          <select v-model="config.bot.replyStrategies.mixed" class="input-field">
+            <option v-for="opt in strategyOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+          </select>
+        </FormField>
+      </div>
+    </SectionCard>
+
     <SectionCard title="图片与撤回（v2 暂未实现压缩/撤回）" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
         <ToggleField v-model="config.bot.imageCompression.enabled" label="默认发送压缩图"
@@ -182,9 +202,17 @@ const commandFields = [
       </div>
     </SectionCard>
 
-    <SectionCard title="触发词" hint="多个用逗号分隔。留空会恢复默认值" class="mb-4">
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        <FormField v-for="field in commandFields" :key="field.key" :label="field.label" :hint="field.hint">
+    <SectionCard title="命令与意图" hint="命令别名、群聊触发方式、自然语言开关已迁移到独立页面" class="mb-4">
+      <p class="text-sm text-[color:var(--ink-3)] mb-3">
+        不再在本页维护功能命令列表。请到
+        <router-link to="/features" class="underline text-[color:var(--accent)]">命令与意图</router-link>
+        配置每个功能的别名、私聊/群聊范围、群聊触发方式和 FreeMode 自然语言识别。
+      </p>
+    </SectionCard>
+
+    <SectionCard title="命令修饰符（高级）" hint="这些是附加在生图描述里的前缀/后缀，不是独立功能命令" class="mb-4">
+      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+        <FormField v-for="field in modifierFields" :key="field.key" :label="field.label" :hint="field.hint">
           <input v-model="config.bot.commands[field.key]" class="input-field" :placeholder="field.placeholder" />
         </FormField>
       </div>

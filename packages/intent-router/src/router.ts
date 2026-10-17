@@ -24,6 +24,8 @@ export interface IntentRouterOptions {
   timeoutMs?: number;
   /** 各能力是否可用；不提供时视为全部可用。 */
   capabilities?: IntentCapabilities;
+  /** 允许自动路由命中的意图；未列出的意图会降级到 chat/ignore。 */
+  allowedKinds?: IntentKind[];
   preferEditWhenImagePresent?: boolean;
   maxCount?: number;
   defaultSize?: string;
@@ -178,6 +180,15 @@ export class IntentRouter {
       const fallback = degradeKind(kind, caps);
       if (fallback !== kind) {
         degradedFrom = kind;
+        kind = fallback;
+      }
+    }
+
+    const allowed = this.options.allowedKinds;
+    if (allowed && kind !== 'ignore' && !allowed.includes(kind)) {
+      const fallback: IntentKind = allowed.includes('chat') ? 'chat' : 'ignore';
+      if (fallback !== kind) {
+        degradedFrom = degradedFrom || kind;
         kind = fallback;
       }
     }

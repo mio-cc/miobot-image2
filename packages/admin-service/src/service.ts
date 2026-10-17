@@ -2,6 +2,7 @@ import { createWebApi, type ConfigRepository, type WebApi, type WebApiRequest } 
 import { getDefaultPrompts } from '../../config/src/index.js';
 import type { LogQuery } from '../../logger/src/index.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
+import { FEATURE_DEFINITIONS, featureAliasCollisions, type FeatureSettings } from '../../shared/src/features.js';
 import { createInMemoryLogStore, type AdminLogStore } from './logs.js';
 import { OPERATION_LABELS, checkCapabilityBindings, resolveModelCapabilities } from './capabilities.js';
 import { createMetrics, type Metrics } from '../../core/src/metrics.js';
@@ -58,6 +59,21 @@ export class AdminService {
 
     if (method === 'GET' && path === '/api/default-prompts') {
       return { status: 200, body: { success: true, prompts: getDefaultPrompts() } };
+    }
+
+    // 命令与意图：前端动态表单的唯一数据源，避免新增功能后后台字段漂移。
+    if (method === 'GET' && path === '/api/features') {
+      const cfg = this.repository.getConfig();
+      const settings = (cfg.bot?.features || {}) as FeatureSettings;
+      return {
+        status: 200,
+        body: {
+          success: true,
+          definitions: FEATURE_DEFINITIONS,
+          settings,
+          collisions: featureAliasCollisions(settings),
+        },
+      };
     }
 
     // 能力体检：逐项检查「这项能力配的模型能不能干这活」，

@@ -79,7 +79,7 @@ test('config regression: old example-like export imports with all required v2 se
   assert.equal(result.config.napcat.mountOutputDir, undefined);
   assert.equal(result.config.freeMode.enabled, false);
   assert.equal(result.config.freeMode.model, 'gpt-4o-mini');
-  assert.deepEqual(result.config.bot.replyStrategies, { text: 'quote', image: 'quote', multiImage: 'quote' });
+  assert.deepEqual(result.config.bot.replyStrategies, { text: 'quote', image: 'quote', multiImage: 'quote', video: 'plain', multiVideo: 'forward', file: 'forward', multiFile: 'forward', mixed: 'forward' });
   assert.deepEqual(result.config.bot.whitelistGroups, ['1000', '2000']);
   assert.deepEqual(result.config.bot.whitelistPrivate, ['3000', '4000']);
   assert.deepEqual(result.config.bot.blacklistGroupUsers, ['1000:5000', '*:6000']);

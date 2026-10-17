@@ -63,6 +63,7 @@ export const useConfigStore = defineStore('config', () => {
         c.llm.capabilityOverrides ||= [];
         c.bot ||= {};
         c.bot.commands ||= {};
+        c.bot.features ||= {};
         c.bot.promptTemplates ||= [];
         c.bot.tts ||= {};
         c.bot.tts.preprocess ||= {};

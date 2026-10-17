@@ -86,7 +86,7 @@ test('migration: legacy llm interrogate fields backfill canvas interrogate field
 test('migration: bot.replyFormat creates replyStrategies when missing', () => {
   const result = importConfig({ bot: { replyFormat: 'quote' } });
   assert.equal(result.config.bot.replyFormat, 'quote');
-  assert.deepEqual(result.config.bot.replyStrategies, { text: 'quote', image: 'quote', multiImage: 'quote' });
+  assert.deepEqual(result.config.bot.replyStrategies, { text: 'quote', image: 'quote', multiImage: 'quote', video: 'plain', multiVideo: 'forward', file: 'forward', multiFile: 'forward', mixed: 'forward' });
   assert.ok(result.migrations.some((item) => item.id === 'bot.replyFormat-to-replyStrategies'));
 });
 

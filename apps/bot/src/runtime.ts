@@ -1,4 +1,5 @@
 import { createBotRouter, extractReplyId, stripNonTextCqSegments, type BotMessageContext, type BotRouteDecision, type BotRouterConfig } from '../../../packages/bot-router/src/index.js';
+import { FEATURE_DEFINITIONS, type FeatureSetting } from '../../../packages/shared/src/features.js';
 import { createReplyStrategyEngine, type ReplyClient, type ReplyContext, type ReplyStrategyConfig } from '../../../packages/reply/src/index.js';
 import { dedupeImageUrls, dedupeVideoUrls } from '../../../packages/napcat/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
@@ -454,23 +455,31 @@ async function sendResult(
 }
 
 function buildHelpText(cfg: AppConfig): string {
-  const c = cfg.bot.commands;
-  const first = (alias: string | undefined, fallback: string): string => {
-    const v = String(alias || '').split(/[,，、;；|\n]/)[0]?.trim();
-    return v || fallback;
+  const settings = (cfg.bot.features || {}) as Record<string, FeatureSetting>;
+  const lines: string[] = ['Miobot 指令:'];
+  const add = (id: string, suffix = '') => {
+    const def = FEATURE_DEFINITIONS.find((item) => item.id === id);
+    const setting = settings[id];
+    if (!def?.implemented || !setting?.enabled || !setting.aliases.length) return;
+    lines.push(`- ${def.label}: ${setting.aliases[0]}${suffix}`);
   };
-  return [
-    'Miobot 指令:',
-    `· 生图: ${first(c.genImage, '生图')} <描述>`,
-    `· 图生图: ${first(c.img2Img, '图生图')} <描述>（带图）`,
-    `· 改图: ${first(c.editImage, '改图')} <描述>（带图）`,
-    `· 反推: ${first(c.interrogate, '反推')}（带图）`,
-    '· 视频: 自由模式说「生成视频 / 做个视频 / 视频 …」或 bang「video!」「6s!」「720p!」',
-    `· 本地模板库: ${first(c.templateLibrary, '模板库')}`,
-    `· 远程模板: ${first(c.remotePromptSearch, 'pp')} / 智能生图: ${first(c.remotePromptSmartImage, 'spp')}`,
-    `· 新对话: ${first(DEFAULT_CLEAR_ALIASES, '/clear')}`,
-    '群里需 @机器人 或 回复机器人 触发；私聊直接说话即可。',
-  ].join('\n');
+  add('image.generate', ' <描述>');
+  add('image.img2img', ' <描述>（带图）');
+  add('image.edit', ' <描述>（带图）');
+  add('image.interrogate', '（带图）');
+  const video = settings['video.generate'];
+  if (video?.enabled) lines.push('- 视频: 自然语言说「生成视频 / 做个视频 / 视频 …」，或使用 bang 参数如 video!、6s!、720p!');
+  add('template.library');
+  add('template.referenced');
+  add('template.remoteSearch');
+  add('template.remoteSmartImage');
+  add('file.list');
+  add('file.read');
+  add('file.generate');
+  add('help');
+  add('clear');
+  lines.push('群里需 @机器人 或 回复机器人 触发；私聊直接说话即可。');
+  return lines.join('\n');
 }
 
 function buildTemplateLibraryText(cfg: AppConfig): string {
@@ -485,6 +494,20 @@ export function toRouterConfig(cfg: AppConfig, selfId?: string | number): BotRou
   const bot = cfg.bot;
   const commands = { ...bot.commands } as BotRouterConfig['commands'];
   if (!commands.clear) commands.clear = DEFAULT_CLEAR_ALIASES;
+  const features = FEATURE_DEFINITIONS
+    .filter((def) => def.implemented && Boolean(def.legacyCommand))
+    .map((def) => {
+      const setting = (bot.features as Record<string, FeatureSetting> | undefined)?.[def.id];
+      if (!setting?.enabled || !setting.aliases?.length) return null;
+      return {
+        id: def.id,
+        command: def.legacyCommand!,
+        aliases: setting.aliases,
+        scopes: setting.scopes,
+        groupActivation: setting.groupActivation,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
   return {
     botId: bot.botQqId || selfId,
     whitelistGroups: bot.whitelistGroups,
@@ -492,6 +515,7 @@ export function toRouterConfig(cfg: AppConfig, selfId?: string | number): BotRou
     blacklistGroupUsers: bot.blacklistGroupUsers,
     triggerModes: bot.triggerModes,
     commands,
+    features,
     freeModeEnabled: cfg.freeMode.enabled,
     chatEnabled: cfg.llm.chatEnabled,
   };
@@ -500,7 +524,7 @@ export function toRouterConfig(cfg: AppConfig, selfId?: string | number): BotRou
 /** AppConfig → reply 策略配置。 */
 export function toReplyStrategyConfig(cfg: AppConfig): ReplyStrategyConfig {
   const s = cfg.bot.replyStrategies;
-  return { text: s.text, image: s.image, multiImage: s.multiImage };
+  return { text: s.text, image: s.image, multiImage: s.multiImage, video: s.video, multiVideo: s.multiVideo, file: s.file, multiFile: s.multiFile, mixed: s.mixed };
 }
 
 /**
