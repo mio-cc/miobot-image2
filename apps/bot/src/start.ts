@@ -238,7 +238,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   });
 
   const resolveLocalImageReference = createNapcatImageReferenceResolver({
-    callGetImage: (file) => adapter.callAction<NonNullable<NapcatGetImageResponse['data']>>('get_image', { file }),
+    callGetImage: (file) => adapter.callAction<NonNullable<NapcatGetImageResponse['data']>>('get_image', { file }, Math.min(getConfig().napcat.actionTimeoutMs, 30000)),
     logger,
   });
   const prepareInputImages = createImageInputPreparer({
@@ -296,7 +296,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     // 引用消息富化:回复一张图片时,get_msg 取回引用消息,把图片带给模型并判定是否回复的是 bot。
     fetchReferencedMessage: async (replyId): Promise<NapcatMessageEvent | null> => {
       try {
-        const data = await adapter.getMessage(replyId);
+        const data = await adapter.getMessage(replyId, Math.min(getConfig().napcat.getMessageTimeoutMs, 15000));
         return (data ?? null) as NapcatMessageEvent | null;
       } catch (error) {
         logger.warn('get_msg (referenced) failed', { replyId, error: String((error as { message?: string })?.message || error) });
