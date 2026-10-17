@@ -47,13 +47,37 @@ export interface ModelDepsOptions {
  * - 生图/改图结果统一转成字符串数组交回引擎。
  * 注：templateId 的模板渲染属于 image/enhance 层职责,model 层只收已渲染的 prompt。
  */
+function isQqImageHost(image: string): boolean {
+  try {
+    const host = new URL(image).hostname.toLowerCase();
+    return host === 'gchat.qpic.cn' || host.endsWith('.qpic.cn') || host === 'multimedia.nt.qq.com.cn' || host.endsWith('.nt.qq.com.cn');
+  } catch {
+    return false;
+  }
+}
+
+/** 模型侧最后一道防线：绝不把 Napcat 本地名或 QQ 签名 CDN URL 当成 image_url 发给上游。 */
+export function sanitizeModelImageReferences(images: string[]): { images: string[]; dropped: number } {
+  const kept = images.filter((image) => {
+    const value = String(image || '').trim();
+    if (!value) return false;
+    if (/^data:image\//i.test(value)) return true;
+    if (/^https?:\/\//i.test(value)) return !isQqImageHost(value);
+    return false;
+  });
+  return { images: kept, dropped: Math.max(0, images.length - kept.length) };
+}
+
 export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps {
   const { client, getRouting, sessions, chatSystemPrompt, pipeline, logger } = options;
   return {
     async chat(req) {
       const routing = getRouting();
       const nodeIndex = req.nodeIndex ?? routing.chatNodeIndex;
-      const images = (req.images || []).filter(Boolean);
+      const rawImages = (req.images || []).filter(Boolean);
+      const sanitizedImages = sanitizeModelImageReferences(rawImages);
+      const images = sanitizedImages.images;
+      if (sanitizedImages.dropped > 0) logger?.warn('模型输入图片引用不安全或不可用，已丢弃', { dropped: sanitizedImages.dropped, total: rawImages.length });
       const videos = (req.videos || []).filter(Boolean);
       // 群聊上下文：@bot 时拉取的最近群聊记录，作为 system 前置注入，让 bot 知道在聊什么。
       const contextSystem = req.context

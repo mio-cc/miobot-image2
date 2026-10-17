@@ -12,6 +12,7 @@ import { routeBotMessage } from '../dist/packages/bot-router/src/index.js';
 import { createIntentRouter } from '../dist/packages/intent-router/src/index.js';
 import { createAdminService } from '../dist/packages/admin-service/src/index.js';
 import { toModelNodes } from '../dist/apps/bot/src/config-bridge.js';
+import { sanitizeModelImageReferences } from '../dist/apps/bot/src/deps.js';
 
 test('features: every catalog entry has a stable setting and unimplemented features stay disabled', () => {
   const defaults = defaultFeatureSettings();
@@ -156,4 +157,17 @@ test('api node headers: apiKey/env templates expand before request', () => {
   assert.equal(nodes[0].headers['X-Test-Env'], 'env-value');
   assert.equal(nodes[0].headers['X-None'], undefined);
   delete process.env.MIOTEST_HEADER_VALUE;
+});
+
+
+test('model image sanitizer: never forwards QQ CDN or local refs upstream', () => {
+  const result = sanitizeModelImageReferences([
+    'data:image/png;base64,AAAA',
+    'https://gchat.qpic.cn/download?rkey=secret',
+    'https://example.com/public.png',
+    '2F4E9D49282C5B22757A249618A7AE95.jpg',
+    'base64://AAAA',
+  ]);
+  assert.deepEqual(result.images, ['data:image/png;base64,AAAA', 'https://example.com/public.png']);
+  assert.equal(result.dropped, 3);
 });
