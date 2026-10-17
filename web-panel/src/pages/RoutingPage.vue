@@ -66,6 +66,8 @@ const rows: Row[] = [
       node: 'llm.translationNodeIndex', model: 'llm.translationModel' },
     { key: 'freeMode', label: '自由模式规划', trigger: '@bot 直接说话', capability: 'chat',
       node: 'freeMode.nodeIndex', model: 'freeMode.model', toggle: 'freeMode.enabled' },
+    { key: 'fileIntent', label: '文件生成意图', trigger: '生成 md / Word / Excel / PDF 文档', capability: 'chat',
+      node: 'fileIntent.nodeIndex', model: 'fileIntent.model', toggle: 'fileIntent.enabled' },
     { key: 'promptsChat', label: '远程库智能选模板', trigger: 'spp', capability: 'chat',
       node: 'promptsChat.smartNodeIndex', model: 'promptsChat.smartModel', toggle: 'promptsChat.enabled',
       detailLink: { to: '/templates', text: '模板库页' } },
@@ -393,6 +395,24 @@ onMounted(() => {
                   <div class="md:col-span-4">
                     <FormField label="规划提示词" hint="占位符 {{userContent}}；规划器必须输出 JSON">
                       <textarea v-model="config.freeMode.plannerPromptTemplate" rows="6" class="input-field font-mono text-xs"></textarea>
+                    </FormField>
+                  </div>
+                </div>
+
+                <div v-if="row.key === 'fileIntent'" class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
+                  <FormField label="分类超时 (ms)">
+                    <input v-model.number="config.fileIntent.timeoutMs" type="number" min="3000" max="60000" step="1000" class="input-field" />
+                  </FormField>
+                  <FormField label="最低置信度" hint="低于此值回退正则判断">
+                    <input v-model.number="config.fileIntent.minConfidence" type="number" min="0" max="1" step="0.05" class="input-field" />
+                  </FormField>
+                  <div class="md:col-span-2 flex items-end">
+                    <ToggleField v-model="config.fileIntent.prefilter" label="先用关键词预筛"
+                      hint="开启后只对包含生成/创建/整理/导出等动作词的请求调用分类模型" />
+                  </div>
+                  <div class="md:col-span-4">
+                    <FormField label="意图分类提示词" hint="占位符 {{userContent}}；模型必须输出 JSON">
+                      <textarea v-model="config.fileIntent.promptTemplate" rows="6" class="input-field font-mono text-xs"></textarea>
                     </FormField>
                   </div>
                 </div>

@@ -59,6 +59,7 @@ const SPECS: BindingSpec[] = [
   { key: 'referencedTemplate', label: '引用模板填充', trigger: '套模板 / rt', operation: 'chat', nodePath: 'llm.referencedTemplateNodeIndex', modelPath: 'llm.referencedTemplateModel', alwaysEnabled: true },
   { key: 'translation', label: '远程库翻译', trigger: 'pp / spp', operation: 'chat', nodePath: 'llm.translationNodeIndex', modelPath: 'llm.translationModel', alwaysEnabled: true },
   { key: 'freeMode', label: '自由模式规划', trigger: '@bot 直接说话', operation: 'chat', nodePath: 'freeMode.nodeIndex', modelPath: 'freeMode.model', enabledPath: 'freeMode.enabled' },
+  { key: 'fileIntent', label: '文件生成意图', trigger: '生成 md / Word / Excel / PDF 文档', operation: 'chat', nodePath: 'fileIntent.nodeIndex', modelPath: 'fileIntent.model', enabledPath: 'fileIntent.enabled' },
   { key: 'promptsChat', label: '远程库智能选模板', trigger: 'spp', operation: 'chat', nodePath: 'promptsChat.smartNodeIndex', modelPath: 'promptsChat.smartModel', enabledPath: 'promptsChat.enabled' },
   { key: 'canvasImage', label: '画布文生图', trigger: '画布前台', operation: 'image.generate', nodePath: 'canvas.imageNodeIndex', modelPath: 'canvas.imageModel', enabledPath: 'canvas.enabled' },
   { key: 'canvasEdit', label: '画布改图', trigger: '画布前台', operation: 'image.edit', nodePath: 'canvas.editNodeIndex', modelPath: 'canvas.editModel', enabledPath: 'canvas.enabled' },

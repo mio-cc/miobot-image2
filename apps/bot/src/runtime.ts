@@ -16,6 +16,7 @@ import { DEFAULT_FILE_PARSE_LIMITS, PendingFileIndex, parseFile, formatParsedFil
 import { DEFAULT_FILEGEN_LIMITS, generateFile, generatedFileSpecFromJson, type GeneratedFileSpec, type GeneratedFileType } from '../../../packages/filegen/src/index.js';
 import { FeatureLimitError, type FeatureGate } from './feature-gate.js';
 import { sanitizeModelImageReferences } from './deps.js';
+import { classifyFileIntent } from './file-intent.js';
 
 /** Napcat(OneBot) 上报的消息事件(只取本环需要的字段)。 */
 export interface NapcatMessageEvent {
@@ -222,11 +223,12 @@ async function handleFileGenerateCommand(
   chatType: 'group' | 'private',
   sessionId: string,
   userId: string | number | undefined,
+  preferredType?: GeneratedFileType,
 ): Promise<FileGenerateOutcome> {
   const request = String(decision.args || '').trim();
   if (!request) return { message: '请说明要生成什么文件，例如：生成Word 一份项目周报。' };
   if (!options.generatedFileDir || !options.uploadFile) return { message: '文件生成功能尚未启用：缺少生成目录或上传器。' };
-  const type = requestedFileType(request);
+  const type = preferredType || requestedFileType(request);
   const prompt = filePrompt(request, type);
   const generated = await options.app.engine.handleExplicit('chat', { text: prompt, chatType, sessionId, featureId: 'file.generate', featureContext: { chatType, groupId: event.group_id, userId, promptChars: request.length } }, { prompt });
   const modelText = String(generated.text || '').trim();
@@ -619,7 +621,21 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         // 群聊上下文注入：@bot 时拉取最近群聊记录，让 bot 知道在聊什么。
         // 自然语言文件生成：生成一个 Markdown/Word/Excel/PPT/PDF 文档，
         // 不能让它落到普通 chat 再被 text reply strategy 当成聊天文本。
-        if (options.generatedFileDir && options.uploadFile && detectFileGenerateRequest(cleanText)) {
+        if (options.generatedFileDir && options.uploadFile && !cleanText.startsWith('你正在分析用户上传的文件') && !cleanText.startsWith('用户请求读取文件')) {
+          const fileIntentCfg = options.getConfig().fileIntent;
+          const regexFallback = {
+            shouldGenerate: detectFileGenerateRequest(cleanText),
+            fileType: detectFileGenerateRequest(cleanText) ? requestedFileType(cleanText) : undefined,
+          };
+          const fileIntent = await classifyFileIntent({
+            client: options.app.client,
+            text: cleanText,
+            config: fileIntentCfg,
+            fallback: regexFallback,
+            logger: options.logger,
+          });
+          options.logger?.info('文件生成意图识别', { shouldGenerate: fileIntent.shouldGenerate, fileType: fileIntent.fileType, confidence: fileIntent.confidence, source: fileIntent.source, reason: fileIntent.reason });
+          if (fileIntent.shouldGenerate) {
           try {
             const syntheticDecision = {
               kind: 'command' as const,
@@ -629,7 +645,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
               trigger: (decision as any).trigger,
               metadata: { featureId: 'file.generate' },
             };
-            const outcome = await handleFileGenerateCommand(options, syntheticDecision, event, chatType, sessionId, userId);
+            const outcome = await handleFileGenerateCommand(options, syntheticDecision, event, chatType, sessionId, userId, fileIntent.fileType);
             if (outcome.message) {
               await engine.replyText(replyCtx, outcome.message, 'quote');
               return { handled: true, kind: 'file-generate' };
@@ -639,6 +655,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
             const message = error instanceof FeatureLimitError ? error.message : `文件生成失败：${String((error as Error)?.message || error).slice(0, 300)}`;
             await engine.replyText(replyCtx, message, 'quote');
             return { handled: false, reason: 'file-generate-error' };
+          }
           }
         }
 

@@ -82,6 +82,7 @@ export const useConfigStore = defineStore('config', () => {
         c.panel ||= {};
         c.huggingFace ||= {};
         c.search ||= {};
+        c.fileIntent ||= {};
     }
 
     function markSaved() {
