@@ -12,6 +12,32 @@ set -Eeuo pipefail
 # Common overrides:
 #   APP_DIR=/opt/miobot-v2 PORT=3018 HOST=0.0.0.0 bash deploy-linux.sh install
 #   RUN_TESTS=1 bash deploy-linux.sh rebuild
+#
+# Existing systemd installs: git-update/rebuild auto-detect the service
+# WorkingDirectory and EnvironmentFile, and preserve existing env values that
+# the caller did not explicitly override.
+
+# Track whether a value came from the caller. git-update/rebuild must not
+# overwrite an existing service layout or env file with generic defaults.
+flag_set() { local name="$1"; [[ -v "$name" ]] && printf '1' || printf '0'; }
+APP_DIR_SET="$(flag_set APP_DIR)"
+SERVICE_NAME_SET="$(flag_set SERVICE_NAME)"
+ENV_FILE_SET="$(flag_set ENV_FILE)"
+HOST_SET="$(flag_set HOST)"
+PORT_SET="$(flag_set PORT)"
+DATA_DIR_SET="$(flag_set DATA_DIR)"
+RUNTIME_DIR_SET="$(flag_set MIOBOT_RUNTIME_DIR)"
+CONFIG_PATH_SET="$(flag_set MIOBOT_CONFIG_PATH)"
+CANVAS_STATE_SET="$(flag_set MIOBOT_CANVAS_STATE_PATH)"
+CANVAS_ASSET_SET="$(flag_set MIOBOT_CANVAS_ASSET_DIR)"
+PUBLIC_BASE_URL_SET="$(flag_set MIOBOT_PUBLIC_BASE_URL)"
+CANVAS_SYNC_URL_SET="$(flag_set MIOBOT_CANVAS_SYNC_URL)"
+SYNC_BOT_GALLERY_SET="$(flag_set MIOBOT_SYNC_BOT_GALLERY)"
+CANVAS_SYNC_TIMEOUT_SET="$(flag_set MIOBOT_CANVAS_SYNC_TIMEOUT_MS)"
+INLINE_REMOTE_IMAGES_SET="$(flag_set MIOBOT_INLINE_REMOTE_IMAGES)"
+INLINE_IMAGE_MAX_BYTES_SET="$(flag_set MIOBOT_INLINE_IMAGE_MAX_BYTES)"
+INLINE_IMAGE_TIMEOUT_SET="$(flag_set MIOBOT_INLINE_IMAGE_TIMEOUT_MS)"
+LOG_DIR_SET="$(flag_set LOG_DIR)"
 
 APP_NAME="${APP_NAME:-miobot-v2}"
 SERVICE_NAME="${SERVICE_NAME:-miobot-v2}"
@@ -55,6 +81,87 @@ log() { printf '\033[1;34m[miobot]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[miobot]\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31m[miobot]\033[0m %s\n' "$*" >&2; exit 1; }
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+env_file_value() {
+  local key="$1" value=""
+  [ -f "$ENV_FILE" ] || return 1
+  value="$(sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1)"
+  [ -n "$value" ] && printf '%s' "$value"
+}
+
+resolved_env_value() {
+  local key="$1" current="$2" explicit="$3" existing=""
+  if [ "$explicit" = 1 ]; then printf '%s' "$current"; return; fi
+  existing="$(env_file_value "$key" || true)"
+  if [ -n "$existing" ]; then printf '%s' "$existing"; else printf '%s' "$current"; fi
+}
+
+# git-update/rebuild must operate on the directory and env file of the
+# already-installed service rather than the generic /opt/miobot-v2 defaults.
+detect_runtime_layout() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  if ! systemctl cat "$SERVICE_NAME" >/dev/null 2>&1; then
+    # No installed service yet. For source-checkout rebuilds, use the script
+    # directory instead of the generic /opt/miobot-v2 default.
+    case "${ACTION:-}" in
+      rebuild|git-update|pull|upgrade|update)
+        if [ "$APP_DIR_SET" = 0 ] && [ -f "$SCRIPT_DIR/package.json" ]; then APP_DIR="$SCRIPT_DIR"; fi
+        ;;
+    esac
+    return 0
+  fi
+
+  if [ "$APP_DIR_SET" = 0 ]; then
+    local wd
+    wd="$(systemctl show "$SERVICE_NAME" -p WorkingDirectory --value 2>/dev/null | head -n 1)"
+    wd="${wd#~}"
+    [ -n "$wd" ] && [ -d "$wd" ] && APP_DIR="$wd"
+  fi
+
+  if [ "$ENV_FILE_SET" = 0 ]; then
+    local ef
+    ef="$(systemctl cat "$SERVICE_NAME" 2>/dev/null | sed -n 's/^EnvironmentFile=//p' | tail -n 1)"
+    ef="${ef#-}"
+    ef="${ef#\"}"; ef="${ef%\"}"
+    [ -n "$ef" ] && ENV_FILE="$ef"
+  fi
+
+  if [ -f "$ENV_FILE" ]; then
+    local v
+    [ "$HOST_SET" = 0 ] && { v="$(env_file_value MIOBOT_HOST || true)"; [ -n "$v" ] && HOST="$v"; }
+    [ "$PORT_SET" = 0 ] && { v="$(env_file_value MIOBOT_PORT || true)"; [ -n "$v" ] && PORT="$v"; }
+    [ "$DATA_DIR_SET" = 0 ] && { v="$(env_file_value DATA_DIR || true)"; [ -n "$v" ] && DATA_DIR="$v"; }
+    if [ "$RUNTIME_DIR_SET" = 0 ]; then
+      v="$(env_file_value MIOBOT_RUNTIME_DIR || true)"
+      if [ -n "$v" ]; then RUNTIME_DIR="$v"; else RUNTIME_DIR="$DATA_DIR"; fi
+    fi
+    if [ "$CONFIG_PATH_SET" = 0 ]; then
+      v="$(env_file_value MIOBOT_CONFIG_PATH || true)"
+      if [ -n "$v" ]; then CONFIG_PATH="$v"; else CONFIG_PATH="${DATA_DIR}/config.json"; fi
+    fi
+    if [ "$CANVAS_STATE_SET" = 0 ]; then
+      v="$(env_file_value MIOBOT_CANVAS_STATE_PATH || true)"
+      if [ -n "$v" ]; then CANVAS_STATE_PATH="$v"; else CANVAS_STATE_PATH="${RUNTIME_DIR}/canvas-state.json"; fi
+    fi
+    if [ "$CANVAS_ASSET_SET" = 0 ]; then
+      v="$(env_file_value MIOBOT_CANVAS_ASSET_DIR || true)"
+      if [ -n "$v" ]; then CANVAS_ASSET_DIR="$v"; else CANVAS_ASSET_DIR="${RUNTIME_DIR}/canvas-assets"; fi
+    fi
+    [ "$LOG_DIR_SET" = 0 ] && { v="$(env_file_value LOG_DIR || true)"; [ -n "$v" ] && LOG_DIR="$v"; }
+    [ "$PUBLIC_BASE_URL_SET" = 0 ] && { v="$(env_file_value MIOBOT_PUBLIC_BASE_URL || true)"; [ -n "$v" ] && PUBLIC_BASE_URL="$v"; }
+    [ "$CANVAS_SYNC_URL_SET" = 0 ] && { v="$(env_file_value MIOBOT_CANVAS_SYNC_URL || true)"; [ -n "$v" ] && CANVAS_SYNC_URL="$v"; }
+    [ "$SYNC_BOT_GALLERY_SET" = 0 ] && { v="$(env_file_value MIOBOT_SYNC_BOT_GALLERY || true)"; [ -n "$v" ] && SYNC_BOT_GALLERY="$v"; }
+    [ "$CANVAS_SYNC_TIMEOUT_SET" = 0 ] && { v="$(env_file_value MIOBOT_CANVAS_SYNC_TIMEOUT_MS || true)"; [ -n "$v" ] && CANVAS_SYNC_TIMEOUT_MS="$v"; }
+    [ "$INLINE_REMOTE_IMAGES_SET" = 0 ] && { v="$(env_file_value MIOBOT_INLINE_REMOTE_IMAGES || true)"; [ -n "$v" ] && INLINE_REMOTE_IMAGES="$v"; }
+    [ "$INLINE_IMAGE_MAX_BYTES_SET" = 0 ] && { v="$(env_file_value MIOBOT_INLINE_IMAGE_MAX_BYTES || true)"; [ -n "$v" ] && INLINE_IMAGE_MAX_BYTES="$v"; }
+    [ "$INLINE_IMAGE_TIMEOUT_SET" = 0 ] && { v="$(env_file_value MIOBOT_INLINE_IMAGE_TIMEOUT_MS || true)"; [ -n "$v" ] && INLINE_IMAGE_TIMEOUT_MS="$v"; }
+  fi
+
+  CODEX_VENV_DIR="${MIOBOT_CODEX_VENV_DIR:-${APP_DIR}/.venv-codex}"
+  CODEX_PYTHON_BIN="${MIOBOT_CODEX_PYTHON:-${CODEX_VENV_DIR}/bin/python}"
+  log "运行布局：APP_DIR=${APP_DIR} ENV_FILE=${ENV_FILE}"
+}
+
 
 require_root() {
   [ "$(id -u)" -eq 0 ] || fail "请用 root 执行：sudo bash deploy-linux.sh $ACTION"
@@ -502,32 +609,73 @@ write_env_file() {
   [ -n "$NODE_BIN" ] || fail "找不到 node。"
   [ -n "$PNPM_BIN" ] || fail "找不到 pnpm。"
 
+  local env_host env_port env_data_dir env_runtime_dir env_config_path
+  local env_canvas_state env_canvas_assets env_public_base env_canvas_sync
+  local env_sync_gallery env_canvas_sync_timeout env_inline_remote
+  local env_inline_max env_inline_timeout env_log_dir env_enable_bot
+  local env_codex_remote env_codex_python
+
+  env_host="$(resolved_env_value MIOBOT_HOST "$HOST" "$HOST_SET")"
+  env_port="$(resolved_env_value MIOBOT_PORT "$PORT" "$PORT_SET")"
+  env_data_dir="$(resolved_env_value DATA_DIR "$DATA_DIR" "$DATA_DIR_SET")"
+  env_runtime_dir="$(resolved_env_value MIOBOT_RUNTIME_DIR "$RUNTIME_DIR" "$RUNTIME_DIR_SET")"
+  env_config_path="$(resolved_env_value MIOBOT_CONFIG_PATH "$CONFIG_PATH" "$CONFIG_PATH_SET")"
+  env_canvas_state="$(resolved_env_value MIOBOT_CANVAS_STATE_PATH "$CANVAS_STATE_PATH" "$CANVAS_STATE_SET")"
+  env_canvas_assets="$(resolved_env_value MIOBOT_CANVAS_ASSET_DIR "$CANVAS_ASSET_DIR" "$CANVAS_ASSET_SET")"
+  env_public_base="$(resolved_env_value MIOBOT_PUBLIC_BASE_URL "$PUBLIC_BASE_URL" "$PUBLIC_BASE_URL_SET")"
+  env_canvas_sync="$(resolved_env_value MIOBOT_CANVAS_SYNC_URL "$CANVAS_SYNC_URL" "$CANVAS_SYNC_URL_SET")"
+  env_sync_gallery="$(resolved_env_value MIOBOT_SYNC_BOT_GALLERY "$SYNC_BOT_GALLERY" "$SYNC_BOT_GALLERY_SET")"
+  env_canvas_sync_timeout="$(resolved_env_value MIOBOT_CANVAS_SYNC_TIMEOUT_MS "$CANVAS_SYNC_TIMEOUT_MS" "$CANVAS_SYNC_TIMEOUT_SET")"
+  env_inline_remote="$(resolved_env_value MIOBOT_INLINE_REMOTE_IMAGES "$INLINE_REMOTE_IMAGES" "$INLINE_REMOTE_IMAGES_SET")"
+  env_inline_max="$(resolved_env_value MIOBOT_INLINE_IMAGE_MAX_BYTES "$INLINE_IMAGE_MAX_BYTES" "$INLINE_IMAGE_MAX_BYTES_SET")"
+  env_inline_timeout="$(resolved_env_value MIOBOT_INLINE_IMAGE_TIMEOUT_MS "$INLINE_IMAGE_TIMEOUT_MS" "$INLINE_IMAGE_TIMEOUT_SET")"
+  env_log_dir="$(resolved_env_value LOG_DIR "$LOG_DIR" "$LOG_DIR_SET")"
+
+  if [ -n "${MIOBOT_ENABLE_BOT+x}" ]; then
+    env_enable_bot="$MIOBOT_ENABLE_BOT"
+  else
+    env_enable_bot="$(env_file_value MIOBOT_ENABLE_BOT || true)"
+    [ -n "$env_enable_bot" ] || env_enable_bot="1"
+  fi
+  if [ -n "${MIOBOT_CODEX_REMOTE_ENABLED+x}" ]; then
+    env_codex_remote="$MIOBOT_CODEX_REMOTE_ENABLED"
+  else
+    env_codex_remote="$(env_file_value MIOBOT_CODEX_REMOTE_ENABLED || true)"
+    [ -n "$env_codex_remote" ] || env_codex_remote="1"
+  fi
+  if [ -n "${MIOBOT_CODEX_PYTHON+x}" ]; then
+    env_codex_python="$MIOBOT_CODEX_PYTHON"
+  else
+    env_codex_python="$(env_file_value MIOBOT_CODEX_PYTHON || true)"
+    [ -n "$env_codex_python" ] || env_codex_python="$CODEX_PYTHON_BIN"
+  fi
+
   log "写入环境文件：$ENV_FILE"
   cat > "$ENV_FILE" <<EOF
 NODE_ENV=production
-MIOBOT_HOST=${HOST}
-MIOBOT_PORT=${PORT}
-MIOBOT_VERIFY_PORT=${PORT}
-MIOBOT_ENABLE_BOT=${MIOBOT_ENABLE_BOT:-1}
-MIOBOT_RUNTIME_DIR=${RUNTIME_DIR}
-MIOBOT_CONFIG_PATH=${CONFIG_PATH}
-MIOBOT_CANVAS_STATE_PATH=${CANVAS_STATE_PATH}
-MIOBOT_CANVAS_ASSET_DIR=${CANVAS_ASSET_DIR}
-MIOBOT_PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
-MIOBOT_CANVAS_SYNC_URL=${CANVAS_SYNC_URL}
-MIOBOT_SYNC_BOT_GALLERY=${SYNC_BOT_GALLERY}
-MIOBOT_CANVAS_SYNC_TIMEOUT_MS=${CANVAS_SYNC_TIMEOUT_MS}
-MIOBOT_INLINE_REMOTE_IMAGES=${INLINE_REMOTE_IMAGES}
-MIOBOT_INLINE_IMAGE_MAX_BYTES=${INLINE_IMAGE_MAX_BYTES}
-MIOBOT_INLINE_IMAGE_TIMEOUT_MS=${INLINE_IMAGE_TIMEOUT_MS}
-MIOBOT_LOG_DIR=${LOG_DIR}
-MIOBOT_SYSTEM_LOG_PATH=${LOG_DIR}/system.ndjson
-MIOBOT_CANVAS_LOG_PATH=${LOG_DIR}/canvas.ndjson
-MIOBOT_BOT_LOG_PATH=${LOG_DIR}/system.ndjson
-MIOBOT_CODEX_PYTHON=${CODEX_PYTHON_BIN}
-MIOBOT_CODEX_REMOTE_ENABLED=${MIOBOT_CODEX_REMOTE_ENABLED:-1}
-DATA_DIR=${DATA_DIR}
-LOG_DIR=${LOG_DIR}
+MIOBOT_HOST=${env_host}
+MIOBOT_PORT=${env_port}
+MIOBOT_VERIFY_PORT=${env_port}
+MIOBOT_ENABLE_BOT=${env_enable_bot}
+MIOBOT_RUNTIME_DIR=${env_runtime_dir}
+MIOBOT_CONFIG_PATH=${env_config_path}
+MIOBOT_CANVAS_STATE_PATH=${env_canvas_state}
+MIOBOT_CANVAS_ASSET_DIR=${env_canvas_assets}
+MIOBOT_PUBLIC_BASE_URL=${env_public_base}
+MIOBOT_CANVAS_SYNC_URL=${env_canvas_sync}
+MIOBOT_SYNC_BOT_GALLERY=${env_sync_gallery}
+MIOBOT_CANVAS_SYNC_TIMEOUT_MS=${env_canvas_sync_timeout}
+MIOBOT_INLINE_REMOTE_IMAGES=${env_inline_remote}
+MIOBOT_INLINE_IMAGE_MAX_BYTES=${env_inline_max}
+MIOBOT_INLINE_IMAGE_TIMEOUT_MS=${env_inline_timeout}
+MIOBOT_LOG_DIR=${env_log_dir}
+MIOBOT_SYSTEM_LOG_PATH=${env_log_dir}/system.ndjson
+MIOBOT_CANVAS_LOG_PATH=${env_log_dir}/canvas.ndjson
+MIOBOT_BOT_LOG_PATH=${env_log_dir}/system.ndjson
+MIOBOT_CODEX_PYTHON=${env_codex_python}
+MIOBOT_CODEX_REMOTE_ENABLED=${env_codex_remote}
+DATA_DIR=${env_data_dir}
+LOG_DIR=${env_log_dir}
 PATH=$(managed_path)
 EOF
   chmod 0644 "$ENV_FILE"
@@ -569,27 +717,31 @@ EOF
 }
 
 service_exists() {
-  [ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]
+  command -v systemctl >/dev/null 2>&1 && systemctl cat "${SERVICE_NAME}.service" >/dev/null 2>&1
 }
 
 service_start() {
+  detect_runtime_layout
   service_exists || { ensure_node; ensure_pnpm; ensure_dirs; write_env_file; write_systemd_unit; }
   systemctl start "$SERVICE_NAME"
   health_check || true
 }
 
 service_stop() {
+  detect_runtime_layout
   service_exists || { warn "服务不存在：${SERVICE_NAME}"; return; }
   systemctl stop "$SERVICE_NAME"
 }
 
 service_restart() {
+  detect_runtime_layout
   service_exists || { ensure_node; ensure_pnpm; ensure_dirs; write_env_file; write_systemd_unit; }
   systemctl restart "$SERVICE_NAME"
   health_check || true
 }
 
 service_status() {
+  detect_runtime_layout
   if have_cmd systemctl && service_exists; then
     systemctl status "$SERVICE_NAME" --no-pager
   else
@@ -598,6 +750,7 @@ service_status() {
 }
 
 service_logs() {
+  detect_runtime_layout
   have_cmd journalctl || fail "journalctl 不存在。"
   journalctl -u "$SERVICE_NAME" -n "${LINES:-200}" -f
 }
@@ -689,6 +842,7 @@ install_all() {
 
 rebuild_all() {
   require_root
+  detect_runtime_layout
   ensure_os_packages
   ensure_node
   ensure_pnpm
@@ -708,12 +862,14 @@ rebuild_all() {
 
 git_update_all() {
   require_root
+  detect_runtime_layout
   git_pull_source
   rebuild_all
 }
 
 env_only() {
   require_root
+  detect_runtime_layout
   ensure_os_packages
   ensure_node
   ensure_pnpm
