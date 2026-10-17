@@ -1,0 +1,14 @@
+﻿{
+  "name": "@miobot-v2/browser-render",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "../../dist/packages/browser-render/src/index.js",
+  "types": "../../dist/packages/browser-render/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "../../dist/packages/browser-render/src/index.d.ts",
+      "default": "../../dist/packages/browser-render/src/index.js"
+    }
+  }
+}

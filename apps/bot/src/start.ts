@@ -14,6 +14,7 @@ import { normalizeForwardPayload } from './message-enrichment.js';
 import { FeatureGate } from './feature-gate.js';
 import { createOutboundImageCompressor } from './image-output.js';
 import { createWebSearchService } from '../../../packages/search/src/index.js';
+import { createBrowserRenderer } from '../../../packages/browser-render/src/index.js';
 import { PendingFileIndex, DEFAULT_FILE_PARSE_LIMITS } from '../../../packages/file-ingest/src/index.js';
 import { derivePanelToken } from '../../../packages/web-api/src/index.js';
 import { promises as fs } from 'node:fs';
@@ -198,6 +199,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // bot 那边照旧回「当前模型不支持」，重启才认。
   const featureGate = new FeatureGate({ getConfig });
   const searchService = createWebSearchService({ getConfig, logger });
+  const browserRenderer = createBrowserRenderer({ getConfig, logger });
   const app = createBotApp({
     getConfig,
     client,
@@ -321,6 +323,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     fileIndex,
     generatedFileDir,
     uploadFile: uploadGeneratedFile,
+    browserRenderer,
     compressImages: createOutboundImageCompressor({ getConfig, uploadFile: uploadGeneratedFile, logger }),
     deleteMessage: (messageId) => adapter.deleteMessage(messageId),
     downloadFile: downloadIncomingFile,

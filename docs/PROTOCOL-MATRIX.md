@@ -339,3 +339,155 @@ Napcat → QQ
 ### 后台
 
 工具 -> 联网搜索：服务商、API 地址、API Key、自动模式、结果数量、正文请求、Jina/DeepSeek 抓取、超时、重试、QPS、缓存、正文和总注入字符上限、测试搜索。
+
+
+## 14. 代码画图与网页截屏
+
+### 意图
+
+自然语言意图模型新增：
+
+```text
+code.render       代码画图
+web.screenshot    网页截屏
+```
+
+显式命令：
+
+```text
+代码画图 <需求>
+网页截屏 <URL>
+```
+
+示例：
+
+```text
+用 HTML 画一个...
+用 SVG 画一个...
+用 Canvas 画一个...
+用 Three.js 画一个...
+截一下 https://example.com
+网页截图 https://example.com 1200x800
+```
+
+### 代码画图
+
+代码画图使用独立模型（能力分工 → 代码画图），模型输出 JSON：
+
+```json
+{
+  "format": "html|svg|canvas|three",
+  "title": "作品标题",
+  "width": 1080,
+  "height": 1080,
+  "html": "...",
+  "css": "...",
+  "js": "...",
+  "svg": "...",
+  "sendSource": false
+}
+```
+
+渲染器：
+
+- HTML/CSS/JS：`page.setContent`
+- SVG：包装成 HTML 后截图
+- Canvas 2D：等待绘制并截图
+- Three.js：注入本地 `packages/browser-render/vendor/three.min.js`
+- 代码画图完全阻断 http/https/ws 网络，只允许 data/blob/about 和内联内容
+
+### 网页截屏
+
+- 只接受 `http://` / `https://`
+- 默认禁止 localhost、私有 IP、内网域名、云元数据地址
+- 导航前做 DNS 解析检查
+- 每个任务独立 BrowserContext
+- 不登录、不填表单、不自动点击
+- 支持 `1200x800`、`全页` 等自然语言参数
+
+### Chromium 限制
+
+启动参数包括：
+
+```text
+--headless=new
+--disable-dev-shm-usage
+--disable-background-networking
+--disable-background-timer-throttling
+--disable-backgrounding-occluded-windows
+--disable-renderer-backgrounding
+--disable-breakpad
+--disable-extensions
+--disable-sync
+--disable-translate
+--disable-default-apps
+--disable-component-update
+--disable-domain-reliability
+--disable-client-side-phishing-detection
+--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints
+--disable-notifications
+--deny-permission-prompts
+--mute-audio
+--hide-scrollbars
+--metrics-recording-only
+--no-first-run
+--no-default-browser-check
+--renderer-process-limit=1
+--js-flags=--max-old-space-size=512
+```
+
+WebGL 额外使用：
+
+```text
+--use-gl=angle
+--use-angle=swiftshader
+--enable-unsafe-swiftshader
+--ignore-gpu-blocklist
+```
+
+明确不使用：
+
+```text
+--disable-web-security
+--allow-file-access-from-files
+--single-process
+```
+
+`--no-sandbox` 默认由配置开启，仅建议在隔离环境使用。
+
+### 资源限制
+
+后台「工具 → 代码与网页渲染」可配置：
+
+- Chromium 路径
+- 最大并发，默认 1
+- 最大排队，默认 3
+- 单任务超时，默认 45 秒
+- 启动超时
+- 空闲关闭，默认 60 秒
+- 最大代码字符数
+- 最大画布尺寸
+- 截图大小上限
+- 是否启用 Three.js/WebGL
+- 是否允许内网 URL
+
+任务结束必须关闭 `page` 和 `context`；空闲关闭浏览器；排队满时直接拒绝。
+
+### 部署
+
+```bash
+# 只在需要此功能时安装 Chromium
+INSTALL_CHROMIUM=1 bash deploy-linux.sh rebuild
+
+# 检查 Chromium / WebGL
+npm run build
+npm run check:chromium
+```
+
+如果使用自定义 Chromium 路径：
+
+```bash
+MIOBOT_CHROMIUM_PATH=/usr/bin/chromium bash deploy-linux.sh rebuild
+```
+
+1C2G 机器建议保持最大并发 1；不建议开启多任务并发。

@@ -1,4 +1,4 @@
-export type FeatureCategory = 'basic' | 'image' | 'file' | 'video' | 'template' | 'web' | 'system';
+export type FeatureCategory = 'basic' | 'image' | 'file' | 'video' | 'template' | 'web' | 'render' | 'system';
 export type FeatureScope = 'private' | 'group';
 export type FeatureGroupActivation = 'direct' | 'mention' | 'reply' | 'mention-or-reply';
 export interface FeatureLimitField {
@@ -36,7 +36,9 @@ export type FeatureLegacyCommand =
   | 'fileList'
   | 'fileRead'
   | 'fileGenerate'
-  | 'webSearch';
+  | 'webSearch'
+  | 'codeRender'
+  | 'webScreenshot';
 
 export type FeatureIntentKind =
   | 'chat'
@@ -168,6 +170,18 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
   {
     id: 'search.web', label: '联网搜索', category: 'web', implemented: true, defaultNaturalLanguage: true,
     legacyCommand: 'webSearch', defaultAliases: ['搜索', '联网搜索', '查一下', '搜一下', 'websearch'],
+    defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
+  },
+  {
+    id: 'code.render', label: '代码画图', category: 'render', implemented: true,
+    legacyCommand: 'codeRender', defaultNaturalLanguage: true,
+    defaultAliases: ['代码画图', 'HTML画图', 'SVG画图', 'Canvas画图', 'Three画图', 'codeart'],
+    defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
+  },
+  {
+    id: 'web.screenshot', label: '网页截屏', category: 'render', implemented: true,
+    legacyCommand: 'webScreenshot', defaultNaturalLanguage: true,
+    defaultAliases: ['网页截屏', '网页截图', '截屏', '截图网页', 'screenshot'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
 ];

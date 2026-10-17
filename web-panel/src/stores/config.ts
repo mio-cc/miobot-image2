@@ -83,6 +83,8 @@ export const useConfigStore = defineStore('config', () => {
         c.huggingFace ||= {};
         c.search ||= {};
         c.intentRecognition ||= {};
+        c.browserRender ||= {};
+        c.codeRender ||= {};
     }
 
     function markSaved() {

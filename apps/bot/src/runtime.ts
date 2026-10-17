@@ -17,6 +17,7 @@ import { DEFAULT_FILEGEN_LIMITS, generateFile, generatedFileSpecFromJson, type G
 import { FeatureLimitError, type FeatureGate } from './feature-gate.js';
 import { sanitizeModelImageReferences } from './deps.js';
 import { classifyNaturalLanguageIntent, type IntentCatalogItem, type IntentFallback } from './intent-recognition.js';
+import type { BrowserRenderService, RenderedImage } from '../../../packages/browser-render/src/index.js';
 
 /** Napcat(OneBot) 上报的消息事件(只取本环需要的字段)。 */
 export interface NapcatMessageEvent {
@@ -71,6 +72,8 @@ export interface BotRuntimeOptions {
   generatedFileDir?: string;
   /** 把生成文件上传到可公开下载的位置，返回 Napcat 可访问的 URL。 */
   uploadFile?: (localPath: string, name: string, mime: string) => Promise<string>;
+  /** 本地 Chromium 代码渲染/网页截图服务。 */
+  browserRenderer?: BrowserRenderService;
   /** 发送前压缩图片；失败时必须回退原图。 */
   compressImages?: (images: string[]) => Promise<string[]>;
   /** 撤回机器人发出的图片（群聊自动撤回用）。 */
@@ -233,6 +236,8 @@ const NATURAL_INTENT_CATALOG: IntentCatalogItem[] = [
   { id: 'image.edit', label: '改图', description: '用户要求修改、编辑、重绘、换风格已有图片。', requires: 'images' },
   { id: 'image.interrogate', label: '图片反推', description: '用户要求描述图片、反推图片提示词、分析画面。', requires: 'images' },
   { id: 'video.generate', label: '视频生成', description: '用户要求生成、制作视频或动画。' },
+  { id: 'code.render', label: '代码画图', description: '用户要求用 HTML、SVG、Canvas、JavaScript 或 Three.js 生成一张可视化图片。' },
+  { id: 'web.screenshot', label: '网页截屏', description: '用户要求打开一个网页并截图，或给出 URL 要求网页截图。' },
   { id: 'template.library', label: '本地模板库', description: '用户要求查看本地生图模板库、模板列表。' },
 ];
 
@@ -240,6 +245,8 @@ function availableIntentCatalog(cfg: AppConfig): IntentCatalogItem[] {
   const settings = cfg.bot.features || {};
   return NATURAL_INTENT_CATALOG.filter((item) => {
     if (item.id === 'chat') return true;
+    if (item.id === 'code.render' && (!cfg.browserRender?.enabled || cfg.codeRender?.enabled === false)) return false;
+    if (item.id === 'web.screenshot' && !cfg.browserRender?.enabled) return false;
     const def = FEATURE_DEFINITIONS.find((entry) => entry.id === item.id);
     // 新自然语言意图路由由全局 intentRecognition.enabled 控制；
     // 旧 naturalLanguage 开关只影响原 FreeMode planner，避免旧配置里默认 false 把新路由一并关掉。
@@ -248,6 +255,13 @@ function availableIntentCatalog(cfg: AppConfig): IntentCatalogItem[] {
 }
 
 function fallbackIntent(text: string, hasFiles: boolean, cfg: AppConfig, options: BotRuntimeOptions): IntentFallback {
+  const url = text.match(/https?:\/\/[^\s<>"']+/i)?.[0];
+  if (options.browserRenderer && cfg.browserRender?.enabled && cfg.bot.features?.['web.screenshot']?.enabled !== false && url && /(截屏|截图|screenshot)/i.test(text)) {
+    return { intent: 'web.screenshot', args: text, confidence: 0.9 };
+  }
+  if (options.browserRenderer && cfg.browserRender?.enabled && cfg.codeRender?.enabled !== false && cfg.bot.features?.['code.render']?.enabled !== false && /(html|svg|canvas|three\.?js|代码画图|用代码画)/i.test(text)) {
+    return { intent: 'code.render', args: text, confidence: 0.9 };
+  }
   if (options.generatedFileDir && options.uploadFile && cfg.bot.features?.['file.generate']?.enabled !== false && detectFileGenerateRequest(text)) {
     return { intent: 'file.generate', args: text, fileType: requestedFileType(text), confidence: 1 };
   }
@@ -255,6 +269,94 @@ function fallbackIntent(text: string, hasFiles: boolean, cfg: AppConfig, options
     return { intent: 'file.read', args: text, confidence: 0.8 };
   }
   return { intent: 'chat', args: text, confidence: 0 };
+}
+
+interface RenderCommandOutcome {
+  result?: BotEngineResult;
+  message?: string;
+}
+
+function parseRenderArtifact(text: string): unknown {
+  const value = String(text || '').trim();
+  const start = value.indexOf('{');
+  const end = value.lastIndexOf('}');
+  if (start < 0 || end <= start) throw new Error('代码模型没有返回 JSON 结构');
+  return JSON.parse(value.slice(start, end + 1));
+}
+
+function renderImageResult(images: string[], prompt: string): BotEngineResult {
+  return {
+    kind: 'image.generate',
+    handled: true,
+    images,
+    decision: {
+      kind: 'image.generate',
+      source: 'explicit',
+      confidence: 1,
+      reason: '代码画图/网页截屏',
+      params: { prompt, tokens: [] },
+    } as any,
+  };
+}
+
+async function handleCodeRenderRequest(
+  options: BotRuntimeOptions,
+  request: string,
+  chatType: 'group' | 'private',
+  groupId: number | string | undefined,
+  userId: number | string | undefined,
+  sessionId: string,
+): Promise<RenderCommandOutcome> {
+  const cfg = options.getConfig();
+  if (!cfg.codeRender?.enabled) return { message: '代码画图功能未启用。' };
+  if (!options.browserRenderer) return { message: '代码画图缺少浏览器渲染服务。' };
+  if (!options.generatedFileDir || !options.uploadFile) return { message: '代码画图缺少临时目录或上传器。' };
+  const release = await options.featureGate?.acquire({ featureId: 'code.render', chatType, groupId, userId, promptChars: request.length });
+  try {
+    const prompt = String(cfg.codeRender.promptTemplate || '').replaceAll('{{userContent}}', request.slice(0, 10000));
+    const result = await options.app.client.chat(cfg.codeRender.nodeIndex, {
+      model: cfg.codeRender.model,
+      messages: [{ role: 'user', content: prompt }],
+      timeoutMs: cfg.codeRender.timeoutMs,
+      maxTokens: cfg.codeRender.maxTokens,
+    });
+    const artifact = parseRenderArtifact(String(result.text || ''));
+    const rendered = await options.browserRenderer.renderCode(artifact, options.generatedFileDir);
+    const url = await options.uploadFile(rendered.path, `code-art-${Date.now()}.png`, 'image/png');
+    return { result: renderImageResult([url], request) };
+  } finally {
+    release?.();
+  }
+}
+
+async function handleWebScreenshotRequest(
+  options: BotRuntimeOptions,
+  request: string,
+  chatType: 'group' | 'private',
+  groupId: number | string | undefined,
+  userId: number | string | undefined,
+): Promise<RenderCommandOutcome> {
+  const cfg = options.getConfig();
+  if (!cfg.browserRender?.enabled) return { message: '网页截屏功能未启用。' };
+  if (!options.browserRenderer) return { message: '网页截屏缺少浏览器渲染服务。' };
+  if (!options.generatedFileDir || !options.uploadFile) return { message: '网页截屏缺少临时目录或上传器。' };
+  const url = String(request || '').match(/https?:\/\/[^\s<>"']+/i)?.[0];
+  if (!url) return { message: '请提供要截图的 http/https 网页地址。' };
+  const size = String(request).match(/(\d{3,4})\s*[x×]\s*(\d{3,4})/i);
+  const fullPage = /(全页|整个页面|完整页面|full\s*page)/i.test(request);
+  const release = await options.featureGate?.acquire({ featureId: 'web.screenshot', chatType, groupId, userId, promptChars: request.length });
+  try {
+    const rendered = await options.browserRenderer.screenshotUrl({
+      url,
+      width: size ? Number(size[1]) : undefined,
+      height: size ? Number(size[2]) : undefined,
+      fullPage,
+    }, options.generatedFileDir);
+    const uploaded = await options.uploadFile(rendered.path, `web-screenshot-${Date.now()}.png`, 'image/png');
+    return { result: renderImageResult([uploaded], request) };
+  } finally {
+    release?.();
+  }
 }
 
 interface FileGenerateOutcome {
@@ -536,6 +638,23 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
 
     // 纯文本类命令(clear/help)直接处理,不进引擎。
     if (decision.kind === 'command') {
+      if (decision.command === 'codeRender' || decision.command === 'webScreenshot') {
+        try {
+          const request = stripNonTextCqSegments(decision.args || decision.commandText || '');
+          const outcome = decision.command === 'codeRender'
+            ? await handleCodeRenderRequest(options, request, chatType, event.group_id, userId, sessionId)
+            : await handleWebScreenshotRequest(options, request, chatType, event.group_id, userId);
+          if (outcome.message) {
+            await engine.replyText(replyCtx, outcome.message, 'quote');
+            return { handled: true, kind: decision.command === 'codeRender' ? 'code-render' : 'web-screenshot' };
+          }
+          if (outcome.result) result = outcome.result;
+        } catch (error) {
+          const message = error instanceof FeatureLimitError ? error.message : `${decision.command === 'codeRender' ? '代码画图' : '网页截屏'}失败：${String((error as Error)?.message || error).slice(0, 300)}`;
+          await engine.replyText(replyCtx, message, 'quote');
+          return { handled: false, reason: decision.command === 'codeRender' ? 'code-render-error' : 'web-screenshot-error' };
+        }
+      }
       if (decision.command === 'fileList') {
         if (cfg.bot.files?.enabled === false) {
           await engine.replyText(replyCtx, '文件读取功能已在后台关闭。', 'quote');
@@ -748,6 +867,32 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
             result = await options.app.engine.handleExplicit('chat', { ...engineFeatureInput, forceSearch: true }, { prompt: intent.args });
           } else if (intent.intent === 'image.generate' || intent.intent === 'image.edit' || intent.intent === 'image.interrogate' || intent.intent === 'video.generate') {
             result = await options.app.engine.handleExplicit(intent.intent as any, engineFeatureInput, { prompt: intent.args });
+          } else if (intent.intent === 'code.render') {
+            try {
+              const outcome = await handleCodeRenderRequest(options, intent.args, chatType, event.group_id, userId, sessionId);
+              if (outcome.message) {
+                await engine.replyText(replyCtx, outcome.message, 'quote');
+                return { handled: true, kind: 'code-render' };
+              }
+              if (outcome.result) result = outcome.result;
+            } catch (error) {
+              const message = error instanceof FeatureLimitError ? error.message : `代码画图失败：${String((error as Error)?.message || error).slice(0, 300)}`;
+              await engine.replyText(replyCtx, message, 'quote');
+              return { handled: false, reason: 'code-render-error' };
+            }
+          } else if (intent.intent === 'web.screenshot') {
+            try {
+              const outcome = await handleWebScreenshotRequest(options, intent.args, chatType, event.group_id, userId);
+              if (outcome.message) {
+                await engine.replyText(replyCtx, outcome.message, 'quote');
+                return { handled: true, kind: 'web-screenshot' };
+              }
+              if (outcome.result) result = outcome.result;
+            } catch (error) {
+              const message = error instanceof FeatureLimitError ? error.message : `网页截屏失败：${String((error as Error)?.message || error).slice(0, 300)}`;
+              await engine.replyText(replyCtx, message, 'quote');
+              return { handled: false, reason: 'web-screenshot-error' };
+            }
           } else if (intent.intent === 'help') {
             await engine.replyText(replyCtx, buildHelpText(cfg));
             return { handled: true, kind: 'help' };
@@ -1020,6 +1165,8 @@ function buildHelpText(cfg: AppConfig): string {
   add('file.read');
   add('file.generate');
   add('search.web');
+  add('code.render');
+  add('web.screenshot');
   add('help');
   add('clear');
   lines.push('群里需 @机器人 或 回复机器人 触发；私聊直接说话即可。');

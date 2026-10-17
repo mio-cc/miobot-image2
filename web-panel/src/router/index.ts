@@ -57,6 +57,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '联网搜索', group: '工具', icon: 'search' },
     },
     {
+        path: '/render',
+        name: 'render',
+        component: () => import('../pages/RenderPage.vue'),
+        meta: { title: '代码与网页渲染', group: '工具', icon: 'canvas' },
+    },
+    {
         path: '/search',
         name: 'search',
         component: () => import('../pages/WebSearchPage.vue'),

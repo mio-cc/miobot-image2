@@ -34,6 +34,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   video: '视频',
   template: '模板',
   web: '联网搜索',
+  render: '代码画图与截屏',
   system: '系统',
 };
 
@@ -63,7 +64,7 @@ function ensureSetting(def: FeatureDefinition): any {
 
 const grouped = computed(() => {
   const out: Array<{ category: string; label: string; items: Array<{ def: FeatureDefinition; setting: any }> }> = [];
-  for (const category of ['basic', 'image', 'file', 'video', 'template', 'web', 'system']) {
+  for (const category of ['basic', 'image', 'file', 'video', 'template', 'web', 'render', 'system']) {
     const items = definitions.value
       .filter((def) => def.category === category)
       .map((def) => ({ def, setting: ensureSetting(def) }));

@@ -68,6 +68,9 @@ const rows: Row[] = [
       node: 'freeMode.nodeIndex', model: 'freeMode.model', toggle: 'freeMode.enabled' },
     { key: 'intentRecognition', label: '自然语言意图识别', trigger: '自然语言 → 命令 / 功能', capability: 'chat',
       node: 'intentRecognition.nodeIndex', model: 'intentRecognition.model', toggle: 'intentRecognition.enabled' },
+    { key: 'codeRender', label: '代码画图', trigger: 'HTML / SVG / Canvas / Three.js', capability: 'chat',
+      node: 'codeRender.nodeIndex', model: 'codeRender.model', toggle: 'codeRender.enabled',
+      detailLink: { to: '/render', text: '代码与网页渲染页' } },
     { key: 'promptsChat', label: '远程库智能选模板', trigger: 'spp', capability: 'chat',
       node: 'promptsChat.smartNodeIndex', model: 'promptsChat.smartModel', toggle: 'promptsChat.enabled',
       detailLink: { to: '/templates', text: '模板库页' } },
@@ -409,6 +412,23 @@ onMounted(() => {
                   <div class="md:col-span-4">
                     <FormField label="意图识别提示词" hint="占位符 {{intents}}、{{context}}、{{userContent}}；模型必须输出 JSON">
                       <textarea v-model="config.intentRecognition.promptTemplate" rows="6" class="input-field font-mono text-xs"></textarea>
+                    </FormField>
+                  </div>
+                </div>
+
+                <div v-if="row.key === 'codeRender'" class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
+                  <FormField label="生成超时 (ms)">
+                    <input v-model.number="config.codeRender.timeoutMs" type="number" min="5000" max="120000" step="1000" class="input-field" />
+                  </FormField>
+                  <FormField label="最大输出 Token">
+                    <input v-model.number="config.codeRender.maxTokens" type="number" min="256" max="32768" step="256" class="input-field" />
+                  </FormField>
+                  <div class="md:col-span-2 flex items-end">
+                    <RouterLink to="/render" class="btn-outline text-xs">打开 Chromium 限制设置</RouterLink>
+                  </div>
+                  <div class="md:col-span-4">
+                    <FormField label="代码生成提示词" hint="占位符 {{userContent}}；模型必须输出 JSON">
+                      <textarea v-model="config.codeRender.promptTemplate" rows="6" class="input-field font-mono text-xs"></textarea>
                     </FormField>
                   </div>
                 </div>

@@ -60,6 +60,7 @@ const SPECS: BindingSpec[] = [
   { key: 'translation', label: '远程库翻译', trigger: 'pp / spp', operation: 'chat', nodePath: 'llm.translationNodeIndex', modelPath: 'llm.translationModel', alwaysEnabled: true },
   { key: 'freeMode', label: '自由模式规划', trigger: '@bot 直接说话', operation: 'chat', nodePath: 'freeMode.nodeIndex', modelPath: 'freeMode.model', enabledPath: 'freeMode.enabled' },
   { key: 'intentRecognition', label: '自然语言意图识别', trigger: '自然语言 → 命令 / 功能', operation: 'chat', nodePath: 'intentRecognition.nodeIndex', modelPath: 'intentRecognition.model', enabledPath: 'intentRecognition.enabled' },
+  { key: 'codeRender', label: '代码画图', trigger: 'HTML / SVG / Canvas / Three.js', operation: 'chat', nodePath: 'codeRender.nodeIndex', modelPath: 'codeRender.model', enabledPath: 'codeRender.enabled' },
   { key: 'promptsChat', label: '远程库智能选模板', trigger: 'spp', operation: 'chat', nodePath: 'promptsChat.smartNodeIndex', modelPath: 'promptsChat.smartModel', enabledPath: 'promptsChat.enabled' },
   { key: 'canvasImage', label: '画布文生图', trigger: '画布前台', operation: 'image.generate', nodePath: 'canvas.imageNodeIndex', modelPath: 'canvas.imageModel', enabledPath: 'canvas.enabled' },
   { key: 'canvasEdit', label: '画布改图', trigger: '画布前台', operation: 'image.edit', nodePath: 'canvas.editNodeIndex', modelPath: 'canvas.editModel', enabledPath: 'canvas.enabled' },

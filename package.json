@@ -17,6 +17,7 @@
     "start:bot": "node scripts/bot-runtime.mjs",
     "start:bot-v2": "node scripts/bot-runtime-v2.mjs",
     "trace:canvas": "node scripts/trace-canvas-generation.mjs",
+    "check:chromium": "node scripts/check-chromium.mjs",
     "deploy:linux": "bash deploy-linux.sh"
   },
   "devDependencies": {
@@ -37,6 +38,7 @@
     "iconv-lite": "^0.7.3",
     "pdfjs-dist": "^6.4.299",
     "pdfkit": "^0.20.2",
+    "playwright-core": "^1.64.1",
     "pptxgenjs": "^4.0.1",
     "ws": "^8.18.0"
   },

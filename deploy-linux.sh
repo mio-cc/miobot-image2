@@ -12,6 +12,7 @@ set -Eeuo pipefail
 # Common overrides:
 #   APP_DIR=/opt/miobot-v2 PORT=3018 HOST=0.0.0.0 bash deploy-linux.sh install
 #   RUN_TESTS=1 bash deploy-linux.sh rebuild
+#   INSTALL_CHROMIUM=1 bash deploy-linux.sh rebuild   # 代码画图/网页截屏需要
 #
 # Existing systemd installs: git-update/rebuild auto-detect the service
 # WorkingDirectory and EnvironmentFile, and preserve existing env values that
@@ -46,6 +47,7 @@ PORT="${PORT:-3018}"
 HOST="${HOST:-0.0.0.0}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
 INSTALL_NODE="${INSTALL_NODE:-auto}"
+INSTALL_CHROMIUM="${INSTALL_CHROMIUM:-auto}"
 PNPM_VERSION="${PNPM_VERSION:-9.14.2}"
 STRICT_LOCKFILE="${STRICT_LOCKFILE:-0}"
 RUN_TESTS="${RUN_TESTS:-0}"
@@ -200,6 +202,46 @@ managed_path() {
   printf '%s%s/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' \
     "${prefix}" \
     "${prefix:+:}"
+}
+
+chromium_path() {
+  local candidate
+  for candidate in "${MIOBOT_CHROMIUM_PATH:-}" chromium chromium-browser google-chrome google-chrome-stable; do
+    [ -n "$candidate" ] || continue
+    if command -v "$candidate" >/dev/null 2>&1; then command -v "$candidate"; return 0; fi
+  done
+  return 1
+}
+
+ensure_chromium() {
+  local found pm
+  found="$(chromium_path || true)"
+  if [ -n "$found" ]; then
+    log "Chromium 可用：$found"
+    return 0
+  fi
+  if [ "$INSTALL_CHROMIUM" = "0" ] || [ "$INSTALL_CHROMIUM" = "false" ]; then
+    warn "未找到 Chromium；代码画图/网页截屏会在运行时提示未安装。"
+    return 0
+  fi
+  if [ "$INSTALL_CHROMIUM" = "auto" ]; then
+    warn "未找到 Chromium。需要代码画图/网页截屏时执行：INSTALL_CHROMIUM=1 bash deploy-linux.sh rebuild"
+    return 0
+  fi
+  pm="$(detect_pm)"
+  log "安装 Chromium（代码画图/网页截屏依赖，1C2G 机器请确认内存）"
+  case "$pm" in
+    apt)
+      apt-get install -y chromium || apt-get install -y chromium-browser || warn "Chromium 安装失败，请手动安装 chromium 并设置 browserRender.executablePath"
+      ;;
+    dnf) dnf install -y chromium || warn "Chromium 安装失败" ;;
+    yum) yum install -y chromium || warn "Chromium 安装失败" ;;
+    pacman) pacman -S --noconfirm --needed chromium || warn "Chromium 安装失败" ;;
+    apk) apk add --no-cache chromium || warn "Chromium 安装失败" ;;
+    *) warn "未知包管理器，跳过 Chromium 安装" ;;
+  esac
+  found="$(chromium_path || true)"
+  [ -n "$found" ] && log "Chromium 安装完成：$found" || warn "安装后仍未找到 Chromium，请设置 MIOBOT_CHROMIUM_PATH 或 browserRender.executablePath"
 }
 
 ensure_os_packages() {
@@ -674,6 +716,7 @@ MIOBOT_CANVAS_LOG_PATH=${env_log_dir}/canvas.ndjson
 MIOBOT_BOT_LOG_PATH=${env_log_dir}/system.ndjson
 MIOBOT_CODEX_PYTHON=${env_codex_python}
 MIOBOT_CODEX_REMOTE_ENABLED=${env_codex_remote}
+MIOBOT_CHROMIUM_PATH=$(chromium_path || true)
 DATA_DIR=${env_data_dir}
 LOG_DIR=${env_log_dir}
 PATH=$(managed_path)
@@ -824,6 +867,7 @@ EOF
 install_all() {
   require_root
   ensure_os_packages
+  ensure_chromium
   ensure_node
   ensure_pnpm
   ensure_dirs
@@ -844,6 +888,7 @@ rebuild_all() {
   require_root
   detect_runtime_layout
   ensure_os_packages
+  ensure_chromium
   ensure_node
   ensure_pnpm
   ensure_dirs
@@ -871,6 +916,7 @@ env_only() {
   require_root
   detect_runtime_layout
   ensure_os_packages
+  ensure_chromium
   ensure_node
   ensure_pnpm
   ensure_dirs
