@@ -32,6 +32,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   file: '文件',
   video: '视频',
   template: '模板',
+  web: '联网搜索',
   system: '系统',
 };
 
@@ -61,7 +62,7 @@ function ensureSetting(def: FeatureDefinition): any {
 
 const grouped = computed(() => {
   const out: Array<{ category: string; label: string; items: Array<{ def: FeatureDefinition; setting: any }> }> = [];
-  for (const category of ['basic', 'image', 'file', 'video', 'template', 'system']) {
+  for (const category of ['basic', 'image', 'file', 'video', 'template', 'web', 'system']) {
     const items = definitions.value
       .filter((def) => def.category === category)
       .map((def) => ({ def, setting: ensureSetting(def) }));
@@ -87,6 +88,30 @@ const collisions = computed(() => {
 function aliasesText(setting: any): string {
   return (setting.aliases || []).join(', ');
 }
+const fileFormatHelp = [
+  { ext: '.md', how: '生成一份 Markdown 介绍文档 / 生成 md 文档', note: 'Markdown 纯文本' },
+  { ext: '.docx', how: '生成一份 Word 项目周报 / 生成 docx 文档', note: '支持封面、主题配色、表格、提示框' },
+  { ext: '.xlsx', how: '生成一个 Excel 销售表格 / 生成 xlsx 表格', note: '工作表与行列数据' },
+  { ext: '.pptx', how: '生成一份 PPT 项目汇报 / 生成 pptx 幻灯片', note: '封面与多页内容' },
+  { ext: '.pdf', how: '生成一份 PDF 报告', note: 'A4 文档' },
+  { ext: '.txt', how: '生成一个 txt 文件', note: '纯文本' },
+  { ext: '.csv', how: '生成 csv 数据文件', note: '一行一个记录' },
+  { ext: '.json', how: '生成 json 文件', note: '结构化数据' },
+  { ext: '.zip', how: '生成一个 zip 压缩包', note: '多个文件打包' },
+];
+
+const quickCommands = computed(() => definitions.value
+  .filter((def) => def.implemented)
+  .map((def) => {
+    const setting = ensureSetting(def);
+    return {
+      id: def.id,
+      label: def.label,
+      aliases: (setting.aliases || []).slice(0, 8),
+      enabled: Boolean(setting.enabled),
+    };
+  }));
+
 
 function updateAliases(setting: any, event: Event) {
   const raw = (event.target as HTMLInputElement).value;
@@ -153,6 +178,41 @@ onMounted(loadFeatures);
         {{ alias }} 同时属于 {{ names.join(' / ') }}
       </div>
     </div>
+
+    <SectionCard title="命令速查" hint="这里展示当前已登记的命令别名；实际别名可在下方逐项修改" class="mb-4">
+      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+        <div v-for="cmd in quickCommands" :key="cmd.id" class="rounded-lg border border-[color:var(--hairline-2)] p-3">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-xs font-medium">{{ cmd.label }}</span>
+            <span class="tag">{{ cmd.enabled ? '已启用' : '已关闭' }}</span>
+          </div>
+          <div class="flex flex-wrap gap-1">
+            <code v-for="alias in cmd.aliases" :key="alias" class="text-[11px] px-1.5 py-0.5 rounded bg-[color:var(--surface-2)]">{{ alias }}</code>
+            <span v-if="!cmd.aliases.length" class="text-xs text-[color:var(--ink-3)]">尚未配置别名</span>
+          </div>
+        </div>
+      </div>
+    </SectionCard>
+
+    <SectionCard title="文件生成格式怎么指定" hint="自然语言和显式命令都可以；模型会先判断是不是文件生成请求" class="mb-4">
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead><tr class="border-b border-[color:var(--hairline-2)]"><th class="text-left py-2 pr-4">格式</th><th class="text-left py-2 pr-4">这样说</th><th class="text-left py-2">说明</th></tr></thead>
+          <tbody>
+            <tr v-for="item in fileFormatHelp" :key="item.ext" class="border-b border-[color:var(--hairline-2)]">
+              <td class="py-2 pr-4 font-mono font-semibold">{{ item.ext }}</td>
+              <td class="py-2 pr-4">{{ item.how }}</td>
+              <td class="py-2 text-[color:var(--ink-3)]">{{ item.note }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="mt-3 text-xs text-[color:var(--ink-3)] leading-5">
+        <p>也可以使用显式命令：<code class="font-mono">生成文件 ...</code>、<code class="font-mono">生成文档 ...</code>、<code class="font-mono">导出文件 ...</code>。</p>
+        <p>没有明确格式时：提到「Word / 文档」默认生成 docx，提到「Excel / 表格」默认生成 xlsx，提到「PPT / 幻灯片」默认生成 pptx，提到「md / Markdown」优先生成 md；都没有则默认 txt。</p>
+        <p>文件生成意图可以在「能力分工 → 文件生成意图」选择独立模型；模型失败或低置信度时自动回退正则。</p>
+      </div>
+    </SectionCard>
 
     <SectionCard v-for="group in grouped" :key="group.category" :title="group.label" class="mb-4">
       <div class="space-y-3">

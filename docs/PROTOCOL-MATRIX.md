@@ -234,6 +234,15 @@ Napcat → QQ
   - `生成文件 一份 PPT 项目汇报`
 - 模型只输出结构化 JSON，本地渲染器负责生成真实文件，避免要求聊天模型返回 Office 二进制。
 - 支持 txt/md/json/csv/docx/xlsx/pptx/pdf/zip。
+- 指定格式：可以在自然语言里带扩展名或格式名，例如 `生成一份 Markdown 介绍文档`、`生成一个 Word 周报`、`生成一份 Excel 表格`、`生成一份 PPT 汇报`、`生成 PDF 报告`、`生成一个 zip 压缩包`。
+- 未明确格式时的默认规则：提到 Word/文档 -> docx，提到 Excel/表格 -> xlsx，提到 PPT/幻灯片 -> pptx，提到 md/Markdown 优先 md，其余默认 txt。
+- DOCX 不再使用固定单一排版。模型会输出 `style` 和结构化 `sections`，支持：
+  - 主题：business / modern / academic / minimal / report / tech
+  - 封面、标题、副标题、作者、日期
+  - 字体、主题色、正文字号、行距、页边距
+  - 页眉、页脚、页码
+  - 章节、正文、项目符号、表格、提示框
+  - 模型会根据内容类型选择版式和主题；模型没给 style 时使用 business 默认样式。
 - 生成后上传到 Canvas 的 `/canvas-api/bot/files`，Napcat 通过公开 URL 以 file 段发送。
 - APK 只支持输入分析，不支持从自然语言直接构建可安装 APK。
 

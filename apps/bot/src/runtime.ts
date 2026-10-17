@@ -186,21 +186,30 @@ function fallbackFileSpec(type: GeneratedFileType, text: string): GeneratedFileS
 }
 
 function filePrompt(userRequest: string, type: GeneratedFileType): string {
-  const schema = type === 'xlsx'
-    ? '{"type":"xlsx","fileName":"report","sheets":[{"name":"Sheet1","rows":[["列1","列2"],["值1","值2"]]}]}'
-    : type === 'pptx'
-      ? '{"type":"pptx","fileName":"slides","title":"标题","slides":[{"title":"页标题","bullets":["要点1","要点2"],"notes":"备注"}]}'
-      : type === 'docx'
-        ? '{"type":"docx","fileName":"document","title":"标题","sections":[{"heading":"小节","body":"正文","bullets":["要点"]}]}'
+  const docxSchema = '{"type":"docx","fileName":"deepseek-intro","title":"DeepSeek 介绍","subtitle":"技术概览","author":"Miobot","date":"2026-10-18","style":{"theme":"tech","fontFamily":"Microsoft YaHei","accentColor":"2563EB","textColor":"1F2937","titleSize":30,"headingSize":16,"bodySize":11,"lineSpacing":1.5,"pageMargin":50,"coverPage":true,"header":"DeepSeek 介绍","footer":"Miobot","tableStyle":"striped"},"sections":[{"heading":"核心信息","body":"这里是正文段落。","bullets":["要点一","要点二"],"table":{"headers":["项目","内容"],"rows":[["发布方","DeepSeek"],["主题","介绍"]]},"callout":{"title":"提示","body":"重点内容可以放在提示框中","tone":"info"}}]}';
+  const schema = type === 'docx'
+    ? docxSchema
+    : type === 'xlsx'
+      ? '{"type":"xlsx","fileName":"report","sheets":[{"name":"Sheet1","rows":[["列1","列2"],["值1","值2"]]}]}'
+      : type === 'pptx'
+        ? '{"type":"pptx","fileName":"slides","title":"标题","slides":[{"title":"页标题","bullets":["要点1","要点2"],"notes":"备注"}]}'
         : type === 'pdf'
           ? '{"type":"pdf","fileName":"document","title":"标题","sections":[{"heading":"小节","body":"正文"}]}'
           : type === 'zip'
             ? '{"type":"zip","fileName":"bundle","files":[{"name":"readme.txt","content":"内容"}]}'
             : `{"type":"${type}","fileName":"document","title":"标题","content":"正文"}`;
+  const extra = type === 'docx'
+    ? [
+        'docx 请根据内容选择最合适的 style.theme（business/modern/academic/minimal/report/tech）。',
+        '不要所有文档都使用同一套版式：技术介绍用 tech，商务报告用 business 或 report，学术资料用 academic，简洁资料用 minimal。',
+        '正文要分段，使用 heading、body、bullets；需要对比或数据时使用 table；重点提示使用 callout。',
+      ]
+    : [];
   return [
     `请根据用户要求生成一个 ${type} 文件。只输出一个 JSON 对象，不要 Markdown 代码块，不要解释。`,
     `JSON 结构示例：${schema}`,
     '内容要完整、可直接使用；长内容可分段，但不要输出 JSON 之外的文字。',
+    ...extra,
     `用户要求：${userRequest}`,
   ].join('\n');
 }

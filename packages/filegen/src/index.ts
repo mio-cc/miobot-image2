@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const PptxGenJS: any = require('pptxgenjs');
 const { ZipArchive }: any = require('archiver');
-import { Document, Packer, Paragraph, HeadingLevel, Table, TableRow, TableCell } from 'docx';
+import { Document, Packer, Paragraph, HeadingLevel, Table, TableRow, TableCell, WidthType, ShadingType, BorderStyle, AlignmentType, TextRun, Header, Footer, PageNumber, PageBreak } from 'docx';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 
@@ -17,17 +17,54 @@ export const FILEGEN_PACKAGE = {
 
 export type GeneratedFileType = 'txt' | 'md' | 'json' | 'csv' | 'docx' | 'xlsx' | 'pptx' | 'pdf' | 'zip';
 
+export type DocxTheme = 'business' | 'modern' | 'academic' | 'minimal' | 'report' | 'tech';
+export type DocxTableStyle = 'grid' | 'striped' | 'minimal';
+
+export interface GeneratedDocxTable {
+  headers?: string[];
+  rows?: Array<Array<string | number>>;
+  caption?: string;
+}
+
+export interface GeneratedDocxCallout {
+  title?: string;
+  body?: string;
+  tone?: 'info' | 'warn' | 'success';
+}
+
 export interface GeneratedFileSection {
   heading?: string;
   body?: string;
   bullets?: string[];
+  table?: GeneratedDocxTable;
+  callout?: GeneratedDocxCallout;
+}
+
+export interface GeneratedDocxStyle {
+  theme?: DocxTheme;
+  fontFamily?: string;
+  accentColor?: string;
+  textColor?: string;
+  titleSize?: number;
+  headingSize?: number;
+  bodySize?: number;
+  lineSpacing?: number;
+  pageMargin?: number;
+  coverPage?: boolean;
+  header?: string;
+  footer?: string;
+  tableStyle?: DocxTableStyle;
 }
 
 export interface GeneratedFileSpec {
   type: GeneratedFileType;
   fileName?: string;
   title?: string;
+  subtitle?: string;
+  author?: string;
+  date?: string;
   content?: string;
+  style?: GeneratedDocxStyle;
   sections?: GeneratedFileSection[];
   sheets?: Array<{ name?: string; rows: Array<Array<string | number | null | undefined>> }>;
   slides?: Array<{ title?: string; bullets?: string[]; notes?: string }>;
@@ -99,6 +136,54 @@ function normalizeRows(rows: unknown, limits: FilegenLimits): Array<Array<string
   return rows.slice(0, limits.maxRowsPerSheet).map((row) => Array.isArray(row) ? row.slice(0, limits.maxColumnsPerSheet) : [String(row ?? '')]);
 }
 
+const DOCX_THEMES: DocxTheme[] = ['business', 'modern', 'academic', 'minimal', 'report', 'tech'];
+const DOCX_TABLE_STYLES: DocxTableStyle[] = ['grid', 'striped', 'minimal'];
+
+function normalizeHexColor(value: unknown, fallback: string): string {
+  const raw = String(value ?? '').trim().replace(/^#/, '').toUpperCase();
+  return /^[0-9A-F]{6}$/.test(raw) ? raw : fallback;
+}
+
+function normalizeDocxStyle(value: unknown): GeneratedDocxStyle | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Record<string, any>;
+  const theme = DOCX_THEMES.includes(raw.theme) ? raw.theme : 'business';
+  const tableStyle = DOCX_TABLE_STYLES.includes(raw.tableStyle) ? raw.tableStyle : 'striped';
+  const defaultAccent = theme === 'modern' ? '0F766E' : theme === 'report' ? '7C3AED' : theme === 'tech' ? '2563EB' : theme === 'academic' ? '333333' : theme === 'minimal' ? '111827' : '1F4E79';
+  return {
+    theme,
+    fontFamily: clampString(raw.fontFamily || 'Microsoft YaHei', 120),
+    accentColor: normalizeHexColor(raw.accentColor, defaultAccent),
+    textColor: normalizeHexColor(raw.textColor, '1F2937'),
+    titleSize: Math.max(18, Math.min(48, Number(raw.titleSize) || 30)),
+    headingSize: Math.max(12, Math.min(28, Number(raw.headingSize) || 15)),
+    bodySize: Math.max(9, Math.min(16, Number(raw.bodySize) || 11)),
+    lineSpacing: Math.max(1, Math.min(2.2, Number(raw.lineSpacing) || 1.5)),
+    pageMargin: Math.max(30, Math.min(100, Number(raw.pageMargin) || 50)),
+    coverPage: raw.coverPage === undefined ? !['minimal', 'academic'].includes(theme) : raw.coverPage !== false,
+    header: raw.header === undefined ? undefined : clampString(raw.header, 200),
+    footer: raw.footer === undefined ? undefined : clampString(raw.footer, 200),
+    tableStyle,
+  };
+}
+
+function normalizeDocxTable(value: unknown): GeneratedDocxTable | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Record<string, any>;
+  const rows = Array.isArray(raw.rows) ? raw.rows.slice(0, 100).map((row: any) => Array.isArray(row) ? row.slice(0, 20).map((cell: any) => typeof cell === 'number' ? cell : clampString(cell, 1000)) : []) : [];
+  const headers = Array.isArray(raw.headers) ? raw.headers.slice(0, 20).map((cell: any) => clampString(cell, 500)) : [];
+  if (!headers.length && !rows.length) return undefined;
+  return { headers: headers.length ? headers : undefined, rows, caption: raw.caption === undefined ? undefined : clampString(raw.caption, 300) };
+}
+
+function normalizeDocxCallout(value: unknown): GeneratedDocxCallout | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value as Record<string, any>;
+  const tone = ['info', 'warn', 'success'].includes(raw.tone) ? raw.tone : 'info';
+  if (!raw.title && !raw.body) return undefined;
+  return { title: raw.title === undefined ? undefined : clampString(raw.title, 300), body: raw.body === undefined ? undefined : clampString(raw.body, 5000), tone };
+}
+
 export function normalizeGeneratedFileSpec(input: unknown, limits: FilegenLimits = DEFAULT_FILEGEN_LIMITS): GeneratedFileSpec {
   if (!input || typeof input !== 'object') throw new Error('文件生成参数必须是对象');
   const raw = input as Record<string, any>;
@@ -107,12 +192,18 @@ export function normalizeGeneratedFileSpec(input: unknown, limits: FilegenLimits
   if (!allowed.includes(type)) throw new Error(`不支持的文件类型: ${type || '空'}`);
   const spec: GeneratedFileSpec = { type, fileName: safeFileName(raw.fileName || raw.name || raw.title, type) };
   if (raw.title !== undefined) spec.title = clampString(raw.title, 500);
+  if (raw.subtitle !== undefined) spec.subtitle = clampString(raw.subtitle, 500);
+  if (raw.author !== undefined) spec.author = clampString(raw.author, 200);
+  if (raw.date !== undefined) spec.date = clampString(raw.date, 100);
   if (raw.content !== undefined) spec.content = clampString(raw.content);
+  spec.style = normalizeDocxStyle(raw.style);
   if (Array.isArray(raw.sections)) {
     spec.sections = raw.sections.slice(0, limits.maxSections).map((item: any) => ({
       heading: item?.heading === undefined ? undefined : clampString(item.heading, 500),
       body: item?.body === undefined ? undefined : clampString(item.body),
       bullets: Array.isArray(item?.bullets) ? item.bullets.slice(0, 200).map((bullet: any) => clampString(bullet, 2000)) : undefined,
+      table: normalizeDocxTable(item?.table),
+      callout: normalizeDocxCallout(item?.callout),
     }));
   }
   if (Array.isArray(raw.sheets)) {
@@ -137,24 +228,155 @@ export function normalizeGeneratedFileSpec(input: unknown, limits: FilegenLimits
   return spec;
 }
 
-function sectionParagraphs(sections: GeneratedFileSection[] = []): Paragraph[] {
-  const out: Paragraph[] = [];
+function hexToRgb(hex: string): [number, number, number] {
+  const value = hex.replace('#', '');
+  return [parseInt(value.slice(0, 2), 16), parseInt(value.slice(2, 4), 16), parseInt(value.slice(4, 6), 16)];
+}
+
+function mixWithWhite(hex: string, amount: number): string {
+  const [r, g, b] = hexToRgb(hex);
+  const mix = (n: number) => Math.round(n + (255 - n) * amount).toString(16).padStart(2, '0').toUpperCase();
+  return `${mix(r)}${mix(g)}${mix(b)}`;
+}
+
+const DOCX_FALLBACK_STYLE: Required<GeneratedDocxStyle> = {
+  theme: 'business',
+  fontFamily: 'Microsoft YaHei',
+  accentColor: '1F4E79',
+  textColor: '1F2937',
+  titleSize: 30,
+  headingSize: 15,
+  bodySize: 11,
+  lineSpacing: 1.5,
+  pageMargin: 50,
+  coverPage: true,
+  header: '',
+  footer: '',
+  tableStyle: 'striped',
+};
+
+function docxStyle(spec: GeneratedFileSpec): Required<GeneratedDocxStyle> {
+  return { ...DOCX_FALLBACK_STYLE, ...(spec.style || {}) } as Required<GeneratedDocxStyle>;
+}
+
+function sectionParagraphs(sections: GeneratedFileSection[] = [], style: Required<GeneratedDocxStyle>): Array<Paragraph | Table> {
+  const out: Array<Paragraph | Table> = [];
+  const bodyRun = (text: string, bold = false, color = style.textColor) => new TextRun({ text, bold, color, font: style.fontFamily, size: style.bodySize * 2 });
   for (const section of sections) {
-    if (section.heading) out.push(new Paragraph({ text: section.heading, heading: HeadingLevel.HEADING_2 }));
-    if (section.body) {
-      for (const line of section.body.split(/\r?\n/)) out.push(new Paragraph({ text: line }));
+    if (section.heading) {
+      out.push(new Paragraph({
+        heading: HeadingLevel.HEADING_1,
+        keepNext: true,
+        spacing: { before: 280, after: 120 },
+        children: [new TextRun({ text: section.heading, bold: true, color: style.accentColor, font: style.fontFamily, size: style.headingSize * 2 })],
+      }));
     }
-    for (const bullet of section.bullets || []) out.push(new Paragraph({ text: bullet, bullet: { level: 0 } }));
+    if (section.body) {
+      for (const line of section.body.split(/\r?\n/)) {
+        out.push(new Paragraph({
+          spacing: { after: 100, line: Math.round(style.lineSpacing * 240) },
+          children: [bodyRun(line)],
+        }));
+      }
+    }
+    for (const bullet of section.bullets || []) {
+      out.push(new Paragraph({
+        bullet: { level: 0 },
+        spacing: { after: 70, line: Math.round(style.lineSpacing * 240) },
+        children: [bodyRun(bullet)],
+      }));
+    }
+    if (section.callout) {
+      const tone = section.callout.tone || 'info';
+      const fill = tone === 'warn' ? 'FEF3C7' : tone === 'success' ? 'DCFCE7' : 'E0F2FE';
+      const toneColor = tone === 'warn' ? '92400E' : tone === 'success' ? '166534' : '075985';
+      const calloutChildren: Paragraph[] = [];
+      if (section.callout.title) calloutChildren.push(new Paragraph({ spacing: { after: 50 }, children: [new TextRun({ text: section.callout.title, bold: true, color: toneColor, font: style.fontFamily, size: style.bodySize * 2 })] }));
+      if (section.callout.body) calloutChildren.push(new Paragraph({ spacing: { after: 30 }, children: [new TextRun({ text: section.callout.body, color: style.textColor, font: style.fontFamily, size: style.bodySize * 2 })] }));
+      if (calloutChildren.length) {
+        out.push(new Table({
+          width: { size: 100, type: WidthType.PERCENTAGE },
+          rows: [new TableRow({ children: [new TableCell({
+            shading: { fill, type: ShadingType.CLEAR },
+            margins: { top: 120, bottom: 120, left: 180, right: 180 },
+            children: calloutChildren,
+          })] })],
+        }));
+        out.push(new Paragraph({ spacing: { after: 120 }, children: [bodyRun('')] }));
+      }
+    }
+    if (section.table && (section.table.headers?.length || section.table.rows?.length)) {
+      if (section.table.caption) out.push(new Paragraph({ spacing: { before: 100, after: 70 }, children: [new TextRun({ text: section.table.caption, italics: true, color: '6B7280', font: style.fontFamily, size: style.bodySize * 2 })] }));
+      const rows: TableRow[] = [];
+      const headers = section.table.headers || [];
+      if (headers.length) {
+        rows.push(new TableRow({
+          tableHeader: true,
+          children: headers.map((cell) => new TableCell({
+            shading: { fill: style.accentColor, type: ShadingType.CLEAR },
+            margins: { top: 90, bottom: 90, left: 120, right: 120 },
+            children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: String(cell), bold: true, color: 'FFFFFF', font: style.fontFamily, size: style.bodySize * 2 })] })],
+          })),
+        }));
+      }
+      for (let i = 0; i < (section.table.rows || []).length; i += 1) {
+        const row = section.table.rows![i];
+        const fill = style.tableStyle === 'striped' && i % 2 === 1 ? mixWithWhite(style.accentColor, 0.92) : 'FFFFFF';
+        rows.push(new TableRow({
+          children: row.map((cell) => new TableCell({
+            shading: style.tableStyle === 'minimal' ? undefined : { fill, type: ShadingType.CLEAR },
+            margins: { top: 80, bottom: 80, left: 120, right: 120 },
+            children: [new Paragraph({ children: [new TextRun({ text: String(cell), color: style.textColor, font: style.fontFamily, size: style.bodySize * 2 })] })],
+          })),
+        }));
+      }
+      out.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows }));
+      out.push(new Paragraph({ spacing: { after: 120 }, children: [bodyRun('')] }));
+    }
   }
   return out;
 }
 
 async function generateDocx(spec: GeneratedFileSpec, outputPath: string): Promise<void> {
+  const style = docxStyle(spec);
   const children: Array<Paragraph | Table> = [];
-  if (spec.title) children.push(new Paragraph({ text: spec.title, heading: HeadingLevel.TITLE }));
-  children.push(...sectionParagraphs(spec.sections));
-  if (spec.content) children.push(...spec.content.split(/\r?\n/).map((line) => new Paragraph({ text: line })));
-  const doc = new Document({ sections: [{ children }] });
+  const titleRun = new TextRun({ text: spec.title || '文档', bold: true, color: style.accentColor, font: style.fontFamily, size: style.titleSize * 2 });
+  if (style.coverPage) {
+    children.push(new Paragraph({ spacing: { before: 2400, after: 240 }, alignment: AlignmentType.CENTER, children: [titleRun] }));
+    if (spec.subtitle) children.push(new Paragraph({ spacing: { after: 160 }, alignment: AlignmentType.CENTER, children: [new TextRun({ text: spec.subtitle, color: '6B7280', font: style.fontFamily, size: style.bodySize * 2 + 4 })] }));
+    if (spec.author) children.push(new Paragraph({ spacing: { after: 60 }, alignment: AlignmentType.CENTER, children: [new TextRun({ text: spec.author, color: '6B7280', font: style.fontFamily, size: style.bodySize * 2 })] }));
+    if (spec.date) children.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: spec.date, color: '6B7280', font: style.fontFamily, size: style.bodySize * 2 })] }));
+    children.push(new Paragraph({ children: [new PageBreak()] }));
+  } else {
+    children.push(new Paragraph({ spacing: { after: 80 }, children: [titleRun] }));
+    if (spec.subtitle) children.push(new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: spec.subtitle, color: '6B7280', font: style.fontFamily, size: style.bodySize * 2 + 2 })] }));
+    children.push(new Paragraph({ spacing: { after: 180 }, border: { bottom: { color: style.accentColor, style: BorderStyle.SINGLE, size: 8, space: 8 } }, children: [new TextRun({ text: '', font: style.fontFamily, size: 2 })] }));
+  }
+  children.push(...sectionParagraphs(spec.sections, style));
+  if (spec.content) {
+    for (const line of spec.content.split(/\r?\n/)) children.push(new Paragraph({ spacing: { after: 100, line: Math.round(style.lineSpacing * 240) }, children: [new TextRun({ text: line, color: style.textColor, font: style.fontFamily, size: style.bodySize * 2 })] }));
+  }
+  if (!children.length) children.push(new Paragraph({ children: [new TextRun({ text: '', font: style.fontFamily })] }));
+
+  const headerText = style.header || spec.title || '';
+  const footerText = style.footer || '';
+  const tiny = { color: '6B7280', font: style.fontFamily, size: 18 };
+  const headers = headerText ? { default: new Header({ children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ ...tiny, text: headerText })] })] }) } : undefined;
+  const footers = {
+    default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [
+      new TextRun({ ...tiny, text: footerText ? `${footerText}  ` : '' }),
+      new TextRun({ ...tiny, children: ['第 ', PageNumber.CURRENT, ' 页'] }),
+    ] })] }),
+  };
+  const doc = new Document({
+    styles: { default: { document: { run: { font: style.fontFamily, size: style.bodySize * 2, color: style.textColor }, paragraph: { spacing: { line: Math.round(style.lineSpacing * 240) } } } } },
+    sections: [{
+      properties: { page: { margin: { top: style.pageMargin * 20, right: style.pageMargin * 20, bottom: style.pageMargin * 20, left: style.pageMargin * 20 } } },
+      headers,
+      footers,
+      children,
+    }],
+  });
   await fs.writeFile(outputPath, await Packer.toBuffer(doc));
 }
 
