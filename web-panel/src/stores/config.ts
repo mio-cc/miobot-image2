@@ -17,6 +17,8 @@ import { useAuthStore } from './auth';
 const SECTION_LABELS: Record<string, string> = {
     llm: '模型', bot: 'Bot 行为', canvas: '画布', napcat: 'Napcat',
     promptsChat: '远程模板库', freeMode: '自由模式', huggingFace: 'HuggingFace', panel: '面板',
+    intentRecognition: '意图识别', browserRender: '浏览器渲染', codeRender: '代码画图',
+    comfyuiTransform: 'ComfyUI 参数转化', search: '联网搜索',
 };
 
 export const useConfigStore = defineStore('config', () => {
