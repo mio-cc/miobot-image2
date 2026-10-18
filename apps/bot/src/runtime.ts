@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { FEATURE_DEFINITIONS, type FeatureSetting } from '../../../packages/shared/src/features.js';
 import { createReplyStrategyEngine, type ReplyClient, type ReplyContext, type ReplyStrategyConfig } from '../../../packages/reply/src/index.js';
+import { createSentMessageTracker, createTrackingReplyClient, sentChatKey } from './sent-messages.js';
 import { dedupeImageUrls, dedupeVideoUrls } from '../../../packages/napcat/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { BotEngineResult } from '../../../packages/bot-engine/src/index.js';
@@ -509,6 +510,27 @@ async function handleFileReadCommand(
 
 export function createBotMessageRuntime(options: BotRuntimeOptions) {
   const log = options.logger;
+  const sentMessages = createSentMessageTracker();
+  const trackedReply = createTrackingReplyClient(options.reply, sentMessages);
+
+  async function recallRecentMessages(chatType: 'group' | 'private', groupId: number | string | undefined, userId: number | string | undefined, count: number): Promise<string> {
+    if (!options.deleteMessage) return '当前运行环境不支持撤回消息。';
+    const key = sentChatKey(chatType, groupId, userId);
+    const ids = sentMessages.take(key, count);
+    if (!ids.length) return '当前聊天没有记录到可撤回的机器人消息。';
+    let ok = 0;
+    const failed: Array<number | string> = [];
+    for (const id of ids) {
+      try {
+        if (await options.deleteMessage(id)) ok += 1;
+        else failed.push(id);
+      } catch { failed.push(id); }
+    }
+    if (failed.length) sentMessages.restore(key, failed);
+    if (!ok) return `撤回失败（${failed.length} 条）。`;
+    const suffix = failed.length ? `，${failed.length} 条失败` : '';
+    return ok === 1 ? `已撤回最近 1 条机器人消息${suffix}。` : `已撤回最近 ${ok} 条机器人消息${suffix}。`;
+  }
   // 会话内“只回最新”：记录每个会话最后一条已进入处理的消息序号，
   // chat 文本结果发送前若已有更新消息，则丢弃这份迟到回复（图/视频等昂贵产物不丢）。
   let messageSeq = 0;
@@ -554,7 +576,9 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     if (options.owner && isOwner(userId, options.owner.ownerQQs())) {
       const oc = parseOwnerCommand(stripNonTextCqSegments(rawMessage), { chatType, mentions: extractMentions(event), botId: options.selfId?.() ?? cfg.bot.botQqId });
       if (oc) {
-        const text = await options.owner.handle(oc, { chatType, groupId: event.group_id, userId, messageId: event.message_id });
+        const text = oc.command === 'recall'
+          ? await recallRecentMessages(chatType, event.group_id, userId, oc.count)
+          : await options.owner.handle(oc, { chatType, groupId: event.group_id, userId, messageId: event.message_id });
         if (text) {
           const ownerReply = createReplyStrategyEngine(options.reply, toReplyStrategyConfig(cfg));
           await ownerReply.replyText({ chatType, groupId: event.group_id, userId, senderId: userId, botName: options.botName || 'Miobot' }, text);
@@ -635,7 +659,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       replyToMessageId: event.message_id,
       botName: options.botName || 'Miobot',
     };
-    const engine = createReplyStrategyEngine(options.reply, toReplyStrategyConfig(cfg));
+    const engine = createReplyStrategyEngine(trackedReply, toReplyStrategyConfig(cfg));
 
     let result: BotEngineResult | null = null;
 
@@ -1044,9 +1068,10 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
             : result.kind === 'video.generate' ? 'video.generate' : '';
     const sendDelay = resultFeatureId ? options.featureGate?.sendDelayMs(resultFeatureId) || 0 : 0;
     if (sendDelay > 0) await new Promise((resolve) => setTimeout(resolve, sendDelay));
-    const sent = await sendResult(engine, replyCtx, result, options.voice, options.reply);
+    const sent = await sendResult(engine, replyCtx, result, options.voice, trackedReply);
     if (cfg.bot.autoRecallImages && result.images?.length && sent?.success && options.deleteMessage) {
       const ids = sent.messageIds?.length ? sent.messageIds : (sent.messageId !== undefined ? [sent.messageId] : []);
+      if (ids.length) sentMessages.remove(sentChatKey(chatType, event.group_id, userId), ids);
       const delayMs = Math.max(1, Number(cfg.bot.autoRecallDelaySeconds || 60)) * 1000;
       for (const id of ids) {
         const timer = setTimeout(() => { void options.deleteMessage!(id).catch?.(() => undefined); }, delayMs);
@@ -1188,6 +1213,7 @@ function buildHelpText(cfg: AppConfig): string {
   add('help');
   add('clear');
   lines.push('- 主人命令：/模型 或 /模型列表 查看模型列表（ComfyUI 会实时读取 object_info）；/切换 <模型> 切换文本模型。');
+  lines.push('- 召回命令：ch 撤回当前聊天最近 1 条机器人消息；plch 或 plch <n> 撤回最近 n 条（默认 5）。');
   lines.push('', '【生图】');
   lines.push('- 直接说：画一只猫 / 生成四张赛博朋克猫，横图。');
   lines.push('- 不需要填写 steps、CFG、sampler、batch_size，后台自动转化参数。');

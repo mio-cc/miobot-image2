@@ -1,3 +1,4 @@
+export { createSentMessageTracker, createTrackingReplyClient, sentChatKey, type SentMessageTracker } from './sent-messages.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
 
 export const BOT_APP: PackageDescriptor = {

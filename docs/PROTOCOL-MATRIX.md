@@ -612,6 +612,18 @@ text-image
 
 实现为 SVG 排版 + sharp 转 JPEG，不启动 Chromium。渲染失败回退普通文本。服务器需安装中文字体，例如 `fonts-noto-cjk`。
 
+### 主人撤回命令
+
+```text
+ch                 撤回当前群聊/私聊最近 1 条机器人消息
+/ch               同上
+plch               撤回最近 5 条机器人消息
+plch 10            撤回最近 10 条机器人消息
+/撤回 3            兼容旧命令，撤回最近 3 条
+```
+
+仅记录当前 bot 进程启动后实际发送成功且 Napcat 返回 `message_id/messageIds` 的消息；撤回命令本身的确认消息不计入队列。群聊需要 @bot 或回复 bot。
+
 ### QQ 端模型列表
 
 主人命令：

@@ -445,7 +445,8 @@ async function handleOwnerCommand(
       return `已加入私聊白名单: ${id}`;
     }
     case 'recall':
-      return '撤回功能尚未在新架构实现(需消息发送追踪)。';
+      // recall needs the runtime's sent-message tracker; runtime intercepts this command.
+      return null;
     default:
       return null;
   }

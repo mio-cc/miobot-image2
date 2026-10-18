@@ -15,6 +15,10 @@ test('parseOwnerCommand: 私聊各命令', () => {
   const p = (text) => parseOwnerCommand(text, { chatType: 'private' });
   assert.deepEqual(p('/模型'), { command: 'modelList' });
   assert.deepEqual(p('/models'), { command: 'modelList' });
+  assert.deepEqual(p('/ch'), { command: 'recall', count: 1 });
+  assert.deepEqual(p('ch'), { command: 'recall', count: 1 });
+  assert.deepEqual(p('/plch'), { command: 'recall', count: 5 });
+  assert.deepEqual(p('plch 8'), { command: 'recall', count: 8 });
   assert.deepEqual(p('/模型列表'), { command: 'modelList' });
   assert.deepEqual(p('/切换 gpt-4o'), { command: 'switchModel', code: 'gpt-4o' });
   assert.deepEqual(p('/q gpt_image_2'), { command: 'switchModel', code: 'gpt.image.2' });

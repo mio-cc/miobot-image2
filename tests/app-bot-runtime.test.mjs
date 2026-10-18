@@ -518,3 +518,37 @@ test('extractImages: segment with both file and url prefers Napcat local file fo
   });
   assert.deepEqual(imgs, ['2F4E9D49282C5B22757A249618A7AE95.jpg']);
 });
+
+
+test('owner: ch -> 撤回当前私聊最近一条机器人消息', async () => {
+  const client = makeModelClient();
+  const getConfig = () => {
+    const c = createDefaultConfig();
+    c.bot.botQqId = '10000';
+    c.bot.ownerQQs = ['5'];
+    return c;
+  };
+  const app = createBotApp({ getConfig, client });
+  const sent = [];
+  const deleted = [];
+  let nextId = 500;
+  const reply = {
+    sendGroupText: async () => ({ success: true, messageId: ++nextId }),
+    sendPrivateText: async (u, t) => { sent.push(['text', u, t]); return { success: true, messageId: ++nextId }; },
+    sendGroupImage: async () => ({ success: true, messageId: ++nextId }),
+    sendPrivateImage: async () => ({ success: true, messageId: ++nextId }),
+  };
+  const handled = [];
+  const rt = createBotMessageRuntime({
+    app, reply, getConfig,
+    owner: { ownerQQs: () => getConfig().bot.ownerQQs, handle: async (cmd) => { handled.push(cmd); return 'UNEXPECTED'; } },
+    deleteMessage: async (id) => { deleted.push(String(id)); return true; },
+  });
+  const first = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 60, raw_message: '你好' });
+  assert.equal(first.handled, true);
+  const recall = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 61, raw_message: 'ch' });
+  assert.equal(recall.kind, 'owner:recall');
+  assert.deepEqual(deleted, ['501']);
+  assert.equal(handled.length, 0);
+  assert.ok(sent.some(([kind, user, text]) => kind === 'text' && user === 5 && text.includes('已撤回最近 1 条')));
+});
