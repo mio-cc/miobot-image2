@@ -86,6 +86,7 @@ function sanitizeParams(profile: ComfyUiProfile, raw: Record<string, unknown>, p
       if (!Number.isFinite(n)) continue;
       if (constraint?.min !== undefined) n = Math.max(constraint.min, n);
       if (constraint?.max !== undefined) n = Math.min(constraint.max, n);
+      if (policy.modelFamily === 'moss-image' && (key === 'width' || key === 'height')) n = Math.max(16, Math.round(n / 16) * 16);
       value = INTEGER_PARAM_KEYS.has(key) ? Math.trunc(n) : n;
     }
     if (constraint?.enum?.length && !constraint.enum.includes(String(value))) value = defaults[key];

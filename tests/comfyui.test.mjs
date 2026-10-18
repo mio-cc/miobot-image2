@@ -97,9 +97,9 @@ test('comfyui params: MOSS keeps decimals and strips unsupported weights', () =>
           pollTimeoutMs: 600000, pollIntervalMs: 2000, maxBatchSize: 4,
           profiles: [{
             id: 'moss-image-sft', name: 'MOSS Image SFT',
-            workflow: {}, parameterMap: { prompt: '1.inputs.text', negativePrompt: '2.inputs.text', cfg: '3.inputs.cfg', steps: '3.inputs.steps' },
-            defaults: { prompt: '', negativePrompt: 'nsfw, worst quality', cfg: 3, steps: 50 },
-            constraints: { cfg: { type: 'number', min: 3, max: 6 }, steps: { type: 'number', min: 1, max: 100 } },
+            workflow: {}, parameterMap: { prompt: '1.inputs.text', negativePrompt: '2.inputs.text', cfg: '3.inputs.cfg', steps: '3.inputs.steps', width: '4.inputs.width' },
+            defaults: { prompt: '', negativePrompt: 'nsfw, worst quality', cfg: 3, steps: 50, width: 1024 },
+            constraints: { cfg: { type: 'number', min: 3, max: 6 }, steps: { type: 'number', min: 1, max: 100 }, width: { type: 'number', min: 256, max: 2048 } },
           }],
         },
       }],
@@ -112,9 +112,11 @@ test('comfyui params: MOSS keeps decimals and strips unsupported weights', () =>
     negativePrompt: 'bad anatomy',
     cfg: 3.5,
     steps: 50,
+    width: 1000,
   }, 'fallback', undefined, 4);
   assert.equal(params.prompt, 'cat on a sofa');
   assert.equal(params.cfg, 3.5);
+  assert.equal(params.width, 1008);
   assert.equal(params.negativePrompt, 'bad anatomy');
 });
 
