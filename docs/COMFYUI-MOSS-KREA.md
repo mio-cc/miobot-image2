@@ -1,4 +1,4 @@
-﻿# ComfyUI：MOSS-Image 与 Krea 2 适配
+﻿# ComfyUI：MOSS-Image、Krea 2 与 Z-Image 适配
 
 这两个模型都不建议使用 SD1.5 式权重语法。它们的 PromptPolicy 默认已关闭权重、BREAK、`<lora:...>` 标签和动态提示词，只保留自然语言提示词。
 
@@ -161,3 +161,75 @@ Profile 没有显式写 `promptPolicy` 时，会根据 `id` / `name` 推断：
 ```
 
 如果 Krea 工作流还使用 `mu`、`shift`、`guidance` 或 `denoise`，把对应字段加入 `parameterMap`，转换模型才会输出和写入这些参数。
+
+## 3. Z-Image Turbo
+
+实际测试使用的工作流参数：
+
+```text
+UNETLoader: z_image_turbo_bf16.safetensors
+CLIPLoader: qwen_3_4b.safetensors / lumina2
+VAELoader: ae.safetensors
+KSampler: steps 9, cfg 1, res_multistep, simple
+ModelSamplingAuraFlow: shift 3
+```
+
+Z-Image 使用自然语言提示词，不使用权重、BREAK 或 LoRA 标签。推荐 Profile：
+
+```json
+{
+  "id": "z-image-turbo",
+  "name": "Z-Image Turbo",
+  "promptPolicy": {
+    "modelFamily": "z-image",
+    "variant": "turbo",
+    "promptSyntax": "natural",
+    "language": "en",
+    "preferredFormat": "caption",
+    "supportsWeights": false,
+    "supportsNegativePrompt": false,
+    "supportsBreak": false,
+    "supportsEmbeddings": false,
+    "supportsDynamicPrompts": false,
+    "supportsLoraTags": false,
+    "maxPromptChars": 2000,
+    "maxWeights": 0,
+    "weightMin": 1,
+    "weightMax": 1,
+    "defaultNegativePrompt": "",
+    "loraTriggers": []
+  },
+  "defaults": {
+    "prompt": "",
+    "width": 1024,
+    "height": 1024,
+    "steps": 9,
+    "cfg": 1,
+    "sampler": "res_multistep",
+    "scheduler": "simple",
+    "shift": 3,
+    "seed": 0,
+    "batchSize": 1
+  }
+}
+```
+
+参数映射参考：
+
+```json
+{
+  "prompt": "45.inputs.text",
+  "width": "41.inputs.width",
+  "height": "41.inputs.height",
+  "batchSize": "41.inputs.batch_size",
+  "steps": "44.inputs.steps",
+  "cfg": "44.inputs.cfg",
+  "sampler": "44.inputs.sampler_name",
+  "scheduler": "44.inputs.scheduler",
+  "seed": "44.inputs.seed",
+  "shift": "47.inputs.shift"
+}
+```
+
+`parameterKeys`、`allowedEnums`、`promptPolicy` 都会注入参数转化模板；Z-Image 默认不输出负向提示词。
+

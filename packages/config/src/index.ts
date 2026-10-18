@@ -17,7 +17,7 @@ export type CanvasAccessMode = 'public' | 'local-only' | 'admin';
 /** concurrency: 该节点同时在跑的请求上限；0 = 不限制。上游额度是按 key 发的，所以限流的单位是节点而不是模型。 */
 export interface ComfyUiParamConstraint { type?: 'number' | 'string' | 'boolean'; min?: number; max?: number; enum?: string[] }
 export interface ComfyUiStitchConfig { enabled?: boolean; quality?: number; columns?: number; gap?: number; label?: boolean; scale?: number; maxWidth?: number; maxHeight?: number; background?: string }
-export type ComfyUiModelFamily = 'moss-image' | 'krea-2' | 'sdxl' | 'flux' | 'sd15' | 'generic';
+export type ComfyUiModelFamily = 'moss-image' | 'krea-2' | 'z-image' | 'sdxl' | 'flux' | 'sd15' | 'generic';
 export type ComfyUiPromptSyntax = 'natural' | 'a1111' | 'sdxl' | 'moss' | 'krea';
 export type ComfyUiPromptFormat = 'caption' | 'tags' | 'layout';
 export type ComfyUiVariant = 'base' | 'sft' | 'raw' | 'turbo' | 'unknown';
@@ -212,6 +212,13 @@ Profile 名称：{{profileName}}
 - negativePrompt 只在 supportsNegativePrompt=true 时输出；默认使用 defaults.negativePrompt，通常为：nsfw, worst quality, bad anatomy, watermark, jpeg artifact。
 - MOSS 推荐参数：50 步以上、CFG 约 3.0、shift 约 5.0、Euler、sgm_uniform；具体以 defaults 和 constraints 为准。
 - 分辨率使用 1M、1.5M 或 2M 总像素附近，宽高为 16 的正整数倍；不要随意改成非 16 倍数。
+
+【模型家族专项：Z-Image Turbo】
+当 modelFamily = z-image：
+- 使用自然语言 caption，具体描述主体、动作、场景、构图、光线、材质和风格。
+- 不要堆叠 SD 式质量词，不要输出权重、BREAK、AND、<lora:...>；不要默认输出 negativePrompt。
+- Z-Image Turbo 工作流通常使用较少采样步数和较低 CFG；以 defaults 和 constraints 为准，不要套用 MOSS 的 50 步参数。
+- 用户要求文字时用引号保留原文。
 
 【模型家族专项：Krea 2】
 当 modelFamily = krea-2：
@@ -503,7 +510,7 @@ function normalizeHfSort(v: unknown): string {
   const mapped = ({ last_modified: 'lastModified', created_at: 'createdAt', trending_score: 'trendingScore' } as Record<string, string>)[raw] || raw;
   return pick(mapped, ['downloads', 'likes', 'lastModified', 'createdAt', 'trendingScore'] as const, 'downloads');
 }
-const COMFYUI_MODEL_FAMILIES = ['moss-image', 'krea-2', 'sdxl', 'flux', 'sd15', 'generic'] as const;
+const COMFYUI_MODEL_FAMILIES = ['moss-image', 'krea-2', 'z-image', 'sdxl', 'flux', 'sd15', 'generic'] as const;
 const COMFYUI_PROMPT_SYNTAXES = ['natural', 'a1111', 'sdxl', 'moss', 'krea'] as const;
 const COMFYUI_PROMPT_FORMATS = ['caption', 'tags', 'layout'] as const;
 const COMFYUI_VARIANTS = ['base', 'sft', 'raw', 'turbo', 'unknown'] as const;
@@ -523,6 +530,11 @@ export function defaultComfyUiPromptPolicy(family: ComfyUiModelFamily = 'generic
   };
   if (family === 'krea-2') return {
     ...base, variant: 'turbo', promptSyntax: 'krea', preferredFormat: 'caption', supportsWeights: false,
+    supportsNegativePrompt: false, supportsEmbeddings: false, maxWeights: 0, weightMin: 1, weightMax: 1,
+    maxPromptChars: 2000,
+  };
+  if (family === 'z-image') return {
+    ...base, variant: 'turbo', promptSyntax: 'natural', preferredFormat: 'caption', supportsWeights: false,
     supportsNegativePrompt: false, supportsEmbeddings: false, maxWeights: 0, weightMin: 1, weightMax: 1,
     maxPromptChars: 2000,
   };
@@ -558,6 +570,7 @@ function inferComfyUiModelFamily(id: unknown, name: unknown, explicit?: unknown)
   const text = `${String(id || '')} ${String(name || '')}`.toLowerCase();
   if (/moss|openmoss/.test(text)) return 'moss-image';
   if (/krea[-\s]?2|krea2/.test(text)) return 'krea-2';
+  if (/z[-\s]?image|zimage/.test(text)) return 'z-image';
   if (/sdxl|sd[-\s]?xl/.test(text)) return 'sdxl';
   if (/flux/.test(text)) return 'flux';
   if (/sd[-\s]?1[._-]?5|sd15/.test(text)) return 'sd15';

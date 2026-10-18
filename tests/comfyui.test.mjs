@@ -73,6 +73,7 @@ test('comfyui prompt policy: MOSS-Image and Krea 2 are inferred from profile id'
           profiles: [
             { id: 'moss-image-sft', name: 'MOSS Image SFT', workflow: {}, parameterMap: {}, defaults: {}, constraints: {} },
             { id: 'krea-2-turbo', name: 'Krea 2 Turbo', workflow: {}, parameterMap: {}, defaults: {}, constraints: {} },
+            { id: 'z-image-turbo', name: 'Z-Image Turbo', workflow: {}, parameterMap: {}, defaults: {}, constraints: {} },
           ],
         },
       }],
@@ -86,6 +87,9 @@ test('comfyui prompt policy: MOSS-Image and Krea 2 are inferred from profile id'
   assert.equal(profiles[1].promptPolicy?.modelFamily, 'krea-2');
   assert.equal(profiles[1].promptPolicy?.variant, 'turbo');
   assert.equal(profiles[1].promptPolicy?.supportsNegativePrompt, false);
+  assert.equal(profiles[2].promptPolicy?.modelFamily, 'z-image');
+  assert.equal(profiles[2].promptPolicy?.variant, 'turbo');
+  assert.equal(profiles[2].promptPolicy?.supportsWeights, false);
 });
 
 test('comfyui params: MOSS keeps decimals and strips unsupported weights', () => {
