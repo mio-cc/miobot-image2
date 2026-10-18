@@ -266,8 +266,16 @@ export async function generateComfyUiImages(options: ComfyUiGenerateOptions, req
     source: transformed.source,
     confidence: transformed.confidence,
     promptCount: String(transformed.params.prompt || '').length,
+    promptPreview: String(transformed.params.prompt || '').slice(0, 800),
+    negativePreview: String(transformed.params.negativePrompt || '').slice(0, 300),
     width: transformed.params.width,
     height: transformed.params.height,
+    steps: transformed.params.steps,
+    cfg: transformed.params.cfg,
+    sampler: transformed.params.sampler,
+    scheduler: transformed.params.scheduler,
+    shift: transformed.params.shift,
+    seed: transformed.params.seed,
     batchSize: transformed.params.batchSize,
   });
   const queuedResult = await runInComfyUiQueue<ImageResult>(comfyQueueKey(node.baseUrl), {
