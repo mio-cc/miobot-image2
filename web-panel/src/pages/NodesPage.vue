@@ -63,6 +63,7 @@ function commitComfyui(node: any, event: Event) {
     try {
         const parsed = JSON.parse((event.target as HTMLTextAreaElement).value);
         node.comfyui = parsed && typeof parsed === 'object' ? parsed : node.comfyui;
+        node.models = Array.isArray(parsed?.profiles) ? parsed.profiles.map((p: any) => p?.id).filter(Boolean) : [];
         fetchError.value = '';
     } catch (error: any) {
         fetchError.value = `ComfyUI 配置 JSON 格式错误：${String(error?.message || error)}`;
