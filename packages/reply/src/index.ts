@@ -39,6 +39,8 @@ export interface ReplyClient {
   sendGroupTextAt?(groupId: number | string, text: string, userId: number | string): Promise<NapcatSendResult>;
   sendGroupTextForward?(groupId: number | string, nodes: Array<{ title?: string; content: string }>, botName?: string): Promise<NapcatSendResult>;
   sendPrivateTextForward?(userId: number | string, nodes: Array<{ title?: string; content: string }>, botName?: string): Promise<NapcatSendResult>;
+  sendGroupNestedTextForward?(groupId: number | string, groups: Array<Array<{ title?: string; content: string }>>, botName?: string): Promise<NapcatSendResult>;
+  sendPrivateNestedTextForward?(userId: number | string, groups: Array<Array<{ title?: string; content: string }>>, botName?: string): Promise<NapcatSendResult>;
   sendGroupImage(groupId: number | string, fileUrl: string, summaryText?: string): Promise<NapcatSendResult>;
   sendPrivateImage(userId: number | string, fileUrl: string): Promise<NapcatSendResult>;
   sendGroupRecord?(groupId: number | string, fileUrl: string): Promise<NapcatSendResult>;
@@ -109,10 +111,54 @@ export class ReplyStrategyEngine {
       if (context.chatType === 'private') return this.replyPrivateText(context, text, resolved);
       return this.replyGroupText(context, text, resolved);
     }
+    const partNodes = chunks.map((chunk, index) => {
+      const prefix = this.textReply.showPartPrefix ? `(${index + 1}/${chunks.length}) ` : '';
+      return {
+        title: `${context.botName || 'Miobot'} ${index + 1}/${chunks.length}`,
+        content: `${prefix}${chunk}`,
+      };
+    });
+    if (resolved === 'forward') {
+      const groups = partNodes.map((node) => [node]);
+      if (context.chatType === 'group') {
+        const groupId = required(context.groupId, 'groupId');
+        if (this.client.sendGroupNestedTextForward) {
+          try {
+            const nested = await this.wrap(
+              'text', resolved, 'sendGroupNestedTextForward',
+              () => this.client.sendGroupNestedTextForward!(groupId, groups, context.botName),
+            );
+            if (nested.success) return nested;
+          } catch { /* Napcat 不支持嵌套节点时回退到单个外层合并转发 */ }
+        }
+        if (this.client.sendGroupTextForward) {
+          return this.wrap(
+            'text', resolved, 'sendGroupTextForward(split)',
+            () => this.client.sendGroupTextForward!(groupId, partNodes, context.botName),
+          );
+        }
+      } else {
+        const userId = required(context.userId, 'userId');
+        if (this.client.sendPrivateNestedTextForward) {
+          try {
+            const nested = await this.wrap(
+              'text', resolved, 'sendPrivateNestedTextForward',
+              () => this.client.sendPrivateNestedTextForward!(userId, groups, context.botName),
+            );
+            if (nested.success) return nested;
+          } catch { /* Napcat 不支持嵌套节点时回退到单个外层合并转发 */ }
+        }
+        if (this.client.sendPrivateTextForward) {
+          return this.wrap(
+            'text', resolved, 'sendPrivateTextForward(split)',
+            () => this.client.sendPrivateTextForward!(userId, partNodes, context.botName),
+          );
+        }
+      }
+    }
     let last: ReplyDispatchResult | undefined;
     for (let i = 0; i < chunks.length; i += 1) {
-      const prefix = this.textReply.showPartPrefix ? `(${i + 1}/${chunks.length}) ` : '';
-      const part = `${prefix}${chunks[i]}`;
+      const part = partNodes[i].content;
       const partContext: ReplyContext = i === 0 ? context : { ...context, replyToMessageId: undefined };
       last = context.chatType === 'private'
         ? await this.replyPrivateText(partContext, part, resolved)

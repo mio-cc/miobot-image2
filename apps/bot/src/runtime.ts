@@ -1130,11 +1130,19 @@ function startImageProgress(
   log?: StructuredLogger,
 ): ImageProgressHandle | undefined {
   if (!options.progressMessages) return undefined;
+  const progressConfig = options.getConfig().bot.progress;
+  if (!progressConfig?.enabled) return undefined;
+  const text = kind === 'video.generate' ? progressConfig.videoText
+    : kind === 'image.edit' ? progressConfig.editText
+      : kind === 'image.interrogate' ? progressConfig.interrogateText
+        : progressConfig.imageText;
   const averageKey = kind === 'video.generate' ? 'video' : 'image';
   return createImageProgress({
     kind,
-    averageMs: options.metrics?.durationAverage?.(averageKey),
-    reminderAfterMs: options.progressReminderMs,
+    text,
+    averageMs: progressConfig.showEta ? options.metrics?.durationAverage?.(averageKey) : undefined,
+    // 用户要求慢任务只提示一次；不发送 60 秒后的持续提醒。
+    reminderAfterMs: 0,
     logger: log,
     send: (text) => engine.replyText(replyCtx, text, 'quote'),
   });

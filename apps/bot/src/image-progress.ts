@@ -4,6 +4,8 @@ export interface ImageProgressOptions {
   kind?: ImageProgressKind;
   /** 历史平均耗时（毫秒）；为空表示还没有样本。 */
   averageMs?: number;
+  /** 自定义进度文本；支持 {action} 和 {eta} 占位符。 */
+  text?: string;
   /** 发送进度文本；失败不应影响主任务。 */
   send: (text: string) => Promise<unknown> | unknown;
   /** 长时间未完成时提醒一次；默认 60 秒，0 关闭。 */
@@ -41,9 +43,8 @@ export function createImageProgress(options: ImageProgressOptions): ImageProgres
   const label = imageProgressLabel(kind);
   const startedAt = (options.now || Date.now)();
   const eta = formatImageEta(options.averageMs);
-  const initial = eta
-    ? `收到，正在${label}${eta}，请稍候…`
-    : `收到，正在${label}，首次运行或冷启动可能较慢，请稍候…`;
+  const template = String(options.text || '').trim() || `收到，正在${label}{eta}，请稍候…`;
+  const initial = template.replaceAll('{action}', label).replaceAll('{eta}', eta);
 
   let done = false;
   void Promise.resolve(options.send(initial)).catch((error) => {

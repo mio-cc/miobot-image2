@@ -17,6 +17,8 @@ class FakeReplyClient {
   sendGroupTextAt(groupId, text, userId) { return this.record('sendGroupTextAt', { groupId, text, userId }); }
   sendGroupTextForward(groupId, nodes, botName) { return this.record('sendGroupTextForward', { groupId, nodes, botName }); }
   sendPrivateTextForward(userId, nodes, botName) { return this.record('sendPrivateTextForward', { userId, nodes, botName }); }
+  sendGroupNestedTextForward(groupId, groups, botName) { return this.record('sendGroupNestedTextForward', { groupId, groups, botName }); }
+  sendPrivateNestedTextForward(userId, groups, botName) { return this.record('sendPrivateNestedTextForward', { userId, groups, botName }); }
   sendGroupImage(groupId, fileUrl, summaryText) { return this.record('sendGroupImage', { groupId, fileUrl, summaryText }); }
   sendPrivateImage(userId, fileUrl) { return this.record('sendPrivateImage', { userId, fileUrl }); }
   sendGroupVideo(groupId, fileUrl, summaryText) { return this.record('sendGroupVideo', { groupId, fileUrl, summaryText }); }
@@ -237,4 +239,18 @@ test('reply strategy: long text splits by maxChars with part prefixes', async ()
   const result = await engine.replyText({ chatType: 'group', groupId: '1', userId: '2' }, 'abcdefghijkl');
   assert.equal(result.success, true);
   assert.deepEqual(sent, ['(1/3) abcde', '(2/3) fghij', '(3/3) kl']);
+});
+
+test('reply strategy: long group forward is one outer forward with nested inner forwards', async () => {
+  const client = new FakeReplyClient();
+  const engine = new ReplyStrategyEngine(client, { text: 'forward', textReply: { maxChars: 8, showPartPrefix: true } });
+  const result = await engine.replyText(
+    { chatType: 'group', groupId: 1000, botName: 'Miobot' },
+    '第一段内容很长。第二段继续补充说明。第三段收尾。',
+  );
+  assert.equal(result.success, true);
+  assert.equal(client.calls.length, 1);
+  assert.equal(client.calls[0].method, 'sendGroupNestedTextForward');
+  assert.ok(client.calls[0].args.groups.length > 1);
+  assert.match(client.calls[0].args.groups[0][0].content, /^\(1\/\d+\)/);
 });

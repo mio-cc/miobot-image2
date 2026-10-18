@@ -473,6 +473,19 @@ export class NapcatAdapter {
     }, this.options.forwardSendTimeoutMs);
   }
 
+  /** 一个外层合并转发，内部包含多个合并转发节点。 */
+  async sendGroupNestedTextForward(groupId: number | string, groups: Array<Array<{ title?: string; content: string }>>, botName = 'Miobot'): Promise<NapcatSendResult> {
+    const messages = buildNestedTextForwardNodes(groups, { botName, userId: this.getForwardUserId() });
+    if (!messages.length) return { success: false, error: 'no nested text forward groups to send' };
+    return this.sendAndReportResult('send_group_forward_msg', { group_id: groupId, messages }, this.options.forwardSendTimeoutMs);
+  }
+
+  async sendPrivateNestedTextForward(userId: number | string, groups: Array<Array<{ title?: string; content: string }>>, botName = 'Miobot'): Promise<NapcatSendResult> {
+    const messages = buildNestedTextForwardNodes(groups, { botName, userId: this.getForwardUserId() });
+    if (!messages.length) return { success: false, error: 'no nested text forward groups to send' };
+    return this.sendAndReportResult('send_private_forward_msg', { user_id: userId, messages }, this.options.forwardSendTimeoutMs);
+  }
+
   async sendGroupImage(groupId: number | string, fileUrl: string, summaryText = ''): Promise<NapcatSendResult> {
     const message: NapcatMessageSegment[] = [];
     if (summaryText) message.push({ type: 'text', data: { text: `${summaryText}\r\n` } });
@@ -869,6 +882,29 @@ export function normalizeVideoFilePayload(fileUrl: string): string {
 
 export function dedupeVideoUrls(fileUrls: string[]): string[] {
   return dedupeImageUrls(fileUrls);
+}
+
+export function buildNestedTextForwardNodes(groups: Array<Array<{ title?: string; content: string }>>, options: { botName?: string; userId?: number | string } = {}): NapcatForwardNode[] {
+  const botName = options.botName || 'Miobot';
+  const userId = options.userId ?? 0;
+  const cleanGroups = (Array.isArray(groups) ? groups : [])
+    .map((group) => (Array.isArray(group) ? group : []).filter((node) => String(node?.content || '').trim()))
+    .filter((group) => group.length > 0);
+  return cleanGroups.map((group, groupIndex) => ({
+    type: 'node' as const,
+    data: {
+      user_id: userId,
+      nickname: `${botName} 合并转发 ${groupIndex + 1}/${cleanGroups.length}`,
+      content: group.map((node, nodeIndex) => ({
+        type: 'node' as const,
+        data: {
+          user_id: userId,
+          nickname: node.title || `${botName} ${groupIndex + 1}-${nodeIndex + 1}`,
+          content: [{ type: 'text', data: { text: String(node.content || '') } }],
+        },
+      })) as unknown as NapcatMessageSegment[],
+    },
+  }));
 }
 
 export function buildTextForwardNodes(nodes: Array<{ title?: string; content: string }>, options: { botName?: string; userId?: number | string } = {}): NapcatForwardNode[] {

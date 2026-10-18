@@ -558,6 +558,6 @@ test('private genImage with progress messages -> ack then image', async () => {
   const r = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 22, raw_message: '生图 一只猫' });
   assert.equal(r.kind, 'image.generate');
   assert.equal(reply.sent[0][0], 'privateText');
-  assert.match(reply.sent[0][2], /收到，正在图片生成/);
+  assert.match(reply.sent[0][2], /收到，正在生成图片/);
   assert.deepEqual(reply.sent[1], ['privateImage', 5, 'data:image/png;base64,AAA']);
 });

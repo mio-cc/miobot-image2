@@ -71,6 +71,7 @@ export const useConfigStore = defineStore('config', () => {
         c.bot.tts ||= {};
         c.bot.tts.preprocess ||= {};
         c.bot.groupContext ||= {};
+        c.bot.progress ||= {};
         c.bot.replyStrategies ||= {};
         c.bot.triggerModes ||= {};
         c.bot.textReply ||= {};
