@@ -2,6 +2,7 @@
 import type { ImageArtifact, ImageResult, ModelClient } from '../../../packages/model/src/index.js';
 import { runComfyUiWorkflow } from '../../../packages/comfyui/src/index.js';
 import { stitchImages } from '../../../packages/image-compose/src/index.js';
+import { runInComfyUiQueue } from './comfyui-queue.js';
 
 export interface ComfyUiGenerateOptions {
   getConfig: () => AppConfig;
@@ -234,6 +235,15 @@ async function transformParams(options: ComfyUiGenerateOptions, profile: ComfyUi
   }
 }
 
+function comfyQueueKey(baseUrl: string): string {
+  try {
+    const parsed = new URL(String(baseUrl || '').trim());
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return String(baseUrl || '').trim();
+  }
+}
+
 function findProfile(node: ApiNode, profileId: string): ComfyUiProfile | undefined {
   const profiles = node.comfyui?.profiles || [];
   return profiles.find((item) => item.id === profileId || item.name === profileId) || profiles[0];
@@ -243,9 +253,10 @@ export async function generateComfyUiImages(options: ComfyUiGenerateOptions, req
   const cfg = options.getConfig();
   const node = cfg.llm.apiKeys[req.nodeIndex];
   if (!node || node.kind !== 'comfyui' || !node.comfyui) throw new Error('当前生图节点不是 ComfyUI');
+  const comfyConfig = node.comfyui;
   const profile = findProfile(node, req.profileId);
   if (!profile) throw new Error('ComfyUI 节点没有可用 profile');
-  const transformed = await transformParams(options, profile, req.prompt, req.count, node.comfyui.maxBatchSize);
+  const transformed = await transformParams(options, profile, req.prompt, req.count, comfyConfig.maxBatchSize);
   const policy = promptPolicyFor(profile);
   options.logger?.info('ComfyUI 参数准备完成', {
     profile: profile.id,
@@ -259,36 +270,46 @@ export async function generateComfyUiImages(options: ComfyUiGenerateOptions, req
     height: transformed.params.height,
     batchSize: transformed.params.batchSize,
   });
-  const result = await runComfyUiWorkflow({
-    baseUrl: node.baseUrl,
-    apiKey: node.key,
-    headers: node.headers,
-    profile,
-    params: transformed.params,
-    node: node.comfyui,
-    outputNodeId: profile.outputNodeId,
-    maxImageBytes: 20 * 1024 * 1024,
-  });
-  const images = result.images;
-  if (!images.length) throw new Error('ComfyUI 没有生成图片');
-  let output = images;
-  let outputMime = images[0].mime;
-  if (profile.stitch?.enabled !== false && images.length > 1) {
-    try {
-      const stitched = await stitchImages(images.map((item) => item.buffer), profile.stitch || { quality: 70 });
-      output = [{ filename: 'comfyui-stitched.jpg', subfolder: '', type: 'output', mime: stitched.mime, buffer: stitched.buffer }];
-      outputMime = stitched.mime;
-      options.logger?.info('ComfyUI 多图已拼接', { count: images.length, width: stitched.width, height: stitched.height, mime: stitched.mime });
-    } catch (error) {
-      options.logger?.warn('ComfyUI 多图拼接失败，发送第一张图', { error: String((error as Error)?.message || error) });
-      output = [images[0]];
+  const queuedResult = await runInComfyUiQueue<ImageResult>(comfyQueueKey(node.baseUrl), {
+    maxConcurrent: comfyConfig.maxConcurrent ?? 1,
+    maxQueue: comfyConfig.maxQueue ?? 10,
+    queueTimeoutMs: comfyConfig.queueTimeoutMs ?? 900000,
+    label: node.name,
+    logger: options.logger,
+  }, async () => {
+    options.logger?.info('ComfyUI 任务开始', { profile: profile.id, node: node.name || req.nodeIndex });
+    const result = await runComfyUiWorkflow({
+      baseUrl: node.baseUrl,
+      apiKey: node.key,
+      headers: node.headers,
+      profile,
+      params: transformed.params,
+      node: comfyConfig,
+      outputNodeId: profile.outputNodeId,
+      maxImageBytes: 20 * 1024 * 1024,
+    });
+    const images = result.images;
+    if (!images.length) throw new Error('ComfyUI 没有生成图片');
+    let output = images;
+    let outputMime = images[0].mime;
+    if (profile.stitch?.enabled !== false && images.length > 1) {
+      try {
+        const stitched = await stitchImages(images.map((item) => item.buffer), profile.stitch || { quality: 70 });
+        output = [{ filename: 'comfyui-stitched.jpg', subfolder: '', type: 'output', mime: stitched.mime, buffer: stitched.buffer }];
+        outputMime = stitched.mime;
+        options.logger?.info('ComfyUI 多图已拼接', { count: images.length, width: stitched.width, height: stitched.height, mime: stitched.mime });
+      } catch (error) {
+        options.logger?.warn('ComfyUI 多图拼接失败，发送第一张图', { error: String((error as Error)?.message || error) });
+        output = [images[0]];
+      }
     }
-  }
-  const artifacts: ImageArtifact[] = output.map((item, index) => ({
-    kind: 'base64',
-    data: item.buffer.toString('base64'),
-    mimeType: item.mime || outputMime,
-    index,
-  }));
-  return { images: artifacts, raw: { promptId: result.promptId, seed: result.seed, source: images } };
+    const artifacts: ImageArtifact[] = output.map((item, index) => ({
+      kind: 'base64',
+      data: item.buffer.toString('base64'),
+      mimeType: item.mime || outputMime,
+      index,
+    }));
+    return { images: artifacts, raw: { promptId: result.promptId, seed: result.seed, source: images } };
+  });
+  return queuedResult;
 }

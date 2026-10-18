@@ -55,7 +55,7 @@ const NODE_KINDS = [
 ];
 
 function comfyuiText(node: any): string {
-    if (!node.comfyui) node.comfyui = { pollTimeoutMs: 600000, pollIntervalMs: 2000, maxBatchSize: 4, profiles: [] };
+    if (!node.comfyui) node.comfyui = { pollTimeoutMs: 600000, pollIntervalMs: 2000, maxBatchSize: 4, maxConcurrent: 1, maxQueue: 10, queueTimeoutMs: 900000, profiles: [] };
     return JSON.stringify(node.comfyui, null, 2);
 }
 
@@ -336,7 +336,7 @@ function formatTime(value: string) {
                   <p v-else class="text-xs text-[color:var(--ink-3)] self-end">ComfyUI 节点使用下方 Profiles，不使用模型列表。</p>
                 <div v-if="node.kind === 'comfyui'" class="mt-4">
                   <FormField label="ComfyUI 连接、Workflow、Profiles、默认参数与参数映射 JSON"
-                    hint="这是后台高级配置，不展示给 QQ 用户。profile 格式：{id,name,workflow,parameterMap,defaults,constraints,outputNodeId,stitch,promptPolicy,transform}">
+                    hint="这是后台高级配置，不展示给 QQ 用户。profile 格式：{id,name,workflow,parameterMap,defaults,constraints,outputNodeId,stitch,promptPolicy,transform}；节点可配 maxConcurrent（默认 1）、maxQueue（默认 10）、queueTimeoutMs（默认 900000）">
                     <textarea :value="comfyuiText(node)" @change="commitComfyui(node, $event)" rows="20"
                       class="input-field font-mono text-xs" spellcheck="false"></textarea>
                   </FormField>

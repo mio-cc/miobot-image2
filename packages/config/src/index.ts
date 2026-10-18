@@ -52,7 +52,7 @@ export interface ComfyUiProfile {
   promptPolicy?: ComfyUiPromptPolicy;
   transform?: Partial<ComfyUiTransformConfig>;
 }
-export interface ComfyUiNodeConfig { profiles: ComfyUiProfile[]; pollTimeoutMs: number; pollIntervalMs: number; maxBatchSize: number }
+export interface ComfyUiNodeConfig { profiles: ComfyUiProfile[]; pollTimeoutMs: number; pollIntervalMs: number; maxBatchSize: number; maxConcurrent: number; maxQueue: number; queueTimeoutMs: number }
 export interface ComfyUiTransformConfig { enabled: boolean; nodeIndex: number; model: string; timeoutMs: number; maxTokens: number; promptTemplate: string }
 
 export interface ApiNode { name: string; baseUrl: string; key: string; enabled: boolean; models: string[]; modelsFetchedAt: string; provider?: string; kind?: 'llm' | 'comfyui'; comfyui?: ComfyUiNodeConfig; headers?: Record<string, string>; concurrency: number }
@@ -682,6 +682,9 @@ function normComfyui(v: unknown, warnings: string[]): ComfyUiNodeConfig | undefi
     pollTimeoutMs: clamp(raw.pollTimeoutMs, 600000, 10000, 1800000, true),
     pollIntervalMs: clamp(raw.pollIntervalMs, 2000, 250, 30000, true),
     maxBatchSize: clamp(raw.maxBatchSize, 4, 1, 16, true),
+    maxConcurrent: clamp(raw.maxConcurrent, 1, 1, 8, true),
+    maxQueue: clamp(raw.maxQueue, 10, 0, 100, true),
+    queueTimeoutMs: clamp(raw.queueTimeoutMs, 900000, 10000, 3600000, true),
   };
 }
 
