@@ -36,5 +36,3 @@ test('sent message tracker: failed sends are not recorded and restored ids remai
   await tracked.sendGroupText('g1', 'failed');
   assert.deepEqual(tracker.take('group:g1', 5), []);
 });
-
-
