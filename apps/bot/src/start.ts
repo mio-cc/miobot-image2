@@ -15,6 +15,7 @@ import { FeatureGate } from './feature-gate.js';
 import { createOutboundImageCompressor } from './image-output.js';
 import { createWebSearchService } from '../../../packages/search/src/index.js';
 import { createBrowserRenderer } from '../../../packages/browser-render/src/index.js';
+import { fetchComfyUiObjectInfo } from '../../../packages/comfyui/src/index.js';
 import { PendingFileIndex, DEFAULT_FILE_PARSE_LIMITS } from '../../../packages/file-ingest/src/index.js';
 import { derivePanelToken } from '../../../packages/web-api/src/index.js';
 import { promises as fs } from 'node:fs';
@@ -409,7 +410,7 @@ async function handleOwnerCommand(
   const persist = () => { try { store?.save(config); } catch { /* best-effort */ } };
   switch (command.command) {
     case 'modelList':
-      return buildModelListText(config);
+      return await buildModelListText(config);
     case 'switchModel': {
       const found = findModel(config, command.code);
       if (!found) return `未找到模型: ${command.code}`;
@@ -450,10 +451,55 @@ async function handleOwnerCommand(
   }
 }
 
-function buildModelListText(config: AppConfig): string {
-  const lines: string[] = [];
-  config.llm.apiKeys.forEach((node, ni) => (node.models || []).forEach((m) => lines.push(`· ${m}${m === config.llm.chatModel ? ' (当前)' : ''} [节点${ni + 1}]`)));
-  return lines.length ? ['可用模型(/切换 <名称> 切换 chat 模型):', ...lines].join('\n') : '未配置任何模型。';
+async function buildModelListText(config: AppConfig): Promise<string> {
+  const lines: string[] = ['【模型列表】', `当前文本模型：${config.llm.chatModel || '(未配置)'}`, ''];
+  config.llm.apiKeys.forEach((node, ni) => {
+    const models = node.models || [];
+    lines.push(`节点 ${ni + 1}：${node.name || '未命名'}${node.enabled === false ? '（停用）' : ''}`);
+    if (!models.length) lines.push(node.kind === 'comfyui' ? '  - ComfyUI：暂无已保存 Profile' : '  - 暂无已保存模型，请先在后台获取');
+    else for (const model of models.slice(0, 80)) lines.push(`  - ${model}${model === config.llm.chatModel ? '（当前文本）' : ''}`);
+    if (models.length > 80) lines.push(`  ... 其余 ${models.length - 80} 个省略`);
+  });
+  const comfyNodes = config.llm.apiKeys.map((node, index) => ({ node, index })).filter(({ node }) => node.kind === 'comfyui' && node.comfyui);
+  if (comfyNodes.length) {
+    lines.push('', 'ComfyUI 实时模型：');
+    await Promise.all(comfyNodes.map(async ({ node, index }) => {
+      lines.push(`节点 ${index + 1}：${node.name || 'ComfyUI'}`);
+      const profiles = (node.comfyui?.profiles || []).map((p) => p.id).filter(Boolean);
+      if (profiles.length) lines.push(`  - Profiles：${profiles.join(', ')}`);
+      try {
+        const info = await fetchComfyUiObjectInfo(node.baseUrl, { apiKey: node.key, headers: node.headers, timeoutMs: 5000 });
+        const checkpoints = extractComfyUiModelNames(info);
+        if (checkpoints.length) lines.push(`  - Checkpoints：${checkpoints.slice(0, 30).join(', ')}${checkpoints.length > 30 ? ` ... +${checkpoints.length - 30}` : ''}`);
+        else lines.push('  - Checkpoints：未从 object_info 识别到 ckpt_name');
+      } catch (error) {
+        lines.push(`  - Checkpoints：读取失败（${String((error as Error)?.message || error).slice(0, 120)}）`);
+      }
+    }).map((task) => task));
+  }
+  const hf = config.huggingFace?.cachedModels || [];
+  if (hf.length) {
+    lines.push('', 'Hugging Face 缓存模型：');
+    for (const model of hf.slice(0, 50)) lines.push(`  - ${model.code || model.id}: ${model.id}`);
+    if (hf.length > 50) lines.push(`  ... 其余 ${hf.length - 50} 个省略`);
+  }
+  return lines.join('\n');
+}
+
+function extractComfyUiModelNames(info: unknown): string[] {
+  const root = info && typeof info === 'object' && !Array.isArray(info) ? info as Record<string, any> : {};
+  const names = new Set<string>();
+  for (const node of Object.values(root)) {
+    const record = node && typeof node === 'object' ? node as Record<string, any> : {};
+    const inputs = { ...(record.input?.required || {}), ...(record.input?.optional || {}) };
+    for (const field of ['ckpt_name', 'unet_name', 'lora_name']) {
+      const value = inputs[field];
+      if (Array.isArray(value) && Array.isArray(value[0])) {
+        for (const item of value[0]) if (typeof item === 'string' && item) names.add(item);
+      }
+    }
+  }
+  return [...names].sort();
 }
 
 function findModel(config: AppConfig, code: string): string | undefined {

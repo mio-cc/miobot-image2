@@ -46,7 +46,7 @@ export function parseOwnerCommand(text: string, ctx: OwnerParseContext): OwnerCo
   const ttsVoice = t.match(/(?:^|\s)\/\s*tts\.(\d{1,2})(?:\s|$)/i);
   if (ttsVoice) return { command: 'switchTtsVoice', index: Math.max(1, Number.parseInt(ttsVoice[1], 10) || 1) };
 
-  const modelList = t.match(/(?:^|\s)\/\s*(?:模型|models?)(?:\s|$)/i);
+  const modelList = t.match(/(?:^|\s)\/\s*(?:模型|模型列表|models?|model\s+list)(?:\s|$)/i);
   if (modelList) return { command: 'modelList' };
 
   const switchM = t.match(/(?:^|\s)\/\s*(?:切换|q)\s*([a-z0-9_.-]+)(?:\s|$)/i);

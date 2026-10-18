@@ -1186,6 +1186,7 @@ function buildHelpText(cfg: AppConfig): string {
   add('web.screenshot');
   add('help');
   add('clear');
+  lines.push('- 主人命令：/模型 或 /模型列表 查看模型列表（ComfyUI 会实时读取 object_info）；/切换 <模型> 切换文本模型。');
   lines.push('', '【生图】');
   lines.push('- 直接说：画一只猫 / 生成四张赛博朋克猫，横图。');
   lines.push('- 不需要填写 steps、CFG、sampler、batch_size，后台自动转化参数。');

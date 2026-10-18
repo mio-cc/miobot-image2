@@ -612,6 +612,18 @@ text-image
 
 实现为 SVG 排版 + sharp 转 JPEG，不启动 Chromium。渲染失败回退普通文本。服务器需安装中文字体，例如 `fonts-noto-cjk`。
 
+### QQ 端模型列表
+
+主人命令：
+
+```text
+/模型
+/模型列表
+/models
+```
+
+普通节点列出后台已保存的模型；ComfyUI 节点会额外请求 `GET /object_info`，从 `ckpt_name`、`unet_name`、`lora_name` 枚举中读取实时模型名，同时列出已配置的 Profiles。请求失败时仍会显示节点已保存的 Profile，不会阻塞整个列表。
+
 ### 第一版边界
 
 - 支持 ComfyUI 文生图
