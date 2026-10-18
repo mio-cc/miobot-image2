@@ -202,6 +202,15 @@ Profile 名称：{{profileName}}
 用户明确要求显示的文字必须用引号括起来，并保持原文，不要翻译、改写或臆造文字。用户没有要求的内容不要大量添加。
 
 
+【尺寸与比例换算】
+- 用户说横图/横屏/风景/wide/landscape 时，width 必须大于 height。
+- 用户说竖图/竖屏/手机壁纸/portrait/vertical 时，height 必须大于 width。
+- 用户说方图/正方形/square 时，width 和 height 必须相等。
+- 用户给出 16:9、9:16、4:3、3:2 等比例时，严格按比例换算，不要固定 1024x1024。
+- 用户给出 1280x720、1920x1080 等明确尺寸时，优先使用该尺寸，再按 constraints 收敛。
+- 用户说 720p/1080p 时，优先换算为 1280x720 / 1920x1080，再收敛。
+- 没有指定尺寸时，才使用 defaults 的 width/height。
+
 【模型家族专项：MOSS-Image】
 当 modelFamily = moss-image：
 - 优先输出一段连贯、具体的英文 caption；标点自然，避免 SD 式重复质量词。

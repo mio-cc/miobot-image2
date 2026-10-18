@@ -71,6 +71,67 @@ function sanitizePromptText(value: unknown, policy: ComfyUiPromptPolicy): string
   return text;
 }
 
+type ComfyUiConstraintMap = NonNullable<ComfyUiProfile['constraints']>;
+
+function alignSize(value: number, multiple: number): number {
+  if (!Number.isFinite(value) || multiple <= 1) return Math.max(1, Math.round(value));
+  return Math.max(multiple, Math.round(value / multiple) * multiple);
+}
+
+function clampSize(value: number, key: 'width' | 'height', constraints: ComfyUiConstraintMap, multiple: number): number {
+  let n = Math.max(64, Math.round(value));
+  const constraint = constraints[key];
+  if (constraint?.min !== undefined) n = Math.max(constraint.min, n);
+  if (constraint?.max !== undefined) n = Math.min(constraint.max, n);
+  n = alignSize(n, multiple);
+  if (constraint?.min !== undefined) n = Math.max(constraint.min, n);
+  if (constraint?.max !== undefined) n = Math.min(constraint.max, n);
+  return Math.max(16, Math.trunc(n));
+}
+
+/**
+ * 用户请求中的尺寸/比例必须优先于模型自己猜的 1024x1024。
+ * 支持 1280x720、16:9、横图、竖图、方图、宽屏、手机壁纸等。
+ */
+function requestedSizeFromPrompt(prompt: string, defaults: Record<string, unknown>, constraints: ComfyUiConstraintMap, policy: ComfyUiPromptPolicy): { width: number; height: number } | undefined {
+  const text = String(prompt || '').toLowerCase();
+  if (!text.trim()) return undefined;
+  const multiple = policy.modelFamily === 'moss-image' ? 16 : 8;
+  const explicit = text.match(/(\d{3,5})\s*[x×*]\s*(\d{3,5})/i);
+  if (explicit) {
+    return {
+      width: clampSize(Number(explicit[1]), 'width', constraints, multiple),
+      height: clampSize(Number(explicit[2]), 'height', constraints, multiple),
+    };
+  }
+  const quality = text.match(/\b(1080|720)p\b/i);
+  if (quality) {
+    const height = Number(quality[1]);
+    const width = Math.round(height * 16 / 9);
+    return { width: clampSize(width, 'width', constraints, multiple), height: clampSize(height, 'height', constraints, multiple) };
+  }
+  let ratio: number | undefined;
+  const ratioMatch = text.match(/(\d{1,2})\s*[:：]\s*(\d{1,2})/);
+  if (ratioMatch) {
+    const w = Number(ratioMatch[1]);
+    const h = Number(ratioMatch[2]);
+    if (w > 0 && h > 0) ratio = w / h;
+  }
+  if (ratio === undefined) {
+    if (/超宽|全景|ultra[-\s]?wide|21:9/.test(text)) ratio = 21 / 9;
+    else if (/宽屏|电影|cinematic|wide|landscape|风景|横向|横屏|横图/.test(text)) ratio = 16 / 9;
+    else if (/手机壁纸|竖屏|竖向|竖向图|portrait|vertical|竖图/.test(text)) ratio = 9 / 16;
+    else if (/方图|正方形|头像|square|1:1/.test(text)) ratio = 1;
+  }
+  if (ratio === undefined) return undefined;
+  const defaultW = Number(defaults.width);
+  const defaultH = Number(defaults.height);
+  const baseArea = defaultW > 0 && defaultH > 0 ? defaultW * defaultH : 1024 * 1024;
+  const height = Math.sqrt(Math.max(baseArea, 512 * 512) / ratio);
+  const width = height * ratio;
+  return { width: clampSize(width, 'width', constraints, multiple), height: clampSize(height, 'height', constraints, multiple) };
+}
+
 function sanitizeParams(profile: ComfyUiProfile, raw: Record<string, unknown>, prompt: string, count: number | undefined, maxBatchSize: number): Record<string, unknown> {
   const policy = promptPolicyFor(profile);
   const defaults = profile.defaults || {};
@@ -101,6 +162,11 @@ function sanitizeParams(profile: ComfyUiProfile, raw: Record<string, unknown>, p
   else delete out.negativePrompt;
   for (const key of ['promptG', 'promptL', 'clipLPrompt', 't5Prompt']) {
     if (out[key] !== undefined) out[key] = sanitizePromptText(out[key], policy);
+  }
+  const requestedSize = requestedSizeFromPrompt(prompt, defaults, constraints, policy);
+  if (requestedSize && (profile.parameterMap?.width || profile.parameterMap?.height || defaults.width !== undefined || defaults.height !== undefined)) {
+    out.width = requestedSize.width;
+    out.height = requestedSize.height;
   }
   const requestedCount = Math.trunc(Number(count || raw.batchSize || defaults.batchSize || 1));
   out.batchSize = profile.parameterMap?.batchSize ? Math.min(maxBatchSize, Math.max(1, requestedCount || 1)) : 1;
@@ -189,6 +255,8 @@ export async function generateComfyUiImages(options: ComfyUiGenerateOptions, req
     source: transformed.source,
     confidence: transformed.confidence,
     promptCount: String(transformed.params.prompt || '').length,
+    width: transformed.params.width,
+    height: transformed.params.height,
     batchSize: transformed.params.batchSize,
   });
   const result = await runComfyUiWorkflow({

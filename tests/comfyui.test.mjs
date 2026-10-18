@@ -161,3 +161,23 @@ test('comfyui config: legacy default transform prompt is upgraded', () => {
   assert.match(cfg.comfyuiTransform.promptTemplate, /Krea 2/);
   assert.ok(cfg.comfyuiTransform.maxTokens >= 2400);
 });
+
+
+test('comfyui params: natural language size and aspect ratio produce width/height', () => {
+  const profile = {
+    id: 'moss-image-sft', name: 'MOSS Image', workflow: {},
+    parameterMap: { width: '1.inputs.width', height: '1.inputs.height' },
+    defaults: { width: 1024, height: 1024 },
+    constraints: { width: { type: 'number', min: 256, max: 2048 }, height: { type: 'number', min: 256, max: 2048 } },
+  };
+  const run = (userPrompt) => sanitizeComfyUiParams(profile, {}, userPrompt, 1, 4);
+  const landscape = run('画一只猫，横图');
+  assert.ok(landscape.width > landscape.height, JSON.stringify(landscape));
+  const portrait = run('画一只猫，竖图');
+  assert.ok(portrait.height > portrait.width, JSON.stringify(portrait));
+  const explicit = run('画一只猫，1280x720');
+  assert.deepEqual([explicit.width, explicit.height], [1280, 720]);
+  const ratio = run('画一只猫，16:9');
+  assert.ok(ratio.width > ratio.height, JSON.stringify(ratio));
+  assert.ok(Math.abs(ratio.width / ratio.height - 16 / 9) < 0.05, JSON.stringify(ratio));
+});

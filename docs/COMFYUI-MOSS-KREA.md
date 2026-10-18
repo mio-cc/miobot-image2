@@ -233,3 +233,18 @@ Z-Image 使用自然语言提示词，不使用权重、BREAK 或 LoRA 标签。
 
 `parameterKeys`、`allowedEnums`、`promptPolicy` 都会注入参数转化模板；Z-Image 默认不输出负向提示词。
 
+
+## 5. 尺寸和比例换算
+
+除了让参数转化模型输出 `width/height`，后端还会从用户原文做确定性尺寸换算，避免模型总是返回 1024×1024：
+
+```text
+横图 / 横屏 / 风景 / wide / landscape  → 横向比例
+竖图 / 竖屏 / 手机壁纸 / portrait       → 竖向比例
+方图 / 正方形 / square                  → 1:1
+16:9 / 9:16 / 4:3 / 3:2                → 按比例计算
+1280x720 / 1920×1080                   → 使用明确尺寸
+720p / 1080p                           → 1280x720 / 1920x1080
+```
+
+计算结果还会经过 Profile 的 `constraints` 收敛；MOSS 宽高自动对齐 16 的倍数，其他模型对齐 8 的倍数。用户没有指定尺寸时才使用 `defaults.width/defaults.height`。
