@@ -345,6 +345,12 @@ function publicCanvasAsset(asset) {
   const out = { ...asset };
   if (out.id && String(out.url || '').startsWith('data:image/')) {
     out.url = `/canvas-api/assets/${encodeURIComponent(out.id)}/download`;
+  } else if (/^https?:\/\/[^/]+\/canvas-api\//i.test(String(out.url || ''))) {
+    // 管理端也走 HTTPS：旧记录里的 host.docker.internal 绝对地址改为同源相对路径。
+    try {
+      const parsed = new URL(String(out.url));
+      out.url = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    } catch { /* keep original */ }
   }
   return out;
 }
