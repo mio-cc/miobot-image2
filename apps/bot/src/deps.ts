@@ -146,7 +146,15 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       const routing = getRouting();
       const cfg = getConfig?.();
       const imageNode = cfg?.llm.apiKeys?.[routing.imageNodeIndex];
-      if (imageNode?.kind === 'comfyui' && imageNode.comfyui) {
+      const comfyConfig = imageNode?.comfyui;
+      logger?.info('生图节点路由', {
+        nodeIndex: routing.imageNodeIndex,
+        nodeName: imageNode?.name || '',
+        kind: imageNode?.kind || '',
+        hasComfyui: Boolean(comfyConfig),
+        model: req.model,
+      });
+      if ((imageNode?.kind === 'comfyui' || comfyConfig) && comfyConfig) {
         const result = await generateComfyUiImages({ getConfig: getConfig!, client, logger }, {
           nodeIndex: routing.imageNodeIndex,
           profileId: req.model,
