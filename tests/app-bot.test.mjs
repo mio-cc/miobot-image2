@@ -128,3 +128,54 @@ test('createBotApp: chat fallback when image model lacks capability (gated to ch
   assert.equal(r.kind, 'chat');
   assert.equal(client.calls.some((c) => c[0] === 'generate'), false);
 });
+
+test('createBotApp: ComfyUI image node is routed through ComfyUI even with injected model client', async () => {
+  const client = makeClient();
+  const cfg = createDefaultConfig();
+  cfg.llm.imageEnabled = true;
+  cfg.llm.imageNodeIndex = 0;
+  cfg.llm.imageModel = 'z-image-turbo';
+  cfg.llm.capabilityOverrides = [{ model: 'z-image-turbo', operations: ['image.generate'] }];
+  cfg.comfyuiTransform.enabled = false;
+  cfg.llm.apiKeys = [{
+    name: 'Comfy', provider: '', kind: 'comfyui', baseUrl: 'http://comfy.test', key: '', enabled: true,
+    models: ['z-image-turbo'], modelsFetchedAt: '', concurrency: 0,
+    comfyui: {
+      pollTimeoutMs: 1000, pollIntervalMs: 1, maxBatchSize: 1,
+      profiles: [{
+        id: 'z-image-turbo', name: 'Z-Image Turbo',
+        workflow: { '1': { class_type: 'SaveImage', inputs: { text: '' } } },
+        parameterMap: { prompt: '1.inputs.text' },
+        defaults: { prompt: '' }, constraints: {},
+        outputNodeId: '1',
+      }],
+    },
+  }];
+
+  const realFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push([String(url), init]);
+    if (String(url).endsWith('/prompt')) {
+      return new Response(JSON.stringify({ prompt_id: 'p1' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (String(url).includes('/history/p1')) {
+      return new Response(JSON.stringify({ p1: { status: { status_str: 'success', completed: true }, outputs: { '1': { images: [{ filename: 'a.png', subfolder: '', type: 'output' }] } } } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (String(url).includes('/view?')) {
+      return new Response(Buffer.from([137, 80, 78, 71]), { status: 200, headers: { 'content-type': 'image/png' } });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const app = createBotApp({ getConfig: () => cfg, client });
+    const r = await app.handle({ text: '画一只猫' });
+    assert.equal(r.kind, 'image.generate');
+    assert.equal(client.calls.some((c) => c[0] === 'generate'), false);
+    assert.ok(requests.some(([url]) => String(url).endsWith('/prompt')));
+    assert.ok(r.images?.[0]?.startsWith('data:image/png;base64,'));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

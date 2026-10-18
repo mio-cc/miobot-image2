@@ -79,6 +79,8 @@ export function createBotApp(options: BotAppOptions): BotApp {
   const pipeline = options.pipeline || createImagePromptPipeline(client, options.getConfig);
   const deps = createModelBackedDeps({
     client,
+    // ComfyUI 生图分支需要完整 AppConfig 读取节点 kind/profile；漏传会退回普通模型请求。
+    getConfig: options.getConfig,
     getRouting: () => toBotRouting(options.getConfig()),
     sessions,
     chatSystemPrompt: options.chatSystemPrompt ?? DEFAULT_CHAT_SYSTEM_PROMPT,
