@@ -172,7 +172,7 @@ const P = {
   pcQuery: 'Return JSON only: {"queries":["query 1","query 2"]}. User request: {{rawPrompt}}',
   pcSmart: 'Return JSON only: {"selectedId":"id or none","selectedTitle":"title or none","reason":"brief Chinese reason","finalPrompt":"ready-to-use image prompt"}. Preserve the user request language in finalPrompt; if the request is Chinese, finalPrompt must contain Chinese and must not be translated into English unless the user explicitly asks for English. User request: {{rawPrompt}}\n\nCandidate prompts:\n{{candidates}}',
   codeRender: '你是代码画图生成器。用户要求用代码画图时，生成一个自包含的 HTML/SVG/Canvas/Three.js 作品。只输出 JSON，不要 Markdown，不要解释：{"format":"html|svg|canvas|three","title":"作品标题","width":1080,"height":1080,"html":"可选 HTML 片段","css":"可选 CSS","js":"可选 JavaScript","svg":"当 format=svg 时的 SVG 源码","sendSource":false}。代码必须自包含，不得访问网络、不得引用 CDN、不得读写本地文件、不能使用 cookie/localStorage。Three.js 使用页面内注入的 THREE 全局变量，不使用 import。canvas/three 请绘制完成后设置 window.__MIOBOT_READY__ = true。用户要求：{{userContent}}',
-  comfyuiTransform: `你是 Miobot 的 ComfyUI 提示词工程师和生成参数规划器。你的任务不是聊天，而是把用户的自然语言请求转换成可直接提交给已配置 ComfyUI workflow 的严格 JSON。
+  comfyuiTransform: `【Miobot-ComfyUI-Transform-v4】你是 Miobot 的 ComfyUI 提示词工程师和生成参数规划器。你的任务不是聊天，而是把用户的自然语言请求转换成可直接提交给已配置 ComfyUI workflow 的严格 JSON。
 
 【本次输入】
 用户请求：{{userRequest}}
@@ -201,6 +201,22 @@ Profile 名称：{{profileName}}
 主体与数量 -> 外观与服装 -> 动作与互动 -> 场景与环境 -> 构图与镜头 -> 光线与色彩 -> 材质与媒介 -> 必要细节。
 用户明确要求显示的文字必须用引号括起来，并保持原文，不要翻译、改写或臆造文字。用户没有要求的内容不要大量添加。
 
+【提示词增强、保真与防漂移规则】
+把用户请求当作硬约束，增强只负责补齐用户没有说、但画面成立所需的视觉细节；不要重写主题，不要把角色替换成泛化人物。
+- 内部按 KEEP / LOCK / BIND / LIMIT / FORBID 做一次自检，不要把这些标记写进最终 prompt。
+- 锁定 3 到 7 个最影响画面的特征：主体类型与数量、身份/外观、关键服装或结构、动作、画幅和主体占比、主色与光线、媒介完成度；次要细节不要抢占主体篇幅。
+- 主体是第一视觉焦点，背景只承担环境、尺度、氛围和构图支撑；不要把背景细节写得比主体更清楚。
+- 细节密度按区域分配：脸部/主体表面、头发/轮廓、服装/物体表面、背景、前景、文字/图形层分别控制；不要全图平均堆细节。
+- 简单背景保持 simple / clean / plain / large negative space；不要为了丰富填满纹理、装饰、光斑、花瓣或额外人物。
+- 背景语义必须绑定区域：花只在花丛/背景，星光只在天空/光效层，草地只在地面；禁止把背景图案迁移成服装印花、皮肤纹理或头发纹理，除非用户明确要求。
+- 用户没有指定构图时，方图默认半身或中景，竖图才优先全身，横图优先环境或远景；不要默认 full-body。
+- 用户没有指定镜头时，只选一个清晰镜头，例如 medium shot、upper-body portrait、waist-up、50mm lens；不要同时写多个冲突镜头。
+- 用户没有指定风格时，用具体可观察的媒介和造型语言补足，例如 clean cel-shaded anime illustration、detailed line art、soft anime key visual；少用 masterpiece、best quality、8k、ultra detailed、award winning 等空泛质量词。
+- 用户没有指定服装时，使用完整、得体、符合场景的日常服装；不得主动添加 C-string、内衣、暴露服装、性化姿势或恋物化描写，也不得将未成年人或幼态角色性化。
+- 不要添加用户未要求的额外人物、可读文字、logo、水印、签名、边框、分屏、对话气泡或剧情关系。
+- 对脸部、眼睛、手、四肢、牙齿、耳朵等高风险结构，写清可见/不可见范围；不可见部位用构图或负面约束防止自动补全。负面约束只针对真实漂移风险，不要堆叠泛化负面词。
+- 提示词出现容易扩散的词，例如 texture、pattern、flower、star、cloud、water、particles 时，必须绑定出现区域、面积和密度，并说明是否接触主体。
+- 提交前做一次提示词回放：只看 prompt 能否还原用户要求的主体、数量、服装、动作、画幅和风格；不能则补关键约束，不要继续堆形容词。
 
 【尺寸与比例换算】
 - 用户说横图/横屏/风景/wide/landscape 时，width 必须大于 height。
@@ -227,6 +243,10 @@ Profile 名称：{{profileName}}
 - 使用自然语言 caption，具体描述主体、动作、场景、构图、光线、材质和风格。
 - 不要堆叠 SD 式质量词，不要输出权重、BREAK、AND、<lora:...>；不要默认输出 negativePrompt。
 - Z-Image Turbo 工作流通常使用较少采样步数和较低 CFG；以 defaults 和 constraints 为准，不要套用 MOSS 的 50 步参数。
+- 目标约 50 到 140 个英文词，通常不超过 180 个英文词；用连贯自然语言，不要写成标签堆砌。
+- 必须保留用户指定的角色名、发色、瞳色、服装和动作；增强只补充缺失的外观、材质、姿势、构图、镜头、光线和风格细节。
+- 方图默认半身或中景，不要默认全身；竖图才优先考虑全身或 9:16 构图。
+- 服装和姿势保持得体，不要添加性化内衣、C-string、暴露服装或恋物化描写。
 - 用户要求文字时用引号保留原文。
 
 【模型家族专项：Krea 2】
@@ -479,6 +499,15 @@ function normalizeAppConfig(input: R, warnings: string[]): AppConfig {
   comfyuiTransform.maxTokens = clamp(comfyuiTransform.maxTokens, 2400, 256, 8192, true);
   comfyuiTransform.promptTemplate = str(comfyuiTransform.promptTemplate, P.comfyuiTransform, false) || P.comfyuiTransform;
   if (comfyuiTransform.promptTemplate.startsWith('你是 ComfyUI 生图参数转换器。') && comfyuiTransform.promptTemplate.includes('最大批量：{{maxBatchSize}}')) {
+    comfyuiTransform.promptTemplate = P.comfyuiTransform;
+    comfyuiTransform.maxTokens = Math.max(comfyuiTransform.maxTokens, 2400);
+  } else if (
+    comfyuiTransform.promptTemplate.startsWith('你是 Miobot 的 ComfyUI 提示词工程师和生成参数规划器。')
+    && comfyuiTransform.promptTemplate.includes('【提示词结构】')
+    && comfyuiTransform.promptTemplate.includes('【模型家族专项：Z-Image Turbo】')
+    && !comfyuiTransform.promptTemplate.includes('【Miobot-ComfyUI-Transform-v4】')
+  ) {
+    // 旧内置模板没有保真、增强和防漂移规则；升级一次，用户自定义模板不会被误改。
     comfyuiTransform.promptTemplate = P.comfyuiTransform;
     comfyuiTransform.maxTokens = Math.max(comfyuiTransform.maxTokens, 2400);
   }

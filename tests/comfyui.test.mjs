@@ -181,3 +181,15 @@ test('comfyui params: natural language size and aspect ratio produce width/heigh
   assert.ok(ratio.width > ratio.height, JSON.stringify(ratio));
   assert.ok(Math.abs(ratio.width / ratio.height - 16 / 9) < 0.05, JSON.stringify(ratio));
 });
+
+test('comfyui config: built-in v3 transform prompt upgrades with v4 enhancement rules', () => {
+  const cfg = normalizeConfig({
+    comfyuiTransform: {
+      promptTemplate: '你是 Miobot 的 ComfyUI 提示词工程师和生成参数规划器。\n\n【提示词结构】\n主体与数量 -> 外观与服装。\n\n【模型家族专项：Z-Image Turbo】\n当 modelFamily = z-image：\n- 使用自然语言 caption。',
+    },
+  });
+  assert.match(cfg.comfyuiTransform.promptTemplate, /Miobot-ComfyUI-Transform-v4/);
+  assert.match(cfg.comfyuiTransform.promptTemplate, /提示词增强、保真与防漂移规则/);
+  assert.match(cfg.comfyuiTransform.promptTemplate, /不得主动添加 C-string/);
+  assert.match(cfg.comfyuiTransform.promptTemplate, /目标约 50 到 140 个英文词/);
+});
