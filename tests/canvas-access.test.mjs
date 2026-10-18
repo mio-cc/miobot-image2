@@ -377,3 +377,21 @@ test('分页上限跟随 store 容量，不再写死 240', async () => {
   const res = await service.handle({ method: 'GET', path: '/gallery?limit=2000' });
   assert.equal(res.body.items.length, 300, `第 241 张之后的作品以前永远取不到，实际返回 ${res.body.items.length}`);
 });
+
+
+test('canvas gallery: legacy host.docker.internal asset URLs are returned relative', async () => {
+  const { CanvasStore, createCanvasService } = await import('../dist/packages/canvas-service/src/index.js');
+  const store = new CanvasStore({ maxGallery: 10, maxHistory: 10 });
+  store.addRecord({
+    id: 'legacy', mode: 'generate', prompt: 'p', effectivePrompt: 'p', presetId: 'bot',
+    size: { width: 1, height: 1 }, quality: 'auto', outputFormat: 'png', createdAt: new Date().toISOString(),
+    outputs: [{ id: 'out_legacy', status: 'succeeded', asset: { id: 'legacy', url: 'http://host.docker.internal:3018/canvas-api/assets/legacy/download' } }],
+  });
+  const service = createCanvasService({
+    getConfig: () => normalizeConfig({}),
+    generator: { generate: async () => ({ images: [] }), edit: async () => ({ images: [] }), interrogate: async () => ({ text: '' }) },
+    store,
+  });
+  const res = await service.handle({ method: 'GET', path: '/gallery' });
+  assert.equal(res.body.items[0].asset.url, '/canvas-api/assets/legacy/download');
+});

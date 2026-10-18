@@ -48,6 +48,8 @@ export interface BotEngineResult {
   decision: IntentDecision;
   text?: string;
   images?: string[];
+  /** 是否跳过 Canvas 图库同步；网页截屏/代码画图等非生图产物应为 true。 */
+  skipGallerySync?: boolean;
   /** 生成的视频 url / data URL，由 reply/napcat 发 type:video。 */
   videos?: string[];
   /** 生成的文件 URL 或本地引用，由 reply/napcat 走 file 段发送。 */

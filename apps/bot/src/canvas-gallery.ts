@@ -74,7 +74,8 @@ export function createCanvasGallerySync(options: CanvasGallerySyncOptions): Canv
       const config = options.getConfig();
       if (config.canvas.enabled === false) return input.images;
 
-      const artifacts = originals.map(toGalleryArtifact);
+      const publicBaseUrl = resolvePublicImageBaseUrl(env);
+      const artifacts = originals.map((image) => toGalleryArtifact(toGalleryRelativeUrl(image, publicBaseUrl)));
       if (artifacts.some((artifact) => !artifact)) {
         options.logger?.warn('Bot image gallery sync skipped: unsupported image reference', {
           imageCount: originals.length,
@@ -121,7 +122,6 @@ export function createCanvasGallerySync(options: CanvasGallerySyncOptions): Canv
           throw new Error(`Canvas gallery sync returned ${assetUrls.length} assets for ${originals.length} images`);
         }
 
-        const publicBaseUrl = resolvePublicImageBaseUrl(env);
         const sendableUrls = assetUrls.map((url) => toAbsoluteImageUrl(url, publicBaseUrl));
         if (sendableUrls.some((url) => !url)) {
           options.logger?.warn('Bot image gallery sync saved images, but MIOBOT_PUBLIC_BASE_URL is not configured; fallback to original image payload', {
@@ -201,7 +201,7 @@ function toGalleryArtifact(value: string): GalleryArtifact | undefined {
   const text = String(value || '').trim();
   if (!text) return undefined;
   if (/^data:image\//i.test(text)) return { kind: 'url', data: text, mimeType: imageMimeFromDataUrl(text) };
-  if (/^https?:\/\//i.test(text)) return { kind: 'url', data: text };
+  if (/^https?:\/\//i.test(text) || text.startsWith('/canvas-api/')) return { kind: 'url', data: text };
   if (/^base64:\/\//i.test(text)) {
     return {
       kind: 'base64',
@@ -210,6 +210,21 @@ function toGalleryArtifact(value: string): GalleryArtifact | undefined {
     };
   }
   return undefined;
+}
+
+/** Canvas 图库内部保存相对 URL，避免 HTTPS 画布页面加载 http://host.docker.internal 触发混合内容。 */
+function toGalleryRelativeUrl(value: string, publicBaseUrl: string | undefined): string {
+  const text = String(value || '').trim();
+  if (!/^https?:\/\//i.test(text)) return text;
+  try {
+    const parsed = new URL(text);
+    if (parsed.pathname.startsWith('/canvas-api/')) return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    if (publicBaseUrl) {
+      const base = new URL(publicBaseUrl);
+      if (parsed.origin === base.origin) return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+  } catch { /* keep original */ }
+  return text;
 }
 
 function toAbsoluteImageUrl(value: string, publicBaseUrl: string | undefined): string | undefined {

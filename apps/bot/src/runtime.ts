@@ -291,6 +291,7 @@ function renderImageResult(images: string[], prompt: string): BotEngineResult {
     kind: 'image.generate',
     handled: true,
     images,
+    skipGallerySync: true,
     decision: {
       kind: 'image.generate',
       source: 'explicit',
@@ -1003,7 +1004,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       return { handled: result.handled, kind: 'chat-superseded' };
     }
 
-    if (options.syncImagesToGallery && result.images?.length && (result.kind === 'image.generate' || result.kind === 'image.edit')) {
+    if (options.syncImagesToGallery && result.images?.length && !result.skipGallerySync && (result.kind === 'image.generate' || result.kind === 'image.edit')) {
       const originalImages = result.images;
       const prompt = String((result.decision?.params as { prompt?: unknown } | undefined)?.prompt || (decision.kind === 'command' ? decision.args : '')).trim();
       try {

@@ -152,3 +152,26 @@ test('canvas gallery sync: 明确关闭时完全不请求 Canvas', async () => {
   assert.equal(called, false);
   assert.deepEqual(images, original);
 });
+
+test('canvas gallery sync: absolute internal asset URLs are stored relative for HTTPS canvas', async () => {
+  const config = baseConfig();
+  const calls = [];
+  const sync = createCanvasGallerySync({
+    getConfig: () => config,
+    env: { MIOBOT_PORT: '3018', MIOBOT_PUBLIC_BASE_URL: 'http://host.docker.internal:3018' },
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return galleryResponse(['/canvas-api/assets/b1/download']);
+    },
+  });
+  const images = await sync.syncImages({
+    mode: 'generate',
+    prompt: 'cat',
+    images: ['http://host.docker.internal:3018/canvas-api/assets/file_x/download'],
+    context: { chatType: 'group', groupId: 9, userId: 5 },
+  });
+  assert.equal(calls.length, 1);
+  const payload = JSON.parse(calls[0].init.body);
+  assert.equal(payload.artifacts[0].data, '/canvas-api/assets/file_x/download');
+  assert.deepEqual(images, ['http://host.docker.internal:3018/canvas-api/assets/b1/download']);
+});

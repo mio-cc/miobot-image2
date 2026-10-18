@@ -584,6 +584,9 @@ export class CanvasService {
     const out = { ...asset };
     if (out.id && (String(out.url || '').startsWith('data:image/') || this.assets.get(out.id))) {
       out.url = `/canvas-api/assets/${encodeURIComponent(out.id)}/download`;
+    } else if (/^https?:\/\/[^/]+\/canvas-api\//i.test(String(out.url || ''))) {
+      // 旧记录可能保存了 host.docker.internal 的绝对地址；返回相对地址，避免 HTTPS 画布混合内容。
+      try { const parsed = new URL(String(out.url)); out.url = `${parsed.pathname}${parsed.search}${parsed.hash}`; } catch { /* keep */ }
     }
     return out;
   }
