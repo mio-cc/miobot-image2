@@ -49,6 +49,26 @@ const PROVIDERS = [
     { value: 'custom', label: 'custom' },
 ];
 
+const NODE_KINDS = [
+    { value: 'llm', label: 'LLM / 图像模型节点' },
+    { value: 'comfyui', label: 'ComfyUI 独立节点' },
+];
+
+function comfyuiText(node: any): string {
+    if (!node.comfyui) node.comfyui = { pollTimeoutMs: 600000, pollIntervalMs: 2000, maxBatchSize: 4, profiles: [] };
+    return JSON.stringify(node.comfyui, null, 2);
+}
+
+function commitComfyui(node: any, event: Event) {
+    try {
+        const parsed = JSON.parse((event.target as HTMLTextAreaElement).value);
+        node.comfyui = parsed && typeof parsed === 'object' ? parsed : node.comfyui;
+        fetchError.value = '';
+    } catch (error: any) {
+        fetchError.value = `ComfyUI 配置 JSON 格式错误：${String(error?.message || error)}`;
+    }
+}
+
 const nodes = computed(() => config.value?.llm?.apiKeys || []);
 
 /** 带原始下标的行，过滤后下标才不会错位。 */
@@ -278,6 +298,11 @@ function formatTime(value: string) {
               <td colspan="9" class="px-4 py-4">
                 <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
                   <FormField label="节点名称"><input v-model="node.name" class="input-field" placeholder="My Node" /></FormField>
+                  <FormField label="节点类型">
+                    <select v-model="node.kind" class="input-field">
+                      <option v-for="k in NODE_KINDS" :key="k.value" :value="k.value">{{ k.label }}</option>
+                    </select>
+                  </FormField>
                   <FormField label="协议方言" hint="决定端点与请求体形态">
                     <select v-model="node.provider" class="input-field">
                       <option v-for="p in PROVIDERS" :key="p.value" :value="p.value">{{ p.label }}</option>
@@ -302,11 +327,21 @@ function formatTime(value: string) {
                         class="input-field font-mono text-xs" placeholder="X-Custom-Header: value"></textarea>
                     </FormField>
                   </div>
-                  <FormField label="模型列表" :hint="node.modelsFetchedAt ? `更新于 ${formatTime(node.modelsFetchedAt)}` : '还没获取过'">
+                  <FormField v-if="node.kind !== 'comfyui'" label="模型列表" :hint="node.modelsFetchedAt ? `更新于 ${formatTime(node.modelsFetchedAt)}` : '还没获取过'">
                     <button class="btn-outline w-full" :disabled="fetchingNode === idx" @click="fetchModels(idx)">
                       {{ fetchingNode === idx ? '获取中...' : `获取模型（当前 ${(node.models || []).length} 个）` }}
                     </button>
                   </FormField>
+                  <p v-else class="text-xs text-[color:var(--ink-3)] self-end">ComfyUI 节点使用下方 Profiles，不使用模型列表。</p>
+                <div v-if="node.kind === 'comfyui'" class="mt-4">
+                  <FormField label="ComfyUI 连接、Workflow、Profiles、默认参数与参数映射 JSON"
+                    hint="这是后台高级配置，不展示给 QQ 用户。profile 格式：{id,name,workflow,parameterMap,defaults,constraints,outputNodeId,stitch,transform}">
+                    <textarea :value="comfyuiText(node)" @change="commitComfyui(node, $event)" rows="20"
+                      class="input-field font-mono text-xs" spellcheck="false"></textarea>
+                  </FormField>
+                  <p class="text-[11px] text-[color:var(--ink-3)] mt-1">ComfyUI 节点不使用模型列表；llm.imageModel 填 profile id 或名称。第一版支持文生图，图生图/ControlNet 暂未开放。</p>
+                </div>
+
                 </div>
 
                 <div v-if="(node.models || []).length" class="mt-3 flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">

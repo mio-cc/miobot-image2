@@ -1,0 +1,14 @@
+﻿{
+  "name": "@miobot-v2/image-compose",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "../../dist/packages/image-compose/src/index.js",
+  "types": "../../dist/packages/image-compose/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "../../dist/packages/image-compose/src/index.d.ts",
+      "default": "../../dist/packages/image-compose/src/index.js"
+    }
+  }
+}

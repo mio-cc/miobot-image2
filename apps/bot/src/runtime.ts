@@ -1,5 +1,6 @@
 import { createBotRouter, extractReplyId, isAllowedByWhitelist, isGroupUserBlacklisted, stripNonTextCqSegments, type BotMessageContext, type BotRouteDecision, type BotRouterConfig } from '../../../packages/bot-router/src/index.js';
 import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { FEATURE_DEFINITIONS, type FeatureSetting } from '../../../packages/shared/src/features.js';
 import { createReplyStrategyEngine, type ReplyClient, type ReplyContext, type ReplyStrategyConfig } from '../../../packages/reply/src/index.js';
 import { dedupeImageUrls, dedupeVideoUrls } from '../../../packages/napcat/src/index.js';
@@ -17,6 +18,7 @@ import { DEFAULT_FILEGEN_LIMITS, generateFile, generatedFileSpecFromJson, type G
 import { FeatureLimitError, type FeatureGate } from './feature-gate.js';
 import { sanitizeModelImageReferences } from './deps.js';
 import { classifyNaturalLanguageIntent, type IntentCatalogItem, type IntentFallback } from './intent-recognition.js';
+import { renderTextToImage } from '../../../packages/image-compose/src/index.js';
 import type { BrowserRenderService, RenderedImage } from '../../../packages/browser-render/src/index.js';
 
 /** Napcat(OneBot) 上报的消息事件(只取本环需要的字段)。 */
@@ -232,7 +234,7 @@ const NATURAL_INTENT_CATALOG: IntentCatalogItem[] = [
   { id: 'file.read', label: '读取文件', description: '用户要求读取、总结、分析、翻译或提取当前消息/引用文件里的内容。', requires: 'files' },
   { id: 'file.generate', label: '生成文件', description: '用户要求创建、生成、导出、整理成可下载的文件、文档、表格、幻灯片、PDF 或压缩包。' },
   { id: 'search.web', label: '联网搜索', description: '用户要求搜索、查询最新新闻、实时信息、价格、版本、官网或外部资料。' },
-  { id: 'image.generate', label: '文生图', description: '用户要求画图、生成图片、制作海报或视觉素材。' },
+  { id: 'image.generate', label: '文生图', description: '用户要求画图、生成图片、制作海报或视觉素材。可以使用 ComfyUI 或其他图像模型；用户不需要提供 steps、CFG、sampler、batch_size，后台会转化参数；多图默认拼接成一张。' },
   { id: 'image.edit', label: '改图', description: '用户要求修改、编辑、重绘、换风格已有图片。', requires: 'images' },
   { id: 'image.interrogate', label: '图片反推', description: '用户要求描述图片、反推图片提示词、分析画面。', requires: 'images' },
   { id: 'video.generate', label: '视频生成', description: '用户要求生成、制作视频或动画。' },
@@ -965,7 +967,22 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     }
     if (!result) return { handled: false, reason: 'no-result' };
 
-    log?.info('引擎返回结果', {
+    // 文本转图片回复策略：本地排版后走图片发送，不启动 Chromium。
+    if (result.kind === 'chat' && result.text?.trim() && cfg.bot.replyStrategies.text === 'text-image' && cfg.bot.textImage.enabled && options.uploadFile && options.generatedFileDir) {
+      try {
+        const rendered = await renderTextToImage(result.text, cfg.bot.textImage);
+        const outputPath = path.join(options.generatedFileDir, `text-image-${Date.now()}.jpg`);
+        await fs.writeFile(outputPath, rendered.buffer);
+        const url = await options.uploadFile(outputPath, `text-image-${Date.now()}.jpg`, rendered.mime);
+        result = { ...result, images: [url], text: undefined };
+        log?.info('文本回复已转为图片', { width: rendered.width, height: rendered.height, bytes: rendered.buffer.length });
+      } catch (error) {
+        log?.warn('文本转图片失败，回退普通文本', { error: String((error as Error)?.message || error) });
+      }
+    }
+
+    log?.info('引擎返回结果'
+, {
       kind: result.kind, handled: result.handled, hasText: !!(result as any).text,
       imageCount: (result as any).images?.length || 0, videoCount: (result as any).videos?.length || 0,
       reason: (result as any).reason || (result as any).decision?.reason,
@@ -1169,6 +1186,17 @@ function buildHelpText(cfg: AppConfig): string {
   add('web.screenshot');
   add('help');
   add('clear');
+  lines.push('', '【生图】');
+  lines.push('- 直接说：画一只猫 / 生成四张赛博朋克猫，横图。');
+  lines.push('- 不需要填写 steps、CFG、sampler、batch_size，后台自动转化参数。');
+  lines.push('- 多图结果默认本地拼接成一张图片后发送。');
+  lines.push('', '【文件】');
+  lines.push('- 支持 md、docx、xlsx、pptx、pdf、txt、csv、json、zip；可用格式名或扩展名指定。');
+  lines.push('', '【代码画图与网页截屏】');
+  lines.push('- 用 HTML/SVG/Canvas/Three.js 画一个……');
+  lines.push('- 截一下 https://example.com 或 网页截图 https://example.com 1200x800');
+  lines.push('', '【回复策略】');
+  lines.push('- 纯文本后台可选择文本转图片；渲染失败自动回退文本。');
   lines.push('群里需 @机器人 或 回复机器人 触发；私聊直接说话即可。');
   return lines.join('\n');
 }

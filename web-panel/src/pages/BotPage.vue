@@ -54,6 +54,7 @@ const strategyOptions = [
     { value: 'quote', label: '引用原消息' },
     { value: 'at', label: '@ 提问者' },
     { value: 'plain', label: '普通消息' },
+    { value: 'text-image', label: '文本转图片' },
 ];
 
 const modifierFields = [
@@ -133,6 +134,24 @@ const modifierFields = [
             <option v-for="opt in strategyOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
           </select>
         </FormField>
+      </div>
+
+      <div v-if="config.bot.replyStrategies.text === 'text-image'" class="mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
+        <div class="flex flex-wrap items-center gap-3 mb-3">
+          <ToggleField v-model="config.bot.textImage.enabled" label="启用文本转图片" />
+          <span class="text-xs text-[color:var(--ink-3)]">本地排版后发图，不启动 Chromium；渲染失败自动回退文本。</span>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <FormField label="默认宽度"><input v-model.number="config.bot.textImage.width" type="number" min="320" max="4096" class="input-field" /></FormField>
+          <FormField label="字号"><input v-model.number="config.bot.textImage.fontSize" type="number" min="12" max="96" class="input-field" /></FormField>
+          <FormField label="行距"><input v-model.number="config.bot.textImage.lineHeight" type="number" min="1.1" max="3" step="0.1" class="input-field" /></FormField>
+          <FormField label="JPEG 质量"><input v-model.number="config.bot.textImage.quality" type="number" min="1" max="100" class="input-field" /></FormField>
+          <FormField label="字体"><input v-model="config.bot.textImage.fontFamily" class="input-field font-mono" /></FormField>
+          <FormField label="背景色"><input v-model="config.bot.textImage.background" class="input-field font-mono" /></FormField>
+          <FormField label="文字色"><input v-model="config.bot.textImage.foreground" class="input-field font-mono" /></FormField>
+          <FormField label="强调色"><input v-model="config.bot.textImage.accent" class="input-field font-mono" /></FormField>
+        </div>
+        <p class="text-xs text-[color:var(--ink-3)] mt-2">服务器需安装中文字体（例如 fonts-noto-cjk）；sharp 不可用时自动回退普通文本。</p>
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">

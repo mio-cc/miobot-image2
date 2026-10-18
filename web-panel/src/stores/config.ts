@@ -82,9 +82,11 @@ export const useConfigStore = defineStore('config', () => {
         c.panel ||= {};
         c.huggingFace ||= {};
         c.search ||= {};
+        if (c.bot) c.bot.textImage ||= {};
         c.intentRecognition ||= {};
         c.browserRender ||= {};
         c.codeRender ||= {};
+        c.comfyuiTransform ||= {};
     }
 
     function markSaved() {

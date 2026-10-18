@@ -5,6 +5,8 @@ import type { SessionStore } from '../../../packages/core/src/index.js';
 import type { BotRouting } from './config-bridge.js';
 import type { ImagePromptPipeline } from './image-pipeline.js';
 import type { WebSearchService } from '../../../packages/search/src/index.js';
+import type { AppConfig } from '../../../packages/config/src/index.js';
+import { generateComfyUiImages } from './comfyui.js';
 
 /** 把 model 层的图像产物统一成可直接发送/压缩的字符串（url 原样、base64 转 data URL）。 */
 export function artifactToString(artifact: ImageArtifact): string {
@@ -30,6 +32,7 @@ export function videoArtifactsToStrings(result: VideoResult): string[] {
 
 export interface ModelDepsOptions {
   client: ModelClient;
+  getConfig?: () => AppConfig;
   /** 每次调用读取当前路由（支持热重载切节点）。 */
   getRouting: () => BotRouting;
   /** 会话记忆(可选)；提供后 chat 带历史并回存。 */
@@ -72,7 +75,7 @@ export function sanitizeModelImageReferences(images: string[]): { images: string
 }
 
 export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps {
-  const { client, getRouting, sessions, chatSystemPrompt, pipeline, search, logger } = options;
+  const { client, getConfig, getRouting, sessions, chatSystemPrompt, pipeline, search, logger } = options;
   return {
     async chat(req) {
       const routing = getRouting();
@@ -141,6 +144,18 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
     },
     async generateImages(req) {
       const routing = getRouting();
+      const cfg = getConfig?.();
+      const imageNode = cfg?.llm.apiKeys?.[routing.imageNodeIndex];
+      if (imageNode?.kind === 'comfyui' && imageNode.comfyui) {
+        const result = await generateComfyUiImages({ getConfig: getConfig!, client, logger }, {
+          nodeIndex: routing.imageNodeIndex,
+          profileId: req.model,
+          prompt: req.prompt,
+          count: req.count,
+          timeoutMs: cfg?.llm.imageTimeoutMs,
+        });
+        return { images: artifactsToStrings(result) };
+      }
       let prompt = req.prompt;
       if (pipeline) {
         try { prompt = await pipeline.prepare({ prompt: req.prompt, templateId: req.templateId }); }
@@ -168,6 +183,9 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
     },
     async editImage(req) {
       const routing = getRouting();
+      const cfg = getConfig?.();
+      const editNode = cfg?.llm.apiKeys?.[routing.editNodeIndex];
+      if (editNode?.kind === 'comfyui') throw new Error('ComfyUI 图生图/改图暂未开放，第一版只支持文生图。');
       const res = await client.editImage(routing.editNodeIndex, {
         model: req.model, prompt: req.prompt, images: req.images, size: req.size, quality: req.quality,
         ...(routing.imageTimeoutMs ? { timeoutMs: routing.imageTimeoutMs } : {}),

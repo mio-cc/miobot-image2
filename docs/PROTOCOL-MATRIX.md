@@ -491,3 +491,131 @@ MIOBOT_CHROMIUM_PATH=/usr/bin/chromium bash deploy-linux.sh rebuild
 ```
 
 1C2G 机器建议保持最大并发 1；不建议开启多任务并发。
+
+
+## 15. ComfyUI 生图与文本转图片
+
+### ComfyUI
+
+ComfyUI 使用独立 API 节点类型：
+
+```text
+kind: comfyui
+```
+
+节点配置包含：
+
+- Base URL
+- API Key / 自定义 Headers
+- Profiles
+- API 格式 workflow JSON
+- parameterMap
+- defaults
+- constraints
+- outputNodeId
+- pollTimeoutMs / pollIntervalMs
+- maxBatchSize
+- stitch 配置
+- profile 级参数转化模型覆盖
+
+每个 Profile 示例：
+
+```json
+{
+  "id": "anime",
+  "name": "动漫文生图",
+  "workflow": {},
+  "parameterMap": {
+    "prompt": "6.inputs.text",
+    "negativePrompt": "7.inputs.text",
+    "width": "5.inputs.width",
+    "height": "5.inputs.height",
+    "steps": "3.inputs.steps",
+    "cfg": "3.inputs.cfg",
+    "sampler": "3.inputs.sampler_name",
+    "scheduler": "3.inputs.scheduler",
+    "seed": "3.inputs.seed",
+    "batchSize": "5.inputs.batch_size"
+  },
+  "defaults": {},
+  "constraints": {},
+  "stitch": { "enabled": true, "quality": 70, "gap": 16, "label": true }
+}
+```
+
+后台默认参数只用于兜底：参数转化模型失败、返回非法 JSON、参数超范围或字段缺失时，仍使用默认参数生成。
+
+### 参数转化模型
+
+能力分工：
+
+```text
+ComfyUI 参数转化
+```
+
+可配置节点、模型、超时、最大 Token 和提示词。模型输出：
+
+```json
+{
+  "prompt": "...",
+  "negativePrompt": "...",
+  "width": 1024,
+  "height": 1024,
+  "steps": 20,
+  "cfg": 7,
+  "sampler": "euler",
+  "scheduler": "normal",
+  "seed": 0,
+  "batchSize": 1,
+  "denoise": 1
+}
+```
+
+后端只接受已声明参数，数值会按 constraints clamp；未知字段丢弃。
+
+### 多图拼接
+
+- sharp 读取 ComfyUI 输出
+- 1 张不拼接
+- 2 张横向
+- 3～4 张 2×2
+- 其他按配置列数
+- 默认 JPEG quality 70
+- 可选 label、gap、scale、maxWidth、maxHeight
+- 拼接失败回退第一张图
+
+### 文本转图片回复
+
+ReplyStrategy 新增：
+
+```text
+text-image
+```
+
+后台：
+
+```text
+对话与触发 → 回复策略 → 纯文本回复
+```
+
+配置 `bot.textImage`：
+
+- width
+- minHeight / maxHeight
+- padding
+- fontSize
+- lineHeight
+- fontFamily
+- background / foreground / accent
+- quality
+- maxChars
+
+实现为 SVG 排版 + sharp 转 JPEG，不启动 Chromium。渲染失败回退普通文本。服务器需安装中文字体，例如 `fonts-noto-cjk`。
+
+### 第一版边界
+
+- 支持 ComfyUI 文生图
+- 支持 batchSize
+- 支持多图拼接
+- 图生图 / ControlNet / LoRA / 局部重绘仅预留配置接口，暂不执行
+- 不支持 ComfyUI 队列全局 interrupt，避免影响其他客户端任务

@@ -71,6 +71,8 @@ const rows: Row[] = [
     { key: 'codeRender', label: '代码画图', trigger: 'HTML / SVG / Canvas / Three.js', capability: 'chat',
       node: 'codeRender.nodeIndex', model: 'codeRender.model', toggle: 'codeRender.enabled',
       detailLink: { to: '/render', text: '代码与网页渲染页' } },
+    { key: 'comfyuiTransform', label: 'ComfyUI 参数转化', trigger: '自然语言 → prompt + 参数', capability: 'chat',
+      node: 'comfyuiTransform.nodeIndex', model: 'comfyuiTransform.model', toggle: 'comfyuiTransform.enabled' },
     { key: 'promptsChat', label: '远程库智能选模板', trigger: 'spp', capability: 'chat',
       node: 'promptsChat.smartNodeIndex', model: 'promptsChat.smartModel', toggle: 'promptsChat.enabled',
       detailLink: { to: '/templates', text: '模板库页' } },
@@ -429,6 +431,23 @@ onMounted(() => {
                   <div class="md:col-span-4">
                     <FormField label="代码生成提示词" hint="占位符 {{userContent}}；模型必须输出 JSON">
                       <textarea v-model="config.codeRender.promptTemplate" rows="6" class="input-field font-mono text-xs"></textarea>
+                    </FormField>
+                  </div>
+                </div>
+
+                <div v-if="row.key === 'comfyuiTransform'" class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
+                  <FormField label="转化超时 (ms)">
+                    <input v-model.number="config.comfyuiTransform.timeoutMs" type="number" min="3000" max="120000" step="1000" class="input-field" />
+                  </FormField>
+                  <FormField label="最大输出 Token">
+                    <input v-model.number="config.comfyuiTransform.maxTokens" type="number" min="256" max="8192" step="128" class="input-field" />
+                  </FormField>
+                  <div class="md:col-span-2 text-xs text-[color:var(--ink-3)] flex items-end">
+                    每个 ComfyUI Profile 可在 API 节点配置里覆盖模型和提示词。
+                  </div>
+                  <div class="md:col-span-4">
+                    <FormField label="ComfyUI 参数转化提示词" hint="占位符 {{userRequest}} {{defaults}} {{constraints}} {{maxBatchSize}}">
+                      <textarea v-model="config.comfyuiTransform.promptTemplate" rows="7" class="input-field font-mono text-xs"></textarea>
                     </FormField>
                   </div>
                 </div>
