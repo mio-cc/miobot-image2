@@ -320,6 +320,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       }
     },
     metrics,
+    progressMessages: true,
     featureGate,
     fileIndex,
     generatedFileDir,

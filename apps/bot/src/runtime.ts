@@ -21,6 +21,7 @@ import { sanitizeModelImageReferences } from './deps.js';
 import { classifyNaturalLanguageIntent, type IntentCatalogItem, type IntentFallback } from './intent-recognition.js';
 import { renderTextToImage } from '../../../packages/image-compose/src/index.js';
 import type { BrowserRenderService, RenderedImage } from '../../../packages/browser-render/src/index.js';
+import { createImageProgress, type ImageProgressKind, type ImageProgressHandle } from './image-progress.js';
 
 /** Napcat(OneBot) 上报的消息事件(只取本环需要的字段)。 */
 export interface NapcatMessageEvent {
@@ -99,7 +100,12 @@ export interface BotRuntimeOptions {
   metrics?: {
     record(event: 'message' | 'command' | 'chat' | 'image' | 'video' | 'voice' | 'error', count?: number): void;
     recordDuration(key: string, ms: number): void;
+    durationAverage?(key: string): number | undefined;
   };
+  /** 进度消息开关；默认关闭，start.ts 开启。 */
+  progressMessages?: boolean;
+  /** 慢任务提醒间隔；默认 60 秒，0 关闭。 */
+  progressReminderMs?: number;
   /** 主人命令(owner-only):匹配则优先于普通路由处理。handle 返回文本则回复。 */
   owner?: {
     ownerQQs: () => Array<string | number>;
@@ -893,7 +899,12 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           } else if (intent.intent === 'search.web') {
             result = await options.app.engine.handleExplicit('chat', { ...engineFeatureInput, forceSearch: true }, { prompt: intent.args });
           } else if (intent.intent === 'image.generate' || intent.intent === 'image.edit' || intent.intent === 'image.interrogate' || intent.intent === 'video.generate') {
-            result = await options.app.engine.handleExplicit(intent.intent as any, engineFeatureInput, { prompt: intent.args });
+            const progress = startImageProgress(engine, replyCtx, options, imageProgressKindForIntent(intent.intent)!, log);
+            try {
+              result = await options.app.engine.handleExplicit(intent.intent as any, engineFeatureInput, { prompt: intent.args });
+            } finally {
+              progress?.done();
+            }
           } else if (intent.intent === 'code.render') {
             try {
               const outcome = await handleCodeRenderRequest(options, intent.args, chatType, event.group_id, userId, sessionId);
@@ -968,12 +979,18 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       } else if (decision.kind === 'command') {
         // 命令类:图片用富化后的(引用图片可达改图/反推),提示词保持原始 args 不注入引用文本。
         if (!result) {
-          result = await runCommand(options.app, decision, {
-            text: stripNonTextCqSegments(decision.args), images: modelImages, videos: enrichedVideos,
-            hasReferencedImage, hasReferencedVideo, chatType, sessionId,
-            featureId: String(decision.metadata?.featureId || '') || undefined,
-            featureContext: { chatType, groupId: event.group_id, userId, promptChars: stripNonTextCqSegments(decision.args).length },
-          });
+          const commandKind = imageProgressKindForCommand(decision.command);
+          const progress = commandKind ? startImageProgress(engine, replyCtx, options, commandKind, log) : undefined;
+          try {
+            result = await runCommand(options.app, decision, {
+              text: stripNonTextCqSegments(decision.args), images: modelImages, videos: enrichedVideos,
+              hasReferencedImage, hasReferencedVideo, chatType, sessionId,
+              featureId: String(decision.metadata?.featureId || '') || undefined,
+              featureContext: { chatType, groupId: event.group_id, userId, promptChars: stripNonTextCqSegments(decision.args).length },
+            });
+          } finally {
+            progress?.done();
+          }
           if (!result) return { handled: false, reason: `command-unsupported:${decision.command}` };
         }
       } else {
@@ -1089,6 +1106,38 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
   }
 
   return { handleMessageEvent, attach };
+}
+
+function imageProgressKindForIntent(intent: string): ImageProgressKind | undefined {
+  if (intent === 'image.generate' || intent === 'image.edit' || intent === 'image.interrogate' || intent === 'video.generate') {
+    return intent;
+  }
+  return undefined;
+}
+
+function imageProgressKindForCommand(command: string): ImageProgressKind | undefined {
+  if (command === 'genImage') return 'image.generate';
+  if (command === 'editImage' || command === 'img2Img') return 'image.edit';
+  if (command === 'interrogate') return 'image.interrogate';
+  return undefined;
+}
+
+function startImageProgress(
+  engine: ReturnType<typeof createReplyStrategyEngine>,
+  replyCtx: ReplyContext,
+  options: BotRuntimeOptions,
+  kind: ImageProgressKind,
+  log?: StructuredLogger,
+): ImageProgressHandle | undefined {
+  if (!options.progressMessages) return undefined;
+  const averageKey = kind === 'video.generate' ? 'video' : 'image';
+  return createImageProgress({
+    kind,
+    averageMs: options.metrics?.durationAverage?.(averageKey),
+    reminderAfterMs: options.progressReminderMs,
+    logger: log,
+    send: (text) => engine.replyText(replyCtx, text, 'quote'),
+  });
 }
 
 async function runCommand(

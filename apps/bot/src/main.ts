@@ -1,4 +1,5 @@
 export { createSentMessageTracker, createTrackingReplyClient, sentChatKey, type SentMessageTracker } from './sent-messages.js';
+export { createImageProgress, formatImageEta, imageProgressLabel, type ImageProgressKind, type ImageProgressHandle } from './image-progress.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
 
 export const BOT_APP: PackageDescriptor = {

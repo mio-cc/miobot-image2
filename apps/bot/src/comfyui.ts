@@ -250,6 +250,7 @@ function findProfile(node: ApiNode, profileId: string): ComfyUiProfile | undefin
 }
 
 export async function generateComfyUiImages(options: ComfyUiGenerateOptions, req: ComfyUiGenerateRequest): Promise<ImageResult> {
+  const startedAt = Date.now();
   const cfg = options.getConfig();
   const node = cfg.llm.apiKeys[req.nodeIndex];
   if (!node || node.kind !== 'comfyui' || !node.comfyui) throw new Error('当前生图节点不是 ComfyUI');
@@ -278,6 +279,7 @@ export async function generateComfyUiImages(options: ComfyUiGenerateOptions, req
     seed: transformed.params.seed,
     batchSize: transformed.params.batchSize,
   });
+  const queueStartedAt = Date.now();
   const queuedResult = await runInComfyUiQueue<ImageResult>(comfyQueueKey(node.baseUrl), {
     maxConcurrent: comfyConfig.maxConcurrent ?? 1,
     maxQueue: comfyConfig.maxQueue ?? 10,
@@ -285,7 +287,12 @@ export async function generateComfyUiImages(options: ComfyUiGenerateOptions, req
     label: node.name,
     logger: options.logger,
   }, async () => {
-    options.logger?.info('ComfyUI 任务开始', { profile: profile.id, node: node.name || req.nodeIndex });
+    const generationStartedAt = Date.now();
+    options.logger?.info('ComfyUI 任务开始', {
+      profile: profile.id,
+      node: node.name || req.nodeIndex,
+      queueWaitMs: generationStartedAt - queueStartedAt,
+    });
     const result = await runComfyUiWorkflow({
       baseUrl: node.baseUrl,
       apiKey: node.key,
@@ -298,6 +305,19 @@ export async function generateComfyUiImages(options: ComfyUiGenerateOptions, req
     });
     const images = result.images;
     if (!images.length) throw new Error('ComfyUI 没有生成图片');
+    const generationMs = Date.now() - generationStartedAt;
+    options.logger?.info('ComfyUI 生成完成', {
+      profile: profile.id,
+      node: node.name || req.nodeIndex,
+      queueWaitMs: generationStartedAt - queueStartedAt,
+      generationMs,
+      totalMs: Date.now() - startedAt,
+      imageCount: images.length,
+      seed: result.seed,
+      width: transformed.params.width,
+      height: transformed.params.height,
+      batchSize: transformed.params.batchSize,
+    });
     let output = images;
     let outputMime = images[0].mime;
     if (profile.stitch?.enabled !== false && images.length > 1) {

@@ -159,6 +159,14 @@ export class Metrics {
     this.scheduleFlush();
   }
 
+  /** 返回某类操作的历史平均耗时（毫秒）；没有样本时返回 undefined。 */
+  durationAverage(key: string): number | undefined {
+    this.ensureLoaded();
+    const entry = this.state.durations[key];
+    if (!entry || entry.count <= 0) return undefined;
+    return Math.round(entry.total / entry.count);
+  }
+
   /** 近 24 小时的分桶序列，缺失的小时补 0，方便前端直接画图。 */
   snapshot(): MetricsSnapshot {
     this.ensureLoaded();

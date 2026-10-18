@@ -38,12 +38,12 @@ function makeReply() {
   };
 }
 
-function setup() {
+function setup(overrides = {}) {
   const client = makeModelClient();
   const reply = makeReply();
   const getConfig = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; return c; };
   const app = createBotApp({ getConfig, client });
-  const rt = createBotMessageRuntime({ app, reply, getConfig, botName: 'Mio' });
+  const rt = createBotMessageRuntime({ app, reply, getConfig, botName: 'Mio', ...overrides });
   return { client, reply, rt };
 }
 
@@ -551,4 +551,13 @@ test('owner: ch -> 撤回当前私聊最近一条机器人消息', async () => {
   assert.deepEqual(deleted, ['501']);
   assert.equal(handled.length, 0);
   assert.ok(sent.some(([kind, user, text]) => kind === 'text' && user === 5 && text.includes('已撤回最近 1 条')));
+});
+
+test('private genImage with progress messages -> ack then image', async () => {
+  const { reply, rt } = setup({ progressMessages: true, progressReminderMs: 0 });
+  const r = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 22, raw_message: '生图 一只猫' });
+  assert.equal(r.kind, 'image.generate');
+  assert.equal(reply.sent[0][0], 'privateText');
+  assert.match(reply.sent[0][2], /收到，正在图片生成/);
+  assert.deepEqual(reply.sent[1], ['privateImage', 5, 'data:image/png;base64,AAA']);
 });
