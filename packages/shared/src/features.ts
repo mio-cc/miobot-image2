@@ -93,7 +93,7 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
   },
   {
     id: 'image.generate', label: '文生图', category: 'image', implemented: true,
-    description: '自然语言生图；支持 ComfyUI 或其它图像模型，参数由后台转化模型处理，多图默认拼接成一张。',
+    description: '自然语言生图；支持 ComfyUI 或其它图像模型，MOSS-Image / Krea 2 会自动使用对应的提示词策略，参数由后台转化模型处理，多图默认拼接成一张。',
     legacyCommand: 'genImage', intentKind: 'image.generate',
     defaultAliases: ['生图', '画', 'draw'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',

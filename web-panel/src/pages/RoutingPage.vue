@@ -446,7 +446,7 @@ onMounted(() => {
                     每个 ComfyUI Profile 可在 API 节点配置里覆盖模型和提示词。
                   </div>
                   <div class="md:col-span-4">
-                    <FormField label="ComfyUI 参数转化提示词" hint="占位符 {{userRequest}} {{defaults}} {{constraints}} {{maxBatchSize}}">
+                    <FormField label="ComfyUI 参数转化提示词" hint="占位符 {{userRequest}} {{profileName}} {{modelFamily}} {{variant}} {{promptSyntax}} {{promptPolicy}} {{parameterKeys}} {{allowedEnums}} {{defaults}} {{constraints}} {{maxBatchSize}}">
                       <textarea v-model="config.comfyuiTransform.promptTemplate" rows="7" class="input-field font-mono text-xs"></textarea>
                     </FormField>
                   </div>

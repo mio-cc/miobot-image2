@@ -234,7 +234,7 @@ const NATURAL_INTENT_CATALOG: IntentCatalogItem[] = [
   { id: 'file.read', label: '读取文件', description: '用户要求读取、总结、分析、翻译或提取当前消息/引用文件里的内容。', requires: 'files' },
   { id: 'file.generate', label: '生成文件', description: '用户要求创建、生成、导出、整理成可下载的文件、文档、表格、幻灯片、PDF 或压缩包。' },
   { id: 'search.web', label: '联网搜索', description: '用户要求搜索、查询最新新闻、实时信息、价格、版本、官网或外部资料。' },
-  { id: 'image.generate', label: '文生图', description: '用户要求画图、生成图片、制作海报或视觉素材。可以使用 ComfyUI 或其他图像模型；用户不需要提供 steps、CFG、sampler、batch_size，后台会转化参数；多图默认拼接成一张。' },
+  { id: 'image.generate', label: '文生图', description: '用户要求画图、生成图片、制作海报或视觉素材。可以使用 ComfyUI 或其他图像模型；MOSS-Image、Krea 2 会自动匹配自然语言提示词策略；用户不需要提供 steps、CFG、sampler、batch_size，后台会转化参数；多图默认拼接成一张。' },
   { id: 'image.edit', label: '改图', description: '用户要求修改、编辑、重绘、换风格已有图片。', requires: 'images' },
   { id: 'image.interrogate', label: '图片反推', description: '用户要求描述图片、反推图片提示词、分析画面。', requires: 'images' },
   { id: 'video.generate', label: '视频生成', description: '用户要求生成、制作视频或动画。' },
@@ -1192,6 +1192,7 @@ function buildHelpText(cfg: AppConfig): string {
   lines.push('- 直接说：画一只猫 / 生成四张赛博朋克猫，横图。');
   lines.push('- 不需要填写 steps、CFG、sampler、batch_size，后台自动转化参数。');
   lines.push('- 多图结果默认本地拼接成一张图片后发送。');
+  lines.push('- MOSS-Image / Krea 2 会自动使用对应的自然语言提示词和参数策略，不需要手动写权重。');
   lines.push('', '【文件】');
   lines.push('- 支持 md、docx、xlsx、pptx、pdf、txt、csv、json、zip；可用格式名或扩展名指定。');
   lines.push('', '【代码画图与网页截屏】');

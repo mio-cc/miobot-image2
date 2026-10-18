@@ -336,11 +336,11 @@ function formatTime(value: string) {
                   <p v-else class="text-xs text-[color:var(--ink-3)] self-end">ComfyUI 节点使用下方 Profiles，不使用模型列表。</p>
                 <div v-if="node.kind === 'comfyui'" class="mt-4">
                   <FormField label="ComfyUI 连接、Workflow、Profiles、默认参数与参数映射 JSON"
-                    hint="这是后台高级配置，不展示给 QQ 用户。profile 格式：{id,name,workflow,parameterMap,defaults,constraints,outputNodeId,stitch,transform}">
+                    hint="这是后台高级配置，不展示给 QQ 用户。profile 格式：{id,name,workflow,parameterMap,defaults,constraints,outputNodeId,stitch,promptPolicy,transform}">
                     <textarea :value="comfyuiText(node)" @change="commitComfyui(node, $event)" rows="20"
                       class="input-field font-mono text-xs" spellcheck="false"></textarea>
                   </FormField>
-                  <p class="text-[11px] text-[color:var(--ink-3)] mt-1">ComfyUI 节点不使用模型列表；llm.imageModel 填 profile id 或名称。第一版支持文生图，图生图/ControlNet 暂未开放。</p>
+                  <p class="text-[11px] text-[color:var(--ink-3)] mt-1">ComfyUI 节点不使用模型列表；llm.imageModel 填 profile id 或名称。Profile 未写 promptPolicy 时会按 id/name 自动识别 MOSS-Image、Krea 2 等模型并套用对应的提示词规则。第一版支持文生图，图生图/ControlNet 暂未开放。</p>
                 </div>
 
                 </div>

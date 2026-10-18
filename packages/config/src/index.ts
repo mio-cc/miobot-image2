@@ -17,6 +17,29 @@ export type CanvasAccessMode = 'public' | 'local-only' | 'admin';
 /** concurrency: 该节点同时在跑的请求上限；0 = 不限制。上游额度是按 key 发的，所以限流的单位是节点而不是模型。 */
 export interface ComfyUiParamConstraint { type?: 'number' | 'string' | 'boolean'; min?: number; max?: number; enum?: string[] }
 export interface ComfyUiStitchConfig { enabled?: boolean; quality?: number; columns?: number; gap?: number; label?: boolean; scale?: number; maxWidth?: number; maxHeight?: number; background?: string }
+export type ComfyUiModelFamily = 'moss-image' | 'krea-2' | 'sdxl' | 'flux' | 'sd15' | 'generic';
+export type ComfyUiPromptSyntax = 'natural' | 'a1111' | 'sdxl' | 'moss' | 'krea';
+export type ComfyUiPromptFormat = 'caption' | 'tags' | 'layout';
+export type ComfyUiVariant = 'base' | 'sft' | 'raw' | 'turbo' | 'unknown';
+export interface ComfyUiPromptPolicy {
+  modelFamily: ComfyUiModelFamily;
+  variant: ComfyUiVariant;
+  promptSyntax: ComfyUiPromptSyntax;
+  language: 'en' | 'zh' | 'auto';
+  preferredFormat: ComfyUiPromptFormat;
+  supportsWeights: boolean;
+  supportsNegativePrompt: boolean;
+  supportsBreak: boolean;
+  supportsEmbeddings: boolean;
+  supportsDynamicPrompts: boolean;
+  supportsLoraTags: boolean;
+  maxPromptChars: number;
+  maxWeights: number;
+  weightMin: number;
+  weightMax: number;
+  defaultNegativePrompt: string;
+  loraTriggers: string[];
+}
 export interface ComfyUiProfile {
   id: string;
   name: string;
@@ -26,6 +49,7 @@ export interface ComfyUiProfile {
   constraints?: Record<string, ComfyUiParamConstraint>;
   outputNodeId?: string;
   stitch?: ComfyUiStitchConfig;
+  promptPolicy?: ComfyUiPromptPolicy;
   transform?: Partial<ComfyUiTransformConfig>;
 }
 export interface ComfyUiNodeConfig { profiles: ComfyUiProfile[]; pollTimeoutMs: number; pollIntervalMs: number; maxBatchSize: number }
@@ -148,7 +172,97 @@ const P = {
   pcQuery: 'Return JSON only: {"queries":["query 1","query 2"]}. User request: {{rawPrompt}}',
   pcSmart: 'Return JSON only: {"selectedId":"id or none","selectedTitle":"title or none","reason":"brief Chinese reason","finalPrompt":"ready-to-use image prompt"}. Preserve the user request language in finalPrompt; if the request is Chinese, finalPrompt must contain Chinese and must not be translated into English unless the user explicitly asks for English. User request: {{rawPrompt}}\n\nCandidate prompts:\n{{candidates}}',
   codeRender: '你是代码画图生成器。用户要求用代码画图时，生成一个自包含的 HTML/SVG/Canvas/Three.js 作品。只输出 JSON，不要 Markdown，不要解释：{"format":"html|svg|canvas|three","title":"作品标题","width":1080,"height":1080,"html":"可选 HTML 片段","css":"可选 CSS","js":"可选 JavaScript","svg":"当 format=svg 时的 SVG 源码","sendSource":false}。代码必须自包含，不得访问网络、不得引用 CDN、不得读写本地文件、不能使用 cookie/localStorage。Three.js 使用页面内注入的 THREE 全局变量，不使用 import。canvas/three 请绘制完成后设置 window.__MIOBOT_READY__ = true。用户要求：{{userContent}}',
-  comfyuiTransform: '你是 ComfyUI 生图参数转换器。根据用户请求和给定的参数约束，输出严格的 JSON，不要 Markdown，不要解释。字段包含：prompt, negativePrompt, width, height, steps, cfg, sampler, scheduler, seed, batchSize, denoise。只能使用允许的参数和枚举值；用户没有指定时使用 defaults。将用户自然语言转换成适合图像生成的英文提示词（保留必要的原文关键词），并合理配置参数。用户请求：{{userRequest}}；默认参数：{{defaults}}；参数约束：{{constraints}}；最大批量：{{maxBatchSize}}',
+  comfyuiTransform: `你是 Miobot 的 ComfyUI 提示词工程师和生成参数规划器。你的任务不是聊天，而是把用户的自然语言请求转换成可直接提交给已配置 ComfyUI workflow 的严格 JSON。
+
+【本次输入】
+用户请求：{{userRequest}}
+Profile 名称：{{profileName}}
+模型家族：{{modelFamily}}
+模型变体：{{variant}}
+提示词策略：{{promptPolicy}}
+允许参数键：{{parameterKeys}}
+允许枚举：{{allowedEnums}}
+默认参数：{{defaults}}
+参数约束：{{constraints}}
+最大批量：{{maxBatchSize}}
+
+【最高优先级】
+1. 只输出一个 JSON object，不要 Markdown、代码块、注释、解释。
+2. 不要输出 workflow JSON、节点 ID、执行命令或思考过程。
+3. 只输出 parameterKeys 中允许的键，不要发明字段。
+4. 用户没有指定的参数使用 defaults；用户明确指定时优先，但必须遵守 constraints 和 allowedEnums。
+5. width/height 必须保持用户要求的方向，并遵守尺寸约束。
+6. 用户没指定 seed 时输出 0；指定时原样输出。
+7. 用户没指定数量时 batchSize 为 1；不要为了多出图重复提交。
+8. prompt 必须能直接放入工作流文本编码节点。
+
+【提示词结构】
+按需组织下列信息，能自然融合就用自然语言，不要机械堆砌：
+主体与数量 -> 外观与服装 -> 动作与互动 -> 场景与环境 -> 构图与镜头 -> 光线与色彩 -> 材质与媒介 -> 必要细节。
+用户明确要求显示的文字必须用引号括起来，并保持原文，不要翻译、改写或臆造文字。用户没有要求的内容不要大量添加。
+
+
+【模型家族专项：MOSS-Image】
+当 modelFamily = moss-image：
+- 优先输出一段连贯、具体的英文 caption；标点自然，避免 SD 式重复质量词。
+- 如果 preferredFormat = tags，使用标签顺序：Quality -> Score -> Meta -> Year -> Character -> Series -> Artist -> General；标签之间用逗号分隔。
+- 支持中文，但默认英文描述；用户要求中文或文字内容本身是中文时保留中文。
+- 不支持 prompt 权重语法，禁止输出 (word:1.2)、BREAK、AND、<lora:...> 或编造 embedding。
+- 需要换行或精确文字时，可以使用实际换行或 \n；不要编造文字位置。
+- negativePrompt 只在 supportsNegativePrompt=true 时输出；默认使用 defaults.negativePrompt，通常为：nsfw, worst quality, bad anatomy, watermark, jpeg artifact。
+- MOSS 推荐参数：50 步以上、CFG 约 3.0、shift 约 5.0、Euler、sgm_uniform；具体以 defaults 和 constraints 为准。
+- 分辨率使用 1M、1.5M 或 2M 总像素附近，宽高为 16 的正整数倍；不要随意改成非 16 倍数。
+
+【模型家族专项：Krea 2】
+当 modelFamily = krea-2：
+- 使用一段连贯、详细的自然语言 caption，描述主体、动作、可见细节、环境、构图、镜头、光线、媒介和风格。
+- 长而具体的自然语言优于标签堆砌；不要写 masterpiece、best quality、8k、ultra detailed 等空泛质量词。
+- 用户要求文字时，用引号包住要显示的文字；不要臆造文字。
+- 不支持 prompt 权重语法，禁止输出 (word:1.2)、BREAK、AND、<lora:...> 或编造 embedding。
+- Krea 2 Turbo：默认 8 步、CFG 0；如果 parameterKeys 包含 mu，默认约 1.15；支持 1K 到 2K 输出。
+- Krea 2 Raw：默认约 52 步、CFG 3.5；以 defaults 和 constraints 为准。
+- 默认不输出 negativePrompt；只有 supportsNegativePrompt=true 时才允许。
+- 不要为了「更精细」擅自提高 steps、CFG 或分辨率。
+
+【其他模型家族】
+- sd15/sd2：简洁逗号标签，质量词最多 1 到 2 个，权重谨慎。
+- sdxl：完整 prompt；若 parameterKeys 包含 promptG/promptL，则分别输出全局场景与主体细节。
+- flux：自然语言长句，具体对象关系和动作；不要堆 SD 质量词，默认不要 negativePrompt。
+- 其他模型：严格服从 promptPolicy，不要套用不适用的模板。
+
+【权重规则】
+只有 supportsWeights=true 且 promptSyntax 为 a1111 或 sdxl 时才允许权重。
+允许：(important detail:1.2)、(silver hair:1.15)、(neon lighting:0.9)。
+限制：权重范围使用 promptPolicy.weightMin 到 weightMax；最多 maxWeights 处；不要嵌套；不要包住整段 prompt；不要用 (((word)))；正文不要每个词都加权重。
+supportsWeights=false 时，禁止所有权重语法、BREAK、AND、[word] 和 <lora:...>；用词序、具体名词和自然语言强调。
+supportsBreak=false 时禁止 BREAK；supportsLoraTags=false 时禁止 LoRA 标签；supportsEmbeddings=false 时禁止写 embedding:name。
+supportsDynamicPrompts=false 时禁止 {a|b} 随机语法。
+
+【负向提示词规则】
+只有 supportsNegativePrompt=true 时才输出 negativePrompt。默认继承 defaults.negativePrompt，仅补充与画面相关的少量约束，不要写和正向提示词冲突的内容。FLUX 和 Krea 2 Turbo 默认不输出负向提示词。
+
+【参数规则】
+- steps、cfg、shift、mu 等可以是小数；width、height、steps、seed、batchSize 使用合法整数。
+- sampler、scheduler 只能从 allowedEnums 中选择；没有枚举则使用 defaults。
+- 用户说横图时 width > height；竖图时 height > width；方图时相等。
+- 用户要求超出范围的参数时收敛到最接近的合法值，不要报错。
+- parameterKeys 之外的字段一律省略。
+
+【输出格式】
+{
+  "prompt": "最终正向提示词",
+  "negativePrompt": "最终负向提示词",
+  "width": 1024,
+  "height": 1024,
+  "steps": 20,
+  "cfg": 3.5,
+  "sampler": "euler",
+  "scheduler": "sgm_uniform",
+  "seed": 0,
+  "batchSize": 1,
+  "confidence": 0.92
+}
+以上仅为字段示例；实际只输出 parameterKeys 允许的键。若 parameterKeys 包含 promptG、promptL、clipLPrompt、t5Prompt，则按相应模型规则增加这些字段；不需要的字段省略。`,
   naturalIntent: '你是 Miobot 的自然语言意图识别器。用户会用普通说话方式提出需求，不需要使用命令格式。请从可用功能中选择一个最合适的 intent，并提取必要参数。只输出 JSON，不要 Markdown，不要解释：{"intent":"功能ID","args":"提取出的用户需求/提示词/查询词","fileType":"md|docx|xlsx|pptx|pdf|txt|csv|json|zip或null","confidence":0到1,"reason":"简短原因"}。如果只是普通聊天、问答、解释、写作但不要求生成文件/图片/视频/搜索，返回 chat。只有用户明确要求生成可下载文件时才返回 file.generate。可用功能：{{intents}}。上下文：{{context}}。用户消息：{{userContent}}',
   free: 'Return JSON only. Use {"action":"text","text":"..."} or {"action":"image","mode":"generate|edit","prompt":"...","size":"1024x1024","count":1} or {"action":"video","prompt":"...","duration":6,"resolution":"720p"}. Use video when the user asks to generate/make a video. Preserve the user content language in image/video prompt; if the user content is Chinese, prompt must contain Chinese and must not be translated into English unless the user explicitly asks for English. User content: {{userContent}}',
   ttsPreprocess: '你是文本转语音前置处理助手。请把机器人回复改写成适合语音合成的文本，并按需要穿插语音标签。要求：1. 保留原意和主要语言，不额外扩写，不要无故翻译成英文；2. 标签必须是语音模型可直接识别的文本；3. 只输出最终要送入语音 API 的文本，不要解释，不要 Markdown。待处理文本：{{text}}',
@@ -163,7 +277,7 @@ const DEFAULT_CONFIG: AppConfig = {
   intentRecognition: { enabled: true, nodeIndex: 0, model: '', timeoutMs: 12000, minConfidence: 0.65, promptTemplate: P.naturalIntent },
   browserRender: { enabled: true, executablePath: '', noSandbox: true, enableWebgl: true, timeoutMs: 45000, launchTimeoutMs: 20000, idleCloseMs: 60000, maxConcurrency: 1, maxQueue: 3, maxCodeChars: 200000, maxWidth: 4096, maxHeight: 4096, defaultWidth: 1080, defaultHeight: 1080, maxScreenshotBytes: 20971520, allowPrivateHosts: false },
   codeRender: { enabled: true, nodeIndex: 0, model: '', timeoutMs: 30000, maxTokens: 4096, promptTemplate: P.codeRender },
-  comfyuiTransform: { enabled: true, nodeIndex: 0, model: '', timeoutMs: 20000, maxTokens: 1200, promptTemplate: P.comfyuiTransform },
+  comfyuiTransform: { enabled: true, nodeIndex: 0, model: '', timeoutMs: 20000, maxTokens: 2400, promptTemplate: P.comfyuiTransform },
   huggingFace: { enabled: false, useForChat: false, token: '', baseUrl: 'https://router.huggingface.co/v1', hubApiUrl: 'https://huggingface.co/api/models', selectedModelId: '', selectedProvider: '', selectedModelCode: '', requestMode: 'openai-chat', timeoutMs: 120000, cacheTtlSeconds: 3600, cachedAt: '', cacheQueryHash: '', cachedModels: [], filters: { search: '', author: '', pipelineTag: 'text-generation', tags: '', library: '', inference: 'warm', gated: 'false', sort: 'downloads', direction: '-1', limit: 50, onlyChatCompatible: true, provider: '' } },
   search: { enabled: true, provider: 'deepseek', apiUrl: 'https://api.deepseek.com', apiKey: '', googleCx: '', language: 'zh-CN', region: '', localization: '', autoMode: 'auto', maxResults: 5, needContent: true, fetchContent: true, fetchProvider: 'provider', jinaBaseUrl: 'https://r.jina.ai', jinaApiKey: '', timeoutMs: 20000, retryCount: 1, cacheTtlSeconds: 300, maxContentChars: 6000, maxTotalChars: 20000, qps: 5 },
   llm: { activeNodeIndex: 0, apiKeys: [{ name: '默认节点', baseUrl: '', key: '', enabled: true, kind: 'llm', models: [], modelsFetchedAt: '', concurrency: 0 }], chatNodeIndex: 0, chatModel: 'gpt-4o-mini', chatEnabled: true, reasoningEffort: 'high', maxConversationRounds: 8, maxConversationChars: 12000, sessionTtlMinutes: 30, enhanceNodeIndex: 0, enhanceModel: 'claude-3-5-sonnet-20240620', enhanceEnabled: false, enhancePromptTemplate: P.enhance, templateNodeIndex: 0, templateModel: 'gpt-4o-mini', referencedTemplateNodeIndex: 0, referencedTemplateModel: 'gpt-4o-mini', translationNodeIndex: 0, translationModel: 'gpt-4o-mini', imageNodeIndex: 0, imageModel: 'gpt-image-2', imageEnabled: true, imageCount: 1, imageTimeoutMs: 300000, imageRetryCount: 1, imageRetryDelayMs: 2500, safeRewriteOnFailure: true, safeRewritePromptTemplate: P.safe, editNodeIndex: 0, editModel: 'gpt-image-2', imageEditRequestMode: 'auto', interrogateNodeIndex: 0, interrogateModel: 'gpt-4o-mini', interrogateTimeoutMs: 300000, interrogatePromptTemplate: P.interrogate, videoNodeIndex: 0, videoModel: 'grok-imagine-video', videoEnabled: true, videoTimeoutMs: 120000, videoPollTimeoutMs: 600000, videoPollIntervalMs: 5000, capabilityOverrides: [] },
@@ -346,8 +460,12 @@ function normalizeAppConfig(input: R, warnings: string[]): AppConfig {
   comfyuiTransform.nodeIndex = clampNode(comfyuiTransform.nodeIndex, free.nodeIndex);
   comfyuiTransform.model = str(comfyuiTransform.model, free.model || llm.chatModel, false).trim() || free.model || llm.chatModel;
   comfyuiTransform.timeoutMs = clamp(comfyuiTransform.timeoutMs, 20000, 3000, 120000, true);
-  comfyuiTransform.maxTokens = clamp(comfyuiTransform.maxTokens, 1200, 256, 8192, true);
+  comfyuiTransform.maxTokens = clamp(comfyuiTransform.maxTokens, 2400, 256, 8192, true);
   comfyuiTransform.promptTemplate = str(comfyuiTransform.promptTemplate, P.comfyuiTransform, false) || P.comfyuiTransform;
+  if (comfyuiTransform.promptTemplate.startsWith('你是 ComfyUI 生图参数转换器。') && comfyuiTransform.promptTemplate.includes('最大批量：{{maxBatchSize}}')) {
+    comfyuiTransform.promptTemplate = P.comfyuiTransform;
+    comfyuiTransform.maxTokens = Math.max(comfyuiTransform.maxTokens, 2400);
+  }
   dropRetired({ napcat: nap, llm, promptsChat: pc, canvas, bot, huggingFace: hf, freeMode: free });
   return { panel: { port: clamp(panel.port, 3018, 1, 65535, true), passwordSeed: str(panel.passwordSeed, 'change-me-on-first-login', false) }, napcat: { wsUrl: str(nap.wsUrl, DEFAULT_CONFIG.napcat.wsUrl), token: str(nap.token, ''), actionTimeoutMs: clamp(nap.actionTimeoutMs, 15000, 3000, 60000), textSendTimeoutMs: clamp(nap.textSendTimeoutMs, 15000, 3000, 180000), imageSendTimeoutMs: clamp(nap.imageSendTimeoutMs, 120000, 10000, 300000), fileSendTimeoutMs: clamp(nap.fileSendTimeoutMs, nap.forwardSendTimeoutMs || 300000, 10000, 600000), fileSendRetryCount: clamp(nap.fileSendRetryCount, 1, 0, 10, true), fileSendRetryDelayMs: clamp(nap.fileSendRetryDelayMs, 1200, 0, 30000, true), forwardSendTimeoutMs: clamp(nap.forwardSendTimeoutMs, 300000, 10000, 600000), getMessageTimeoutMs: clamp(nap.getMessageTimeoutMs, 10000, 3000, 60000) }, promptsChat: pc, canvas, freeMode: free, intentRecognition, browserRender, codeRender, comfyuiTransform, huggingFace: hf, search, llm, bot };
 }
@@ -385,6 +503,122 @@ function normalizeHfSort(v: unknown): string {
   const mapped = ({ last_modified: 'lastModified', created_at: 'createdAt', trending_score: 'trendingScore' } as Record<string, string>)[raw] || raw;
   return pick(mapped, ['downloads', 'likes', 'lastModified', 'createdAt', 'trendingScore'] as const, 'downloads');
 }
+const COMFYUI_MODEL_FAMILIES = ['moss-image', 'krea-2', 'sdxl', 'flux', 'sd15', 'generic'] as const;
+const COMFYUI_PROMPT_SYNTAXES = ['natural', 'a1111', 'sdxl', 'moss', 'krea'] as const;
+const COMFYUI_PROMPT_FORMATS = ['caption', 'tags', 'layout'] as const;
+const COMFYUI_VARIANTS = ['base', 'sft', 'raw', 'turbo', 'unknown'] as const;
+
+export function defaultComfyUiPromptPolicy(family: ComfyUiModelFamily = 'generic'): ComfyUiPromptPolicy {
+  const base: ComfyUiPromptPolicy = {
+    modelFamily: family, variant: 'unknown', promptSyntax: 'a1111', language: 'en', preferredFormat: 'caption',
+    supportsWeights: true, supportsNegativePrompt: true, supportsBreak: false, supportsEmbeddings: true,
+    supportsDynamicPrompts: false, supportsLoraTags: false,
+    maxPromptChars: 4000, maxWeights: 10, weightMin: 0.5, weightMax: 2,
+    defaultNegativePrompt: '', loraTriggers: [],
+  };
+  if (family === 'moss-image') return {
+    ...base, promptSyntax: 'moss', preferredFormat: 'caption', supportsWeights: false,
+    supportsNegativePrompt: true, supportsEmbeddings: false, maxWeights: 0, weightMin: 1, weightMax: 1,
+    maxPromptChars: 4000, defaultNegativePrompt: 'nsfw, worst quality, bad anatomy, watermark, jpeg artifact',
+  };
+  if (family === 'krea-2') return {
+    ...base, variant: 'turbo', promptSyntax: 'krea', preferredFormat: 'caption', supportsWeights: false,
+    supportsNegativePrompt: false, supportsEmbeddings: false, maxWeights: 0, weightMin: 1, weightMax: 1,
+    maxPromptChars: 2000,
+  };
+  if (family === 'sdxl') return {
+    ...base, promptSyntax: 'sdxl', supportsWeights: true, supportsNegativePrompt: true, supportsEmbeddings: true,
+    maxPromptChars: 900, maxWeights: 5, weightMin: 0.8, weightMax: 1.3,
+    defaultNegativePrompt: 'low quality, blurry, jpeg artifacts, deformed hands, extra fingers, watermark, text, logo',
+  };
+  if (family === 'flux') return {
+    ...base, promptSyntax: 'natural', preferredFormat: 'caption', supportsWeights: false,
+    supportsNegativePrompt: false, supportsEmbeddings: false, maxWeights: 0, weightMin: 1, weightMax: 1,
+    maxPromptChars: 1200,
+  };
+  if (family === 'sd15') return {
+    ...base, promptSyntax: 'a1111', supportsWeights: true, supportsNegativePrompt: true, supportsEmbeddings: true,
+    maxPromptChars: 500, maxWeights: 4, weightMin: 0.8, weightMax: 1.3,
+    defaultNegativePrompt: 'low quality, worst quality, blurry, jpeg artifacts, bad anatomy, watermark, text',
+  };
+  return base;
+}
+
+function normalizeComfyUiFamilyAlias(value: unknown): string {
+  const raw = String(value || '').trim().toLowerCase().replace(/_/g, '-');
+  if (raw === 'moss' || raw === 'moss-image') return 'moss-image';
+  if (raw === 'krea' || raw === 'krea2' || raw === 'krea-2') return 'krea-2';
+  if (raw === 'sd-15' || raw === 'sd1-5') return 'sd15';
+  return raw;
+}
+
+function inferComfyUiModelFamily(id: unknown, name: unknown, explicit?: unknown): ComfyUiModelFamily {
+  const explicitValue = normalizeComfyUiFamilyAlias(explicit);
+  if ((COMFYUI_MODEL_FAMILIES as readonly string[]).includes(explicitValue)) return explicitValue as ComfyUiModelFamily;
+  const text = `${String(id || '')} ${String(name || '')}`.toLowerCase();
+  if (/moss|openmoss/.test(text)) return 'moss-image';
+  if (/krea[-\s]?2|krea2/.test(text)) return 'krea-2';
+  if (/sdxl|sd[-\s]?xl/.test(text)) return 'sdxl';
+  if (/flux/.test(text)) return 'flux';
+  if (/sd[-\s]?1[._-]?5|sd15/.test(text)) return 'sd15';
+  return 'generic';
+}
+
+function inferComfyUiVariant(id: unknown, name: unknown): ComfyUiVariant {
+  const text = `${String(id || '')} ${String(name || '')}`.toLowerCase();
+  if (/turbo/.test(text)) return 'turbo';
+  if (/\braw\b/.test(text)) return 'raw';
+  if (/sft/.test(text)) return 'sft';
+  if (/\bbase\b/.test(text)) return 'base';
+  return 'unknown';
+}
+
+export function normalizeComfyUiPromptPolicy(value: unknown, fallback: ComfyUiPromptPolicy = defaultComfyUiPromptPolicy()): ComfyUiPromptPolicy {
+  const raw = isObj(value) ? value as R : {};
+  const explicitFamily = normalizeComfyUiFamilyAlias(raw.modelFamily);
+  const family = (COMFYUI_MODEL_FAMILIES as readonly string[]).includes(explicitFamily)
+    ? explicitFamily as ComfyUiModelFamily
+    : fallback.modelFamily;
+  const base = defaultComfyUiPromptPolicy(family);
+  const weightMin = clamp(raw.weightMin, fallback.weightMin ?? base.weightMin, 0, 3);
+  const weightMax = clamp(raw.weightMax, fallback.weightMax ?? base.weightMax, weightMin, 3);
+  return {
+    modelFamily: family,
+    variant: (COMFYUI_VARIANTS as readonly string[]).includes(String(raw.variant || '').trim().toLowerCase())
+      ? String(raw.variant).trim().toLowerCase() as ComfyUiVariant
+      : (fallback.variant !== 'unknown' ? fallback.variant : base.variant),
+    promptSyntax: (COMFYUI_PROMPT_SYNTAXES as readonly string[]).includes(String(raw.promptSyntax || '').trim().toLowerCase())
+      ? String(raw.promptSyntax).trim().toLowerCase() as ComfyUiPromptSyntax
+      : (fallback.promptSyntax || base.promptSyntax),
+    language: (['en', 'zh', 'auto'] as readonly string[]).includes(String(raw.language || '').trim().toLowerCase())
+      ? String(raw.language).trim().toLowerCase() as 'en' | 'zh' | 'auto'
+      : (fallback.language || base.language),
+    preferredFormat: (COMFYUI_PROMPT_FORMATS as readonly string[]).includes(String(raw.preferredFormat || '').trim().toLowerCase())
+      ? String(raw.preferredFormat).trim().toLowerCase() as ComfyUiPromptFormat
+      : (fallback.preferredFormat || base.preferredFormat),
+    supportsWeights: bool(raw.supportsWeights, fallback.supportsWeights ?? base.supportsWeights),
+    supportsNegativePrompt: bool(raw.supportsNegativePrompt, fallback.supportsNegativePrompt ?? base.supportsNegativePrompt),
+    supportsBreak: bool(raw.supportsBreak, fallback.supportsBreak ?? base.supportsBreak),
+    supportsEmbeddings: bool(raw.supportsEmbeddings, fallback.supportsEmbeddings ?? base.supportsEmbeddings),
+    supportsDynamicPrompts: bool(raw.supportsDynamicPrompts, fallback.supportsDynamicPrompts ?? base.supportsDynamicPrompts),
+    supportsLoraTags: bool(raw.supportsLoraTags, fallback.supportsLoraTags ?? base.supportsLoraTags),
+    maxPromptChars: clamp(raw.maxPromptChars, fallback.maxPromptChars ?? base.maxPromptChars, 200, 20000, true),
+    maxWeights: clamp(raw.maxWeights, fallback.maxWeights ?? base.maxWeights, 0, 20, true),
+    weightMin,
+    weightMax,
+    defaultNegativePrompt: str(raw.defaultNegativePrompt, fallback.defaultNegativePrompt ?? base.defaultNegativePrompt, false),
+    loraTriggers: list(raw.loraTriggers).map((x) => String(x || '').trim()).filter(Boolean),
+  };
+}
+
+export function inferComfyUiPromptPolicy(id: unknown, name: unknown, value?: unknown): ComfyUiPromptPolicy {
+  const explicitFamily = isObj(value) ? String((value as R).modelFamily || '').trim() : '';
+  const family = inferComfyUiModelFamily(id, name, explicitFamily);
+  const base = defaultComfyUiPromptPolicy(family);
+  base.variant = inferComfyUiVariant(id, name);
+  return normalizeComfyUiPromptPolicy(value, base);
+}
+
 function normComfyui(v: unknown, warnings: string[]): ComfyUiNodeConfig | undefined {
   if (!isObj(v)) return undefined;
   const raw = v as R;
@@ -415,10 +649,11 @@ function normComfyui(v: unknown, warnings: string[]): ComfyUiNodeConfig | undefi
       maxTokens: clamp((item.transform as R).maxTokens, 1200, 256, 8192, true),
       promptTemplate: str((item.transform as R).promptTemplate, '', false),
     } : undefined,
+    promptPolicy: inferComfyUiPromptPolicy(item.id, item.name, item.promptPolicy),
   })) : [];
   if (!profiles.length) {
     warnings.push('ComfyUI 节点没有 profiles，已补入空 profile。');
-    profiles = [{ id: 'default', name: '默认工作流', workflow: {}, parameterMap: {}, defaults: {}, constraints: {}, outputNodeId: undefined, stitch: undefined, transform: undefined }];
+    profiles = [{ id: 'default', name: '默认工作流', workflow: {}, parameterMap: {}, defaults: {}, constraints: {}, outputNodeId: undefined, stitch: undefined, promptPolicy: defaultComfyUiPromptPolicy(), transform: undefined }];
   }
   return {
     profiles,

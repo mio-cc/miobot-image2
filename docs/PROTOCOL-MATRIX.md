@@ -624,6 +624,16 @@ text-image
 
 普通节点列出后台已保存的模型；ComfyUI 节点会额外请求 `GET /object_info`，从 `ckpt_name`、`unet_name`、`lora_name` 枚举中读取实时模型名，同时列出已配置的 Profiles。请求失败时仍会显示节点已保存的 Profile，不会阻塞整个列表。
 
+### 提示词策略
+
+ComfyUI Profile 可以配置 `promptPolicy`。未配置时按 Profile 的 id/name 自动推断：
+
+- `moss-image-*`：MOSS-Image 自然语言 caption，关闭权重/BREAK/LoRA 标签，保留官方负向提示词和 50 步、CFG 3、Euler、sgm_uniform 等默认值。
+- `krea-2-*`：Krea 2 自然语言长描述，关闭权重和负向提示词；Turbo 默认 8 步、CFG 0、mu 1.15。
+- 其他 Profile：保持通用兼容策略，避免破坏已有自定义工作流。
+
+参数转化模型会收到 `modelFamily`、`variant`、`promptPolicy`、`parameterKeys` 和 `allowedEnums`，输出后再经过语法清洗、长度限制和参数范围收敛。详见 `docs/COMFYUI-MOSS-KREA.md`。
+
 ### 第一版边界
 
 - 支持 ComfyUI 文生图
