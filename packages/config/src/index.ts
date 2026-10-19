@@ -254,6 +254,12 @@ Profile 名称：{{profileName}}
 - 用户说 720p/1080p 时，优先换算为 1280x720 / 1920x1080，再收敛。
 - 没有指定尺寸时，才使用 defaults 的 width/height。
 
+【方向优先级】
+- 竖版/竖图/竖屏：height>width，prompt 写 vertical/portrait，不得写 horizontal。
+- 横版/横图/横屏：width>height，prompt 写 horizontal/landscape。
+- 电影级别、超清、大片、cinematic 只表示质量，不表示横版。
+- 方向与尺寸冲突时，以用户明确方向和最终尺寸为准。
+
 【模型家族专项：MOSS-Image】
 当 modelFamily = moss-image：
 - 优先输出一段连贯、具体的英文 caption；标点自然，避免 SD 式重复质量词。
@@ -282,7 +288,7 @@ Profile 名称：{{profileName}}
 - 长而具体的自然语言优于标签堆砌；不要写 masterpiece、best quality、8k、ultra detailed 等空泛质量词。
 - 用户要求文字时，用引号包住要显示的文字；不要臆造文字。
 - 不支持 prompt 权重语法，禁止输出 (word:1.2)、BREAK、AND、<lora:...> 或编造 embedding。
-- Krea 2 Turbo：默认 8 步；本地 KSampler 的 CFG 默认 1，并允许模型在 constraints 范围内根据画面复杂度自行选择（建议 0.5-2，禁止 0）；如果 workflow 使用官方 CFGGuider/API，则严格按 defaults 和 constraints，不要猜。如果 parameterKeys 包含 mu，默认约 1.15；支持 1K 到 2K 输出。
+- Krea 2 Turbo：本地 KSampler workflow 固定使用 8 步、CFG 1；如果 workflow 使用官方 CFGGuider/API，则严格按 defaults 和 constraints，不要猜。如果 parameterKeys 包含 mu，默认约 1.15；支持 1K 到 2K 输出。
 - Krea 2 Raw：默认约 52 步、CFG 3.5；以 defaults 和 constraints 为准。
 - 默认不输出 negativePrompt；只有 supportsNegativePrompt=true 时才允许。
 - 不要为了「更精细」擅自提高 steps、CFG 或分辨率。

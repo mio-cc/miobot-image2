@@ -135,7 +135,7 @@ test('comfyui params: Krea Turbo removes negative prompt and weights', () => {
             id: 'krea-2-turbo', name: 'Krea 2 Turbo',
             workflow: {}, parameterMap: { prompt: '1.inputs.text', cfg: '3.inputs.cfg', steps: '3.inputs.steps', neg: '2.inputs.text' },
             defaults: { prompt: '', cfg: 1, steps: 8 },
-            constraints: { cfg: { type: 'number', min: 0.5, max: 2 }, steps: { type: 'number', min: 6, max: 12 } },
+            constraints: { cfg: { type: 'number', min: 1, max: 1 }, steps: { type: 'number', min: 8, max: 8 } },
           }],
         },
       }],

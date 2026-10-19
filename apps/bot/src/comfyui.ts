@@ -125,7 +125,7 @@ function requestedSizeFromPrompt(prompt: string, defaults: Record<string, unknow
   }
   if (ratio === undefined) {
     if (/超宽|全景|ultra[-\s]?wide|21:9/.test(text)) ratio = 21 / 9;
-    else if (/宽屏|电影|cinematic|wide|landscape|风景|横向|横屏|横图|横版|横构图/.test(text)) ratio = 16 / 9;
+    else if (/宽屏|wide|landscape|风景|横向|横屏|横图|横版|横构图/.test(text)) ratio = 16 / 9;
     else if (/手机壁纸|竖屏|竖向|竖向图|竖版|竖构图|portrait|vertical|竖图/.test(text)) ratio = 9 / 16;
     else if (/方图|正方形|头像|square|1:1/.test(text)) ratio = 1;
   }
