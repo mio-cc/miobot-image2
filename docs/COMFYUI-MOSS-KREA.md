@@ -70,7 +70,7 @@ Krea 2 的官方建议：
 - 使用自然语言，长而具体的描述效果最好。
 - 不需要 SD 式质量词堆砌。
 - 要显示的文字用引号括起来。
-- Turbo：8 步、CFG 0、`mu` 约 1.15，支持 1K 到 2K。
+- Turbo：8 步；本地 KSampler workflow 使用 CFG 1，官方 CFGGuider/API 则以实际 defaults 为准。`mu` 约 1.15，支持 1K 到 2K。
 - Raw：约 52 步、CFG 3.5，主要用于训练和二次开发。
 - Turbo 默认不使用负向提示词。
 
@@ -104,7 +104,7 @@ Krea 2 的官方建议：
     "width": 1024,
     "height": 1024,
     "steps": 8,
-    "cfg": 0,
+    "cfg": 1,
     "mu": 1.15,
     "seed": 0,
     "batchSize": 1
@@ -113,7 +113,7 @@ Krea 2 的官方建议：
     "width": { "type": "number", "min": 512, "max": 2048 },
     "height": { "type": "number", "min": 512, "max": 2048 },
     "steps": { "type": "number", "min": 8, "max": 8 },
-    "cfg": { "type": "number", "min": 0, "max": 1 }
+    "cfg": { "type": "number", "min": 1, "max": 1 }
   }
 }
 ```

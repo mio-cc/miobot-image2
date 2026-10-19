@@ -134,8 +134,8 @@ test('comfyui params: Krea Turbo removes negative prompt and weights', () => {
           profiles: [{
             id: 'krea-2-turbo', name: 'Krea 2 Turbo',
             workflow: {}, parameterMap: { prompt: '1.inputs.text', cfg: '3.inputs.cfg', steps: '3.inputs.steps', neg: '2.inputs.text' },
-            defaults: { prompt: '', cfg: 0, steps: 8 },
-            constraints: { cfg: { type: 'number', min: 0, max: 1 }, steps: { type: 'number', min: 8, max: 8 } },
+            defaults: { prompt: '', cfg: 1, steps: 8 },
+            constraints: { cfg: { type: 'number', min: 1, max: 1 }, steps: { type: 'number', min: 8, max: 8 } },
           }],
         },
       }],
@@ -146,7 +146,9 @@ test('comfyui params: Krea Turbo removes negative prompt and weights', () => {
   const params = sanitizeComfyUiParams(profile, { prompt: 'A (cat:1.3) in rain', negativePrompt: 'bad', cfg: 0, steps: 8 }, 'fallback', undefined, 4);
   assert.equal(params.prompt, 'A cat in rain');
   assert.equal(params.negativePrompt, undefined);
-  assert.equal(params.cfg, 0);
+  assert.equal(params.cfg, 1);
+  const guarded = buildComfyUiWorkflow({ ...profile, workflow: { '7': { class_type: 'KSampler', inputs: { cfg: 0 } } } }, { prompt: 'test' }, 1);
+  assert.equal(guarded.workflow['7'].inputs.cfg, 1);
 });
 
 
@@ -175,6 +177,8 @@ test('comfyui params: natural language size and aspect ratio produce width/heigh
   assert.ok(landscape.width > landscape.height, JSON.stringify(landscape));
   const portrait = run('画一只猫，竖图');
   assert.ok(portrait.height > portrait.width, JSON.stringify(portrait));
+  const portraitWord = run('画一只猫，竖版');
+  assert.ok(portraitWord.height > portraitWord.width, JSON.stringify(portraitWord));
   const explicit = run('画一只猫，1280x720');
   assert.deepEqual([explicit.width, explicit.height], [1280, 720]);
   const ratio = run('画一只猫，16:9');

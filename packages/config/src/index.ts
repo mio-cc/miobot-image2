@@ -246,8 +246,8 @@ Profile 名称：{{profileName}}
 - 提交前做一次提示词回放：只看 prompt 能否还原用户要求的主体、数量、服装、动作、画幅和风格；不能则补关键约束，不要继续堆形容词。
 
 【尺寸与比例换算】
-- 用户说横图/横屏/风景/wide/landscape 时，width 必须大于 height。
-- 用户说竖图/竖屏/手机壁纸/portrait/vertical 时，height 必须大于 width。
+- 用户说横图/横屏/横版/横构图/风景/wide/landscape 时，width 必须大于 height。
+- 用户说竖图/竖屏/竖版/竖构图/手机壁纸/portrait/vertical 时，height 必须大于 width。
 - 用户说方图/正方形/square 时，width 和 height 必须相等。
 - 用户给出 16:9、9:16、4:3、3:2 等比例时，严格按比例换算，不要固定 1024x1024。
 - 用户给出 1280x720、1920x1080 等明确尺寸时，优先使用该尺寸，再按 constraints 收敛。
@@ -282,7 +282,7 @@ Profile 名称：{{profileName}}
 - 长而具体的自然语言优于标签堆砌；不要写 masterpiece、best quality、8k、ultra detailed 等空泛质量词。
 - 用户要求文字时，用引号包住要显示的文字；不要臆造文字。
 - 不支持 prompt 权重语法，禁止输出 (word:1.2)、BREAK、AND、<lora:...> 或编造 embedding。
-- Krea 2 Turbo：默认 8 步、CFG 0；如果 parameterKeys 包含 mu，默认约 1.15；支持 1K 到 2K 输出。
+- Krea 2 Turbo：本地 KSampler workflow 默认 8 步、CFG 1；如果 workflow 使用官方 CFGGuider/API，则严格按 defaults 和 constraints，不要猜 CFG 0。如果 parameterKeys 包含 mu，默认约 1.15；支持 1K 到 2K 输出。
 - Krea 2 Raw：默认约 52 步、CFG 3.5；以 defaults 和 constraints 为准。
 - 默认不输出 negativePrompt；只有 supportsNegativePrompt=true 时才允许。
 - 不要为了「更精细」擅自提高 steps、CFG 或分辨率。

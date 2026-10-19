@@ -101,6 +101,22 @@ function replaceNodeLink(value: unknown, nodeId: string, baseModel: [string, num
 }
 
 /** 根据 loraId 决定保留/移除 LoRA 节点；未选择时把下游连接回基础模型。 */
+function isKrea2Profile(profile: ComfyUiProfile): boolean {
+  return profile.promptPolicy?.modelFamily === 'krea-2' || /krea[-_ ]?2/i.test(`${profile.id} ${profile.name}`);
+}
+
+/** Krea 2 Turbo 的本地 KSampler 不接受 CFG 0；旧配置或模型输出 0 时强制回到 1。 */
+function normalizeKreaKsamplerCfg(profile: ComfyUiProfile, workflow: Record<string, any>): void {
+  if (!isKrea2Profile(profile)) return;
+  for (const node of Object.values(workflow)) {
+    if (!node || typeof node !== 'object') continue;
+    const record = node as Record<string, any>;
+    if (record.class_type !== 'KSampler' || !record.inputs) continue;
+    const cfg = Number(record.inputs.cfg);
+    if (Number.isFinite(cfg) && cfg <= 0) record.inputs.cfg = 1;
+  }
+}
+
 function applyComfyUiLora(profile: ComfyUiProfile, workflow: Record<string, any>, params: Record<string, unknown>): void {
   const config = profile.lora;
   if (!config?.nodeId) return;
@@ -155,6 +171,7 @@ export function buildComfyUiWorkflow(profile: ComfyUiProfile, params: Record<str
     applied[key] = value;
   }
   applyComfyUiLora(profile, workflow, merged);
+  normalizeKreaKsamplerCfg(profile, workflow);
   return { workflow, applied, seed };
 }
 
