@@ -138,7 +138,7 @@ function requestedSizeFromPrompt(prompt: string, defaults: Record<string, unknow
   return { width: clampSize(width, 'width', constraints, multiple), height: clampSize(height, 'height', constraints, multiple) };
 }
 
-function sanitizeParams(profile: ComfyUiProfile, raw: Record<string, unknown>, prompt: string, count: number | undefined, maxBatchSize: number): Record<string, unknown> {
+function sanitizeParams(profile: ComfyUiProfile, raw: Record<string, unknown>, prompt: string, count: number | undefined, maxBatchSize: number, options: { trustModelSize?: boolean } = {}): Record<string, unknown> {
   const policy = promptPolicyFor(profile);
   const defaults = profile.defaults || {};
   const constraints = profile.constraints || {};
@@ -189,7 +189,7 @@ function sanitizeParams(profile: ComfyUiProfile, raw: Record<string, unknown>, p
   for (const key of ['promptG', 'promptL', 'clipLPrompt', 't5Prompt']) {
     if (out[key] !== undefined) out[key] = sanitizePromptText(out[key], policy);
   }
-  const requestedSize = requestedSizeFromPrompt(prompt, defaults, constraints, policy);
+  const requestedSize = options.trustModelSize ? undefined : requestedSizeFromPrompt(prompt, defaults, constraints, policy);
   if (requestedSize && (profile.parameterMap?.width || profile.parameterMap?.height || defaults.width !== undefined || defaults.height !== undefined)) {
     out.width = requestedSize.width;
     out.height = requestedSize.height;
@@ -265,7 +265,7 @@ async function transformParams(options: ComfyUiGenerateOptions, profile: ComfyUi
     const parsed = parseJsonObject(String(result.text || ''));
     if (!parsed) throw new Error('参数转化模型没有返回 JSON');
     const confidence = Math.max(0, Math.min(1, Number((parsed as any).confidence) || 0.8));
-    return { params: sanitizeParams(profile, parsed, prompt, count, maxBatchSize), source: 'model', confidence };
+    return { params: sanitizeParams(profile, parsed, prompt, count, maxBatchSize, { trustModelSize: true }), source: 'model', confidence };
   } catch (error) {
     options.logger?.warn('ComfyUI 参数转化失败，使用后台默认参数兜底', { error: String((error as Error)?.message || error) });
     return { params: fallback, source: 'fallback', confidence: 0 };

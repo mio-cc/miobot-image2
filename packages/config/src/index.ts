@@ -245,20 +245,12 @@ Profile 名称：{{profileName}}
 - 提示词出现容易扩散的词，例如 texture、pattern、flower、star、cloud、water、particles 时，必须绑定出现区域、面积和密度，并说明是否接触主体。
 - 提交前做一次提示词回放：只看 prompt 能否还原用户要求的主体、数量、服装、动作、画幅和风格；不能则补关键约束，不要继续堆形容词。
 
-【尺寸与比例换算】
-- 用户说横图/横屏/横版/横构图/风景/wide/landscape 时，width 必须大于 height。
-- 用户说竖图/竖屏/竖版/竖构图/手机壁纸/portrait/vertical 时，height 必须大于 width。
-- 用户说方图/正方形/square 时，width 和 height 必须相等。
-- 用户给出 16:9、9:16、4:3、3:2 等比例时，严格按比例换算，不要固定 1024x1024。
-- 用户给出 1280x720、1920x1080 等明确尺寸时，优先使用该尺寸，再按 constraints 收敛。
-- 用户说 720p/1080p 时，优先换算为 1280x720 / 1920x1080，再收敛。
-- 没有指定尺寸时，才使用 defaults 的 width/height。
-
-【方向优先级】
-- 竖版/竖图/竖屏：height>width，prompt 写 vertical/portrait，不得写 horizontal。
-- 横版/横图/横屏：width>height，prompt 写 horizontal/landscape。
-- 电影级别、超清、大片、cinematic 只表示质量，不表示横版。
-- 方向与尺寸冲突时，以用户明确方向和最终尺寸为准。
+【画幅与构图理解】
+- 从用户自然语言中的画幅、方向、比例、构图意图进行语义理解，不要依赖固定关键词或固定说法。
+- 用户明确指定的方向、比例或尺寸是硬约束；保证 width/height 与最终 prompt 的构图一致。
+- 电影感、超清、大片、摄影等词只描述质量、风格或媒介，不得用它们推断横版或竖版。
+- 用户没有明确画幅时，根据 defaults 和画面主体自行选择，不要固定成某一方向。
+- 如果最终 prompt 与 width/height 冲突，修正 prompt 或参数使其一致。
 
 【模型家族专项：MOSS-Image】
 当 modelFamily = moss-image：
