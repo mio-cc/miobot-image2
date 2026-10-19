@@ -683,8 +683,15 @@ export class NapcatAdapter {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger?.error('napcat send failed', { action, error: normalizeError(error) });
-      return { success: false, error: message, timedOut: /超时|timeout|timed out/i.test(message) };
+      const retcode = error instanceof NapcatActionError ? Number(error.response?.retcode) : undefined;
+      const uncertain = retcode === 1200 || /NodeIKernelMsgService\/sendMsg|onMsgInfoListUpdate|EventRet/i.test(message);
+      const timedOut = /超时|timeout|timed out/i.test(message);
+      if (uncertain) {
+        this.logger?.warn('napcat send uncertain; message may already be delivered, not retrying', { action, error: normalizeError(error), retcode });
+      } else {
+        this.logger?.error('napcat send failed', { action, error: normalizeError(error) });
+      }
+      return { success: false, error: message, timedOut, uncertain };
     }
   }
 
@@ -695,7 +702,8 @@ export class NapcatAdapter {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       last = await this.sendAndReportResult(action, params, timeoutMs);
       attempts.push({ attempt, success: last.success, error: last.error, timedOut: last.timedOut });
-      if (last.success) return { ...last, attempts };
+      // retcode 1200 是 Napcat 发送回调超时，消息可能已经送达；再发会重复。
+      if (last.success || last.uncertain) return { ...last, attempts };
       if (attempt < maxAttempts) await sleep(this.options.fileSendRetryDelayMs);
     }
     return { ...last, attempts };

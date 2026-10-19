@@ -360,3 +360,21 @@ test('napcat adapter: downloadFileStream writes chunk packets to disk', async ()
   assert.equal(fs.readFileSync(outputPath, 'utf8'), 'hello');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('napcat adapter: retcode 1200 send timeout is marked uncertain, not definite failure', async () => {
+  const { adapter, sockets } = createHarness({ imageSendTimeoutMs: 100 });
+  adapter.connect();
+  sockets[0].open();
+  const pending = adapter.sendGroupImage(1098867961, 'http://example.test/canvas-api/assets/a.png');
+  const action = sockets[0].sent[0];
+  sockets[0].message({
+    echo: action.echo,
+    status: 'failed',
+    retcode: 1200,
+    wording: 'Timeout: NTEvent serviceAndMethod:NodeIKernelMsgService/sendMsg ListenerName:NodeIKernelMsgListener/onMsgInfoListUpdate EventRet:',
+  });
+  const result = await pending;
+  assert.equal(result.success, false);
+  assert.equal(result.timedOut, true);
+  assert.equal(result.uncertain, true);
+});
