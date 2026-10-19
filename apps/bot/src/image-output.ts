@@ -104,3 +104,58 @@ export function createOutboundImageCompressor(options: {
     });
   };
 }
+
+export interface NapcatMountOutputOptions {
+  /** Bot 所在宿主机可写的目录。 */
+  hostDir: string;
+  /** Napcat 容器内可见的同一目录。 */
+  containerDir: string;
+  logger?: Pick<StructuredLogger, 'info' | 'warn'>;
+}
+
+function extensionForImage(buffer: Buffer, original: string): string {
+  if (buffer.length >= 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return 'png';
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'jpg';
+  if (buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') return 'webp';
+  const mime = /^data:image\/([a-z0-9.+-]+)/i.exec(original)?.[1]?.toLowerCase();
+  if (mime === 'jpeg') return 'jpg';
+  if (mime === 'png' || mime === 'webp' || mime === 'gif') return mime;
+  return 'bin';
+}
+
+/** 把出站图片写到 Napcat 共享目录，返回 Napcat 容器内可直接读取的 file:// 路径。 */
+export async function materializeImagesForNapcat(
+  images: string[],
+  options: NapcatMountOutputOptions,
+): Promise<string[]> {
+  const hostDir = String(options.hostDir || '').trim();
+  const containerDir = String(options.containerDir || '').trim().replace(/\/+$/, '');
+  if (!hostDir || !containerDir) return images;
+  await fs.mkdir(hostDir, { recursive: true });
+  const out: string[] = [];
+  for (let i = 0; i < images.length; i += 1) {
+    const original = images[i];
+    try {
+      const input = await loadBuffer(original);
+      if (!input) { out.push(original); continue; }
+      const ext = extensionForImage(input, original);
+      const filename = `miobot-${Date.now()}-${i}-${randomUUID()}.${ext}`;
+      const localPath = path.join(hostDir, filename);
+      await fs.writeFile(localPath, input, { mode: 0o644 });
+      out.push(`file://${containerDir}/${filename}`);
+      options.logger?.info('图片已写入 Napcat 共享目录', {
+        index: i,
+        bytes: input.length,
+        hostPath: localPath,
+        napcatPath: `file://${containerDir}/${filename}`,
+      });
+    } catch (error) {
+      options.logger?.warn('图片写入 Napcat 共享目录失败，回退原引用', {
+        index: i,
+        error: String((error as Error)?.message || error),
+      });
+      out.push(original);
+    }
+  }
+  return out;
+}

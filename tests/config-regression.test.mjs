@@ -74,9 +74,9 @@ test('config regression: old example-like export imports with all required v2 se
   assert.equal(result.sourceFormat, 'export-wrapper-v1');
   assert.equal(result.config.panel.passwordSeed, 'legacy-test-password');
   assert.equal(result.config.napcat.wsUrl, 'ws://localhost:3001');
-  // mountOutputDir 是 v1 遗留的 Docker 路径映射，v2 两条运行时都不读，已从配置里删除。
-  // 旧导出里仍带着它，导入后不该再冒出来（否则面板又会多一个改了没用的框）。
-  assert.equal(result.config.napcat.mountOutputDir, undefined);
+  // mountOutputDir 现在恢复为 Napcat 共享目录映射，旧配置值应保留并 trim。
+  assert.equal(result.config.napcat.mountOutputDir, 'C:/miobot/output');
+  assert.equal(result.config.napcat.mountOutputContainerDir, '');
   assert.equal(result.config.freeMode.enabled, false);
   assert.equal(result.config.freeMode.model, 'gpt-4o-mini');
   assert.deepEqual(result.config.bot.replyStrategies, { text: 'quote', image: 'quote', multiImage: 'quote', video: 'plain', multiVideo: 'forward', file: 'forward', multiFile: 'forward', mixed: 'forward' });
@@ -190,7 +190,7 @@ test('config regression: 退役字段不会从旧 config.json 里漏回来', () 
   // llm / canvas / bot 是 { ...默认值, ...用户对象 } 展开的，未知键本来会原样穿过去
   // 再被写回磁盘——只删接口声明是拦不住的。
   const result = importConfig({
-    napcat: { mountOutputDir: '/app/napcat/output' },
+    napcat: { mountOutputDir: '/root/Napcat-OmniBot/output', mountOutputContainerDir: '/app/napcat/output' },
     canvas: { dataDir: 'D:/canvas-data' },
     freeMode: { maxReferencedMessages: 33 },
     promptsChat: { translateSearchQuery: true, translateResults: true },
@@ -206,7 +206,6 @@ test('config regression: 退役字段不会从旧 config.json 里漏回来', () 
   });
   const cfg = result.config;
   const retired = [
-    ['napcat.mountOutputDir', cfg.napcat.mountOutputDir],
     ['canvas.dataDir', cfg.canvas.dataDir],
     ['freeMode.maxReferencedMessages', cfg.freeMode.maxReferencedMessages],
     ['promptsChat.translateSearchQuery', cfg.promptsChat.translateSearchQuery],
@@ -227,6 +226,8 @@ test('config regression: 退役字段不会从旧 config.json 里漏回来', () 
     ['huggingFace.filters.includePrivate', cfg.huggingFace.filters.includePrivate],
   ];
   for (const [path, value] of retired) assert.equal(value, undefined, `${path} 不该复活`);
+  assert.equal(cfg.napcat.mountOutputDir, '/root/Napcat-OmniBot/output');
+  assert.equal(cfg.napcat.mountOutputContainerDir, '/app/napcat/output');
 
   // 同段里活着的字段不能被误伤
   assert.equal(cfg.bot.imageCompression.enabled, true);

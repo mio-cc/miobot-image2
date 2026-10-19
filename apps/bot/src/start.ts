@@ -12,7 +12,7 @@ import type { OwnerCommand } from './owner.js';
 import type { NapcatHistoryMessage } from './group-context.js';
 import { normalizeForwardPayload } from './message-enrichment.js';
 import { FeatureGate } from './feature-gate.js';
-import { createOutboundImageCompressor } from './image-output.js';
+import { createOutboundImageCompressor, materializeImagesForNapcat } from './image-output.js';
 import { createWebSearchService } from '../../../packages/search/src/index.js';
 import { createBrowserRenderer } from '../../../packages/browser-render/src/index.js';
 import { fetchComfyUiObjectInfo } from '../../../packages/comfyui/src/index.js';
@@ -327,6 +327,15 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     uploadFile: uploadGeneratedFile,
     browserRenderer,
     compressImages: createOutboundImageCompressor({ getConfig, uploadFile: uploadGeneratedFile, logger }),
+    materializeImages: async (images) => {
+      const napcat = getConfig().napcat;
+      if (!napcat.mountOutputDir || !napcat.mountOutputContainerDir) return images;
+      return materializeImagesForNapcat(images, {
+        hostDir: napcat.mountOutputDir,
+        containerDir: napcat.mountOutputContainerDir,
+        logger,
+      });
+    },
     deleteMessage: (messageId) => adapter.deleteMessage(messageId),
     downloadFile: downloadIncomingFile,
     fileParseLimits: DEFAULT_FILE_PARSE_LIMITS,

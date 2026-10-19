@@ -80,6 +80,8 @@ export interface BotRuntimeOptions {
   browserRenderer?: BrowserRenderService;
   /** 发送前压缩图片；失败时必须回退原图。 */
   compressImages?: (images: string[]) => Promise<string[]>;
+  /** 把图片落到 Napcat 共享目录，返回 file:// 容器路径。 */
+  materializeImages?: (images: string[]) => Promise<string[]>;
   /** 撤回机器人发出的图片（群聊自动撤回用）。 */
   deleteMessage?: (messageId: number | string) => Promise<boolean>;
   voice?: (text: string) => Promise<string | null | undefined>;
@@ -1074,6 +1076,17 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       } catch (error) {
         result.images = originals;
         log?.warn('出站图片压缩失败，回退原图', { error: String((error as Error)?.message || error) });
+      }
+    }
+
+    if (result.images?.length && options.materializeImages) {
+      const originals = result.images;
+      try {
+        const local = await options.materializeImages(originals);
+        if (Array.isArray(local) && local.length) result.images = local;
+      } catch (error) {
+        result.images = originals;
+        log?.warn('出站图片写入 Napcat 共享目录失败，回退原图', { error: String((error as Error)?.message || error) });
       }
     }
 
