@@ -130,6 +130,16 @@ export function createCanvasGallerySync(options: CanvasGallerySyncOptions): Canv
           });
           return input.images;
         }
+        // host.docker.internal / localhost / 内网 IP 对 QQ 和部分 Napcat 容器不可达。
+        // 图库仍然入库，但发送时回退到原始图片，避免 QQ 下载 URL 超时。
+        if (sendableUrls.some((url) => isPrivateImageEndpoint(String(url)))) {
+          options.logger?.warn('Bot image gallery sync saved images, but public image URL is private; fallback to original image payload for Napcat', {
+            imageCount: originals.length,
+            endpoint,
+            publicBaseUrl: publicBaseUrl || '(none)',
+          });
+          return input.images;
+        }
 
         options.logger?.info('Bot images synced to canvas gallery', {
           imageCount: originals.length,
@@ -225,6 +235,21 @@ function toGalleryRelativeUrl(value: string, publicBaseUrl: string | undefined):
     }
   } catch { /* keep original */ }
   return text;
+}
+
+function isPrivateImageEndpoint(value: string): boolean {
+  try {
+    const host = new URL(String(value || '')).hostname.toLowerCase();
+    if (!host) return false;
+    if (host === 'localhost' || host === 'host.docker.internal' || host.endsWith('.local') || host.endsWith('.internal')) return true;
+    if (host === '::1' || host === '0.0.0.0') return true;
+    if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^169\.254\./.test(host)) return true;
+    const private172 = host.match(/^172\.(\d+)\./);
+    if (private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31) return true;
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 function toAbsoluteImageUrl(value: string, publicBaseUrl: string | undefined): string | undefined {

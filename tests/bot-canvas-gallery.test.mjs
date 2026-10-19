@@ -31,7 +31,7 @@ test('canvas gallery sync: 保存进图库并把相对资产 URL 转成 Napcat �
     getConfig: () => config,
     env: {
       MIOBOT_PORT: '3018',
-      MIOBOT_PUBLIC_BASE_URL: 'http://host.docker.internal:3018',
+      MIOBOT_PUBLIC_BASE_URL: 'https://i.mioku.cn',
     },
     fetchImpl: async (url, init) => {
       calls.push({ url, init });
@@ -62,7 +62,7 @@ test('canvas gallery sync: 保存进图库并把相对资产 URL 转成 Napcat �
     mimeType: 'image/png',
   }]);
 
-  assert.deepEqual(images, ['http://host.docker.internal:3018/canvas-api/assets/a1/download']);
+  assert.deepEqual(images, ['https://i.mioku.cn/canvas-api/assets/a1/download']);
 });
 
 test('canvas gallery sync: 未配置 MIOBOT_PUBLIC_BASE_URL 时仍然入库，但发送回退原图', async () => {
@@ -158,7 +158,7 @@ test('canvas gallery sync: absolute internal asset URLs are stored relative for 
   const calls = [];
   const sync = createCanvasGallerySync({
     getConfig: () => config,
-    env: { MIOBOT_PORT: '3018', MIOBOT_PUBLIC_BASE_URL: 'http://host.docker.internal:3018' },
+    env: { MIOBOT_PORT: '3018', MIOBOT_PUBLIC_BASE_URL: 'https://i.mioku.cn' },
     fetchImpl: async (url, init) => {
       calls.push({ url, init });
       return galleryResponse(['/canvas-api/assets/b1/download']);
@@ -173,5 +173,27 @@ test('canvas gallery sync: absolute internal asset URLs are stored relative for 
   assert.equal(calls.length, 1);
   const payload = JSON.parse(calls[0].init.body);
   assert.equal(payload.artifacts[0].data, '/canvas-api/assets/file_x/download');
-  assert.deepEqual(images, ['http://host.docker.internal:3018/canvas-api/assets/b1/download']);
+  assert.deepEqual(images, ['https://i.mioku.cn/canvas-api/assets/b1/download']);
+});
+
+test('canvas gallery sync: private public base stores gallery but sends original images', async () => {
+  const config = baseConfig();
+  let called = false;
+  const sync = createCanvasGallerySync({
+    getConfig: () => config,
+    env: { MIOBOT_PORT: '3018', MIOBOT_PUBLIC_BASE_URL: 'http://host.docker.internal:3018' },
+    fetchImpl: async () => {
+      called = true;
+      return galleryResponse(['/canvas-api/assets/private1/download']);
+    },
+  });
+  const original = ['data:image/png;base64,AAAA'];
+  const images = await sync.syncImages({
+    mode: 'generate',
+    prompt: 'cat',
+    images: original,
+    context: { chatType: 'group', groupId: 9, userId: 5 },
+  });
+  assert.equal(called, true);
+  assert.deepEqual(images, original);
 });
