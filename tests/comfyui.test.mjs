@@ -193,3 +193,40 @@ test('comfyui config: built-in v3 transform prompt upgrades with v4 enhancement 
   assert.match(cfg.comfyuiTransform.promptTemplate, /不得主动添加 C-string/);
   assert.match(cfg.comfyuiTransform.promptTemplate, /目标约 50 到 140 个英文词/);
 });
+
+test('comfyui lora: transform selection can disable or enable the LoRA node', () => {
+  const loraProfile = {
+    id: 'krea-2-turbo', name: 'Krea 2 Turbo',
+    workflow: {
+      '1': { class_type: 'UNETLoader', inputs: {} },
+      '2': { class_type: 'LoraLoaderModelOnly', inputs: { model: ['1', 0], lora_name: 'krea2_darkbrush.safetensors', strength_model: 0.8 } },
+      '7': { class_type: 'KSampler', inputs: { model: ['2', 0], steps: 8, cfg: 1 } },
+    },
+    parameterMap: { steps: '7.inputs.steps', cfg: '7.inputs.cfg' },
+    defaults: { steps: 8, cfg: 1 },
+    constraints: {},
+    lora: {
+      nodeId: '2',
+      baseModel: ['1', 0],
+      catalog: [
+        { id: 'none', file: 'krea2_darkbrush.safetensors', defaultStrength: 0, minStrength: 0, maxStrength: 0 },
+        { id: 'darkbrush', file: 'krea2_darkbrush.safetensors', defaultStrength: 0.6, minStrength: 0, maxStrength: 1.2 },
+      ],
+    },
+  };
+
+  const clean = buildComfyUiWorkflow(loraProfile, { prompt: 'clean anime portrait', loraId: 'none' }, 1);
+  assert.equal(clean.workflow['2'], undefined);
+  assert.deepEqual(clean.workflow['7'].inputs.model, ['1', 0]);
+
+  const styled = buildComfyUiWorkflow(loraProfile, { prompt: 'dark oil painting portrait', loraId: 'darkbrush', loraStrength: 0.5 }, 1);
+  assert.equal(styled.workflow['2'].inputs.lora_name, 'krea2_darkbrush.safetensors');
+  assert.equal(styled.workflow['2'].inputs.strength_model, 0.5);
+  assert.deepEqual(styled.workflow['7'].inputs.model, ['2', 0]);
+
+  const params = sanitizeComfyUiParams(loraProfile, { prompt: 'dark oil painting portrait', loraId: 'darkbrush', loraStrength: 9 }, 'dark oil painting portrait', 1, 1);
+  assert.equal(params.loraId, 'darkbrush');
+  assert.equal(params.loraStrength, 1.2);
+  const off = sanitizeComfyUiParams(loraProfile, { prompt: 'clean anime portrait' }, 'clean anime portrait', 1, 1);
+  assert.equal(off.loraId, 'none');
+});

@@ -45,6 +45,7 @@ function collectAllowedEnums(profile: ComfyUiProfile): Record<string, string[]> 
   for (const [key, constraint] of Object.entries(profile.constraints || {})) {
     if (constraint?.enum?.length) out[key] = constraint.enum.map((item) => String(item));
   }
+  if (profile.lora?.catalog?.length) out.loraId = ['none', ...profile.lora.catalog.map((item) => item.id)];
   return out;
 }
 
@@ -138,6 +139,7 @@ function sanitizeParams(profile: ComfyUiProfile, raw: Record<string, unknown>, p
   const defaults = profile.defaults || {};
   const constraints = profile.constraints || {};
   const allowed = new Set([...Object.keys(profile.parameterMap || {}), ...Object.keys(defaults), ...Object.keys(constraints)]);
+  if (profile.lora) { allowed.add('loraId'); allowed.add('loraStrength'); }
   const out: Record<string, unknown> = { ...defaults };
   for (const key of allowed) {
     if (raw[key] === undefined) continue;
@@ -153,6 +155,23 @@ function sanitizeParams(profile: ComfyUiProfile, raw: Record<string, unknown>, p
     }
     if (constraint?.enum?.length && !constraint.enum.includes(String(value))) value = defaults[key];
     if (value !== undefined) out[key] = value;
+  }
+  if (profile.lora) {
+    const catalog = profile.lora.catalog || [];
+    const requestedId = String(raw.loraId ?? defaults.loraId ?? 'none');
+    const selected = requestedId !== 'none'
+      ? catalog.find((item) => item.id === requestedId || item.file === requestedId)
+      : undefined;
+    const selectedId = selected?.id || 'none';
+    out.loraId = selectedId;
+    if (selectedId === 'none') {
+      out.loraStrength = 0;
+    } else {
+      const min = selected?.minStrength ?? 0;
+      const max = selected?.maxStrength ?? 2;
+      const rawStrength = Number(raw.loraStrength ?? defaults.loraStrength ?? selected?.defaultStrength ?? 0.6);
+      out.loraStrength = Math.max(min, Math.min(max, Number.isFinite(rawStrength) ? rawStrength : (selected?.defaultStrength ?? 0.6)));
+    }
   }
   const rawPrompt = raw.prompt !== undefined ? raw.prompt : defaults.prompt;
   out.prompt = sanitizePromptText(rawPrompt || prompt, policy) || sanitizePromptText(prompt, policy);
@@ -207,7 +226,8 @@ async function transformParams(options: ComfyUiGenerateOptions, profile: ComfyUi
   try {
     const policy = promptPolicyFor(profile);
     const parameterKeys = Object.keys(profile.parameterMap || {});
-    const renderedPrompt = String(transform.promptTemplate || '')
+    if (profile.lora) parameterKeys.push('loraId', 'loraStrength');
+    let renderedPrompt = String(transform.promptTemplate || '')
       .replaceAll('{{userRequest}}', prompt.slice(0, 4000))
       .replaceAll('{{profileName}}', profile.name || profile.id)
       .replaceAll('{{modelFamily}}', policy.modelFamily)
@@ -219,6 +239,17 @@ async function transformParams(options: ComfyUiGenerateOptions, profile: ComfyUi
       .replaceAll('{{defaults}}', JSON.stringify(profile.defaults || {}))
       .replaceAll('{{constraints}}', JSON.stringify(profile.constraints || {}))
       .replaceAll('{{maxBatchSize}}', String(maxBatchSize));
+    if (profile.lora) {
+      const loraCatalog = profile.lora.catalog.map((item) => ({
+        id: item.id,
+        description: item.description || '',
+        triggers: item.triggers || [],
+        defaultStrength: item.defaultStrength ?? 0.6,
+        minStrength: item.minStrength ?? 0,
+        maxStrength: item.maxStrength ?? 2,
+      }));
+      renderedPrompt += '\n\n【LoRA 选择规则】\n用户请求是唯一依据。loraId 只能从以下目录中选择；不需要特定风格时默认 none，不要为了更精细默认开启 LoRA。只有提示词明确需要某种风格、题材或触发词时才选择对应 LoRA，并把 loraStrength 设为该目录允许的强度。\nLoRA 目录：' + JSON.stringify(loraCatalog) + '\n请只在 parameterKeys 包含时输出 loraId 和 loraStrength。';
+    }
     const result = await options.client.chat(transform.nodeIndex, {
       model: transform.model,
       messages: [{ role: 'user', content: renderedPrompt }],

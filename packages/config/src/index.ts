@@ -40,6 +40,22 @@ export interface ComfyUiPromptPolicy {
   defaultNegativePrompt: string;
   loraTriggers: string[];
 }
+export interface ComfyUiLoraOption {
+  id: string;
+  file: string;
+  description?: string;
+  triggers?: string[];
+  defaultStrength?: number;
+  minStrength?: number;
+  maxStrength?: number;
+}
+export interface ComfyUiLoraConfig {
+  /** workflow 里 LoraLoaderModelOnly 的节点 ID。 */
+  nodeId: string;
+  /** 去掉 LoRA 时，把该节点输出替换成的上游模型连接，例如 ["1", 0]。 */
+  baseModel?: [string, number];
+  catalog: ComfyUiLoraOption[];
+}
 export interface ComfyUiProfile {
   id: string;
   name: string;
@@ -51,6 +67,8 @@ export interface ComfyUiProfile {
   stitch?: ComfyUiStitchConfig;
   promptPolicy?: ComfyUiPromptPolicy;
   transform?: Partial<ComfyUiTransformConfig>;
+  /** 可选 LoRA 目录；由提示词转化模型选择是否启用及强度。 */
+  lora?: ComfyUiLoraConfig;
 }
 export interface ComfyUiNodeConfig { profiles: ComfyUiProfile[]; pollTimeoutMs: number; pollIntervalMs: number; maxBatchSize: number; maxConcurrent: number; maxQueue: number; queueTimeoutMs: number }
 export interface ComfyUiTransformConfig { enabled: boolean; nodeIndex: number; model: string; timeoutMs: number; maxTokens: number; promptTemplate: string }
@@ -679,6 +697,29 @@ export function inferComfyUiPromptPolicy(id: unknown, name: unknown, value?: unk
   return normalizeComfyUiPromptPolicy(value, base);
 }
 
+function normComfyLora(v: unknown): ComfyUiLoraConfig | undefined {
+  if (!isObj(v)) return undefined;
+  const raw = v as R;
+  const nodeId = str(raw.nodeId, '', false).trim();
+  const catalog = (Array.isArray(raw.catalog) ? raw.catalog : [])
+    .filter(isObj)
+    .map((item: R) => ({
+      id: str(item.id, '', false).trim(),
+      file: str(item.file, '', false).trim(),
+      description: str(item.description, '', false).trim() || undefined,
+      triggers: list(item.triggers),
+      defaultStrength: clamp(item.defaultStrength, 0.6, 0, 2),
+      minStrength: clamp(item.minStrength, 0, 0, 2),
+      maxStrength: clamp(item.maxStrength, 2, 0, 2),
+    }))
+    .filter((item) => item.id && item.file);
+  if (!nodeId || !catalog.length) return undefined;
+  const base = Array.isArray(raw.baseModel) && raw.baseModel.length >= 2
+    ? [String(raw.baseModel[0]), clamp(raw.baseModel[1], 0, 0, 999, true)] as [string, number]
+    : undefined;
+  return { nodeId, baseModel: base, catalog };
+}
+
 function normComfyui(v: unknown, warnings: string[]): ComfyUiNodeConfig | undefined {
   if (!isObj(v)) return undefined;
   const raw = v as R;
@@ -709,11 +750,12 @@ function normComfyui(v: unknown, warnings: string[]): ComfyUiNodeConfig | undefi
       maxTokens: clamp((item.transform as R).maxTokens, 1200, 256, 8192, true),
       promptTemplate: str((item.transform as R).promptTemplate, '', false),
     } : undefined,
+    lora: normComfyLora(item.lora),
     promptPolicy: inferComfyUiPromptPolicy(item.id, item.name, item.promptPolicy),
   })) : [];
   if (!profiles.length) {
     warnings.push('ComfyUI 节点没有 profiles，已补入空 profile。');
-    profiles = [{ id: 'default', name: '默认工作流', workflow: {}, parameterMap: {}, defaults: {}, constraints: {}, outputNodeId: undefined, stitch: undefined, promptPolicy: defaultComfyUiPromptPolicy(), transform: undefined }];
+    profiles = [{ id: 'default', name: '默认工作流', workflow: {}, parameterMap: {}, defaults: {}, constraints: {}, outputNodeId: undefined, stitch: undefined, promptPolicy: defaultComfyUiPromptPolicy(), transform: undefined, lora: undefined }];
   }
   return {
     profiles,

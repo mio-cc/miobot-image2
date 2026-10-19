@@ -87,6 +87,51 @@ export function setByPath(root: Record<string, any>, dottedPath: string, value: 
   current[parts[parts.length - 1]] = value;
 }
 
+function replaceNodeLink(value: unknown, nodeId: string, baseModel: [string, number]): unknown {
+  if (Array.isArray(value)) {
+    if (value.length === 2 && String(value[0]) === nodeId && Number(value[1]) === 0) return [...baseModel];
+    return value.map((item) => replaceNodeLink(item, nodeId, baseModel));
+  }
+  if (value && typeof value === 'object') {
+    const out = value as Record<string, unknown>;
+    for (const key of Object.keys(out)) out[key] = replaceNodeLink(out[key], nodeId, baseModel);
+    return out;
+  }
+  return value;
+}
+
+/** 根据 loraId 决定保留/移除 LoRA 节点；未选择时把下游连接回基础模型。 */
+function applyComfyUiLora(profile: ComfyUiProfile, workflow: Record<string, any>, params: Record<string, unknown>): void {
+  const config = profile.lora;
+  if (!config?.nodeId) return;
+  const loraNode = workflow[config.nodeId];
+  const selectedId = String(params.loraId || 'none');
+  const selected = selectedId !== 'none'
+    ? (config.catalog || []).find((item) => item.id === selectedId || item.file === selectedId)
+    : undefined;
+  if (!selected) {
+    const upstream = config.baseModel
+      || (Array.isArray(loraNode?.inputs?.model) ? loraNode.inputs.model as [string, number] : undefined);
+    if (upstream) {
+      for (const [id, node] of Object.entries(workflow)) {
+        if (id === config.nodeId || !node || typeof node !== 'object') continue;
+        (node as Record<string, any>).inputs = replaceNodeLink((node as Record<string, any>).inputs, config.nodeId, upstream) as Record<string, unknown>;
+      }
+    }
+    delete workflow[config.nodeId];
+    return;
+  }
+  if (!loraNode || typeof loraNode !== 'object' || !loraNode.inputs) {
+    throw new ComfyUiError(`ComfyUI 缺少 LoRA 节点 ${config.nodeId}`);
+  }
+  const min = selected.minStrength ?? 0;
+  const max = selected.maxStrength ?? 2;
+  const rawStrength = Number(params.loraStrength ?? selected.defaultStrength ?? 0.6);
+  const strength = Math.max(min, Math.min(max, Number.isFinite(rawStrength) ? rawStrength : (selected.defaultStrength ?? 0.6)));
+  loraNode.inputs.lora_name = selected.file;
+  loraNode.inputs.strength_model = strength;
+}
+
 export function buildComfyUiWorkflow(profile: ComfyUiProfile, params: Record<string, unknown>, maxBatchSize = 4): { workflow: Record<string, any>; applied: Record<string, unknown>; seed?: number } {
   const workflow = JSON.parse(JSON.stringify(profile.workflow || {})) as Record<string, any>;
   const merged = { ...(profile.defaults || {}), ...(params || {}) } as Record<string, unknown>;
@@ -109,6 +154,7 @@ export function buildComfyUiWorkflow(profile: ComfyUiProfile, params: Record<str
     setByPath(workflow, path, value);
     applied[key] = value;
   }
+  applyComfyUiLora(profile, workflow, merged);
   return { workflow, applied, seed };
 }
 
