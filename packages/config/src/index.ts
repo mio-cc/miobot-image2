@@ -282,7 +282,7 @@ Profile 名称：{{profileName}}
 - 长而具体的自然语言优于标签堆砌；不要写 masterpiece、best quality、8k、ultra detailed 等空泛质量词。
 - 用户要求文字时，用引号包住要显示的文字；不要臆造文字。
 - 不支持 prompt 权重语法，禁止输出 (word:1.2)、BREAK、AND、<lora:...> 或编造 embedding。
-- Krea 2 Turbo：本地 KSampler workflow 默认 8 步、CFG 1；如果 workflow 使用官方 CFGGuider/API，则严格按 defaults 和 constraints，不要猜 CFG 0。如果 parameterKeys 包含 mu，默认约 1.15；支持 1K 到 2K 输出。
+- Krea 2 Turbo：默认 8 步；本地 KSampler 的 CFG 默认 1，并允许模型在 constraints 范围内根据画面复杂度自行选择（建议 0.5-2，禁止 0）；如果 workflow 使用官方 CFGGuider/API，则严格按 defaults 和 constraints，不要猜。如果 parameterKeys 包含 mu，默认约 1.15；支持 1K 到 2K 输出。
 - Krea 2 Raw：默认约 52 步、CFG 3.5；以 defaults 和 constraints 为准。
 - 默认不输出 negativePrompt；只有 supportsNegativePrompt=true 时才允许。
 - 不要为了「更精细」擅自提高 steps、CFG 或分辨率。

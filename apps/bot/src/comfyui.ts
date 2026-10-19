@@ -152,10 +152,10 @@ function sanitizeParams(profile: ComfyUiProfile, raw: Record<string, unknown>, p
     if (constraint?.type === 'number' || typeof value === 'number') {
       let n = Number(value);
       if (!Number.isFinite(n)) continue;
-      if (constraint?.min !== undefined) n = Math.max(constraint.min, n);
-      if (constraint?.max !== undefined) n = Math.min(constraint.max, n);
       // Krea 2 Turbo 本地 KSampler 的 CFG 0 会退化成几乎无引导的故障图；旧配置仍可能把 0 放进来。
       if (key === 'cfg' && isKrea2Profile(profile) && n <= 0) n = 1;
+      if (constraint?.min !== undefined) n = Math.max(constraint.min, n);
+      if (constraint?.max !== undefined) n = Math.min(constraint.max, n);
       if (policy.modelFamily === 'moss-image' && (key === 'width' || key === 'height')) n = Math.max(16, Math.round(n / 16) * 16);
       value = INTEGER_PARAM_KEYS.has(key) ? Math.trunc(n) : n;
     }
