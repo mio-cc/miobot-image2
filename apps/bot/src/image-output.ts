@@ -8,6 +8,8 @@ import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 export interface ImageCompressionOptions {
   scale: number;
   quality: number;
+  /** 聊天图片的目标上限；超过后继续降质量/尺寸。 */
+  maxBytes?: number;
   uploadFile?: (localPath: string, name: string, mime: string) => Promise<string>;
   logger?: Pick<StructuredLogger, 'info' | 'warn'>;
 }
@@ -46,18 +48,28 @@ export async function compressOutboundImages(
     try {
       const input = await loadBuffer(original);
       if (!input) { out.push(original); continue; }
-      const image = sharpFactory(input, { limitInputPixels: 40_000_000 }).rotate();
-      const meta = await image.metadata();
-      const width = Math.max(1, Math.round(Number(meta.width || 0) * Math.max(0.1, Math.min(1, options.scale))));
-      const hasAlpha = Boolean(meta.hasAlpha);
-      let pipeline = image.resize({ width, withoutEnlargement: true });
-      pipeline = hasAlpha
-        ? pipeline.png({ compressionLevel: 9 })
-        : pipeline.jpeg({ quality: Math.max(1, Math.min(100, options.quality)), mozjpeg: true });
-      const buffer = await pipeline.toBuffer();
-      if (buffer.length >= input.length) { out.push(original); continue; }
-      const mime = hasAlpha ? 'image/png' : 'image/jpeg';
-      const ext = hasAlpha ? 'png' : 'jpg';
+      const meta = await sharpFactory(input, { limitInputPixels: 40_000_000 }).metadata();
+      const initialWidth = Math.max(1, Math.round(Number(meta.width || 0) * Math.max(0.1, Math.min(1, options.scale))));
+      const maxBytes = Math.max(64 * 1024, Number(options.maxBytes || 700 * 1024));
+      let width = initialWidth;
+      let quality = Math.max(1, Math.min(100, options.quality));
+      let buffer: Buffer | undefined;
+      // QQ 图片上传对 base64 体积很敏感；透明 PNG 也统一扁平化为 JPEG，避免 1.5MB 的 PNG 卡住 sendMsg 回调。
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        let pipeline = sharpFactory(input, { limitInputPixels: 40_000_000 })
+          .rotate()
+          .resize({ width, withoutEnlargement: true })
+          .flatten({ background: '#ffffff' })
+          .jpeg({ quality, mozjpeg: true });
+        const nextBuffer = await pipeline.toBuffer();
+        buffer = nextBuffer;
+        if (nextBuffer.length <= maxBytes) break;
+        width = Math.max(256, Math.round(width * 0.75));
+        quality = Math.max(45, Math.round(quality * 0.8));
+      }
+      if (!buffer) { out.push(original); continue; }
+      const mime = 'image/jpeg';
+      const ext = 'jpg';
       if (buffer.length <= 6 * 1024 * 1024 || !options.uploadFile) {
         out.push(`data:${mime};base64,${buffer.toString('base64')}`);
       } else {
@@ -66,7 +78,7 @@ export async function compressOutboundImages(
         try { out.push(await options.uploadFile(temp, `image-${i + 1}.${ext}`, mime)); }
         finally { await fs.unlink(temp).catch(() => undefined); }
       }
-      options.logger?.info('图片已压缩', { index: i, beforeBytes: input.length, afterBytes: buffer.length, width });
+      options.logger?.info('图片已压缩', { index: i, beforeBytes: input.length, afterBytes: buffer.length, width, quality, mime });
     } catch (error) {
       options.logger?.warn('单张图片压缩失败，回退原图', { index: i, error: String((error as Error)?.message || error) });
       out.push(original);
@@ -86,6 +98,7 @@ export function createOutboundImageCompressor(options: {
     return compressOutboundImages(images, {
       scale: Math.max(0.1, Math.min(1, Number(cfg?.scale || 0.65))),
       quality: Math.max(1, Math.min(100, Number(cfg?.quality || 82))),
+      maxBytes: 700 * 1024,
       uploadFile: options.uploadFile,
       logger: options.logger,
     });
