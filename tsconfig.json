@@ -27,7 +27,8 @@
       "@miobot-v2/admin-service": ["packages/admin-service/src/index.ts"],
       "@miobot-v2/canvas-service": ["packages/canvas-service/src/index.ts"],
       "@miobot-v2/web-api": ["packages/web-api/src/index.ts"],
-      "@miobot-v2/web-panel": ["packages/web-panel/src/index.ts"]
+      "@miobot-v2/web-panel": ["packages/web-panel/src/index.ts"],
+    "@miobot-v2/orchestration": ["packages/orchestration/src/index.ts"]
     }
   },
   "include": [
