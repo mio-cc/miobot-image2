@@ -594,6 +594,18 @@ export class NapcatAdapter {
     return this.sendAndReportResultWithRetry('send_group_forward_msg', { group_id: groupId, messages }, this.options.fileSendTimeoutMs, 'mixed-forward');
   }
 
+  async sendGroupNestedMixedForward(groupId: number | string, groups: NapcatMixedForwardItem[][], botName = 'Miobot'): Promise<NapcatSendResult> {
+    const messages = buildNestedMixedForwardNodes(groups, { botName, userId: this.getForwardUserId() });
+    if (!messages.length) return { success: false, error: 'no nested mixed forward groups to send' };
+    return this.sendAndReportResult('send_group_forward_msg', { group_id: groupId, messages }, this.options.forwardSendTimeoutMs);
+  }
+
+  async sendPrivateNestedMixedForward(userId: number | string, groups: NapcatMixedForwardItem[][], botName = 'Miobot'): Promise<NapcatSendResult> {
+    const messages = buildNestedMixedForwardNodes(groups, { botName, userId: this.getForwardUserId() });
+    if (!messages.length) return { success: false, error: 'no nested mixed forward groups to send' };
+    return this.sendAndReportResult('send_private_forward_msg', { user_id: userId, messages }, this.options.forwardSendTimeoutMs);
+  }
+
   async sendPrivateMixedForward(userId: number | string, items: NapcatMixedForwardItem[], botName = 'Miobot'): Promise<NapcatSendResult> {
     const messages = buildMixedForwardNodes(items, { botName, userId: this.getForwardUserId() });
     if (!messages.length) return { success: false, error: 'no mixed forward items to send' };
@@ -1154,4 +1166,34 @@ export function summarizeLogValue(value: unknown, depth = 0): unknown {
     return out;
   }
   return value;
+}
+
+function mixedForwardItemContent(item: NapcatMixedForwardItem): NapcatMessageSegment[] {
+  if (item.kind === 'text') return [{ type: 'text', data: { text: item.text } }];
+  if (item.kind === 'image') return [{ type: 'image', data: { file: item.file } }];
+  if (item.kind === 'video') return [buildVideoSegment(item.file)!].filter(Boolean);
+  return [buildFileSegment(item.file, item.name)!].filter(Boolean);
+}
+
+export function buildNestedMixedForwardNodes(groups: NapcatMixedForwardItem[][], options: { botName?: string; userId?: number | string } = {}): NapcatForwardNode[] {
+  const botName = options.botName || 'Miobot';
+  const userId = options.userId ?? 0;
+  const cleanGroups = (Array.isArray(groups) ? groups : [])
+    .map((group) => (Array.isArray(group) ? normalizeMixedForwardItems(group) : []))
+    .filter((group) => group.length > 0);
+  return cleanGroups.map((group, groupIndex) => ({
+    type: 'node' as const,
+    data: {
+      user_id: userId,
+      nickname: `${botName} 混合合并转发 ${groupIndex + 1}/${cleanGroups.length}`,
+      content: group.map((item, itemIndex) => ({
+        type: 'node' as const,
+        data: {
+          user_id: userId,
+          nickname: item.title || `${botName} ${groupIndex + 1}-${itemIndex + 1}`,
+          content: mixedForwardItemContent(item),
+        },
+      })) as unknown as NapcatMessageSegment[],
+    },
+  }));
 }

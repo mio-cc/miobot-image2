@@ -1,4 +1,4 @@
-﻿export type UserRole = 'guest' | 'user' | 'admin' | 'owner';
+export type UserRole = 'guest' | 'user' | 'admin' | 'owner';
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
 export type PermissionMode = 'allow' | 'ask_admin' | 'deny';
 export type ApprovalState = 'pending' | 'approved' | 'rejected' | 'expired' | 'cancelled';
@@ -37,6 +37,10 @@ export interface IntentStep {
   optional?: boolean;
   condition?: string;
   approvalRequired?: boolean;
+  timeoutMs?: number;
+  maxRetries?: number;
+  estimatedCost?: number;
+  modelRounds?: number;
 }
 
 export interface IntentPlan {
@@ -50,7 +54,11 @@ export interface IntentPlan {
     maxDurationMs?: number;
     maxCost?: number;
     maxModelRounds?: number;
+    maxParallelSteps?: number;
+    maxDepth?: number;
   };
+  /** 规划阶段实际消耗的模型轮数，用于执行预算续算。 */
+  modelRoundsUsed?: number;
   needsClarification?: boolean;
   clarificationQuestion?: string;
   confidence?: number;
@@ -88,6 +96,9 @@ export interface CapabilityDescriptor {
   mergeable?: boolean;
   expectedLatency?: 'fast' | 'medium' | 'slow';
   costClass?: 'free' | 'low' | 'medium' | 'high';
+  external?: boolean;
+  estimatedCost?: number;
+  modelRounds?: number;
 }
 
 export interface ExecutionOutput {
@@ -111,6 +122,8 @@ export interface ExecutionResult {
   error?: string;
   retryable?: boolean;
   durationMs?: number;
+  cost?: number;
+  modelRounds?: number;
 }
 
 export interface ReplyGroup {
@@ -124,6 +137,9 @@ export interface ReplyPlan {
   messageCount: number;
   truncated: ExecutionOutput[];
   warnings: string[];
+  maxMessages?: number;
+  noticeIncluded?: boolean;
+  noticeSuppressed?: boolean;
 }
 
 export interface PermissionRule {
@@ -171,6 +187,7 @@ export interface ApprovalRequest {
   requesterQq: string;
   groupId?: string;
   adminQqIds: string[];
+  ownerQqIds?: string[];
   quorum: ApprovalQuorum;
   status: ApprovalState;
   createdAt: string;

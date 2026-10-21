@@ -137,7 +137,8 @@ const server = http.createServer(async (req, res) => {
     if (pathname.startsWith('/canvas-api/')) return handleCanvas(req, res, url);
     return sendJson(res, 404, { error: 'Not Found' });
   } catch (error) {
-    return sendJson(res, 500, { error: error?.message || String(error), stack: error?.stack });
+    console.error('[web-v2] request failed', error);
+    return sendJson(res, 500, { error: error?.message || String(error) });
   }
 });
 

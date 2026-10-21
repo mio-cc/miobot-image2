@@ -33,6 +33,9 @@ const SECRET_PATHS = [
   'huggingFace.token',
   'search.apiKey',
   'search.jinaApiKey',
+  'orchestration.suno.apiKey',
+  'orchestration.suno.callbackSecret',
+  'orchestration.suno.callbackUrl',
 ] as const;
 
 export function maskSecretValue(value: unknown): string {

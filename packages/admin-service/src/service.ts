@@ -35,7 +35,7 @@ export class AdminService {
   private readonly deps: AdminServiceDeps;
 
   constructor(options: AdminServiceOptions = {}) {
-    this.api = options.webApi || createWebApi({ initialConfig: options.initialConfig, now: options.now });
+    this.api = options.webApi || createWebApi({ initialConfig: options.initialConfig, now: options.now, versionFile: process.env.MIOBOT_CONFIG_VERSION_FILE });
     this.logs = options.logs || createInMemoryLogStore();
     this.deps = options.deps || {};
     this.metrics = options.metrics || createMetrics();

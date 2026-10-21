@@ -24,9 +24,9 @@ test('buildGroupContext: 跳过合并转发', () => {
     mkMsg(3, 3, 'world', [{ type: 'text', data: { text: 'world' } }]),
   ];
   const out = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: OPTS });
-  assert.ok(out.includes('U1: hi'));
+  assert.ok(out.includes('U1 [QQ:1]: hi'));
   assert.ok(!out.includes('U2'));  // 转发跳过
-  assert.ok(out.includes('U3: world'));
+  assert.ok(out.includes('U3 [QQ:3]: world'));
 });
 
 test('buildGroupContext: 排除 bot 自己 + 触发消息', () => {
@@ -37,8 +37,8 @@ test('buildGroupContext: 排除 bot 自己 + 触发消息', () => {
   ];
   const out = buildGroupContext({ messages: msgs, anchorMessageId: 50, selfId: 100, options: OPTS });
   assert.ok(!out.includes('bot msg'));  // bot 自己排除
-  assert.ok(!out.includes('U1: @bot 在吗'));  // 触发消息排除
-  assert.ok(out.includes('U2: 在的'));
+  assert.ok(!out.includes('U1 [QQ:1]: @bot 在吗'));  // 触发消息排除
+  assert.ok(out.includes('U2 [QQ:2]: 在的'));
 });
 
 test('buildGroupContext: 图片 URL 保留/占位', () => {
@@ -64,8 +64,8 @@ test('buildGroupContext: maxChars 裁剪从最旧截断', () => {
   for (let i = 1; i <= 10; i++) msgs.push(mkMsg(i, i, 'msg'.repeat(20), [{ type: 'text', data: { text: 'msg'.repeat(20) } }]));
   const out = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: { ...OPTS, maxChars: 100 } });
   assert.ok(out.length <= 100 + 50);  // 裁剪后不超太多（含换行容差）
-  assert.ok(!out.includes('U1:'));  // 最旧的被截断
-  assert.ok(out.includes('U10:'));  // 最新的保留
+  assert.ok(!out.includes('U1 [QQ:1]:'));  // 最旧的被截断
+  assert.ok(out.includes('U10 [QQ:10]:'));  // 最新的保留
 });
 
 test('buildGroupContext: 空消息跳过', () => {
@@ -75,7 +75,7 @@ test('buildGroupContext: 空消息跳过', () => {
   ];
   const out = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: OPTS });
   assert.ok(!out.includes('U1'));  // 空消息跳过
-  assert.ok(out.includes('U2: hello'));
+  assert.ok(out.includes('U2 [QQ:2]: hello'));
 });
 
 test('buildGroupContext: messageCount 限制条数', () => {
@@ -91,6 +91,16 @@ test('formatHistoryMessageText: 纯 CQ 字符串退化路径', () => {
   const out = formatHistoryMessageText(mkMsg(1, 1, '你好[图片]世界', undefined), { includeImages: true });
   // 退化路径用 stripNonTextCq，[图片]非CQ格式保留
   assert.ok(out.includes('你好'));
+});
+
+test('buildGroupContext: 同名用户通过 QQ 号区分', () => {
+  const msgs = [
+    mkMsg(101, 1, 'a', [{ type: 'text', data: { text: 'a' } }], { card: '同名', nickname: 'A' }),
+    mkMsg(202, 2, 'b', [{ type: 'text', data: { text: 'b' } }], { card: '同名', nickname: 'B' }),
+  ];
+  const out = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: OPTS });
+  assert.ok(out.includes('同名 [QQ:101]: a'));
+  assert.ok(out.includes('同名 [QQ:202]: b'));
 });
 
 test('SessionStore TTL: cleanup 删除超时会话', () => {

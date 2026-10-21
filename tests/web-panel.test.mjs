@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
@@ -167,4 +167,133 @@ test('web api: login rejects stale or wrong password after passwordSeed changes'
   await assert.rejects(() => client.login('change-me-on-first-login'), /密码错误/);
   const rotated = await client.login('rotated');
   assert.equal(rotated.auth.token, derivePanelToken('rotated'));
+});
+
+test('web api: permission preview reflects user rules and hard deny over owner allow', async () => {
+  const api = createWebApi();
+  const login = await api.handle({ method: 'POST', path: '/api/login', body: { password: 'change-me-on-first-login' } });
+  const token = login.body.auth.token;
+  const saved = await api.handle({
+    method: 'POST',
+    path: '/api/config',
+    headers: { authorization: 'Bearer ' + token },
+    body: {
+      bot: { ownerQQs: ['900'] },
+      orchestration: {
+        permissions: {
+          hardDenyEnabled: true,
+          hardDenyCapabilities: ['config.update'],
+          rules: [{ id: 'user-image-deny', scope: 'user', mode: 'deny', qq: '42', priority: 10 }],
+        },
+      },
+    },
+  });
+  assert.equal(saved.status, 200);
+
+  const userPreview = await api.handle({
+    method: 'POST',
+    path: '/api/orchestration/permissions/preview',
+    headers: { authorization: 'Bearer ' + token },
+    body: { capability: 'image.generate', userQq: '42', role: 'user', riskLevel: 'low' },
+  });
+  assert.equal(userPreview.status, 200);
+  assert.equal(userPreview.body.preview.decision, 'deny');
+  assert.equal(userPreview.body.preview.matchedRule, 'matrix:user-image-deny');
+
+  const ownerPreview = await api.handle({
+    method: 'POST',
+    path: '/api/orchestration/permissions/preview',
+    headers: { authorization: 'Bearer ' + token },
+    body: { capability: 'config.update', userQq: '900', role: 'owner', riskLevel: 'critical' },
+  });
+  assert.equal(ownerPreview.status, 200);
+  assert.equal(ownerPreview.body.preview.decision, 'deny');
+  assert.equal(ownerPreview.body.preview.hardDenied, true);
+  assert.equal(ownerPreview.body.preview.matchedRule, 'hard-deny:config.update');
+});
+test('web api: external Suno capability stays disabled until explicitly enabled', async () => {
+  const api = createWebApi();
+  const login = await api.handle({ method: 'POST', path: '/api/login', body: { password: 'change-me-on-first-login' } });
+  const token = login.body.auth.token;
+  const response = await api.handle({ method: 'GET', path: '/api/orchestration/capabilities', headers: { authorization: 'Bearer ' + token } });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.capabilities.find((item) => item.id === 'audio.music.generate')?.enabled, false);
+});
+test('web api: config versions are audited and can be rolled back', async () => {
+  const api = createWebApi();
+  const login = await api.handle({ method: 'POST', path: '/api/login', body: { password: 'change-me-on-first-login' } });
+  const token = login.body.auth.token;
+  const headers = { authorization: 'Bearer ' + token };
+  await api.handle({ method: 'POST', path: '/api/config', headers, body: { llm: { chatModel: 'model-a' } } });
+  await api.handle({ method: 'POST', path: '/api/config', headers, body: { llm: { chatModel: 'model-b' } } });
+  const versions = await api.handle({ method: 'GET', path: '/api/config/versions', headers });
+  assert.equal(versions.status, 200);
+  assert.ok(versions.body.versions.length >= 3);
+  const target = versions.body.versions.find((item) => item.changedPaths.includes('llm.chatModel') && item.version === 2);
+  assert.ok(target);
+  const rolled = await api.handle({ method: 'POST', path: '/api/config/rollback', headers, body: { version: 2 } });
+  assert.equal(rolled.status, 200);
+  assert.equal(rolled.body.config.llm.chatModel, 'model-a');
+  assert.ok(rolled.body.hotReload.changedPaths.includes('llm.chatModel'));
+  const after = await api.handle({ method: 'GET', path: '/api/config/versions', headers });
+  assert.equal(after.body.versions[after.body.versions.length - 1].current, true);
+});
+test('web api: prompt versions can be evaluated, diffed, activated and rolled back', async () => {
+  const api = createWebApi();
+  const login = await api.handle({ method: 'POST', path: '/api/login', body: { password: 'change-me-on-first-login' } });
+  const headers = { authorization: 'Bearer ' + login.body.auth.token };
+  await api.handle({
+    method: 'POST', path: '/api/config', headers,
+    body: { orchestration: { promptOptimization: {
+      enabled: true, canaryPercent: 25, activeVersionId: 'v1', canaryVersionId: 'v2',
+      versions: [
+        { id: 'v1', name: 'stable', content: 'stable prompt', status: 'active', createdAt: '2026-01-01' },
+        { id: 'v2', name: 'candidate', content: 'candidate prompt', status: 'canary', createdAt: '2026-01-02' },
+      ],
+    } } },
+  });
+  const evaluation = await api.handle({
+    method: 'POST', path: '/api/orchestration/prompts/evaluate', headers,
+    body: { versionId: 'v2', samples: 60, successRate: 0.95, averageScore: 0.9, safetyFailures: 0, ownerApproved: true },
+  });
+  assert.equal(evaluation.status, 200);
+  assert.equal(evaluation.body.decision.promote, true);
+  const diff = await api.handle({ method: 'GET', path: '/api/orchestration/prompts/v2/diff', headers });
+  assert.equal(diff.status, 200);
+  assert.ok(diff.body.diff.some((line) => line.type === 'remove'));
+  const activated = await api.handle({ method: 'POST', path: '/api/orchestration/prompts/activate', headers, body: { versionId: 'v2', mode: 'active' } });
+  assert.equal(activated.status, 200);
+  assert.equal(activated.body.config.orchestration.promptOptimization.activeVersionId, 'v2');
+  const rolled = await api.handle({ method: 'POST', path: '/api/orchestration/prompts/rollback', headers, body: { versionId: 'v1' } });
+  assert.equal(rolled.status, 200);
+  assert.equal(rolled.body.config.orchestration.promptOptimization.activeVersionId, 'v1');
+});
+test('web api: capability health test and trace replay are available', async () => {
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const nodePath = await import('node:path');
+  const traceFile = nodePath.join(os.tmpdir(), 'miobot-trace-' + Date.now() + '.jsonl');
+  await fs.writeFile(traceFile, [
+    JSON.stringify({ id: 't1', requestId: 'req-replay', stage: 'request', summary: 'start', timestamp: '2026-01-01T00:00:00.000Z' }),
+    JSON.stringify({ id: 't2', requestId: 'req-replay', stage: 'execute', summary: 'done', timestamp: '2026-01-01T00:00:01.000Z' }),
+    JSON.stringify({ id: 't3', requestId: 'other', stage: 'request', summary: 'other', timestamp: '2026-01-01T00:00:02.000Z' }),
+  ].join('\n') + '\n', 'utf8');
+  const previous = process.env.MIOBOT_TRACE_FILE;
+  process.env.MIOBOT_TRACE_FILE = traceFile;
+  try {
+    const api = createWebApi();
+    const login = await api.handle({ method: 'POST', path: '/api/login', body: { password: 'change-me-on-first-login' } });
+    const headers = { authorization: 'Bearer ' + login.body.auth.token };
+    const testResult = await api.handle({ method: 'POST', path: '/api/orchestration/capabilities/test', headers, body: { id: 'image.generate' } });
+    assert.equal(testResult.status, 200);
+    assert.ok(['ok', 'unconfigured', 'disabled'].includes(testResult.body.capability.health.status));
+    const replay = await api.handle({ method: 'GET', path: '/api/orchestration/traces/req-replay', headers });
+    assert.equal(replay.status, 200);
+    assert.equal(replay.body.timeline.length, 2);
+    assert.equal(replay.body.timeline[1].stage, 'execute');
+  } finally {
+    if (previous === undefined) delete process.env.MIOBOT_TRACE_FILE;
+    else process.env.MIOBOT_TRACE_FILE = previous;
+    await fs.unlink(traceFile).catch(() => undefined);
+  }
 });

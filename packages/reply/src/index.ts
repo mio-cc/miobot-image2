@@ -59,6 +59,8 @@ export interface ReplyClient {
   sendPrivateFilesForward?(userId: number | string, files: ReplyFile[], botName?: string): Promise<NapcatSendResult>;
   sendGroupMixedForward?(groupId: number | string, items: NapcatMixedForwardItem[], botName?: string): Promise<NapcatSendResult>;
   sendPrivateMixedForward?(userId: number | string, items: NapcatMixedForwardItem[], botName?: string): Promise<NapcatSendResult>;
+  sendGroupNestedMixedForward?(groupId: number | string, groups: NapcatMixedForwardItem[][], botName?: string): Promise<NapcatSendResult>;
+  sendPrivateNestedMixedForward?(userId: number | string, groups: NapcatMixedForwardItem[][], botName?: string): Promise<NapcatSendResult>;
 }
 
 export interface ReplyAttempt {
@@ -75,8 +77,42 @@ export interface ReplyDispatchResult extends Omit<NapcatSendResult, 'attempts'> 
   attempts: ReplyAttempt[];
   sentImages?: string[];
   sentVideos?: string[];
+  /** 实际占用消息预算的发送条数；长文本按策略拆分时可能大于 1。 */
+  messageCount?: number;
 }
 
+export interface ReplyPlanOutputLike {
+  kind: string;
+  id?: string;
+  text?: string;
+  url?: string;
+  mime?: string;
+  mergeable?: boolean;
+  meta?: Record<string, unknown>;
+}
+
+export interface ReplyPlanGroupLike {
+  mode: 'nested_forward' | 'flat_forward' | 'direct';
+  outputs: ReplyPlanOutputLike[];
+  messageCount: number;
+}
+
+export interface ReplyPlanLike {
+  groups: ReplyPlanGroupLike[];
+  messageCount: number;
+  truncated?: ReplyPlanOutputLike[];
+  warnings?: string[];
+  maxMessages?: number;
+  noticeIncluded?: boolean;
+  noticeSuppressed?: boolean;
+}
+
+export interface ReplyPlanDispatchResult extends ReplyDispatchResult {
+  sentCount: number;
+  truncatedCount: number;
+  warnings: string[];
+  budgetEnforced: boolean;
+}
 export class ReplyStrategyEngine {
   private readonly client: ReplyClient;
   private readonly config: Required<ReplyStrategyConfig>;
@@ -103,15 +139,29 @@ export class ReplyStrategyEngine {
     };
   }
 
-  async replyText(context: ReplyContext, text: string, strategy = this.config.text): Promise<ReplyDispatchResult> {
+  async replyText(context: ReplyContext, text: string, strategy = this.config.text, options: { maxMessages?: number } = {}): Promise<ReplyDispatchResult> {
     const resolved = normalizeStrategy(strategy, this.config.text);
     assertTarget(context);
-    const chunks = splitLongText(text, this.textReply.maxChars);
+    const maxMessages = Math.max(0, Math.trunc(Number(options.maxMessages) || 0));
+    let chunks = splitLongText(text, this.textReply.maxChars);
+    const capChunks = (values: string[]): string[] => {
+      if (!maxMessages || values.length <= maxMessages) return values;
+      const capped = values.slice(0, maxMessages);
+      const lastIndex = capped.length - 1;
+      capped[lastIndex] = capped[lastIndex] + '\n\n（内容过长，后续已按消息预算截断）';
+      return capped;
+    };
+    const canForward = context.chatType === 'group'
+      ? Boolean(this.client.sendGroupNestedTextForward || this.client.sendGroupTextForward)
+      : Boolean(this.client.sendPrivateNestedTextForward || this.client.sendPrivateTextForward);
+    if (resolved !== 'forward' || !canForward) chunks = capChunks(chunks);
     if (chunks.length <= 1) {
-      if (context.chatType === 'private') return this.replyPrivateText(context, text, resolved);
-      return this.replyGroupText(context, text, resolved);
+      const single = context.chatType === 'private'
+        ? await this.replyPrivateText(context, chunks[0] || text, resolved)
+        : await this.replyGroupText(context, chunks[0] || text, resolved);
+      return { ...single, messageCount: 1 };
     }
-    const partNodes = chunks.map((chunk, index) => {
+    let partNodes = chunks.map((chunk, index) => {
       const prefix = this.textReply.showPartPrefix ? `(${index + 1}/${chunks.length}) ` : '';
       return {
         title: `${context.botName || 'Miobot'} ${index + 1}/${chunks.length}`,
@@ -128,14 +178,15 @@ export class ReplyStrategyEngine {
               'text', resolved, 'sendGroupNestedTextForward',
               () => this.client.sendGroupNestedTextForward!(groupId, groups, context.botName),
             );
-            if (nested.success) return nested;
+            if (nested.success || nested.uncertain) return { ...nested, messageCount: 1 };
           } catch { /* Napcat 不支持嵌套节点时回退到单个外层合并转发 */ }
         }
         if (this.client.sendGroupTextForward) {
-          return this.wrap(
+          const flat = await this.wrap(
             'text', resolved, 'sendGroupTextForward(split)',
             () => this.client.sendGroupTextForward!(groupId, partNodes, context.botName),
           );
+          return { ...flat, messageCount: 1 };
         }
       } else {
         const userId = required(context.userId, 'userId');
@@ -145,15 +196,29 @@ export class ReplyStrategyEngine {
               'text', resolved, 'sendPrivateNestedTextForward',
               () => this.client.sendPrivateNestedTextForward!(userId, groups, context.botName),
             );
-            if (nested.success) return nested;
+            if (nested.success || nested.uncertain) return { ...nested, messageCount: 1 };
           } catch { /* Napcat 不支持嵌套节点时回退到单个外层合并转发 */ }
         }
         if (this.client.sendPrivateTextForward) {
-          return this.wrap(
+          const flat = await this.wrap(
             'text', resolved, 'sendPrivateTextForward(split)',
             () => this.client.sendPrivateTextForward!(userId, partNodes, context.botName),
           );
+          return { ...flat, messageCount: 1 };
         }
+      }
+    }
+    if (resolved === 'forward') {
+      const capped = capChunks(chunks);
+      if (capped.length !== chunks.length) {
+        chunks = capped;
+        partNodes = chunks.map((chunk, index) => {
+          const prefix = this.textReply.showPartPrefix ? '(' + (index + 1) + '/' + chunks.length + ') ' : '';
+          return {
+            title: (context.botName || 'Miobot') + ' ' + (index + 1) + '/' + chunks.length,
+            content: prefix + chunk,
+          };
+        });
       }
     }
     let last: ReplyDispatchResult | undefined;
@@ -163,12 +228,12 @@ export class ReplyStrategyEngine {
       last = context.chatType === 'private'
         ? await this.replyPrivateText(partContext, part, resolved)
         : await this.replyGroupText(partContext, part, resolved);
-      if (!last.success) return last;
+      if (!last.success) return { ...last, messageCount: i + 1 };
       if (i < chunks.length - 1 && this.textReply.splitDelayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, this.textReply.splitDelayMs));
       }
     }
-    return last!;
+    return { ...last!, messageCount: chunks.length };
   }
 
   async replyImage(context: ReplyContext, fileUrl: string, strategy = this.config.image): Promise<ReplyDispatchResult> {
@@ -234,7 +299,7 @@ export class ReplyStrategyEngine {
     return this.replyGroupFiles(context, cleanFiles, resolved);
   }
 
-  async replyMixed(context: ReplyContext, payload: { text?: string; images?: string[]; videos?: string[]; files?: ReplyFile[] }, strategy = this.config.mixed): Promise<ReplyDispatchResult> {
+  async replyMixed(context: ReplyContext, payload: { text?: string; images?: string[]; videos?: string[]; files?: ReplyFile[] }, strategy = this.config.mixed, options: { preferNestedForward?: boolean } = {}): Promise<ReplyDispatchResult> {
     const resolved = normalizeStrategy(strategy, this.config.mixed);
     assertTarget(context);
     const text = String(payload?.text || '').trim();
@@ -244,13 +309,23 @@ export class ReplyStrategyEngine {
     const mediaKinds = [images.length > 0, videos.length > 0, files.length > 0].filter(Boolean).length;
 
     // 图/视/文件混排 → 合并转发；单介质走专用路径。
-    if (mediaKinds >= 2 || (text && (videos.length || (files.length && images.length)))) {
+    if (mediaKinds >= 2 || (text && (images.length || videos.length || files.length))) {
       const items: NapcatMixedForwardItem[] = [
         ...(text ? [{ kind: 'text' as const, text, title: context.botName || 'Miobot' }] : []),
         ...images.map((file, index) => ({ kind: 'image' as const, file, title: `${context.botName || 'Miobot'} 图 ${index + 1}/${images.length}` })),
         ...videos.map((file, index) => ({ kind: 'video' as const, file, title: `${context.botName || 'Miobot'} 视频 ${index + 1}/${videos.length}` })),
         ...files.map((file, index) => ({ kind: 'file' as const, ...file, title: `${context.botName || 'Miobot'} 文件 ${index + 1}/${files.length}` })),
       ];
+      const groups = [
+        items.filter((item) => item.kind === 'text'),
+        items.filter((item) => item.kind === 'image'),
+        items.filter((item) => item.kind === 'video'),
+        items.filter((item) => item.kind === 'file'),
+      ].filter((group) => group.length > 0);
+      if (resolved === 'forward' && options.preferNestedForward !== false) {
+        const nested = await this.sendNestedMixedForward(context, groups, resolved);
+        if (nested.success || nested.uncertain) return { ...nested, messageCount: 1 };
+      }
       return this.sendMixedForward(context, items, resolved);
     }
 
@@ -260,6 +335,176 @@ export class ReplyStrategyEngine {
     return this.replyText(context, text, resolved);
   }
 
+  /**
+   * ReplyPlan 的唯一发送入口。它按 plan.groups 决定发送顺序和消息数，
+   * 并在最终发送层再次执行 maxMessages；任何 uncertain 发送都会立即停止后续消息，避免双发。
+   */
+  async replyPlan(context: ReplyContext, plan: ReplyPlanLike, options: { maxMessages?: number } = {}): Promise<ReplyPlanDispatchResult> {
+    assertTarget(context);
+    const limits = [options.maxMessages, plan.maxMessages]
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value >= 1);
+    const maxMessages = limits.length ? Math.max(1, Math.trunc(Math.min(...limits))) : 3;
+    const attempts: ReplyAttempt[] = [];
+    const messageIds: Array<number | string> = [];
+    const warnings = Array.isArray(plan.warnings) ? plan.warnings.map(String).filter(Boolean) : [];
+    let sentCount = 0;
+    let truncatedCount = Array.isArray(plan.truncated) ? plan.truncated.length : 0;
+    let failure = '';
+    let uncertain = false;
+    let budgetEnforced = false;
+
+    const usedMessages = (result: ReplyDispatchResult): number => {
+      const explicit = Number(result.messageCount);
+      if (Number.isFinite(explicit) && explicit >= 1) return Math.trunc(explicit);
+      const attemptCount = Array.isArray(result.attempts) ? result.attempts.length : 0;
+      return Math.max(1, attemptCount);
+    };
+    const remember = (result: ReplyDispatchResult): boolean => {
+      attempts.push(...(result.attempts || []));
+      if (result.messageId !== undefined) messageIds.push(result.messageId);
+      if (Array.isArray(result.messageIds)) messageIds.push(...result.messageIds);
+      if (result.uncertain) {
+        uncertain = true;
+        return false;
+      }
+      if (!result.success) {
+        failure ||= result.error || 'reply_plan_send_failed';
+        return false;
+      }
+      return true;
+    };
+
+    for (const group of plan.groups || []) {
+      if (sentCount >= maxMessages) {
+        budgetEnforced = true;
+        truncatedCount += group.outputs?.length || 0;
+        break;
+      }
+      if (group.mode !== 'direct') {
+        const result = await this.replyPlanGroup(context, group, maxMessages - sentCount);
+        remember(result);
+        sentCount += usedMessages(result);
+        if (failure || uncertain) break;
+        continue;
+      }
+      for (const output of group.outputs || []) {
+        if (sentCount >= maxMessages) {
+          budgetEnforced = true;
+          truncatedCount += 1;
+          continue;
+        }
+        const result = await this.replyPlanDirectOutput(context, output, maxMessages - sentCount);
+        remember(result);
+        sentCount += usedMessages(result);
+        if (failure || uncertain) break;
+      }
+      if (failure || uncertain) break;
+    }
+
+    if (!failure && !uncertain && !plan.noticeIncluded && !plan.noticeSuppressed && warnings.length && sentCount < maxMessages) {
+      const notice = await this.replyText(context, warnings.join('\n'), this.config.text, { maxMessages: maxMessages - sentCount });
+      if (remember(notice)) sentCount += usedMessages(notice);
+    }
+
+    const success = !failure && !uncertain;
+    return {
+      success,
+      uncertain: uncertain || undefined,
+      messageId: messageIds[0],
+      messageIds: uniqueIds(messageIds),
+      error: failure || undefined,
+      kind: 'mixed',
+      strategy: 'forward',
+      attempts,
+      sentCount,
+      truncatedCount,
+      warnings,
+      budgetEnforced,
+    };
+  }
+  private replyPlanText(outputs: ReplyPlanOutputLike[]): string {
+    return outputs
+      .map((output) => {
+        if (output.text && output.text.trim()) return output.text.trim();
+        const title = typeof output.meta?.title === 'string' ? output.meta.title : '';
+        return [title, output.url || ''].filter(Boolean).join(' ');
+      })
+      .filter(Boolean)
+      .join('\n\n');
+  }
+
+  private async replyPlanForwardGroup(context: ReplyContext, group: ReplyPlanGroupLike): Promise<ReplyDispatchResult> {
+    const items: NapcatMixedForwardItem[] = [];
+    for (const output of group.outputs || []) {
+      const title = typeof output.meta?.title === 'string' ? output.meta.title : undefined;
+      if ((output.kind === 'text' || output.kind === 'link' || output.kind === 'card')) {
+        const text = this.replyPlanText([output]);
+        if (text) items.push({ kind: 'text', text, title });
+      } else if (output.kind === 'image' && output.url) {
+        items.push({ kind: 'image', file: String(output.url), title });
+      } else if (output.kind === 'video' && output.url) {
+        items.push({ kind: 'video', file: String(output.url), title });
+      } else if (output.kind === 'file' && output.url) {
+        const name = typeof output.meta?.name === 'string' ? output.meta.name : undefined;
+        items.push({ kind: 'file', file: String(output.url), name, title });
+      }
+    }
+    if (!items.length) return this.replyText(context, '');
+    if (group.mode === 'nested_forward') {
+      const groups = [
+        items.filter((item) => item.kind === 'text'),
+        items.filter((item) => item.kind === 'image'),
+        items.filter((item) => item.kind === 'video'),
+        items.filter((item) => item.kind === 'file'),
+      ].filter((item) => item.length > 0);
+      const nested = await this.sendNestedMixedForward(context, groups, 'forward');
+      if (nested.success || nested.uncertain) return nested;
+    }
+    return this.sendMixedForward(context, items, 'forward');
+  }
+  private async replyPlanGroup(context: ReplyContext, group: ReplyPlanGroupLike, maxMessages?: number): Promise<ReplyDispatchResult> {
+    const outputs = group.outputs || [];
+    if (!outputs.length) return this.replyText(context, '');
+    if (outputs.length === 1) return this.replyPlanDirectOutput(context, outputs[0], maxMessages);
+    return this.replyPlanForwardGroup(context, group);
+  }
+
+  private async replyPlanDirectOutput(context: ReplyContext, output: ReplyPlanOutputLike, maxMessages?: number): Promise<ReplyDispatchResult> {
+    const url = String(output.url || '').trim();
+    if (output.kind === 'text' || output.kind === 'link' || output.kind === 'card') {
+      return this.replyText(context, this.replyPlanText([output]), this.config.text, { maxMessages });
+    }
+    if (output.kind === 'image') {
+      if (!url) return this.finish('image', this.config.image, [{ kind: 'image', strategy: this.config.image, method: 'validate-image', success: false, error: 'empty_image_url' }], { success: false, error: 'empty_image_url' });
+      return this.replyImage(context, url);
+    }
+    if (output.kind === 'video') {
+      if (!url) return this.finish('video', this.config.video, [{ kind: 'video', strategy: this.config.video, method: 'validate-video', success: false, error: 'empty_video_url' }], { success: false, error: 'empty_video_url' });
+      return this.replyVideo(context, url);
+    }
+    if (output.kind === 'file') {
+      if (!url) return this.finish('file', this.config.file, [{ kind: 'file', strategy: this.config.file, method: 'validate-file', success: false, error: 'empty_file_url' }], { success: false, error: 'empty_file_url' });
+      const name = typeof output.meta?.name === 'string' ? output.meta.name : undefined;
+      return this.replyFiles(context, [{ file: url, name }]);
+    }
+    if (output.kind === 'audio') {
+      if (!url) return this.finish('mixed', 'plain', [{ kind: 'mixed', strategy: 'plain', method: 'validate-record', success: false, error: 'empty_audio_url' }], { success: false, error: 'empty_audio_url' });
+      return this.replyPlanRecord(context, url);
+    }
+    return this.finish('mixed', 'plain', [{ kind: 'mixed', strategy: 'plain', method: 'unsupported-output', success: false, error: 'unsupported_output_kind:' + output.kind }], { success: false, error: 'unsupported_output_kind:' + output.kind });
+  }
+
+  private async replyPlanRecord(context: ReplyContext, fileUrl: string): Promise<ReplyDispatchResult> {
+    if (context.chatType === 'group') {
+      const groupId = required(context.groupId, 'groupId');
+      if (!this.client.sendGroupRecord) return this.finish('mixed', 'plain', [{ kind: 'mixed', strategy: 'plain', method: 'sendGroupRecord', success: false, error: 'group record send not supported' }], { success: false, error: 'group record send not supported' });
+      return this.wrap('mixed', 'plain', 'sendGroupRecord', () => this.client.sendGroupRecord!(groupId, fileUrl));
+    }
+    const userId = required(context.userId, 'userId');
+    if (!this.client.sendPrivateRecord) return this.finish('mixed', 'plain', [{ kind: 'mixed', strategy: 'plain', method: 'sendPrivateRecord', success: false, error: 'private record send not supported' }], { success: false, error: 'private record send not supported' });
+    return this.wrap('mixed', 'plain', 'sendPrivateRecord', () => this.client.sendPrivateRecord!(userId, fileUrl));
+  }
   private async replyGroupText(context: ReplyContext, text: string, strategy: ReplyStrategy): Promise<ReplyDispatchResult> {
     const groupId = required(context.groupId, 'groupId');
     if (strategy === 'forward' && this.client.sendGroupTextForward) {
@@ -467,6 +712,17 @@ export class ReplyStrategyEngine {
     }
     const success = attempts.every((attempt) => attempt.success);
     return this.finish('multiFile', strategy, [...previousAttempts, ...attempts], { success, messageIds: uniqueIds(messageIds), error: success ? undefined : firstError });
+  }
+
+  private async sendNestedMixedForward(context: ReplyContext, groups: NapcatMixedForwardItem[][], strategy: ReplyStrategy): Promise<ReplyDispatchResult> {
+    if (context.chatType === 'private') {
+      const userId = required(context.userId, 'userId');
+      if (!this.client.sendPrivateNestedMixedForward) return this.finish('mixed', strategy, [], { success: false, error: 'nested mixed forward not supported' });
+      return this.wrap('mixed', strategy, 'sendPrivateNestedMixedForward', () => this.client.sendPrivateNestedMixedForward!(userId, groups, context.botName));
+    }
+    const groupId = required(context.groupId, 'groupId');
+    if (!this.client.sendGroupNestedMixedForward) return this.finish('mixed', strategy, [], { success: false, error: 'nested mixed forward not supported' });
+    return this.wrap('mixed', strategy, 'sendGroupNestedMixedForward', () => this.client.sendGroupNestedMixedForward!(groupId, groups, context.botName));
   }
 
   private async sendMixedForward(context: ReplyContext, items: NapcatMixedForwardItem[], strategy: ReplyStrategy): Promise<ReplyDispatchResult> {

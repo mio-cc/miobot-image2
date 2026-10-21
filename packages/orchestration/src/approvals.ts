@@ -1,4 +1,4 @@
-﻿import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   ApprovalDecision,
   ApprovalQuorum,
@@ -17,6 +17,7 @@ export interface CreateApprovalInput {
   requesterQq: string;
   groupId?: string;
   adminQqIds: string[];
+  ownerQqIds?: string[];
   quorum?: ApprovalQuorum;
   ttlMs?: number;
   now?: Date;
@@ -41,6 +42,7 @@ export function createApproval(input: CreateApprovalInput): ApprovalRequest {
     requesterQq: input.requesterQq,
     groupId: input.groupId,
     adminQqIds: Array.from(new Set(input.adminQqIds.map(String).filter(Boolean))),
+    ownerQqIds: Array.from(new Set((input.ownerQqIds || []).map(String).filter(Boolean))),
     quorum: input.quorum || 'any',
     status: 'pending',
     createdAt: now.toISOString(),
@@ -60,11 +62,16 @@ export function decideApproval(
   decision: ApprovalDecision,
   payloadHash?: string,
   now: Date = new Date(),
+  options: { bypassApproverCheck?: boolean } = {},
 ): ApprovalRequest {
   const current = expireApproval(approval, now);
   if (current.status !== 'pending') return current;
-  if (!current.adminQqIds.includes(decision.adminQq)) {
+  const allowedApprovers = current.quorum === 'owner' ? current.ownerQqIds || [] : current.adminQqIds;
+  if (!options.bypassApproverCheck && !allowedApprovers.includes(decision.adminQq)) {
     throw new Error('approval_admin_not_allowed');
+  }
+  if (!options.bypassApproverCheck && current.requesterQq === decision.adminQq) {
+    throw new Error('approval_requester_cannot_decide');
   }
   if (payloadHash !== undefined && payloadHash !== current.payloadHash) {
     throw new Error('approval_payload_changed');
@@ -85,9 +92,10 @@ export function decideApproval(
     };
   }
   const approvals = new Set(decisions.filter((item) => item.decision === 'approve').map((item) => item.adminQq));
-  const required = current.quorum === 'all' ? new Set(current.adminQqIds) : null;
+  const required = current.quorum === 'all' ? new Set(current.adminQqIds)
+    : current.quorum === 'owner' ? new Set(current.ownerQqIds || []) : null;
   const approved = required
-    ? Array.from(required).every((qq) => approvals.has(qq))
+    ? required.size > 0 && Array.from(required).every((qq) => approvals.has(qq))
     : approvals.size > 0;
   if (!approved) return { ...current, decisions };
   return {

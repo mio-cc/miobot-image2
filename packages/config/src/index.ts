@@ -1,5 +1,6 @@
 import type { ConfigSourceFormat, LegacyReplyFormat, MigrationNotice, PackageDescriptor, ReplyStrategy } from '@miobot-v2/shared';
 import { defaultFeatureSettings, normalizeFeatureSettings, type FeatureSettings } from '../../shared/src/features.js';
+import { defaultOrchestrationConfig, normalizeOrchestrationConfig, type OrchestrationConfig } from '../../orchestration/src/config.js';
 
 export const CONFIG_PACKAGE: PackageDescriptor = { name: '@miobot-v2/config', phase: 'P12-config-regression' };
 export const CONFIG_SCHEMA_VERSION = 2;
@@ -61,6 +62,8 @@ export interface ComfyUiProfile {
   name: string;
   workflow: Record<string, unknown>;
   parameterMap: Record<string, string>;
+  promptNodeIds: string[];
+  negativePromptNodeIds: string[];
   defaults: Record<string, unknown>;
   constraints?: Record<string, ComfyUiParamConstraint>;
   outputNodeId?: string;
@@ -178,7 +181,7 @@ export interface WebSearchConfig {
   qps: number;
 }
 
-export interface AppConfig { panel: { port: number; passwordSeed: string }; napcat: { wsUrl: string; token: string; mountOutputDir: string; mountOutputContainerDir: string; actionTimeoutMs: number; textSendTimeoutMs: number; imageSendTimeoutMs: number; fileSendTimeoutMs: number; fileSendRetryCount: number; fileSendRetryDelayMs: number; forwardSendTimeoutMs: number; getMessageTimeoutMs: number }; promptsChat: PromptsChatConfig; canvas: CanvasConfig; freeMode: FreeModeConfig; intentRecognition: IntentRecognitionConfig; browserRender: BrowserRenderConfig; codeRender: CodeRenderConfig; comfyuiTransform: ComfyUiTransformConfig; huggingFace: HuggingFaceConfig; search: WebSearchConfig; llm: { activeNodeIndex: number; apiKeys: ApiNode[]; chatNodeIndex: number; chatModel: string; chatEnabled: boolean; reasoningEffort: ReasoningEffort; maxConversationRounds: number; maxConversationChars: number; sessionTtlMinutes: number; enhanceNodeIndex: number; enhanceModel: string; enhanceEnabled: boolean; enhancePromptTemplate: string; templateNodeIndex: number; templateModel: string; referencedTemplateNodeIndex: number; referencedTemplateModel: string; translationNodeIndex: number; translationModel: string; imageNodeIndex: number; imageModel: string; imageEnabled: boolean; imageCount: number; imageTimeoutMs: number; imageRetryCount: number; imageRetryDelayMs: number; safeRewriteOnFailure: boolean; safeRewritePromptTemplate: string; editNodeIndex: number; editModel: string; imageEditRequestMode: ImageEditRequestMode; interrogateNodeIndex: number; interrogateModel: string; interrogateTimeoutMs: number; interrogatePromptTemplate: string; /** 视频生成节点索引（grok-imagine-video 等）。 */ videoNodeIndex: number; videoModel: string; videoEnabled: boolean; /** 单次视频 HTTP 超时。 */ videoTimeoutMs: number; /** 异步轮询总等待上限（默认 10 分钟）。 */ videoPollTimeoutMs: number; /** 轮询间隔（默认 5 秒）。 */ videoPollIntervalMs: number; capabilityOverrides: ConfigCapabilityOverride[] }; bot: { botQqId: string; ownerQQs: string[]; whitelistGroups: string[]; whitelistPrivate: string[]; blacklistGroupUsers: string[]; features: FeatureSettings; files: BotFilesConfig; tts: BotTtsConfig; replyFormat: LegacyReplyFormat; replyStrategies: { text: ReplyStrategy; image: ReplyStrategy; multiImage: ReplyStrategy; video: ReplyStrategy; multiVideo: ReplyStrategy; file: ReplyStrategy; multiFile: ReplyStrategy; mixed: ReplyStrategy }; triggerModes: { mention: boolean; replyToBot: boolean }; /** 消息事件超过此秒数直接丢弃不回复（0=不限），避免积压/重连后迟到回复扎堆。 */ staleMessageMaxAgeSeconds: number; groupContext: BotGroupContextConfig; textReply: { maxChars: number; splitDelayMs: number; showPartPrefix: boolean }; progress: BotProgressConfig; textImage: BotTextImageConfig; autoRecallImages: boolean; autoRecallDelaySeconds: number; imageCompression: { enabled: boolean; scale: number; quality: number; }; promptTemplates: PromptTemplate[]; commands: { genImage: string; img2Img: string; editImage: string; interrogate: string; originalImage: string; imageCount: string; referencedTemplateImage: string; templateLibrary: string; help: string; remotePromptSearch: string; remotePromptSmartImage: string; toggleEnhance: string; forceEnhance: string; disableEnhance: string } } }
+export interface AppConfig { panel: { port: number; passwordSeed: string }; napcat: { wsUrl: string; token: string; mountOutputDir: string; mountOutputContainerDir: string; actionTimeoutMs: number; textSendTimeoutMs: number; imageSendTimeoutMs: number; fileSendTimeoutMs: number; fileSendRetryCount: number; fileSendRetryDelayMs: number; forwardSendTimeoutMs: number; getMessageTimeoutMs: number }; promptsChat: PromptsChatConfig; canvas: CanvasConfig; freeMode: FreeModeConfig; intentRecognition: IntentRecognitionConfig; browserRender: BrowserRenderConfig; codeRender: CodeRenderConfig; comfyuiTransform: ComfyUiTransformConfig; huggingFace: HuggingFaceConfig; search: WebSearchConfig; llm: { activeNodeIndex: number; apiKeys: ApiNode[]; chatNodeIndex: number; chatModel: string; chatEnabled: boolean; reasoningEffort: ReasoningEffort; maxConversationRounds: number; maxConversationChars: number; sessionTtlMinutes: number; enhanceNodeIndex: number; enhanceModel: string; enhanceEnabled: boolean; enhancePromptTemplate: string; templateNodeIndex: number; templateModel: string; referencedTemplateNodeIndex: number; referencedTemplateModel: string; translationNodeIndex: number; translationModel: string; imageNodeIndex: number; imageModel: string; imageEnabled: boolean; imageCount: number; imageTimeoutMs: number; imageRetryCount: number; imageRetryDelayMs: number; safeRewriteOnFailure: boolean; safeRewritePromptTemplate: string; editNodeIndex: number; editModel: string; imageEditRequestMode: ImageEditRequestMode; interrogateNodeIndex: number; interrogateModel: string; interrogateTimeoutMs: number; interrogatePromptTemplate: string; /** 视频生成节点索引（grok-imagine-video 等）。 */ videoNodeIndex: number; videoModel: string; videoEnabled: boolean; /** 单次视频 HTTP 超时。 */ videoTimeoutMs: number; /** 异步轮询总等待上限（默认 10 分钟）。 */ videoPollTimeoutMs: number; /** 轮询间隔（默认 5 秒）。 */ videoPollIntervalMs: number; capabilityOverrides: ConfigCapabilityOverride[] }; bot: { botQqId: string; ownerQQs: string[]; whitelistGroups: string[]; whitelistPrivate: string[]; blacklistGroupUsers: string[]; features: FeatureSettings; files: BotFilesConfig; tts: BotTtsConfig; replyFormat: LegacyReplyFormat; replyStrategies: { text: ReplyStrategy; image: ReplyStrategy; multiImage: ReplyStrategy; video: ReplyStrategy; multiVideo: ReplyStrategy; file: ReplyStrategy; multiFile: ReplyStrategy; mixed: ReplyStrategy }; triggerModes: { mention: boolean; replyToBot: boolean }; /** 消息事件超过此秒数直接丢弃不回复（0=不限），避免积压/重连后迟到回复扎堆。 */ staleMessageMaxAgeSeconds: number; groupContext: BotGroupContextConfig; textReply: { maxChars: number; splitDelayMs: number; showPartPrefix: boolean }; progress: BotProgressConfig; textImage: BotTextImageConfig; autoRecallImages: boolean; autoRecallDelaySeconds: number; imageCompression: { enabled: boolean; scale: number; quality: number; }; promptTemplates: PromptTemplate[]; commands: { genImage: string; img2Img: string; editImage: string; interrogate: string; originalImage: string; imageCount: string; referencedTemplateImage: string; templateLibrary: string; help: string; remotePromptSearch: string; remotePromptSmartImage: string; toggleEnhance: string; forceEnhance: string; disableEnhance: string } }; orchestration: OrchestrationConfig }
 export interface ExportedConfigFile<TConfig = AppConfig> { version: number; exportedAt: string; config: TConfig }
 export interface ConfigMigrationDefinition { id: string; from: string; to: string; reason: string; introducedIn: number }
 export interface ConfigImportResult { config: AppConfig; sourceFormat: ConfigSourceFormat; sourceVersion?: number; migrations: MigrationNotice[]; warnings: string[] }
@@ -329,6 +332,74 @@ supportsDynamicPrompts=false 时禁止 {a|b} 随机语法。
   ttsPreprocess: '你是文本转语音前置处理助手。请把机器人回复改写成适合语音合成的文本，并按需要穿插语音标签。要求：1. 保留原意和主要语言，不额外扩写，不要无故翻译成英文；2. 标签必须是语音模型可直接识别的文本；3. 只输出最终要送入语音 API 的文本，不要解释，不要 Markdown。待处理文本：{{text}}',
 };
 
+
+export const COMFYUI_PROMPT_ONLY_TEMPLATE_V5 = `【Miobot-ComfyUI-Prompt-v5】你是 Miobot 的高级画面提示词导演。你的唯一任务是把用户自然语言增强成一段可以直接送入 ComfyUI 文本编码节点的最终正向提示词。
+
+【本次输入】
+用户请求：{{userRequest}}
+Profile：{{profileName}}
+模型家族：{{modelFamily}}
+模型变体：{{variant}}
+提示词语法：{{promptSyntax}}
+输出语言：{{promptLanguage}}
+偏好格式：{{preferredFormat}}
+最大字符数：{{maxPromptChars}}
+提示词策略：{{promptPolicy}}
+正向提示词节点：{{promptNodeIds}}
+
+【最高优先级】
+1. 只输出最终正向提示词正文。不要 JSON，不要 Markdown，不要代码块，不要标题，不要解释，不要引号包裹整段结果。
+2. 绝对不要输出或建议 steps、cfg、sampler、scheduler、shift、seed、width、height、batchSize、LoRA、模型文件名、节点 ID 或任何工作流参数。参数全部由后台工作流模板决定。
+3. 不要复述用户请求，不要写"根据你的要求"等对话语言。直接给可执行画面描述。
+4. 用户的明确要求是硬约束。增强只补齐画面成立所需的视觉信息，不得改角色、数量、动作、关系、服装、场景、画幅或用户指定文字。
+5. 不要编造用户没有要求的具体品牌、真实人物、版权角色、文字内容或敏感信息。不要模仿在世艺术家；用可观察的媒介、风格和视觉语言描述。
+6. 不要输出负向提示词。负向条件由后台工作流固定配置。
+
+【提示词增强方法】
+把用户请求当作创作 brief，先内部完成 KEEP / LOCK / BIND / LIMIT / FORBID 自检，不要把标记写进结果：
+- KEEP：原样保留用户明确给出的主体、数量、身份特征、服装、动作、道具、场景、时间和文字。
+- LOCK：锁定 3 到 7 个最影响画面的视觉锚点，优先主体身份、脸和发型、服装结构、姿势、构图、主光与主色。
+- BIND：每个背景元素都绑定位置与关系，例如花只在花丛或背景，光只在天空或灯源，水只在地面或水面，禁止扩散成服装印花、皮肤纹理或头发纹理。
+- LIMIT：按区域分配细节。脸部与主体表面最清晰，服装次之，背景只提供环境和氛围；不要让背景细节压过主体。
+- FORBID：阻止常见漂移，包括多手多脚、错误手指、身体融合、重复人物、主体被裁切、文字乱码、水印、过密纹理和冲突镜头。
+
+【画面描述顺序】
+按画面需要自然融合，不要机械列清单：
+主体类型与数量 -> 身份和外观 -> 服装与道具 -> 动作和互动 -> 场景与环境 -> 构图和镜头 -> 光线与色彩 -> 材质与媒介 -> 完成度与风格。
+
+【构图和镜头】
+- 用户没有指定构图时：方图优先半身或中景；竖图优先全身或环境人像；横图优先环境、场景或电影构图。
+- 只选择一个清晰镜头，例如 close-up、upper-body portrait、medium shot、full-body shot、wide establishing shot、50mm lens。不要同时写互相冲突的镜头。
+- 主体是第一视觉焦点，背景承担环境、尺度、氛围和构图支撑。
+- 用户明确要求海报时，强调 poster composition、visual hierarchy、clean negative space、graphic design layout；没有要求文字就不要臆造标题或标语。
+
+【光线和色彩】
+写清主光方向、光源性质、色温、主色和对比，不要只写 beautiful lighting、cinematic 等空泛词。需要电影感时说明具体光比、轮廓光、环境光和色调。
+
+【模型专项：MOSS-Image】
+- 使用连贯、具体的中文或英文自然语言 caption，语言服从输出语言。
+- 具体描述人物、服装、动作、环境、镜头、光线和画风；不要堆 masterpiece、best quality、8k、ultra detailed。
+- 不使用权重语法、BREAK、AND、LoRA 标签、embedding 或动态提示词语法。
+- 保持画面干净，背景复杂时说明景深、虚实和主体轮廓分离。
+
+【模型专项：Z-Image Turbo】
+- 使用连贯自然语言，通常 60 到 180 个英文词或等量中文信息。
+- 重点写主体、动作、场景、构图、光线和材质，不要写成逗号标签堆砌。
+- 不要堆质量词，不要使用权重、BREAK、LoRA 标签或负向提示词。
+
+【模型专项：Krea 2】
+- 使用一段连贯、详细、可拍摄或可绘制的自然语言描述。
+- 强调主体结构、空间关系、镜头、光比、材质和设计感；避免空泛质量词和过度堆叠形容词。
+- 海报任务强调版式层级、留白、视觉中心和平面设计语言，但不要臆造文字。
+- 不使用权重、BREAK、LoRA 标签或负向提示词。
+
+【语言规则】
+- promptLanguage 为 zh 时输出中文；为 en 时输出英文；为 auto 时优先跟随用户主要语言，专有名词保留原文。
+- 用户明确给出的中文文字必须原样保留并加引号。不要翻译用户要求显示的文字。
+
+【最终输出】
+现在只输出增强后的正向提示词正文。不要加任何前后缀，不要输出解释、参数、负向提示词或工作流信息。`;
+
 const DEFAULT_CONFIG: AppConfig = {
   panel: { port: 3018, passwordSeed: 'change-me-on-first-login' },
   napcat: { wsUrl: 'ws://localhost:3001', token: '', mountOutputDir: '', mountOutputContainerDir: '', actionTimeoutMs: 15000, textSendTimeoutMs: 15000, imageSendTimeoutMs: 120000, fileSendTimeoutMs: 300000, fileSendRetryCount: 1, fileSendRetryDelayMs: 1200, forwardSendTimeoutMs: 300000, getMessageTimeoutMs: 10000 },
@@ -338,7 +409,8 @@ const DEFAULT_CONFIG: AppConfig = {
   intentRecognition: { enabled: true, nodeIndex: 0, model: '', timeoutMs: 12000, minConfidence: 0.65, promptTemplate: P.naturalIntent },
   browserRender: { enabled: true, executablePath: '', noSandbox: true, enableWebgl: true, timeoutMs: 45000, launchTimeoutMs: 20000, idleCloseMs: 60000, maxConcurrency: 1, maxQueue: 3, maxCodeChars: 200000, maxWidth: 4096, maxHeight: 4096, defaultWidth: 1080, defaultHeight: 1080, maxScreenshotBytes: 20971520, allowPrivateHosts: false },
   codeRender: { enabled: true, nodeIndex: 0, model: '', timeoutMs: 30000, maxTokens: 4096, promptTemplate: P.codeRender },
-  comfyuiTransform: { enabled: true, nodeIndex: 0, model: '', timeoutMs: 20000, maxTokens: 2400, promptTemplate: P.comfyuiTransform },
+  comfyuiTransform: { enabled: true, nodeIndex: 0, model: '', timeoutMs: 20000, maxTokens: 2400, promptTemplate: COMFYUI_PROMPT_ONLY_TEMPLATE_V5 },
+  orchestration: defaultOrchestrationConfig(),
   huggingFace: { enabled: false, useForChat: false, token: '', baseUrl: 'https://router.huggingface.co/v1', hubApiUrl: 'https://huggingface.co/api/models', selectedModelId: '', selectedProvider: '', selectedModelCode: '', requestMode: 'openai-chat', timeoutMs: 120000, cacheTtlSeconds: 3600, cachedAt: '', cacheQueryHash: '', cachedModels: [], filters: { search: '', author: '', pipelineTag: 'text-generation', tags: '', library: '', inference: 'warm', gated: 'false', sort: 'downloads', direction: '-1', limit: 50, onlyChatCompatible: true, provider: '' } },
   search: { enabled: true, provider: 'deepseek', apiUrl: 'https://api.deepseek.com', apiKey: '', googleCx: '', language: 'zh-CN', region: '', localization: '', autoMode: 'auto', maxResults: 5, needContent: true, fetchContent: true, fetchProvider: 'provider', jinaBaseUrl: 'https://r.jina.ai', jinaApiKey: '', timeoutMs: 20000, retryCount: 1, cacheTtlSeconds: 300, maxContentChars: 6000, maxTotalChars: 20000, qps: 5 },
   llm: { activeNodeIndex: 0, apiKeys: [{ name: '默认节点', baseUrl: '', key: '', enabled: true, kind: 'llm', models: [], modelsFetchedAt: '', concurrency: 0 }], chatNodeIndex: 0, chatModel: 'gpt-4o-mini', chatEnabled: true, reasoningEffort: 'high', maxConversationRounds: 8, maxConversationChars: 12000, sessionTtlMinutes: 30, enhanceNodeIndex: 0, enhanceModel: 'claude-3-5-sonnet-20240620', enhanceEnabled: false, enhancePromptTemplate: P.enhance, templateNodeIndex: 0, templateModel: 'gpt-4o-mini', referencedTemplateNodeIndex: 0, referencedTemplateModel: 'gpt-4o-mini', translationNodeIndex: 0, translationModel: 'gpt-4o-mini', imageNodeIndex: 0, imageModel: 'gpt-image-2', imageEnabled: true, imageCount: 1, imageTimeoutMs: 300000, imageRetryCount: 1, imageRetryDelayMs: 2500, safeRewriteOnFailure: true, safeRewritePromptTemplate: P.safe, editNodeIndex: 0, editModel: 'gpt-image-2', imageEditRequestMode: 'auto', interrogateNodeIndex: 0, interrogateModel: 'gpt-4o-mini', interrogateTimeoutMs: 300000, interrogatePromptTemplate: P.interrogate, videoNodeIndex: 0, videoModel: 'grok-imagine-video', videoEnabled: true, videoTimeoutMs: 120000, videoPollTimeoutMs: 600000, videoPollIntervalMs: 5000, capabilityOverrides: [] },
@@ -521,22 +593,17 @@ function normalizeAppConfig(input: R, warnings: string[]): AppConfig {
   comfyuiTransform.model = str(comfyuiTransform.model, free.model || llm.chatModel, false).trim() || free.model || llm.chatModel;
   comfyuiTransform.timeoutMs = clamp(comfyuiTransform.timeoutMs, 20000, 3000, 120000, true);
   comfyuiTransform.maxTokens = clamp(comfyuiTransform.maxTokens, 2400, 256, 8192, true);
-  comfyuiTransform.promptTemplate = str(comfyuiTransform.promptTemplate, P.comfyuiTransform, false) || P.comfyuiTransform;
-  if (comfyuiTransform.promptTemplate.startsWith('你是 ComfyUI 生图参数转换器。') && comfyuiTransform.promptTemplate.includes('最大批量：{{maxBatchSize}}')) {
-    comfyuiTransform.promptTemplate = P.comfyuiTransform;
-    comfyuiTransform.maxTokens = Math.max(comfyuiTransform.maxTokens, 2400);
-  } else if (
-    comfyuiTransform.promptTemplate.startsWith('你是 Miobot 的 ComfyUI 提示词工程师和生成参数规划器。')
-    && comfyuiTransform.promptTemplate.includes('【提示词结构】')
-    && comfyuiTransform.promptTemplate.includes('【模型家族专项：Z-Image Turbo】')
-    && !comfyuiTransform.promptTemplate.includes('【Miobot-ComfyUI-Transform-v4】')
-  ) {
-    // 旧内置模板没有保真、增强和防漂移规则；升级一次，用户自定义模板不会被误改。
-    comfyuiTransform.promptTemplate = P.comfyuiTransform;
+  comfyuiTransform.promptTemplate = str(comfyuiTransform.promptTemplate, COMFYUI_PROMPT_ONLY_TEMPLATE_V5, false) || COMFYUI_PROMPT_ONLY_TEMPLATE_V5;
+  const comfyTemplate = comfyuiTransform.promptTemplate;
+  const builtInLegacyComfyTemplate = comfyTemplate.includes('Transform-v4')
+    || comfyTemplate.includes('{{maxBatchSize}}')
+    || (comfyTemplate.includes('【提示词结构】') && comfyTemplate.includes('【模型家族专项'));
+  if (builtInLegacyComfyTemplate && !comfyTemplate.includes('Miobot-ComfyUI-Prompt-v5')) {
+    comfyuiTransform.promptTemplate = COMFYUI_PROMPT_ONLY_TEMPLATE_V5;
     comfyuiTransform.maxTokens = Math.max(comfyuiTransform.maxTokens, 2400);
   }
   dropRetired({ napcat: nap, llm, promptsChat: pc, canvas, bot, huggingFace: hf, freeMode: free });
-  return { panel: { port: clamp(panel.port, 3018, 1, 65535, true), passwordSeed: str(panel.passwordSeed, 'change-me-on-first-login', false) }, napcat: { wsUrl: str(nap.wsUrl, DEFAULT_CONFIG.napcat.wsUrl), token: str(nap.token, ''), mountOutputDir: str(nap.mountOutputDir, '').trim(), mountOutputContainerDir: str(nap.mountOutputContainerDir, '').trim(), actionTimeoutMs: clamp(nap.actionTimeoutMs, 15000, 3000, 60000), textSendTimeoutMs: clamp(nap.textSendTimeoutMs, 15000, 3000, 180000), imageSendTimeoutMs: clamp(nap.imageSendTimeoutMs, 120000, 10000, 300000), fileSendTimeoutMs: clamp(nap.fileSendTimeoutMs, nap.forwardSendTimeoutMs || 300000, 10000, 600000), fileSendRetryCount: clamp(nap.fileSendRetryCount, 1, 0, 10, true), fileSendRetryDelayMs: clamp(nap.fileSendRetryDelayMs, 1200, 0, 30000, true), forwardSendTimeoutMs: clamp(nap.forwardSendTimeoutMs, 300000, 10000, 600000), getMessageTimeoutMs: clamp(nap.getMessageTimeoutMs, 10000, 3000, 60000) }, promptsChat: pc, canvas, freeMode: free, intentRecognition, browserRender, codeRender, comfyuiTransform, huggingFace: hf, search, llm, bot };
+  return { panel: { port: clamp(panel.port, 3018, 1, 65535, true), passwordSeed: str(panel.passwordSeed, 'change-me-on-first-login', false) }, napcat: { wsUrl: str(nap.wsUrl, DEFAULT_CONFIG.napcat.wsUrl), token: str(nap.token, ''), mountOutputDir: str(nap.mountOutputDir, '').trim(), mountOutputContainerDir: str(nap.mountOutputContainerDir, '').trim(), actionTimeoutMs: clamp(nap.actionTimeoutMs, 15000, 3000, 60000), textSendTimeoutMs: clamp(nap.textSendTimeoutMs, 15000, 3000, 180000), imageSendTimeoutMs: clamp(nap.imageSendTimeoutMs, 120000, 10000, 300000), fileSendTimeoutMs: clamp(nap.fileSendTimeoutMs, nap.forwardSendTimeoutMs || 300000, 10000, 600000), fileSendRetryCount: clamp(nap.fileSendRetryCount, 1, 0, 10, true), fileSendRetryDelayMs: clamp(nap.fileSendRetryDelayMs, 1200, 0, 30000, true), forwardSendTimeoutMs: clamp(nap.forwardSendTimeoutMs, 300000, 10000, 600000), getMessageTimeoutMs: clamp(nap.getMessageTimeoutMs, 10000, 3000, 60000) }, promptsChat: pc, canvas, freeMode: free, intentRecognition, browserRender, codeRender, comfyuiTransform, huggingFace: hf, search, llm, bot, orchestration: normalizeOrchestrationConfig(obj((cfg as any).orchestration)) };
 }
 
 function notice(id: string): MigrationNotice { const r = CONFIG_MIGRATION_TABLE.find(x => x.id === id); return r ? { id: r.id, from: r.from, to: r.to, reason: r.reason } : { id, from: 'unknown', to: 'unknown', reason: '未登记迁移规则。' }; }
@@ -725,6 +792,8 @@ function normComfyui(v: unknown, warnings: string[]): ComfyUiNodeConfig | undefi
     name: str(item.name, `Profile ${index + 1}`, false).trim() || `Profile ${index + 1}`,
     workflow: isObj(item.workflow) ? clone(item.workflow) : {},
     parameterMap: Object.fromEntries(Object.entries(isObj(item.parameterMap) ? item.parameterMap : {}).map(([key, path]) => [key, str(path, '', false).trim()]).filter(([, path]) => path)),
+    promptNodeIds: list(item.promptNodeIds).map((id) => String(id).trim()).filter(Boolean),
+    negativePromptNodeIds: list(item.negativePromptNodeIds).map((id) => String(id).trim()).filter(Boolean),
     defaults: isObj(item.defaults) ? clone(item.defaults) : {},
     constraints: isObj(item.constraints) ? clone(item.constraints) : {},
     outputNodeId: str(item.outputNodeId, '', false).trim() || undefined,
@@ -752,7 +821,7 @@ function normComfyui(v: unknown, warnings: string[]): ComfyUiNodeConfig | undefi
   })) : [];
   if (!profiles.length) {
     warnings.push('ComfyUI 节点没有 profiles，已补入空 profile。');
-    profiles = [{ id: 'default', name: '默认工作流', workflow: {}, parameterMap: {}, defaults: {}, constraints: {}, outputNodeId: undefined, stitch: undefined, promptPolicy: defaultComfyUiPromptPolicy(), transform: undefined, lora: undefined }];
+    profiles = [{ id: 'default', name: '默认工作流', workflow: {}, parameterMap: {}, promptNodeIds: [], negativePromptNodeIds: [], defaults: {}, constraints: {}, outputNodeId: undefined, stitch: undefined, promptPolicy: defaultComfyUiPromptPolicy(), transform: undefined, lora: undefined }];
   }
   return {
     profiles,

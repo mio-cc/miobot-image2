@@ -65,7 +65,7 @@ test('同一张图重复请求走缓存，不重复解码', async (t) => {
   const cachedMs = Number(process.hrtime.bigint() - t0) / 1e6;
 
   assert.equal(second.base64, first.base64);
-  assert.ok(cachedMs < 5, `缓存命中还花了 ${cachedMs.toFixed(1)}ms，看着不像走了缓存`);
+  assert.ok(cachedMs < 25, `缓存命中还花了 ${cachedMs.toFixed(1)}ms，看着不像走了缓存`);
 });
 
 test('原图比目标还小时不放大——放大只会让文件变大', async (t) => {

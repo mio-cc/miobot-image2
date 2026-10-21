@@ -3,6 +3,11 @@
 export class CapabilityRegistry {
   private readonly capabilities = new Map<string, CapabilityDescriptor>();
 
+  replaceAll(descriptors: CapabilityDescriptor[]): void {
+    this.capabilities.clear();
+    for (const descriptor of descriptors) this.register(descriptor);
+  }
+
   register(descriptor: CapabilityDescriptor): void {
     const id = String(descriptor.id || '').trim();
     if (!id) throw new Error('capability_id_required');

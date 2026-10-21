@@ -5,6 +5,7 @@ import {
   buildFileForwardNodes,
   buildImageForwardNodes,
   buildMixedForwardNodes,
+  buildNestedMixedForwardNodes,
   buildVideoForwardNodes,
   buildVideoSegment,
   dedupeImageUrls,
@@ -377,4 +378,15 @@ test('napcat adapter: retcode 1200 send timeout is marked uncertain, not definit
   assert.equal(result.success, false);
   assert.equal(result.timedOut, true);
   assert.equal(result.uncertain, true);
+});
+
+test('napcat adapter: nested mixed forward nodes contain inner node groups', () => {
+  const nodes = buildNestedMixedForwardNodes([
+    [{ kind: 'text', text: 'hello' }, { kind: 'image', file: 'img1' }],
+    [{ kind: 'file', file: 'file1', name: 'a.pdf' }],
+  ]);
+  assert.equal(nodes.length, 2);
+  assert.equal(nodes[0].data.content[0].type, 'node');
+  assert.equal(nodes[0].data.content[0].data.content[0].type, 'text');
+  assert.equal(nodes[1].data.content[0].data.content[0].type, 'file');
 });

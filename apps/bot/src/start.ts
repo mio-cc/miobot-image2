@@ -5,7 +5,7 @@ import { createFileMetricsStore, createMetrics } from '../../../packages/core/sr
 import { createDefaultConfig, normalizeConfig, type AppConfig } from '../../../packages/config/src/index.js';
 import { ConsoleLogSink, createLogger, type StructuredLogger } from '../../../packages/logger/src/index.js';
 import { createBotApp } from './app.js';
-import { createBotMessageRuntime, type FileReference, type NapcatMessageEvent } from './runtime.js';
+import { createBotMessageRuntime, handleCodeRenderRequest, handleFileGenerateCommand, handleFileReadCommand, handleWebScreenshotRequest, type BotRuntimeOptions, type FileReference, type NapcatMessageEvent } from './runtime.js';
 import { toModelNodes, toCapabilityOverrides } from './config-bridge.js';
 import { shouldUseTts, synthesizeSpeech } from './tts.js';
 import type { OwnerCommand } from './owner.js';
@@ -13,12 +13,34 @@ import type { NapcatHistoryMessage } from './group-context.js';
 import { normalizeForwardPayload } from './message-enrichment.js';
 import { FeatureGate } from './feature-gate.js';
 import { createOutboundImageCompressor, materializeImagesForNapcat } from './image-output.js';
+import { runShadowOrchestration } from './orchestration-shadow.js';
+import { ApprovalRuntime } from './approval-runtime.js';
+import { buildCommandIntentPlan } from '../../../packages/orchestration/src/index.js';
+import { ApprovalActionConsumer } from './approval-actions.js';
+import { CapabilityTestActionConsumer } from './capability-test-actions.js';
+import { MemoryActionConsumer } from './memory-actions.js';
+import { ProblemReporter } from './problem-reporter.js';
+import { PendingJobStore, type PendingJobRecord } from './pending-job-store.js';
+import { JobRecoveryService } from './job-recovery.js';
+import { FileDeleteCapabilityHandler, ManagedArtifactRegistry, type ArtifactScope } from './managed-artifacts.js';
+import { AuditService } from './audit-service.js';
+import { ChatMemoryService } from './memory-service.js';
+import { FishAudioVoiceService } from './voice-service.js';
+import { OwnerRecallCapabilityHandler } from './capability-owner.js';
+import { createSentMessageTracker } from './sent-messages.js';
+import { OrchestrationEnforcer } from './orchestration-enforce.js';
+import { OrchestrationTraceWriter } from './orchestration-trace.js';
+import { RuntimeAdapterCapabilityHandler, executionFromBotResult } from './capability-runtime-adapters.js';
+import { ImageStitchCapabilityHandler } from './capability-image.js';
+import { CanvasGalleryCapabilityHandler } from './capability-canvas.js';
+import { CanvasStore } from '../../../packages/canvas-service/src/index.js';
+import type { CapabilityHandler, CapabilityInvocation, ExecutionResult } from '../../../packages/orchestration/src/index.js';
 import { createWebSearchService } from '../../../packages/search/src/index.js';
 import { createBrowserRenderer } from '../../../packages/browser-render/src/index.js';
 import { fetchComfyUiObjectInfo } from '../../../packages/comfyui/src/index.js';
 import { PendingFileIndex, DEFAULT_FILE_PARSE_LIMITS } from '../../../packages/file-ingest/src/index.js';
 import { derivePanelToken } from '../../../packages/web-api/src/index.js';
-import { promises as fs } from 'node:fs';
+import { promises as fs, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createCanvasGallerySync } from './canvas-gallery.js';
@@ -73,6 +95,17 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // 否则 web 和 bot 是两个进程，面板那句「无需重启」对机器人是假的。
   const getConfig = (): AppConfig => (store ? store.loadIfChanged() : config);
   const dataDir = options.dataDir || (options.configFilePath ? path.dirname(options.configFilePath) : path.resolve('.runtime'));
+  const auditService = new AuditService({
+    filePath: process.env.MIOBOT_AUDIT_FILE || path.join(dataDir, 'audit.jsonl'),
+    enabled: () => getConfig().orchestration.audit.enabled,
+    retentionDays: () => getConfig().orchestration.audit.retentionDays,
+    logger,
+  });
+  const voiceService = new FishAudioVoiceService({
+    getConfig,
+    preferenceFile: path.join(dataDir, 'voice-preferences.json'),
+    logger,
+  });
   const tempFileDir = path.join(dataDir, 'tmp-files');
   const fileIndex = new PendingFileIndex({ filePath: path.join(dataDir, 'pending-files.json'), ttlMs: Math.max(1, config.bot.files.indexTtlMinutes || 1440) * 60_000, maxPerChat: Math.max(10, config.bot.files.maxIndexPerChat || 200) });
   fileIndex.loadSync();
@@ -143,6 +176,11 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // 指标写文件，web 进程读同一个文件。不配路径就不统计。
   const generatedFileDir = path.join(dataDir, 'generated-files');
   void fs.mkdir(generatedFileDir, { recursive: true }).catch(() => undefined);
+  const managedArtifacts = new ManagedArtifactRegistry({
+    filePath: process.env.MIOBOT_MANAGED_ARTIFACTS_FILE || path.join(dataDir, 'managed-artifacts.json'),
+    roots: [generatedFileDir, tempFileDir],
+  });
+  const uploadedLocalByUrl = new Map<string, { localPath: string; name: string; mime?: string }>();
   async function cleanupOldFiles(dir: string, maxAgeMs: number): Promise<void> {
     try {
       const entries = await fs.readdir(dir).catch(() => [] as string[]);
@@ -168,9 +206,9 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     try {
       uploadEndpoint = syncUrl
         ? new URL('/canvas-api/bot/files', new URL(syncUrl).origin).toString()
-        : `http://127.0.0.1:${cfg.panel.port}/canvas-api/bot/files`;
+        : `http://127.0.0.1:${process.env.MIOBOT_PORT || process.env.MIOBOT_VERIFY_PORT || cfg.panel.port}/canvas-api/bot/files`;
     } catch {
-      uploadEndpoint = `http://127.0.0.1:${cfg.panel.port}/canvas-api/bot/files`;
+      uploadEndpoint = `http://127.0.0.1:${process.env.MIOBOT_PORT || process.env.MIOBOT_VERIFY_PORT || cfg.panel.port}/canvas-api/bot/files`;
     }
     const token = derivePanelToken(String(cfg.panel.passwordSeed || ''));
     const response = await fetch(uploadEndpoint, {
@@ -183,17 +221,64 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     const body = await response.json() as { file?: { url?: string } };
     const assetUrl = String(body.file?.url || '').trim();
     if (!assetUrl) throw new Error('文件上传响应缺少 URL');
-    const publicBase = String(process.env.MIOBOT_PUBLIC_BASE_URL || `http://127.0.0.1:${cfg.panel.port}`).replace(/\/+$/, '');
+    const publicBase = String(process.env.MIOBOT_PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.MIOBOT_PORT || process.env.MIOBOT_VERIFY_PORT || cfg.panel.port}`).replace(/\/+$/, '');
     if (!process.env.MIOBOT_PUBLIC_BASE_URL) logger.warn('MIOBOT_PUBLIC_BASE_URL 未配置，生成文件 URL 只能本机访问；Napcat 容器可能下载失败');
-    return assetUrl.startsWith('http://') || assetUrl.startsWith('https://') ? assetUrl : `${publicBase}${assetUrl}`;
+    const finalUrl = assetUrl.startsWith('http://') || assetUrl.startsWith('https://') ? assetUrl : publicBase + assetUrl;
+    uploadedLocalByUrl.set(finalUrl, { localPath, name, mime });
+    if (uploadedLocalByUrl.size > 500) uploadedLocalByUrl.delete(uploadedLocalByUrl.keys().next().value as string);
+    return finalUrl;
   }
 
+  const artifactScope = (invocation: CapabilityInvocation): ArtifactScope => ({
+    chatType: invocation.request.chat.type,
+    groupId: invocation.request.chat.groupId,
+    userId: invocation.request.user.qq,
+  });
+  const registerResultArtifacts = (invocation: CapabilityInvocation, result: ExecutionResult): ExecutionResult => {
+    const scope = artifactScope(invocation);
+    const outputs = (result.outputs || []).map((output) => {
+      if (!['file', 'image', 'video'].includes(output.kind) || !output.url) return output;
+      const uploaded = uploadedLocalByUrl.get(output.url);
+      if (!uploaded) return output;
+      try {
+        const artifact = managedArtifacts.register({
+          scope,
+          localPath: uploaded.localPath,
+          publicUrl: output.url,
+          name: String(output.meta?.name || uploaded.name),
+          mime: output.mime || uploaded.mime,
+          source: invocation.step.capability,
+        });
+        return { ...output, meta: { ...(output.meta || {}), artifactId: artifact.artifactId } };
+      } catch {
+        return output;
+      }
+    });
+    return { ...result, outputs };
+  };
   const metrics = options.metricsFilePath
     ? createMetrics({ store: createFileMetricsStore(options.metricsFilePath) })
     : undefined;
 
   const getRegistry = createReloadableRegistry(() => toCapabilityOverrides(getConfig().llm.capabilityOverrides));
   const client = createModelClient({ nodes: () => toModelNodes(getConfig()), registry: getRegistry, getNodeConcurrency: (i) => getConfig().llm.apiKeys?.[i]?.concurrency });
+  const memoryService = new ChatMemoryService({
+    rootDir: getConfig().orchestration.memory.dataDir || path.join(dataDir, 'memory'),
+    getConfig,
+    logger,
+    summarize: async ({ namespace, messages }) => {
+      const cfg = getConfig();
+      const transcript = messages.map((item) => (item.role === 'assistant' ? '助手' : '用户') + '(' + item.userId + '): ' + item.text).join('\n');
+      const prompt = '你是会话记忆摘要器。请把以下聊天记录压缩成不超过 300 字的事实摘要，保留人物、偏好、未完成事项和重要上下文；不同 QQ 号是不同用户，不能合并；只输出摘要文本。\n范围：' + namespace.kind + '\n聊天记录：\n' + transcript.slice(0, 12000);
+      const result = await client.chat(Number(cfg.llm.chatNodeIndex || 0), {
+        model: String(cfg.llm.chatModel || ''),
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.1,
+        maxTokens: 500,
+      });
+      return String(result.text || '').trim();
+    },
+  });
   // 注意别传 registry：createBotApp 一旦收到实例就退化成 `() => 该实例`，
   // 把它自己那条可热重载的分支整个绕过去。BotEngine 判断「这个模型支不支持生图/视频」
   // 用的就是这份注册表，于是用户在面板上加了能力覆盖、提示热重载成功，
@@ -279,16 +364,373 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     adapter.connect();
   };
 
+  let jobRecoveryService: JobRecoveryService | undefined;
+  let approvalPersistQueue: Promise<void> = Promise.resolve();
+  const approvalFile = process.env.MIOBOT_APPROVAL_FILE || path.join(dataDir, 'orchestration-approvals.json');
+  let initialApprovals: any[] = [];
+  try {
+    const raw = readFileSync(approvalFile, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed?.approvals)) initialApprovals = parsed.approvals;
+  } catch { /* first run or corrupt file: start empty */ }
+
+  const approvalRuntime = new ApprovalRuntime({
+    adminQqIds: () => getConfig().orchestration.approval.adminQqIds,
+    ownerQqIds: () => getConfig().bot.ownerQQs,
+    allowGroupReply: () => getConfig().orchestration.approval.allowGroupReply,
+    allowedGroupIds: () => getConfig().orchestration.approval.allowedGroupIds,
+    sendPrivate: async (qq, text) => {
+      const result = await adapter.sendPrivateText(qq, text);
+      return { success: result.success, messageId: result.messageId, uncertain: result.uncertain, error: result.error };
+    },
+    sendGroup: async (groupId, text) => {
+      const result = await adapter.sendGroupText(groupId, text);
+      return { success: result.success, messageId: result.messageId, uncertain: result.uncertain, error: result.error };
+    },
+    logger,
+    initialApprovals,
+    maxPendingPerUser: () => getConfig().orchestration.approval.maxPendingPerUser,
+    maxPendingGlobal: () => getConfig().orchestration.approval.maxPendingGlobal,
+    resendIntervalMs: () => getConfig().orchestration.approval.resendIntervalMs,
+    maxResend: () => getConfig().orchestration.approval.maxResend,
+    onDecision: (approval) => jobRecoveryService?.onDecision(approval),
+    audit: (record) => auditService.append(record as any),
+    persist: (approvals) => {
+      const payload = JSON.stringify({ approvals }, null, 2);
+      const tempFile = approvalFile + '.tmp';
+      approvalPersistQueue = approvalPersistQueue
+        .then(async () => {
+          await fs.mkdir(path.dirname(approvalFile), { recursive: true });
+          await fs.writeFile(tempFile, payload, 'utf8');
+          await fs.rename(tempFile, approvalFile);
+        })
+        .catch(() => undefined);
+    },
+  });
+
+  const approvalActionFile = process.env.MIOBOT_APPROVAL_ACTION_FILE || path.join(dataDir, 'orchestration-approval-actions.jsonl');
+  const approvalActionConsumer = new ApprovalActionConsumer({
+    actionFile: approvalActionFile,
+    processedFile: path.join(dataDir, 'orchestration-approval-actions.done.json'),
+    logger,
+    onAction: async (action) => {
+      approvalRuntime.decideFromPanel(action.code, action.decision, action.actor || 'panel');
+    },
+  });
+  void approvalActionConsumer.start().catch((error) => logger.warn('审批面板文件监听启动失败', { error: String((error as Error)?.message || error) }));
+
+  const problemReporter = new ProblemReporter({
+    adminQqIds: () => getConfig().orchestration.approval.adminQqIds,
+    ownerQqIds: () => getConfig().bot.ownerQQs,
+    sendPrivate: async (qq, text) => {
+      const result = await adapter.sendPrivateText(qq, text);
+      return { success: result.success, messageId: result.messageId, uncertain: result.uncertain, error: result.error };
+    },
+    logger,
+  });
+
+  const traceFile = process.env.MIOBOT_TRACE_FILE || path.join(dataDir, 'orchestration-traces.jsonl');
+  const traceWriter = new OrchestrationTraceWriter(traceFile, 2 * 1024 * 1024, {
+    retentionDays: () => getConfig().orchestration.audit.retentionDays,
+    maxEntries: 100000,
+    maxBytes: 2 * 1024 * 1024,
+  });
+
+  const pendingJobFile = process.env.MIOBOT_PENDING_JOB_FILE || path.join(dataDir, 'orchestration-pending-jobs.json');
+  let initialPendingJobs: any[] = [];
+  try {
+    const parsed = JSON.parse(readFileSync(pendingJobFile, 'utf8'));
+    if (Array.isArray(parsed?.jobs)) initialPendingJobs = parsed.jobs;
+  } catch { /* first run */ }
+  let pendingJobPersistQueue: Promise<void> = Promise.resolve();
+  const pendingJobStore = new PendingJobStore((jobs) => {
+    const payload = JSON.stringify({ jobs }, null, 2);
+    const tempFile = pendingJobFile + '.tmp';
+    pendingJobPersistQueue = pendingJobPersistQueue
+      .then(async () => {
+        await fs.mkdir(path.dirname(pendingJobFile), { recursive: true });
+        await fs.writeFile(tempFile, payload, 'utf8');
+        await fs.rename(tempFile, pendingJobFile);
+      })
+      .catch(() => undefined);
+  });
+  pendingJobStore.restore(initialPendingJobs);
+  const runRetention = async (): Promise<void> => {
+    const retentionDays = getConfig().orchestration.audit.retentionDays;
+    const protectedApprovals = pendingJobStore.listActive().map((job) => job.approvalId).filter(Boolean) as string[];
+    await Promise.allSettled([
+      auditService.prune(),
+      traceWriter.pruneNow(),
+      memoryService.prune(),
+    ]);
+    approvalRuntime.pruneTerminal(retentionDays, Date.now(), protectedApprovals);
+  };
+  const retentionTimer = setInterval(() => { void runRetention(); }, 24 * 60 * 60 * 1000);
+  retentionTimer.unref?.();
+  void runRetention();
+
+  const sentMessages = createSentMessageTracker();
+  const canvasStore = new CanvasStore({
+    filePath: process.env.MIOBOT_CANVAS_STATE_FILE || process.env.MIOBOT_CANVAS_STATE_PATH || path.join(dataDir, 'canvas-state.json'),
+    maxHistory: () => getConfig().canvas?.maxHistory,
+  });
+
+
+  const runtimeAdapterOptions = {
+    app,
+    reply: adapter,
+    getConfig,
+    featureGate,
+    generatedFileDir,
+    uploadFile: uploadGeneratedFile,
+    browserRenderer,
+    fileIndex,
+    downloadFile: downloadIncomingFile,
+    logger,
+  } as BotRuntimeOptions;
+  const orchestrationHandlers = new Map<string, CapabilityHandler>();
+  const handlerFailure = (invocation: any, message: string) => ({
+    jobId: invocation.plan.planId,
+    stepId: invocation.step.id,
+    status: /失败|未启用|缺少|不可用|不支持|不存在|异常|failed|failure|error|timeout|unsupported|not supported/i.test(message) ? 'failed' as const : 'needs_input' as const,
+    outputs: [],
+    error: message,
+    diagnostics: { question: message },
+  });
+  const runOwnerPlan = async (invocation: any, allowedActions: Set<string>) => {
+    const action = String(invocation.step.args?.ownerAction || '');
+    if (!allowedActions.has(action)) return handlerFailure(invocation, '配置/权限操作失败：不支持的 action');
+    let command: OwnerCommand | null = null;
+    if (action === 'switchModel') command = { command: 'switchModel', code: String(invocation.step.args?.code || '') };
+    else if (action === 'ttsOn') command = { command: 'ttsOn' };
+    else if (action === 'ttsOff') command = { command: 'ttsOff' };
+    else if (action === 'switchTtsVoice') command = { command: 'switchTtsVoice', index: Math.max(1, Math.trunc(Number(invocation.step.args?.index) || 1)) };
+    else if (action === 'blacklist') command = { command: 'blacklist', targetUserId: String(invocation.step.args?.targetUserId || '') };
+    else if (action === 'whitelist') command = { command: 'whitelist', targetUserId: String(invocation.step.args?.targetUserId || '') };
+    if (!command) return handlerFailure(invocation, '配置/权限操作失败：不支持的 action');
+    const text = await handleOwnerCommand(command, {
+      chatType: invocation.request.chat.type,
+      groupId: invocation.request.chat.groupId,
+      userId: invocation.request.user.qq,
+    }, { getConfig, store });
+    if (!text) return handlerFailure(invocation, '主人命令执行失败：没有返回结果');
+    return {
+      jobId: invocation.plan.planId,
+      stepId: invocation.step.id,
+      status: 'success' as const,
+      outputs: [{ kind: 'text' as const, text, priority: 10, mergeable: true }],
+    };
+  };
+  orchestrationHandlers.set('owner.model.list', new RuntimeAdapterCapabilityHandler(async (invocation) => {
+    const text = await handleOwnerCommand({ command: 'modelList' }, {
+      chatType: invocation.request.chat.type,
+      groupId: invocation.request.chat.groupId,
+      userId: invocation.request.user.qq,
+    }, { getConfig, store });
+    if (!text) return handlerFailure(invocation, '模型列表失败：不可用');
+    return {
+      jobId: invocation.plan.planId,
+      stepId: invocation.step.id,
+      status: 'success' as const,
+      outputs: [{ kind: 'text' as const, text, priority: 10, mergeable: true }],
+    };
+  }));
+  orchestrationHandlers.set('config.update', new RuntimeAdapterCapabilityHandler(async (invocation) => (
+    runOwnerPlan(invocation, new Set(['switchModel', 'ttsOn', 'ttsOff', 'switchTtsVoice']))
+  )));
+  orchestrationHandlers.set('permission.update', new RuntimeAdapterCapabilityHandler(async (invocation) => (
+    runOwnerPlan(invocation, new Set(['blacklist', 'whitelist']))
+  )));  orchestrationHandlers.set('code.render', new RuntimeAdapterCapabilityHandler(async (invocation) => {
+    const outcome = await handleCodeRenderRequest(runtimeAdapterOptions, invocation.request.text, invocation.request.chat.type, invocation.request.chat.groupId, invocation.request.user.qq, `orchestration:${invocation.request.requestId}`);
+    if (outcome.message) return handlerFailure(invocation, outcome.message);
+    return registerResultArtifacts(invocation, executionFromBotResult(invocation, outcome.result));
+  }));
+  orchestrationHandlers.set('browser.render', new RuntimeAdapterCapabilityHandler(async (invocation) => {
+    const outcome = await handleWebScreenshotRequest(runtimeAdapterOptions, invocation.request.text, invocation.request.chat.type, invocation.request.chat.groupId, invocation.request.user.qq);
+    if (outcome.message) return handlerFailure(invocation, outcome.message);
+    return registerResultArtifacts(invocation, executionFromBotResult(invocation, outcome.result));
+  }));
+  orchestrationHandlers.set('file.generate', new RuntimeAdapterCapabilityHandler(async (invocation) => {
+    const event = { message_id: '', group_id: invocation.request.chat.groupId, user_id: invocation.request.user.qq, message: [], raw_message: invocation.request.text } as unknown as NapcatMessageEvent;
+    const decision = { kind: 'command', command: 'fileGenerate', args: invocation.request.text, commandText: invocation.request.text } as any;
+    const outcome = await handleFileGenerateCommand(runtimeAdapterOptions, decision, event, invocation.request.chat.type, `orchestration:${invocation.request.requestId}`, invocation.request.user.qq);
+    if (outcome.message) return handlerFailure(invocation, outcome.message);
+    return registerResultArtifacts(invocation, executionFromBotResult(invocation, outcome.result));
+  }));
+  orchestrationHandlers.set('owner.recall', new OwnerRecallCapabilityHandler({
+    tracker: sentMessages,
+    deleteMessage: (id) => adapter.deleteMessage(id),
+  }));
+  orchestrationHandlers.set('canvas.gallery', new CanvasGalleryCapabilityHandler(canvasStore));
+  orchestrationHandlers.set('image.stitch', new ImageStitchCapabilityHandler({
+    getConfig,
+    generatedFileDir,
+    uploadFile: uploadGeneratedFile,
+  }));
+  orchestrationHandlers.set('file.delete', new FileDeleteCapabilityHandler(managedArtifacts, (record) => auditService.append(record as any)));
+  orchestrationHandlers.set('file.list', new RuntimeAdapterCapabilityHandler(async (invocation) => {
+    const files = fileIndex?.list(invocation.request.chat.type, invocation.request.chat.groupId, invocation.request.user.qq, 10) || [];
+    const artifacts = managedArtifacts.list(artifactScope(invocation), 10);
+    const lines = [
+      ...files.map((item: any) => `- ${item.code || item.fileId || '-'}: ${item.name || '文件'}`),
+      ...artifacts.map((item) => `- ${item.artifactId}: ${item.name}`),
+    ];
+    const text = lines.length
+      ? ['最近文件:', ...lines].join('\n')
+      : '当前没有可读取的文件记录。';
+    return {
+      jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success',
+      outputs: [{ kind: 'text', text, priority: 10, mergeable: true }],
+    };
+  }));
+  orchestrationHandlers.set('file.read', new RuntimeAdapterCapabilityHandler(async (invocation) => {
+    const event = { message_id: '', group_id: invocation.request.chat.groupId, user_id: invocation.request.user.qq, message: [], raw_message: invocation.request.text } as unknown as NapcatMessageEvent;
+    const baseFiles = (invocation.request.attachments || []).filter((item: any) => item.kind === 'file').map((item: any) => ({
+      type: 'file', file: item.file || item.ref, url: item.url, name: item.name || 'file', size: Number(item.size || 0), mime: String(item.mime || 'application/octet-stream'),
+    })) as FileReference[];
+    const decision = { kind: 'command', command: 'fileRead', args: invocation.request.text, commandText: invocation.request.text } as any;
+    const outcome = await handleFileReadCommand(runtimeAdapterOptions, decision, event, invocation.request.chat.type, invocation.request.user.qq, undefined, null, baseFiles, `orchestration:${invocation.request.requestId}`);
+    if (outcome.message) return handlerFailure(invocation, outcome.message);
+    return registerResultArtifacts(invocation, executionFromBotResult(invocation, outcome.result));
+  }));
+
+  const orchestrationEnforcer = new OrchestrationEnforcer({
+    getConfig,
+    app,
+    client,
+    approvalRuntime,
+    pendingJobs: pendingJobStore,
+    voiceService,
+    logger,
+    handlers: orchestrationHandlers,
+    trace: (trace) => traceWriter.append(trace),
+  });
+
+  const memoryActionFile = process.env.MIOBOT_MEMORY_ACTION_FILE || path.join(dataDir, 'orchestration-memory-actions.jsonl');
+  const memoryResultFile = process.env.MIOBOT_MEMORY_RESULT_FILE || path.join(dataDir, 'orchestration-memory-results.json');
+  const memoryActionConsumer = new MemoryActionConsumer({
+    actionFile: memoryActionFile,
+    resultFile: memoryResultFile,
+    processedFile: path.join(dataDir, 'orchestration-memory-actions.done.json'),
+    logger,
+    onAction: async (action) => {
+      const botId = String(action.botId || getConfig().bot.botQqId || adapter.selfQqId || 'unknown');
+      if (action.type === 'list') {
+        const namespaces = (await memoryService.listNamespaces()).filter((item) =>
+          (!action.botId || String(item.namespace.botId) === String(action.botId))
+          && (!action.groupId || String(item.namespace.groupId || '') === String(action.groupId))
+          && (!action.userId || String(item.namespace.userId || '') === String(action.userId)));
+        return { ok: true, namespaces };
+      }
+      if (action.type === 'search') {
+        if (!action.chatType || !action.userId) throw new Error('memory_search_scope_required');
+        const result = await memoryService.retrieve({
+          botId,
+          chatType: action.chatType,
+          groupId: action.groupId,
+          userId: String(action.userId),
+          query: String(action.query || ''),
+        });
+        return { ok: true, result };
+      }
+      if (action.type === 'clear_group') {
+        if (!action.groupId) throw new Error('memory_group_id_required');
+        await memoryService.clearNamespace({ kind: 'group', botId, groupId: String(action.groupId) });
+        return { ok: true, cleared: 'group_and_personal_group' };
+      }
+      if (action.type === 'clear_user') {
+        if (!action.userId) throw new Error('memory_user_id_required');
+        const removed = await memoryService.clearUser(botId, String(action.userId), action.groupId);
+        return { ok: true, removed };
+      }
+      if (action.type === 'prune') return { ok: true, ...(await memoryService.prune()) };
+      throw new Error('memory_action_unknown');
+    },
+  });
+  void memoryActionConsumer.start().catch((error) => logger.warn('记忆管理消费者启动失败', { error: String((error as Error)?.message || error) }));
+  const capabilityTestActionFile = process.env.MIOBOT_CAPABILITY_TEST_ACTION_FILE || path.join(dataDir, 'orchestration-capability-test-actions.jsonl');
+  const capabilityTestResultFile = process.env.MIOBOT_CAPABILITY_TEST_RESULT_FILE || path.join(dataDir, 'orchestration-capability-test-results.json');
+  const capabilityTestConsumer = new CapabilityTestActionConsumer({
+    actionFile: capabilityTestActionFile,
+    resultFile: capabilityTestResultFile,
+    processedFile: path.join(dataDir, 'orchestration-capability-test-actions.done.json'),
+    logger,
+    onAction: (action) => orchestrationEnforcer.testCapability(action),
+  });
+  void capabilityTestConsumer.start().catch((error) => logger.warn('能力测试消费者启动失败', { error: String((error as Error)?.message || error) }));
   const runtime = createBotMessageRuntime({
     app,
     reply: adapter,
     getConfig: () => { syncNapcat(); return getConfig(); },
     selfId: () => adapter.selfQqId || undefined,
+    sentMessages,
     botName: options.botName || 'Miobot',
     syncImagesToGallery: canvasGallerySync.syncImages,
     prepareInputImages,
     logger,
     // 群聊上下文：@bot 时通过 napcat get_group_msg_history 拉取最近群聊记录。
+    handleApprovalReply: (input) => approvalRuntime.handleReply(input),
+    reportProblem: (input) => problemReporter.report(input),
+    loadMemoryContext: async (input) => {
+      const botId = String(getConfig().bot.botQqId || adapter.selfQqId || 'unknown');
+      const result = await memoryService.retrieve({
+        botId,
+        chatType: input.chatType,
+        groupId: input.groupId === undefined ? undefined : String(input.groupId),
+        userId: String(input.userId),
+        query: input.query,
+      });
+      const voiceScope = {
+        chatType: input.chatType,
+        groupId: input.groupId === undefined ? undefined : String(input.groupId),
+        userId: String(input.userId),
+      };
+      const voiceCandidates = voiceService.listCandidates(voiceScope);
+      const voiceContext = voiceCandidates.length ? voiceService.formatCandidates(voiceCandidates) : '';
+      return [result.context, voiceContext].filter(Boolean).join('\n\n') || undefined;
+    },
+    ingestMemory: async (input) => {
+      const botId = String(getConfig().bot.botQqId || adapter.selfQqId || 'unknown');
+      await memoryService.ingest({
+        botId,
+        chatType: input.chatType,
+        groupId: input.groupId === undefined ? undefined : String(input.groupId),
+        userId: String(input.userId),
+        authorName: input.authorName,
+        role: input.role,
+        text: input.text,
+        messageId: input.messageId === undefined ? undefined : String(input.messageId),
+      });
+    },    enforceOrchestration: (input) => orchestrationEnforcer.handle(input),
+    commandOrchestration: async (input) => {
+      const plan = buildCommandIntentPlan({
+        requestId: `cmd_${Date.now()}`,
+        command: input.command,
+        args: input.args,
+        commandText: input.commandText,
+      });
+      if (!plan) return { handled: false, reason: 'command_not_mapped' };
+      return orchestrationEnforcer.handle({
+        text: input.text || input.args || '',
+        chatType: input.chatType,
+        groupId: input.groupId,
+        userId: input.userId,
+        images: input.images,
+        files: input.files,
+        groupContext: input.groupContext,
+        sessionId: input.sessionId,
+        plan,
+      });
+    },
+    shadowOrchestration: async (input) => {
+      await runShadowOrchestration({
+        ...input,
+        config: getConfig(),
+        client,
+        logger,
+        groupContext: input.groupContext,
+      });
+    },
     fetchGroupHistory: async (groupId, anchorMessageId, count): Promise<NapcatHistoryMessage[]> => {
       try {
         const resp = await adapter.callAction('get_group_msg_history', { group_id: groupId, message_id: anchorMessageId, count });
@@ -339,8 +781,12 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     deleteMessage: (messageId) => adapter.deleteMessage(messageId),
     downloadFile: downloadIncomingFile,
     fileParseLimits: DEFAULT_FILE_PARSE_LIMITS,
-    voice: async (text) => {
-      const tts = getConfig().bot.tts;
+    voice: async (text, voiceCtx) => {
+      const tts = voiceService.effectiveTts(getConfig().bot.tts, {
+        chatType: voiceCtx.chatType,
+        groupId: voiceCtx.groupId === undefined ? undefined : String(voiceCtx.groupId),
+        userId: String(voiceCtx.userId || ''),
+      });
       if (!shouldUseTts(tts, text)) return null;
       let speakText = text;
       const pre = tts.preprocess;
@@ -362,6 +808,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         return audio.file;
       } catch (error) {
         logger.warn('tts synthesize failed', { error: String((error as { message?: string })?.message || error) });
+        void problemReporter.report({ kind: 'tts-synthesize-error', error, chatType: 'private', message: 'TTS 合成失败' });
         return null;
       }
     },
@@ -371,10 +818,58 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     },
   });
   runtime.attach(adapter);
+  const waitForAdapterConnected = async (timeoutMs = 60000): Promise<void> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!adapter.getConnectionSnapshot().connected) {
+      if (Date.now() >= deadline) throw new Error('napcat_not_connected_for_job_recovery');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  };
+  const resumePersistedJob = async (job: PendingJobRecord): Promise<void> => {
+    await waitForAdapterConnected();
+    const chat = job.originalRequest?.chat;
+    if (!chat?.type || !chat.userId) throw new Error('recovered_job_missing_chat_context');
+    const botQq = String(getConfig().bot.botQqId || adapter.selfQqId || '');
+    const chatType = chat.type;
+    const text = '继续';
+    const rawMessage = chatType === 'group'
+      ? (botQq ? `[CQ:at,qq=${botQq}] ${text}` : text)
+      : text;
+    const message = chatType === 'group'
+      ? [
+          ...(botQq ? [{ type: 'at', data: { qq: botQq } }] : []),
+          { type: 'text', data: { text: ' ' + text } },
+        ]
+      : [{ type: 'text', data: { text } }];
+    await runtime.handleMessageEvent({
+      post_type: 'message',
+      message_type: chatType,
+      group_id: chat.groupId === undefined ? undefined : Number(chat.groupId) || chat.groupId,
+      user_id: Number(chat.userId) || chat.userId,
+      self_id: Number(botQq) || botQq || undefined,
+      message_id: 'recover_' + String(job.jobId || job.key) + '_' + Date.now(),
+      time: Math.floor(Date.now() / 1000),
+      raw_message: rawMessage,
+      message,
+      sender: { user_id: chat.userId },
+    } as any);
+  };
+  jobRecoveryService = new JobRecoveryService({
+    jobs: pendingJobStore,
+    approvals: approvalRuntime,
+    resume: resumePersistedJob,
+    logger,
+  });
 
-  adapter.on('open', () => { logger.info('bot connected to napcat', { wsUrl: nap.wsUrl }); });
+  adapter.on('open', () => {
+    logger.info('bot connected to napcat', { wsUrl: nap.wsUrl });
+    jobRecoveryService?.start();
+  });
   adapter.on('close', (data) => { logger.warn('napcat connection closed', data as Record<string, unknown>); });
-  adapter.on('error', (error) => { logger.error('napcat connection error', { error: String((error as { message?: string })?.message || error) }); });
+  adapter.on('error', (error) => {
+    logger.error('napcat connection error', { error: String((error as { message?: string })?.message || error) });
+    void problemReporter.report({ kind: 'napcat-adapter-error', error, chatType: 'private', message: 'Napcat 连接异常' });
+  });
 
   // 会话记忆空闲清理：按 sessionTtlMinutes 周期性清理超时会话，避免长期运行内存堆积。
   const sessionTtlMs = Math.max(0, (config.llm.sessionTtlMinutes ?? 0) * 60_000);
@@ -399,7 +894,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   });
   adapter.connect();
 
-  return { adapter, getConfig, stop: () => { if (cleanupTimer) clearInterval(cleanupTimer); adapter.disconnect(); } };
+  return { adapter, getConfig, stop: () => { if (cleanupTimer) clearInterval(cleanupTimer); clearInterval(retentionTimer); auditService.stop(); approvalActionConsumer.stop(); capabilityTestConsumer.stop(); memoryActionConsumer.stop(); adapter.disconnect(); } };
 }
 
 /**

@@ -246,3 +246,40 @@ test('config regression: getDefaultPrompts 只吐还能编辑的提示词', () =
   for (const alive of ['enhancePromptTemplate', 'interrogatePromptTemplate', 'safeRewritePromptTemplate', 'freeModePromptTemplate'])
     assert.equal(typeof prompts[alive], 'string', `${alive} 还在用`);
 });
+
+test('config regression: v3 orchestration settings survive export/import', () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.externalProviders.enabled = true;
+  cfg.orchestration.externalProviders.allowlist = ['suno-official'];
+  cfg.orchestration.voice.enabled = true;
+  cfg.orchestration.voice.allowedScopes = 'group';
+  cfg.orchestration.voice.userCanChange = false;
+  cfg.orchestration.memory.enabled = true;
+  cfg.orchestration.memory.dataDir = '/var/lib/miobot-v2/memory';
+  cfg.orchestration.memory.embeddingModel = 'text-embedding-3-small';
+  cfg.orchestration.memory.embeddingDimensions = 1024;
+  cfg.orchestration.memory.userGlobalProfileEnabled = true;
+  cfg.orchestration.suno.enabled = true;
+  cfg.orchestration.suno.requestMode = 'v6';
+  cfg.orchestration.suno.baseUrl = 'https://api.suno.example';
+  cfg.orchestration.suno.apiKey = 'suno-secret-key';
+  cfg.orchestration.suno.callbackUrl = 'https://bot.example/api/orchestration/suno/callback/callback-secret';
+  cfg.orchestration.suno.callbackSecret = 'callback-secret';
+  cfg.orchestration.suno.maxConcurrent = 2;
+  cfg.orchestration.suno.quotaPerUserPerDay = 4;
+  cfg.orchestration.permissions.hardDenyEnabled = true;
+  cfg.orchestration.permissions.hardDenyCapabilities = ['file.delete'];
+  cfg.orchestration.audit.enabled = true;
+  cfg.orchestration.audit.retentionDays = 90;
+
+  const normalized = normalizeConfig(cfg);
+  const roundTrip = importConfig(exportConfig(normalized, { exportedAt: '2026-05-28T02:00:00.000Z' }));
+  assert.equal(roundTrip.sourceFormat, 'export-wrapper-v2');
+  assert.deepEqual(roundTrip.config.orchestration, normalized.orchestration);
+  assert.equal(roundTrip.config.orchestration.suno.apiKey, 'suno-secret-key');
+  assert.equal(roundTrip.config.orchestration.suno.callbackSecret, 'callback-secret');
+  assert.equal(roundTrip.config.orchestration.memory.userGlobalProfileEnabled, true);
+  assert.equal(roundTrip.config.orchestration.permissions.hardDenyCapabilities[0], 'file.delete');
+});

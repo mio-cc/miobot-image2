@@ -1,4 +1,4 @@
-﻿import { inferComfyUiPromptPolicy, type AppConfig, type ApiNode, type ComfyUiProfile, type ComfyUiPromptPolicy, type ComfyUiTransformConfig } from '../../../packages/config/src/index.js';
+import { inferComfyUiPromptPolicy, type AppConfig, type ApiNode, type ComfyUiProfile, type ComfyUiPromptPolicy, type ComfyUiTransformConfig } from '../../../packages/config/src/index.js';
 import type { ImageArtifact, ImageResult, ModelClient } from '../../../packages/model/src/index.js';
 import { runComfyUiWorkflow } from '../../../packages/comfyui/src/index.js';
 import { stitchImages } from '../../../packages/image-compose/src/index.js';
@@ -207,10 +207,53 @@ export function sanitizeComfyUiParams(profile: ComfyUiProfile, raw: Record<strin
   return sanitizeParams(profile, raw, prompt, count, maxBatchSize);
 }
 
-function fallbackParams(profile: ComfyUiProfile, prompt: string, count: number | undefined, maxBatchSize: number): Record<string, unknown> {
-  return sanitizeParams(profile, { ...(profile.defaults || {}), prompt }, prompt, count, maxBatchSize);
+function fixedParams(profile: ComfyUiProfile, prompt: string): Record<string, unknown> {
+  const policy = promptPolicyFor(profile);
+  const out: Record<string, unknown> = { ...(profile.defaults || {}) };
+  out.prompt = sanitizePromptText(prompt, policy) || sanitizePromptText(out.prompt, policy);
+  const rawNegative = profile.defaults?.negativePrompt !== undefined ? profile.defaults.negativePrompt : policy.defaultNegativePrompt;
+  if (policy.supportsNegativePrompt && rawNegative !== undefined) out.negativePrompt = sanitizePromptText(rawNegative, policy);
+  else delete out.negativePrompt;
+  for (const key of ['promptG', 'promptL', 'clipLPrompt', 't5Prompt']) {
+    if (out[key] !== undefined) out[key] = sanitizePromptText(out[key], policy);
+  }
+  return out;
 }
 
+interface PromptEnhancementResult {
+  prompt: string;
+  source: 'model' | 'fallback';
+}
+function normalizePromptOutput(value: unknown): string {
+  let text = String(value ?? '').trim();
+  if (!text) return '';
+  const fence = String.fromCharCode(96).repeat(3);
+  if (text.startsWith(fence)) {
+    text = text.slice(fence.length).trim();
+    const end = text.lastIndexOf(fence);
+    if (end >= 0) text = text.slice(0, end).trim();
+  }
+  for (const prefix of ['final prompt:', 'positive prompt:', 'prompt:']) {
+    if (text.toLowerCase().startsWith(prefix)) text = text.slice(prefix.length).trim();
+  }
+  if (text.startsWith('"') && text.endsWith('"')) text = text.slice(1, -1).trim();
+  return text;
+}
+function renderPromptTemplate(template: string, profile: ComfyUiProfile, prompt: string): string {
+  const policy = promptPolicyFor(profile);
+  return String(template || '')
+    .replaceAll('{{userRequest}}', prompt.slice(0, 4000))
+    .replaceAll('{{profileName}}', profile.name || profile.id)
+    .replaceAll('{{modelFamily}}', policy.modelFamily)
+    .replaceAll('{{variant}}', policy.variant)
+    .replaceAll('{{promptSyntax}}', policy.promptSyntax)
+    .replaceAll('{{promptLanguage}}', policy.language)
+    .replaceAll('{{preferredFormat}}', policy.preferredFormat)
+    .replaceAll('{{promptPolicy}}', JSON.stringify(policy))
+    .replaceAll('{{maxPromptChars}}', String(policy.maxPromptChars))
+    .replaceAll('{{defaultNegativePrompt}}', policy.defaultNegativePrompt || '')
+    .replaceAll('{{promptNodeIds}}', JSON.stringify(profile.promptNodeIds || []));
+}
 function mergeTransformConfig(global: ComfyUiTransformConfig, profile: ComfyUiProfile): ComfyUiTransformConfig {
   const local = profile.transform || {};
   return {
@@ -224,54 +267,28 @@ function mergeTransformConfig(global: ComfyUiTransformConfig, profile: ComfyUiPr
   };
 }
 
-async function transformParams(options: ComfyUiGenerateOptions, profile: ComfyUiProfile, prompt: string, count: number | undefined, maxBatchSize: number): Promise<TransformResult> {
+async function enhancePrompt(options: ComfyUiGenerateOptions, profile: ComfyUiProfile, prompt: string): Promise<PromptEnhancementResult> {
   const cfg = options.getConfig();
   const transform = mergeTransformConfig(cfg.comfyuiTransform, profile);
-  const fallback = fallbackParams(profile, prompt, count, maxBatchSize);
-  if (!transform.enabled || !transform.model) return { params: fallback, source: 'fallback', confidence: 0 };
+  const raw = sanitizePromptText(prompt, promptPolicyFor(profile));
+  if (!raw) return { prompt: '', source: 'fallback' };
+  if (!transform.enabled || !transform.model) return { prompt: raw, source: 'fallback' };
   try {
-    const policy = promptPolicyFor(profile);
-    const parameterKeys = Object.keys(profile.parameterMap || {});
-    if (profile.lora) parameterKeys.push('loraId', 'loraStrength');
-    let renderedPrompt = String(transform.promptTemplate || '')
-      .replaceAll('{{userRequest}}', prompt.slice(0, 4000))
-      .replaceAll('{{profileName}}', profile.name || profile.id)
-      .replaceAll('{{modelFamily}}', policy.modelFamily)
-      .replaceAll('{{variant}}', policy.variant)
-      .replaceAll('{{promptSyntax}}', policy.promptSyntax)
-      .replaceAll('{{promptPolicy}}', JSON.stringify(policy))
-      .replaceAll('{{parameterKeys}}', JSON.stringify(parameterKeys))
-      .replaceAll('{{allowedEnums}}', JSON.stringify(collectAllowedEnums(profile)))
-      .replaceAll('{{defaults}}', JSON.stringify(profile.defaults || {}))
-      .replaceAll('{{constraints}}', JSON.stringify(profile.constraints || {}))
-      .replaceAll('{{maxBatchSize}}', String(maxBatchSize));
-    if (profile.lora) {
-      const loraCatalog = profile.lora.catalog.map((item) => ({
-        id: item.id,
-        description: item.description || '',
-        triggers: item.triggers || [],
-        defaultStrength: item.defaultStrength ?? 0.6,
-        minStrength: item.minStrength ?? 0,
-        maxStrength: item.maxStrength ?? 2,
-      }));
-      renderedPrompt += '\n\n【LoRA 选择规则】\n用户请求是唯一依据。loraId 只能从以下目录中选择；不需要特定风格时默认 none，不要为了更精细默认开启 LoRA。只有提示词明确需要某种风格、题材或触发词时才选择对应 LoRA，并把 loraStrength 设为该目录允许的强度。\nLoRA 目录：' + JSON.stringify(loraCatalog) + '\n请只在 parameterKeys 包含时输出 loraId 和 loraStrength。';
-    }
+    const renderedPrompt = renderPromptTemplate(transform.promptTemplate, profile, raw);
     const result = await options.client.chat(transform.nodeIndex, {
       model: transform.model,
       messages: [{ role: 'user', content: renderedPrompt }],
       timeoutMs: transform.timeoutMs,
       maxTokens: transform.maxTokens,
     });
-    const parsed = parseJsonObject(String(result.text || ''));
-    if (!parsed) throw new Error('参数转化模型没有返回 JSON');
-    const confidence = Math.max(0, Math.min(1, Number((parsed as any).confidence) || 0.8));
-    return { params: sanitizeParams(profile, parsed, prompt, count, maxBatchSize, { trustModelSize: true }), source: 'model', confidence };
+    const enhanced = sanitizePromptText(normalizePromptOutput(result.text), promptPolicyFor(profile));
+    if (!enhanced) throw new Error('ComfyUI prompt enhancement returned empty text');
+    return { prompt: enhanced, source: 'model' };
   } catch (error) {
-    options.logger?.warn('ComfyUI 参数转化失败，使用后台默认参数兜底', { error: String((error as Error)?.message || error) });
-    return { params: fallback, source: 'fallback', confidence: 0 };
+    options.logger?.warn('ComfyUI prompt enhancement failed; using raw prompt', { error: String((error as Error)?.message || error) });
+    return { prompt: raw, source: 'fallback' };
   }
 }
-
 function comfyQueueKey(baseUrl: string): string {
   try {
     const parsed = new URL(String(baseUrl || '').trim());
@@ -286,6 +303,10 @@ function findProfile(node: ApiNode, profileId: string): ComfyUiProfile | undefin
   return profiles.find((item) => item.id === profileId || item.name === profileId) || profiles[0];
 }
 
+export async function enhanceComfyUiPrompt(options: ComfyUiGenerateOptions, profile: ComfyUiProfile, prompt: string): Promise<{ prompt: string; source: 'model' | 'fallback' }> {
+  return enhancePrompt(options, profile, prompt);
+}
+
 export async function generateComfyUiImages(options: ComfyUiGenerateOptions, req: ComfyUiGenerateRequest): Promise<ImageResult> {
   const startedAt = Date.now();
   const cfg = options.getConfig();
@@ -294,27 +315,27 @@ export async function generateComfyUiImages(options: ComfyUiGenerateOptions, req
   const comfyConfig = node.comfyui;
   const profile = findProfile(node, req.profileId);
   if (!profile) throw new Error('ComfyUI 节点没有可用 profile');
-  const transformed = await transformParams(options, profile, req.prompt, req.count, comfyConfig.maxBatchSize);
+  const enhanced = await enhancePrompt(options, profile, req.prompt);
+  const fixed = fixedParams(profile, enhanced.prompt);
   const policy = promptPolicyFor(profile);
   options.logger?.info('ComfyUI 参数准备完成', {
     profile: profile.id,
     modelFamily: policy.modelFamily,
     variant: policy.variant,
     promptSyntax: policy.promptSyntax,
-    source: transformed.source,
-    confidence: transformed.confidence,
-    promptCount: String(transformed.params.prompt || '').length,
-    promptPreview: String(transformed.params.prompt || '').slice(0, 800),
-    negativePreview: String(transformed.params.negativePrompt || '').slice(0, 300),
-    width: transformed.params.width,
-    height: transformed.params.height,
-    steps: transformed.params.steps,
-    cfg: transformed.params.cfg,
-    sampler: transformed.params.sampler,
-    scheduler: transformed.params.scheduler,
-    shift: transformed.params.shift,
-    seed: transformed.params.seed,
-    batchSize: transformed.params.batchSize,
+    source: enhanced.source,
+    promptCount: String(fixed.prompt || '').length,
+    promptPreview: String(fixed.prompt || '').slice(0, 800),
+    negativePreview: String(fixed.negativePrompt || '').slice(0, 300),
+    width: fixed.width,
+    height: fixed.height,
+    steps: fixed.steps,
+    cfg: fixed.cfg,
+    sampler: fixed.sampler,
+    scheduler: fixed.scheduler,
+    shift: fixed.shift,
+    seed: fixed.seed,
+    batchSize: fixed.batchSize,
   });
   const queueStartedAt = Date.now();
   const queuedResult = await runInComfyUiQueue<ImageResult>(comfyQueueKey(node.baseUrl), {
@@ -335,7 +356,7 @@ export async function generateComfyUiImages(options: ComfyUiGenerateOptions, req
       apiKey: node.key,
       headers: node.headers,
       profile,
-      params: transformed.params,
+      params: fixed,
       node: comfyConfig,
       outputNodeId: profile.outputNodeId,
       maxImageBytes: 20 * 1024 * 1024,
@@ -351,9 +372,9 @@ export async function generateComfyUiImages(options: ComfyUiGenerateOptions, req
       totalMs: Date.now() - startedAt,
       imageCount: images.length,
       seed: result.seed,
-      width: transformed.params.width,
-      height: transformed.params.height,
-      batchSize: transformed.params.batchSize,
+      width: fixed.width,
+      height: fixed.height,
+      batchSize: fixed.batchSize,
     });
     let output = images;
     let outputMime = images[0].mime;

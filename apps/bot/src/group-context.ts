@@ -114,6 +114,12 @@ export function senderName(msg: NapcatHistoryMessage): string {
   return '用户';
 }
 
+export function senderIdentity(msg: NapcatHistoryMessage): string {
+  const name = senderName(msg);
+  const qq = String(msg.user_id ?? msg.sender?.user_id ?? '').trim();
+  return qq ? `${name} [QQ:${qq}]` : name;
+}
+
 export interface BuildGroupContextParams {
   messages: NapcatHistoryMessage[];
   anchorMessageId?: number | string;
@@ -140,7 +146,7 @@ export function buildGroupContext(params: BuildGroupContextParams): string {
     if (anchorStr && String(msg.message_id ?? '') === anchorStr) continue; // 触发的那条
     const text = formatHistoryMessageText(msg, options);
     if (!text) continue; // 空消息跳过
-    lines.push(`${senderName(msg)}: ${text}`);
+    lines.push(`${senderIdentity(msg)}: ${text}`);
   }
 
   if (!lines.length) return '';

@@ -151,7 +151,7 @@ test('reply strategy: single file ignores quote and at strategies to avoid unsup
   assert.deepEqual(client.calls[0].args, { groupId: 1000, fileUrl: 'https://example.test/a.pptx', fileName: 'a.pptx' });
 });
 
-test('reply strategy: file plus text sends only files and never sends text', async () => {
+test('reply strategy: file plus text keeps both in a mixed forward', async () => {
   const client = new FakeReplyClient();
   const engine = new ReplyStrategyEngine(client, { mixed: 'quote' });
   const result = await engine.replyMixed(groupContext, {
@@ -159,7 +159,8 @@ test('reply strategy: file plus text sends only files and never sends text', asy
     files: [{ file: 'https://example.test/a.pptx', name: 'a.pptx' }],
   }, 'quote');
   assert.equal(result.success, true);
-  assert.deepEqual(client.calls.map((call) => call.method), ['sendGroupFile']);
+  assert.deepEqual(client.calls.map((call) => call.method), ['sendGroupMixedForward']);
+  assert.deepEqual(client.calls[0].args.items.map((item) => item.kind), ['text', 'file']);
 });
 
 test('reply strategy: file plus image forces group mixed forward nodes', async () => {
@@ -253,4 +254,14 @@ test('reply strategy: long group forward is one outer forward with nested inner 
   assert.equal(client.calls[0].method, 'sendGroupNestedTextForward');
   assert.ok(client.calls[0].args.groups.length > 1);
   assert.match(client.calls[0].args.groups[0][0].content, /^\(1\/\d+\)/);
+});
+
+test('reply strategy: forward mixed results use nested mixed forward when supported', async () => {
+  const client = new FakeReplyClient();
+  client.sendGroupNestedMixedForward = (groupId, groups, botName) => client.record('sendGroupNestedMixedForward', { groupId, groups, botName }, { success: true, forwardId: 'nested-mixed', forwardIds: ['nested-mixed'] });
+  const engine = new ReplyStrategyEngine(client, { mixed: 'forward' });
+  const result = await engine.replyMixed(groupContext, { text: '成品', images: ['img1'], videos: ['vid1'] });
+  assert.equal(result.success, true);
+  assert.equal(client.calls[0].method, 'sendGroupNestedMixedForward');
+  assert.deepEqual(client.calls[0].args.groups.map((group) => group.map((item) => item.kind)), [['text'], ['image'], ['video']]);
 });

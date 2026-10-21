@@ -34,7 +34,8 @@ export function validateIntentPlan(
   const errors: string[] = [];
   if (!plan.planId) errors.push('planId_required');
   if (!plan.requestId) errors.push('requestId_required');
-  if (!Array.isArray(plan.steps) || plan.steps.length === 0) errors.push('steps_required');
+  const canClarify = Boolean(plan.needsClarification && String(plan.clarificationQuestion || '').trim());
+  if (!Array.isArray(plan.steps) || (plan.steps.length === 0 && !canClarify)) errors.push('steps_required');
   const maxSteps = Math.max(1, Math.trunc(Number(options.maxSteps) || 1000));
   if (plan.steps.length > maxSteps) errors.push(`too_many_steps:${plan.steps.length}>${maxSteps}`);
   const ids = new Set<string>();

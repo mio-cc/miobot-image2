@@ -112,7 +112,7 @@ test('formatForwardMessages: 文本拼接 + 图片占位', () => {
     { user_id: 2, sender: { nickname: 'Bob' }, message: [{ type: 'image', data: { url: 'http://x/a.png' } }] },
   ];
   const out = formatForwardMessages(nodes);
-  assert.ok(out.includes('Alice: 你好'));
+  assert.ok(out.includes('Alice [QQ:1]: 你好'));
   assert.ok(out.includes('[图片]')); // includeImages=false 占位
   assert.ok(!out.includes('http://x/a.png'));
 });

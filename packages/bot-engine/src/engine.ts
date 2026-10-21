@@ -54,6 +54,9 @@ export interface BotEngineResult {
   videos?: string[];
   /** 生成的文件 URL 或本地引用，由 reply/napcat 走 file 段发送。 */
   files?: Array<string | { file: string; name?: string }>;
+  audio?: string[];
+  /** 编排结果的唯一发送计划；存在时 runtime 必须走 ReplyPlan 发送器。 */
+  replyPlan?: import('../../orchestration/src/index.js').ReplyPlan;
   handled: boolean;
 }
 

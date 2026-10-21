@@ -1,4 +1,4 @@
-import { formatHistoryMessageText, senderName, type NapcatHistoryMessage } from './group-context.js';
+import { formatHistoryMessageText, senderIdentity, type NapcatHistoryMessage } from './group-context.js';
 
 /**
  * 消息内容富化:把 get_msg(引用消息) / get_forward_msg(合并转发) 拉到的外部内容,
@@ -177,7 +177,7 @@ export function formatForwardMessages(nodes: NapcatHistoryMessage[], options: { 
   const maxChars = options.maxChars ?? 4000;
   const lines: string[] = [];
   for (const node of nodes.slice(0, maxCount)) {
-    const name = senderName(node) || '用户';
+    const name = senderIdentity(node) || '用户';
     const text = formatHistoryMessageText(node, { includeImages: false });
     if (text) lines.push(`${name}: ${text}`);
   }

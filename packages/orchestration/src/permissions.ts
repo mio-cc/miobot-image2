@@ -1,4 +1,4 @@
-﻿import type {
+import type {
   PermissionDecision,
   PermissionMode,
   PermissionRequest,
@@ -125,4 +125,56 @@ export function resolvePermission(
 export function isRiskAtLeast(risk: RiskLevel, threshold: RiskLevel): boolean {
   const order: RiskLevel[] = ['low', 'medium', 'high', 'critical'];
   return order.indexOf(risk) >= order.indexOf(threshold);
+}
+
+export interface PermissionDefaults {
+  low: PermissionMode;
+  medium: PermissionMode;
+  high: PermissionMode;
+  critical: PermissionMode;
+  hardDenyEnabled?: boolean;
+  hardDenyCapabilities?: string[];
+  /** 后台权限矩阵；作用域优先级由 resolvePermission 统一处理。 */
+  rules?: PermissionRule[];
+}
+
+/**
+ * 用后台默认值构建权限策略，同时保留 owner/admin/user 的角色基线。
+ * 默认值用于低/中/高/严重风险；如果某个角色规则更具体，仍按作用域优先级匹配。
+ */
+export function createPermissionPolicyFromDefaults(defaults: PermissionDefaults, version = 'config-v1'): PermissionPolicy {
+  const rules: PermissionRule[] = [
+    {
+      id: 'owner-full-permission',
+      scope: 'role', roles: ['owner'], mode: 'allow', priority: 100,
+      reason: 'owner 默认完全权限',
+    },
+    {
+      id: 'admin-high-risk-approval',
+      scope: 'role', roles: ['admin'], mode: 'ask_admin', riskLevels: ['high', 'critical'], priority: 90,
+      reason: 'admin 高风险动作需要审批',
+    },
+    {
+      id: 'user-high-risk-deny',
+      scope: 'role', roles: ['guest', 'user'], mode: 'deny', riskLevels: ['high', 'critical'], priority: 90,
+      reason: '普通用户高风险动作默认拒绝',
+    },
+    { id: 'default-low', scope: 'global', mode: defaults.low, riskLevels: ['low'], priority: 10, reason: '低风险默认策略' },
+    { id: 'default-medium', scope: 'global', mode: defaults.medium, riskLevels: ['medium'], priority: 10, reason: '中风险默认策略' },
+    { id: 'default-high', scope: 'global', mode: defaults.high, riskLevels: ['high'], priority: 10, reason: '高风险默认策略' },
+    { id: 'default-critical', scope: 'global', mode: defaults.critical, riskLevels: ['critical'], priority: 10, reason: '严重风险默认策略' },
+  ];
+  for (const custom of defaults.rules || []) {
+    if (!custom || !custom.id || !custom.mode) continue;
+    // 硬拒绝规则必须由总开关启用；关闭时整条规则不参与匹配，避免被降级成普通 deny 后产生误解。
+    if (custom.hard && !defaults.hardDenyEnabled) continue;
+    rules.push({ ...custom, id: 'matrix:' + custom.id });
+  }  if (defaults.hardDenyEnabled) {
+    for (const capability of defaults.hardDenyCapabilities || []) {
+      const id = String(capability || '').trim();
+      if (!id) continue;
+      rules.push({ id: `hard-deny:${id}`, scope: 'capability', capability: id, mode: 'deny', hard: true, priority: 1000, reason: '硬拒绝能力' });
+    }
+  }
+  return { version, rules };
 }

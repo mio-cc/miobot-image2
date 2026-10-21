@@ -1,4 +1,4 @@
-﻿import { randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { ComfyUiNodeConfig, ComfyUiProfile } from '../../config/src/index.js';
 
 export interface ComfyUiRunOptions {
@@ -148,6 +148,122 @@ function applyComfyUiLora(profile: ComfyUiProfile, workflow: Record<string, any>
   loraNode.inputs.strength_model = strength;
 }
 
+function getByPath(root: unknown, dottedPath: string): unknown {
+  let current: any = root;
+  for (const part of String(dottedPath || '').split('.').filter(Boolean)) {
+    if (current === null || current === undefined || typeof current !== 'object') return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+function hasByPath(root: unknown, dottedPath: string): boolean {
+  let current: any = root;
+  const parts = String(dottedPath || '').split('.').filter(Boolean);
+  if (!parts.length) return false;
+  for (const part of parts) {
+    if (current === null || current === undefined || typeof current !== 'object' || !(part in current)) return false;
+    current = current[part];
+  }
+  return true;
+}
+
+/** 只替换显式声明的文本节点，不改任何采样、尺寸或 LoRA 参数。 */
+function applyPromptNodes(profile: ComfyUiProfile, workflow: Record<string, any>, params: Record<string, unknown>): void {
+  const positive = String(params.prompt || '').trim();
+  const negative = String(params.negativePrompt || '').trim();
+  for (const nodeId of profile.promptNodeIds || []) {
+    const node = workflow[nodeId];
+    if (!node || typeof node !== 'object') throw new ComfyUiError(`ComfyUI 正向提示词节点不存在: ${nodeId}`);
+    node.inputs = node.inputs && typeof node.inputs === 'object' ? node.inputs : {};
+    if (!('text' in node.inputs)) throw new ComfyUiError(`ComfyUI 节点 ${nodeId} 没有 text 输入`);
+    node.inputs.text = positive;
+  }
+  for (const nodeId of profile.negativePromptNodeIds || []) {
+    if (!negative) continue;
+    const node = workflow[nodeId];
+    if (!node || typeof node !== 'object') throw new ComfyUiError(`ComfyUI 负向提示词节点不存在: ${nodeId}`);
+    node.inputs = node.inputs && typeof node.inputs === 'object' ? node.inputs : {};
+    if (!('text' in node.inputs)) throw new ComfyUiError(`ComfyUI 节点 ${nodeId} 没有 text 输入`);
+    node.inputs.text = negative;
+  }
+}
+
+export interface ComfyUiWorkflowValidation {
+  ok: boolean;
+  nodeCount: number;
+  errors: string[];
+  warnings: string[];
+}
+
+export function validateComfyUiProfile(profile: ComfyUiProfile): ComfyUiWorkflowValidation {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const workflow = profile.workflow && typeof profile.workflow === 'object' ? profile.workflow as Record<string, any> : {};
+  const nodeIds = Object.keys(workflow);
+  if (!nodeIds.length) errors.push('workflow_empty');
+  for (const nodeId of profile.promptNodeIds || []) {
+    const node = workflow[nodeId];
+    if (!node || typeof node !== 'object') errors.push(`prompt_node_missing:${nodeId}`);
+    else if (!node.inputs || !('text' in node.inputs)) errors.push(`prompt_node_text_missing:${nodeId}`);
+  }
+  for (const nodeId of profile.negativePromptNodeIds || []) {
+    const node = workflow[nodeId];
+    if (!node || typeof node !== 'object') errors.push(`negative_prompt_node_missing:${nodeId}`);
+    else if (!node.inputs || !('text' in node.inputs)) errors.push(`negative_prompt_node_text_missing:${nodeId}`);
+  }
+  if (profile.outputNodeId && !workflow[profile.outputNodeId]) errors.push(`output_node_missing:${profile.outputNodeId}`);
+  for (const [key, path] of Object.entries(profile.parameterMap || {})) {
+    if (!path) { errors.push(`parameter_path_empty:${key}`); continue; }
+    const first = path.split('.')[0];
+    if (!workflow[first]) { errors.push(`parameter_node_missing:${key}:${first}`); continue; }
+    if (!hasByPath(workflow, path)) warnings.push(`parameter_path_not_present:${key}:${path}`);
+  }
+  if (!(profile.promptNodeIds || []).length && !profile.parameterMap?.prompt) warnings.push('prompt_node_not_configured');
+  return { ok: errors.length === 0, nodeCount: nodeIds.length, errors, warnings };
+}
+
+export interface ComfyUiWorkflowNodeInfo {
+  id: string;
+  classType: string;
+  title: string;
+  inputs: string[];
+  text?: string;
+}
+
+export function inspectComfyUiWorkflow(workflow: Record<string, unknown>): ComfyUiWorkflowNodeInfo[] {
+  return Object.entries(workflow || {}).map(([id, value]) => {
+    const node = value && typeof value === 'object' ? value as Record<string, any> : {};
+    const inputs = node.inputs && typeof node.inputs === 'object' ? node.inputs as Record<string, unknown> : {};
+    return {
+      id,
+      classType: String(node.class_type || node.type || ''),
+      title: String(node._meta?.title || ''),
+      inputs: Object.keys(inputs),
+      text: typeof inputs.text === 'string' ? inputs.text.slice(0, 500) : undefined,
+    };
+  });
+}
+
+function isConditioningNode(node: any): boolean {
+  return Boolean(node && /CLIPTextEncode|TextEncode|Conditioning/i.test(String(node.class_type || node.type || '')));
+}
+
+export function detectComfyUiPromptNodeIds(workflow: Record<string, unknown>, negativeNodeIds: string[] = []): string[] {
+  const candidates = inspectComfyUiWorkflow(workflow)
+    .filter((node) => isConditioningNode((workflow as any)[node.id]) && !negativeNodeIds.includes(node.id));
+  const referencedPositive = new Set<string>();
+  for (const node of Object.values(workflow || {})) {
+    const inputs = (node as any)?.inputs;
+    if (!inputs || typeof inputs !== 'object') continue;
+    for (const key of ['positive', 'negative', 'conditioning']) {
+      const link = inputs[key];
+      if (Array.isArray(link) && link.length === 2) referencedPositive.add(String(link[0]));
+    }
+  }
+  const preferred = candidates.filter((node) => referencedPositive.has(node.id));
+  return (preferred.length ? preferred : candidates).map((node) => node.id);
+}
 export function buildComfyUiWorkflow(profile: ComfyUiProfile, params: Record<string, unknown>, maxBatchSize = 4): { workflow: Record<string, any>; applied: Record<string, unknown>; seed?: number } {
   const workflow = JSON.parse(JSON.stringify(profile.workflow || {})) as Record<string, any>;
   const merged = { ...(profile.defaults || {}), ...(params || {}) } as Record<string, unknown>;
@@ -158,7 +274,7 @@ export function buildComfyUiWorkflow(profile: ComfyUiProfile, params: Record<str
   let seed: number | undefined;
   if (merged.seed !== undefined) {
     const n = Math.trunc(Number(merged.seed));
-    seed = Number.isFinite(n) && n > 0 ? Math.min(4294967295, n) : Math.floor(Math.random() * 4294967294) + 1;
+    seed = Number.isFinite(n) && n > 0 ? Math.min(Number.MAX_SAFE_INTEGER, n) : Math.floor(Math.random() * (Number.MAX_SAFE_INTEGER - 1)) + 1;
     merged.seed = seed;
   }
   const applied: Record<string, unknown> = {};
@@ -171,6 +287,7 @@ export function buildComfyUiWorkflow(profile: ComfyUiProfile, params: Record<str
     applied[key] = value;
   }
   applyComfyUiLora(profile, workflow, merged);
+  applyPromptNodes(profile, workflow, merged);
   normalizeKreaKsamplerCfg(profile, workflow);
   return { workflow, applied, seed };
 }

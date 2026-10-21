@@ -313,3 +313,36 @@ test('secret mask: search and jina keys are masked', () => {
   assert.equal(restored.search.apiKey, config.search.apiKey);
   assert.equal(restored.search.jinaApiKey, config.search.jinaApiKey);
 });
+
+test('secrets: Suno callback URL and path secret are masked and round-trip', () => {
+  const cfg = {
+    orchestration: {
+      suno: {
+        apiKey: 'suno-api-key-real',
+        callbackSecret: 'callback-secret-real',
+        callbackUrl: 'https://i.mioku.cn/api/orchestration/suno/callback/callback-secret-real',
+      },
+    },
+  };
+  const masked = maskConfigSecrets(cfg);
+  assert.equal(masked.orchestration.suno.apiKey, maskSecretValue('suno-api-key-real'));
+  assert.equal(masked.orchestration.suno.callbackSecret, maskSecretValue('callback-secret-real'));
+  assert.equal(masked.orchestration.suno.callbackUrl, maskSecretValue(cfg.orchestration.suno.callbackUrl));
+  assert.equal(JSON.stringify(masked).includes('callback-secret-real'), false);
+  const restored = unmaskConfigSecrets(masked, cfg);
+  assert.equal(restored.orchestration.suno.callbackSecret, 'callback-secret-real');
+  assert.equal(restored.orchestration.suno.callbackUrl, cfg.orchestration.suno.callbackUrl);
+});
+test('config import: unrecognized payload is rejected without clearing current config', () => {
+  const repo = new ConfigRepository({
+    initialConfig: {
+      panel: { port: 3020, passwordSeed: 'keep-this-password' },
+      bot: { botQqId: '12345', ownerQQs: ['1'] },
+      llm: { chatModel: 'keep-model' },
+    },
+  });
+  const before = repo.getConfig();
+  assert.throws(() => repo.importAndSave({ foo: 'not-a-config' }), /无法识别/);
+  assert.throws(() => repo.importAndSave({ config: {} }), /无法识别/);
+  assert.deepEqual(repo.getConfig(), before);
+});

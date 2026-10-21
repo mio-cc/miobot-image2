@@ -18,7 +18,7 @@ const SECTION_LABELS: Record<string, string> = {
     llm: '模型', bot: 'Bot 行为', canvas: '画布', napcat: 'Napcat',
     promptsChat: '远程模板库', freeMode: '自由模式', huggingFace: 'HuggingFace', panel: '面板',
     intentRecognition: '意图识别', browserRender: '浏览器渲染', codeRender: '代码画图',
-    comfyuiTransform: 'ComfyUI 参数转化', search: '联网搜索',
+    comfyuiTransform: 'ComfyUI 参数转化', search: '联网搜索', orchestration: '智能编排',
 };
 
 export const useConfigStore = defineStore('config', () => {
@@ -90,6 +90,21 @@ export const useConfigStore = defineStore('config', () => {
         c.browserRender ||= {};
         c.codeRender ||= {};
         c.comfyuiTransform ||= {};
+        c.orchestration ||= {};
+        c.orchestration.execution ||= {};
+        c.orchestration.externalProviders ||= {};
+        c.orchestration.memory ||= {};
+        c.orchestration.voice ||= {};
+        c.orchestration.planner ||= {};
+        c.orchestration.roles ||= {};
+        c.orchestration.permissions ||= {};
+        c.orchestration.permissions.rules ||= [];
+        c.orchestration.approval ||= {};
+        c.orchestration.reply ||= {};
+        c.orchestration.promptOptimization ||= {};
+        c.orchestration.promptOptimization.versions ||= [];
+        c.orchestration.suno ||= {};
+        c.orchestration.audit ||= {};
     }
 
     function markSaved() {

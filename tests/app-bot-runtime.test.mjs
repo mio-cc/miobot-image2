@@ -295,11 +295,12 @@ test('empty-mention: 群里纯 @bot 无内容 -> 快捷回复, 不进引擎', as
   assert.equal(reply.sent[0][0], 'groupText');
 });
 
-test('voice: record 发送失败 -> 回退文本', async () => {
+test('voice: record 明确失败 -> 不再回退文字，避免语音和文字双发', async () => {
   const client = makeModelClient();
   const getConfig = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; return c; };
   const app = createBotApp({ getConfig, client });
   const sent = [];
+  const reports = [];
   const reply = {
     sendGroupText: async () => ({ success: true }),
     sendPrivateText: async (u, t) => { sent.push(['text', u, t]); return { success: true }; },
@@ -307,11 +308,16 @@ test('voice: record 发送失败 -> 回退文本', async () => {
     sendPrivateImage: async () => ({ success: true }),
     sendPrivateRecord: async () => ({ success: false, error: 'codec failed' }),
   };
-  const rt = createBotMessageRuntime({ app, reply, getConfig, botName: 'Mio', voice: async () => 'base64://VOICE' });
+  const rt = createBotMessageRuntime({
+    app, reply, getConfig, botName: 'Mio', voice: async () => 'base64://VOICE',
+    reportProblem: async (input) => { reports.push(input); return true; },
+  });
   const r = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 44, raw_message: '在吗' });
   assert.equal(r.kind, 'chat');
-  assert.deepEqual(sent[0], ['text', 5, 'CHAT']); // record 失败 -> 文本兜底
+  assert.deepEqual(sent, []);
+  assert.ok(reports.some((item) => item.kind === 'voice-send-failed'));
 });
+
 
 test('private /clear 命令 -> 清会话并确认', async () => {
   const { reply, rt } = setup();
@@ -560,4 +566,403 @@ test('private genImage with progress messages -> ack then image', async () => {
   assert.equal(reply.sent[0][0], 'privateText');
   assert.match(reply.sent[0][2], /收到，正在生成图片/);
   assert.deepEqual(reply.sent[1], ['privateImage', 5, 'data:image/png;base64,AAA']);
+});
+
+test('voice: record 发送结果不确定时不再回退文字，避免语音和文字双发', async () => {
+  const client = makeModelClient();
+  const getConfig = () => {
+    const c = createDefaultConfig();
+    c.bot.botQqId = '10000';
+    c.bot.textReply.maxChars = 1;
+    c.bot.replyStrategies.text = 'forward';
+    return c;
+  };
+  const app = createBotApp({ getConfig, client });
+  const sent = [];
+  const reply = {
+    sendGroupText: async () => { sent.push(['groupText']); return { success: true }; },
+    sendGroupTextForward: async () => { sent.push(['groupForward']); return { success: true }; },
+    sendGroupNestedTextForward: async () => { sent.push(['groupNestedForward']); return { success: true }; },
+    sendPrivateText: async () => { sent.push(['privateText']); return { success: true }; },
+    sendGroupImage: async () => ({ success: true }),
+    sendPrivateImage: async () => ({ success: true }),
+    sendPrivateRecord: async () => ({ success: false, uncertain: true, error: 'retcode=1200 accepted but timed out' }),
+  };
+  const rt = createBotMessageRuntime({ app, reply, getConfig, botName: 'Mio', voice: async () => 'base64://VOICE' });
+  const r = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 45, raw_message: '鍦ㄥ悧' });
+  assert.equal(r.kind, 'chat');
+  assert.deepEqual(sent, []);
+});
+
+test('errors: 运行异常只私聊管理员，不再回复用户', async () => {
+  const client = makeModelClient();
+  client.chat = async () => { throw new Error('upstream 500'); };
+  const reply = makeReply();
+  const reports = [];
+  const getConfig = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; return c; };
+  const app = createBotApp({ getConfig, client });
+  const rt = createBotMessageRuntime({
+    app, reply, getConfig, botName: 'Mio',
+    reportProblem: async (input) => { reports.push(input); return true; },
+  });
+  const result = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 46, raw_message: '你好' });
+  assert.equal(result.handled, false);
+  assert.ok(reports.some((item) => item.kind === 'engine-error'));
+  assert.deepEqual(reply.sent, []);
+});
+
+test('group context: 同名群成员通过 QQ 号区分，并标注当前提问用户', async () => {
+  const client = makeModelClient();
+  const reply = makeReply();
+  const getConfig = () => {
+    const c = createDefaultConfig();
+    c.bot.botQqId = '10000';
+    c.bot.groupContext.enabled = true;
+    c.bot.groupContext.messageCount = 10;
+    return c;
+  };
+  const app = createBotApp({ getConfig, client });
+  const history = [
+    { message_id: 1, user_id: 101, sender: { nickname: '同名', card: '同名' }, message: [{ type: 'text', data: { text: '第一人' } }] },
+    { message_id: 2, user_id: 202, sender: { nickname: '同名', card: '同名' }, message: [{ type: 'text', data: { text: '第二人' } }] },
+  ];
+  const rt = createBotMessageRuntime({
+    app, reply, getConfig, botName: 'Mio',
+    fetchGroupHistory: async () => history,
+  });
+  await rt.handleMessageEvent({
+    post_type: 'message', message_type: 'group', group_id: 900, user_id: 303,
+    sender: { nickname: '提问者', card: '提问者' }, message_id: 77,
+    raw_message: '[CQ:at,qq=10000] 他们在说什么',
+    message: [{ type: 'at', data: { qq: '10000' } }, { type: 'text', data: { text: ' 他们在说什么' } }],
+  });
+  const all = JSON.stringify(client.calls);
+  assert.ok(all.includes('同名 [QQ:101]'));
+  assert.ok(all.includes('同名 [QQ:202]'));
+  assert.ok(all.includes('当前提问用户'));
+  assert.ok(all.includes('QQ:303'));
+});
+
+test('voice: capability audio result sends record without duplicate text', async () => {
+  const reply = makeReply();
+  const records = [];
+  reply.sendPrivateRecord = async (u, f) => { records.push([u, f]); return { success: true }; };
+  const app = {
+    handle: async () => ({ kind: 'chat', handled: true, text: 'fallback text', audio: ['base64://AUDIO'] }),
+    engine: { handleExplicit: async () => ({ kind: 'chat', handled: true, text: 'unused' }) },
+    sessions: { clear() {} },
+    registry: () => ({}),
+    client: {},
+  };
+  const getConfig = () => createDefaultConfig();
+  const rt = createBotMessageRuntime({ app, reply, getConfig, botName: 'Mio' });
+  await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 47, raw_message: '你好' });
+  assert.deepEqual(records, [[5, 'base64://AUDIO']]);
+  assert.equal(reply.sent.length, 0);
+});
+
+test('runtime command gateway: mapped exact command bypasses legacy engine', async () => {
+  const reply = makeReply();
+  const replies = [];
+  const getConfig = () => {
+    const c = createDefaultConfig();
+    c.bot.botQqId = '10000';
+    c.orchestration.enabled = true;
+    c.orchestration.mode = 'enforce';
+    return c;
+  };
+  const app = {
+    sessions: { clear() { return true; } },
+    engine: {
+      handleExplicit: async () => { replies.push('legacy-explicit'); return { kind: 'image.generate', handled: true, images: ['legacy'] }; },
+    },
+    handle: async () => { replies.push('legacy-handle'); return { kind: 'chat', handled: true, text: 'legacy' }; },
+    registry: () => ({}),
+    client: {},
+  };
+  const calls = [];
+  const rt = createBotMessageRuntime({
+    app,
+    reply,
+    getConfig,
+    commandOrchestration: async (input) => {
+      calls.push(input);
+      return { handled: true, result: { kind: 'image.generate', handled: true, images: ['gateway-image'] } };
+    },
+  });
+  const result = await rt.handleMessageEvent({
+    post_type: 'message', message_type: 'private', user_id: 5, message_id: 90,
+    raw_message: '生图 一只猫', message: [{ type: 'text', data: { text: '生图 一只猫' } }],
+  });
+  assert.equal(result.kind, 'image.generate');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, 'genImage');
+  assert.deepEqual(replies, []);
+  assert.deepEqual(reply.sent[0], ['privateImage', 5, 'gateway-image']);
+});
+
+test('runtime command gateway: only command_not_mapped may fall back to legacy implementation', async () => {
+  const reply = makeReply();
+  const getConfig = () => {
+    const c = createDefaultConfig();
+    c.bot.botQqId = '10000';
+    c.orchestration.enabled = true;
+    c.orchestration.mode = 'enforce';
+    return c;
+  };
+  const app = {
+    sessions: { clear() { return true; } },
+    engine: { handleExplicit: async () => null },
+    handle: async () => ({ kind: 'chat', handled: true, text: 'legacy' }),
+    registry: () => ({}),
+    client: {},
+  };
+  const rt = createBotMessageRuntime({
+    app,
+    reply,
+    getConfig,
+    commandOrchestration: async () => ({ handled: false, reason: 'command_not_mapped' }),
+  });
+  const result = await rt.handleMessageEvent({
+    post_type: 'message', message_type: 'private', user_id: 5, message_id: 91,
+    raw_message: '/clear', message: [{ type: 'text', data: { text: '/clear' } }],
+  });
+  assert.equal(result.kind, 'clear');
+  assert.match(reply.sent[0][2], /新对话|清除/);
+});
+
+test('runtime command gateway: mapped command orchestration failure never replays legacy path', async () => {
+  const reply = makeReply();
+  const legacyCalls = [];
+  const getConfig = () => {
+    const c = createDefaultConfig();
+    c.bot.botQqId = '10000';
+    c.orchestration.enabled = true;
+    c.orchestration.mode = 'enforce';
+    return c;
+  };
+  const app = {
+    sessions: { clear() { return true; } },
+    engine: { handleExplicit: async () => { legacyCalls.push('explicit'); return { kind: 'image.generate', handled: true, images: ['legacy'] }; } },
+    handle: async () => ({ kind: 'chat', handled: true, text: 'legacy' }),
+    registry: () => ({}),
+    client: {},
+  };
+  const rt = createBotMessageRuntime({
+    app,
+    reply,
+    getConfig,
+    commandOrchestration: async () => ({ handled: false, reason: 'capability_failed' }),
+  });
+  const result = await rt.handleMessageEvent({
+    post_type: 'message', message_type: 'private', user_id: 5, message_id: 92,
+    raw_message: '生图 一只猫', message: [{ type: 'text', data: { text: '生图 一只猫' } }],
+  });
+  assert.equal(result.handled, false);
+  assert.equal(result.reason, 'command-orchestration-failed');
+  assert.deepEqual(legacyCalls, []);
+  assert.deepEqual(reply.sent, []);
+});
+
+test('runtime command gateway: owner recall uses unified command plan', async () => {
+  const reply = makeReply();
+  const getConfig = () => {
+    const c = createDefaultConfig();
+    c.bot.botQqId = '10000';
+    c.bot.ownerQQs = ['5'];
+    c.orchestration.enabled = true;
+    c.orchestration.mode = 'enforce';
+    return c;
+  };
+  const app = {
+    sessions: { clear() { return true; } },
+    engine: { handleExplicit: async () => null },
+    handle: async () => ({ kind: 'chat', handled: true, text: 'legacy' }),
+    registry: () => ({}),
+    client: {},
+  };
+  const calls = [];
+  const rt = createBotMessageRuntime({
+    app,
+    reply,
+    getConfig,
+    commandOrchestration: async (input) => {
+      calls.push(input);
+      return { handled: true, result: { kind: 'chat', handled: true, text: '已撤回 1 条消息。' } };
+    },
+    owner: { ownerQQs: () => ['5'], handle: async () => 'legacy-owner' },
+  });
+  const result = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 93, raw_message: 'ch' });
+  assert.equal(result.kind, 'owner:recall');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, 'ownerRecall');
+  assert.equal(calls[0].args, '1');
+  assert.deepEqual(reply.sent[0], ['privateText', 5, '已撤回 1 条消息。']);
+});
+test('runtime: orchestrated result is sent only through ReplyPlan and final maxMessages wins', async () => {
+  const reply = makeReply();
+  const getConfig = () => {
+    const c = createDefaultConfig();
+    c.bot.botQqId = '10000';
+    c.orchestration.enabled = true;
+    c.orchestration.mode = 'enforce';
+    c.orchestration.reply.maxMessages = 1;
+    return c;
+  };
+  const app = {
+    sessions: { clear() { return true; } },
+    engine: { handleExplicit: async () => ({ kind: 'image.generate', handled: true, images: ['legacy'] }) },
+    handle: async () => ({ kind: 'chat', handled: true, text: 'legacy' }),
+    registry: () => ({}),
+    client: {},
+  };
+  const rt = createBotMessageRuntime({
+    app,
+    reply,
+    getConfig,
+    enforceOrchestration: async () => ({
+      handled: true,
+      result: {
+        kind: 'chat', handled: true, text: 'first',
+        replyPlan: {
+          groups: [
+            { mode: 'direct', outputs: [{ id: 't', kind: 'text', text: 'first' }], messageCount: 1 },
+            { mode: 'direct', outputs: [{ id: 'i', kind: 'image', url: 'second.png' }], messageCount: 1 },
+          ],
+          messageCount: 2, truncated: [], warnings: [], maxMessages: 1,
+        },
+      },
+    }),
+  });
+  const result = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 94, raw_message: '画一只猫' });
+  assert.equal(result.handled, true);
+  assert.deepEqual(reply.sent, [['privateText', 5, 'first']]);
+});
+test('runtime: orchestrated voice plan uncertain does not fall back to text', async () => {
+  const sent = [];
+  const reports = [];
+  const getConfig = () => {
+    const c = createDefaultConfig();
+    c.bot.botQqId = '10000';
+    c.orchestration.enabled = true;
+    c.orchestration.mode = 'enforce';
+    return c;
+  };
+  const reply = {
+    sendGroupText: async () => ({ success: true }),
+    sendPrivateText: async (userId, text) => { sent.push(['text', text]); return { success: true }; },
+    sendGroupImage: async () => ({ success: true }),
+    sendPrivateImage: async () => ({ success: true }),
+    sendPrivateRecord: async () => ({ success: false, uncertain: true, error: 'retcode=1200' }),
+  };
+  const app = {
+    sessions: { clear() { return true; } },
+    engine: { handleExplicit: async () => null },
+    handle: async () => ({ kind: 'chat', handled: true, text: 'legacy' }),
+    registry: () => ({}), client: {},
+  };
+  const rt = createBotMessageRuntime({
+    app, reply, getConfig, voice: async () => 'base64://VOICE',
+    reportProblem: async (input) => { reports.push(input); return true; },
+    enforceOrchestration: async () => ({
+      handled: true,
+      result: {
+        kind: 'chat', handled: true, text: '你好',
+        replyPlan: {
+          groups: [{ mode: 'direct', outputs: [{ id: 't', kind: 'text', text: '你好' }], messageCount: 1 }],
+          messageCount: 1, truncated: [], warnings: [], maxMessages: 1,
+        },
+      },
+    }),
+  });
+  const result = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 95, raw_message: '你好' });
+  assert.equal(result.handled, true);
+  assert.deepEqual(sent, []);
+  assert.ok(reports.some((item) => item.kind === 'reply-send-uncertain'));
+});
+test('runtime command gateway: owner config command uses unified gateway and does not call legacy owner handler', async () => {
+  const reply = makeReply();
+  const getConfig = () => {
+    const c = createDefaultConfig();
+    c.bot.botQqId = '10000';
+    c.bot.ownerQQs = ['5'];
+    c.orchestration.enabled = true;
+    c.orchestration.mode = 'enforce';
+    return c;
+  };
+  const app = {
+    sessions: { clear() { return true; } },
+    engine: { handleExplicit: async () => null },
+    handle: async () => ({ kind: 'chat', handled: true, text: 'legacy' }),
+    registry: () => ({}), client: {},
+  };
+  const calls = [];
+  let legacyOwnerCalls = 0;
+  const rt = createBotMessageRuntime({
+    app,
+    reply,
+    getConfig,
+    commandOrchestration: async (input) => {
+      calls.push(input);
+      return { handled: true, result: { kind: 'chat', handled: true, text: '已切换 chat 模型' } };
+    },
+    owner: { ownerQQs: () => ['5'], handle: async () => { legacyOwnerCalls += 1; return 'legacy-owner'; } },
+  });
+  const result = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 96, raw_message: '/切换 gpt-4o' });
+  assert.equal(result.kind, 'owner:switchModel');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, 'ownerSwitchModel');
+  assert.equal(calls[0].args, 'gpt-4o');
+  assert.equal(legacyOwnerCalls, 0);
+  assert.deepEqual(reply.sent[0], ['privateText', 5, '已切换 chat 模型']);
+});
+test('runtime: duplicate QQ message events are idempotent and do not reply twice', async () => {
+  const { reply, rt } = setup();
+  const event = { post_type: 'message', message_type: 'private', user_id: 5, message_id: 123456, raw_message: '在吗' };
+  const first = await rt.handleMessageEvent(event);
+  const second = await rt.handleMessageEvent({ ...event });
+  assert.equal(first.handled, true);
+  assert.equal(second.handled, false);
+  assert.equal(second.reason, 'duplicate-message');
+  assert.equal(reply.sent.length, 1);
+});
+test('runtime: vector memory context replaces fixed group history and extracts user/assistant memories', async () => {
+  const ingested = [];
+  let historyCalls = 0;
+  let memoryQueries = 0;
+  const { rt } = setup({
+    loadMemoryContext: async () => {
+      memoryQueries += 1;
+      return '【长期记忆】\n用户 [QQ:5]: 之前讨论过猫';
+    },
+    ingestMemory: (input) => { ingested.push(input); },
+    fetchGroupHistory: async () => {
+      historyCalls += 1;
+      return [];
+    },
+  });
+  const result = await rt.handleMessageEvent({
+    post_type: 'message', message_type: 'group', group_id: 3000, user_id: 5, message_id: 8801,
+    sender: { nickname: '同名' },
+    raw_message: '[CQ:at,qq=10000] 继续聊刚才的话题',
+    message: [{ type: 'at', data: { qq: '10000' } }, { type: 'text', data: { text: ' 继续聊刚才的话题' } }],
+  });
+  assert.equal(result.handled, true);
+  assert.equal(memoryQueries, 1);
+  assert.equal(historyCalls, 0);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(ingested.some((item) => item.role === 'user' && item.text.includes('继续聊刚才的话题')));
+  assert.ok(ingested.some((item) => item.role === 'assistant'));
+});
+test('runtime: ignored group message is not written into long-term memory', async () => {
+  const ingested = [];
+  const { rt } = setup({ ingestMemory: (input) => { ingested.push(input); } });
+  const result = await rt.handleMessageEvent({
+    post_type: 'message', message_type: 'group', group_id: 3001, user_id: 5, message_id: 8802,
+    sender: { nickname: '路人' }, raw_message: '群里普通闲聊',
+    message: [{ type: 'text', data: { text: '群里普通闲聊' } }],
+  });
+  assert.equal(result.handled, false);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(ingested.length, 0);
 });

@@ -71,6 +71,7 @@ async function handleImportFile(event: Event) {
     const file = input.files?.[0];
     input.value = '';
     if (!file) return;
+    if (!window.confirm('导入配置会覆盖当前配置，建议先导出备份。确定继续？')) return;
     configStore.saveStatus = '导入中...';
     try {
         const result = await configStore.importConfig(JSON.parse(await file.text()));

@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
 
@@ -152,15 +152,16 @@ test('comfyui params: Krea Turbo removes negative prompt and weights', () => {
 });
 
 
-test('comfyui config: legacy default transform prompt is upgraded', () => {
+test('comfyui config: legacy parameter-planner prompt is upgraded to prompt-only v5', () => {
   const cfg = normalizeConfig({
     comfyuiTransform: {
       promptTemplate: '你是 ComfyUI 生图参数转换器。旧模板 最大批量：{{maxBatchSize}}',
       maxTokens: 1200,
     },
   });
-  assert.match(cfg.comfyuiTransform.promptTemplate, /MOSS-Image/);
-  assert.match(cfg.comfyuiTransform.promptTemplate, /Krea 2/);
+  assert.match(cfg.comfyuiTransform.promptTemplate, /Miobot-ComfyUI-Prompt-v5/);
+  assert.match(cfg.comfyuiTransform.promptTemplate, /只输出最终正向提示词正文/);
+  assert.match(cfg.comfyuiTransform.promptTemplate, /绝对不要输出或建议 steps/);
   assert.ok(cfg.comfyuiTransform.maxTokens >= 2400);
 });
 
@@ -186,16 +187,16 @@ test('comfyui params: natural language size and aspect ratio produce width/heigh
   assert.ok(Math.abs(ratio.width / ratio.height - 16 / 9) < 0.05, JSON.stringify(ratio));
 });
 
-test('comfyui config: built-in v3 transform prompt upgrades with v4 enhancement rules', () => {
+test('comfyui config: old built-in transform is upgraded to prompt-only v5', () => {
   const cfg = normalizeConfig({
     comfyuiTransform: {
       promptTemplate: '你是 Miobot 的 ComfyUI 提示词工程师和生成参数规划器。\n\n【提示词结构】\n主体与数量 -> 外观与服装。\n\n【模型家族专项：Z-Image Turbo】\n当 modelFamily = z-image：\n- 使用自然语言 caption。',
     },
   });
-  assert.match(cfg.comfyuiTransform.promptTemplate, /Miobot-ComfyUI-Transform-v4/);
-  assert.match(cfg.comfyuiTransform.promptTemplate, /提示词增强、保真与防漂移规则/);
-  assert.match(cfg.comfyuiTransform.promptTemplate, /不得主动添加 C-string/);
-  assert.match(cfg.comfyuiTransform.promptTemplate, /目标约 50 到 140 个英文词/);
+  assert.match(cfg.comfyuiTransform.promptTemplate, /Miobot-ComfyUI-Prompt-v5/);
+  assert.match(cfg.comfyuiTransform.promptTemplate, /KEEP \/ LOCK \/ BIND \/ LIMIT \/ FORBID/);
+  assert.match(cfg.comfyuiTransform.promptTemplate, /不要输出负向提示词/);
+  assert.doesNotMatch(cfg.comfyuiTransform.promptTemplate, /Miobot-ComfyUI-Transform-v4/);
 });
 
 test('comfyui lora: transform selection can disable or enable the LoRA node', () => {

@@ -320,7 +320,16 @@ ensure_pnpm() {
 
 ensure_dirs() {
   log "准备目录"
-  install -d -m 0755 "$APP_DIR" "$DATA_DIR" "$RUNTIME_DIR" "$CANVAS_ASSET_DIR" "$LOG_DIR"
+  install -d -m 0755 "$APP_DIR"
+  install -d -m 0700 "$DATA_DIR" "$RUNTIME_DIR" "$CANVAS_ASSET_DIR" "$LOG_DIR"
+  install -d -m 0700 "$RUNTIME_DIR/memory" "$RUNTIME_DIR/generated-files" "$RUNTIME_DIR/tmp-files"
+  # 运行数据含聊天、审批 payload、记忆和 API Key；只允许服务账号读取。
+  [ -d "$DATA_DIR" ] && chmod 0700 "$DATA_DIR"
+  [ -d "$RUNTIME_DIR" ] && chmod 0700 "$RUNTIME_DIR"
+  [ -d "$CANVAS_ASSET_DIR" ] && chmod 0700 "$CANVAS_ASSET_DIR"
+  [ -d "$LOG_DIR" ] && chmod 0700 "$LOG_DIR"
+  [ -f "$CONFIG_PATH" ] && chmod 0600 "$CONFIG_PATH"
+  [ -f "$ENV_FILE" ] && chmod 0600 "$ENV_FILE"
 }
 
 ensure_codex_python() {
@@ -364,7 +373,7 @@ backup_config() {
   local backup_dir backup_file
   backup_dir="${DATA_DIR}/backups"
   backup_file="${backup_dir}/config.$(date +%Y%m%d-%H%M%S).json"
-  install -d -m 0755 "$backup_dir"
+  install -d -m 0700 "$backup_dir"
   cp -a "$CONFIG_PATH" "$backup_file"
   log "已备份配置：$backup_file"
 }
@@ -393,6 +402,38 @@ backup_runtime_data() {
     tar -C "$(dirname "$CANVAS_ASSET_DIR")" -czf "${backup_dir}/canvas-assets.${stamp}.tar.gz" "$(basename "$CANVAS_ASSET_DIR")"
     log "已备份画布/模板库图片资源：${backup_dir}/canvas-assets.${stamp}.tar.gz"
   fi
+
+  # v3 orchestration / memory / approval runtime state. These files are
+  # separate from config.json and canvas-state.json, so a config-only backup
+  # would lose in-flight approvals, pending clarifications and long-term memory.
+  local runtime_items=() item
+  for item in \
+    orchestration-approvals.json \
+    config-versions.json \
+    orchestration-pending-jobs.json \
+    orchestration-approval-actions.jsonl \
+    orchestration-approval-actions.done.json \
+    orchestration-memory-actions.jsonl \
+    orchestration-memory-actions.done.json \
+    orchestration-memory-results.json \
+    orchestration-capability-test-actions.jsonl \
+    orchestration-capability-test-actions.done.json \
+    orchestration-capability-test-results.json \
+    orchestration-traces.jsonl \
+    orchestration-suno-callbacks.jsonl \
+    audit.jsonl \
+    managed-artifacts.json \
+    voice-preferences.json \
+    pending-files.json \
+    metrics.json \
+    memory \
+    generated-files; do
+    [ -e "$RUNTIME_DIR/$item" ] && runtime_items+=("$item")
+  done
+  if [ "${#runtime_items[@]}" -gt 0 ]; then
+    tar -C "$RUNTIME_DIR" -czf "${backup_dir}/orchestration-state.${stamp}.tar.gz" "${runtime_items[@]}"
+    log "已备份编排/记忆/审批运行状态：${backup_dir}/orchestration-state.${stamp}.tar.gz"
+  fi
 }
 
 migrate_legacy_runtime_config() {
@@ -402,13 +443,15 @@ migrate_legacy_runtime_config() {
 
   local candidate
   for candidate in \
+    "$APP_DIR/config.json" \
+    "$PROJECT_SOURCE/config.json" \
     "$APP_DIR/.runtime/config.json" \
     "$PROJECT_SOURCE/.runtime/config.json"
   do
     if [ -f "$candidate" ]; then
-      install -d -m 0755 "$(dirname "$CONFIG_PATH")"
+      install -d -m 0700 "$(dirname "$CONFIG_PATH")"
       cp -a "$candidate" "$CONFIG_PATH"
-      chmod 0644 "$CONFIG_PATH"
+      chmod 0600 "$CONFIG_PATH"
       log "已迁移旧配置：$candidate -> $CONFIG_PATH"
       return
     fi
@@ -420,9 +463,9 @@ merge_legacy_canvas_state_file() {
   [ -f "$source_state" ] || return
 
   if [ ! -f "$CANVAS_STATE_PATH" ]; then
-    install -d -m 0755 "$(dirname "$CANVAS_STATE_PATH")"
+    install -d -m 0700 "$(dirname "$CANVAS_STATE_PATH")"
     cp -a "$source_state" "$CANVAS_STATE_PATH"
-    chmod 0644 "$CANVAS_STATE_PATH"
+    chmod 0600 "$CANVAS_STATE_PATH"
     log "已迁移旧画布/模板库状态：$source_state -> $CANVAS_STATE_PATH"
     return
   fi
@@ -501,7 +544,7 @@ migrate_legacy_canvas_runtime() {
     fi
 
     if [ -d "$candidate/canvas-assets" ]; then
-      install -d -m 0755 "$CANVAS_ASSET_DIR"
+      install -d -m 0700 "$CANVAS_ASSET_DIR"
       rsync -a "$candidate/canvas-assets/" "$CANVAS_ASSET_DIR/"
       log "已合并旧画布/模板库图片资源：$candidate/canvas-assets/ -> $CANVAS_ASSET_DIR/"
     fi
@@ -519,8 +562,21 @@ sync_source() {
   fi
 
   log "同步项目到 $APP_DIR"
+  # 如果运维把 config/data/runtime 放在 APP_DIR 里面，rsync --delete 不能把它们删掉。
+  # 默认路径在 /var/lib 时这几条不会生效；自定义路径时是生产数据保命线。
+  local -a protected_excludes=()
+  local protected rel
+  for protected in "$CONFIG_PATH" "$DATA_DIR" "$RUNTIME_DIR" "$CANVAS_STATE_PATH" "$CANVAS_ASSET_DIR" "$LOG_DIR" "$ENV_FILE"; do
+    case "$protected" in
+      "$APP_DIR"/*)
+        rel="${protected#"$APP_DIR"/}"
+        protected_excludes+=("--exclude=/${rel}")
+        ;;
+    esac
+  done
   rsync -a --delete \
     --exclude '.git/' \
+    --exclude '/config.json' \
     --exclude '.runtime/' \
     --exclude '.codex/' \
     --exclude '.codex-run/' \
@@ -532,6 +588,7 @@ sync_source() {
     --exclude 'web-canvas/packages/*/node_modules/' \
     --exclude 'web-panel/dist/' \
     --exclude 'web-canvas/apps/web/dist/' \
+    "${protected_excludes[@]}" \
     "$source_real/" "$APP_DIR/"
 }
 
@@ -596,9 +653,9 @@ git_pull_source() {
 npm_install_dir() {
   local dir="$1"
   if [ "$STRICT_LOCKFILE" = "1" ] || [ "$STRICT_LOCKFILE" = "true" ]; then
-    (cd "$dir" && npm ci)
+    (cd "$dir" && NODE_ENV=development npm ci --include=dev)
   else
-    (cd "$dir" && npm install)
+    (cd "$dir" && NODE_ENV=development npm install --include=dev)
   fi
 }
 
@@ -616,9 +673,9 @@ install_dependencies() {
     # 排除 @gpt-image-canvas/api：v2 从不启动它（画布后端已由 packages/canvas-service 取代），
     # 但它带着 sharp / better-sqlite3 这类原生依赖，装不上就等于整个画布部署失败。
     # 用排除式过滤而不是正向 --filter，后者会把 root 一起排掉，shared 的 tsc 会找不到。
-    (cd "$APP_DIR/web-canvas" && pnpm install --frozen-lockfile --filter '!@gpt-image-canvas/api')
+    (cd "$APP_DIR/web-canvas" && NODE_ENV=development pnpm install --frozen-lockfile --filter '!@gpt-image-canvas/api')
   else
-    (cd "$APP_DIR/web-canvas" && pnpm install --no-frozen-lockfile --filter '!@gpt-image-canvas/api')
+    (cd "$APP_DIR/web-canvas" && NODE_ENV=development pnpm install --no-frozen-lockfile --filter '!@gpt-image-canvas/api')
   fi
 }
 
@@ -626,18 +683,18 @@ build_project() {
   export PATH="$(managed_path)"
 
   log "构建根项目"
-  (cd "$APP_DIR" && npm run build)
+  (cd "$APP_DIR" && NODE_ENV=development npm run build)
 
   if [ "$RUN_TESTS" = "1" ] || [ "$RUN_TESTS" = "true" ]; then
     log "运行测试"
-    (cd "$APP_DIR" && npm test)
+    (cd "$APP_DIR" && NODE_ENV=development npm test)
   fi
 
   # 后台前端的 vite outDir 直接就是 apps/panel/static/admin（见 web-panel/vite.config.ts），
   # 不再需要构建完再 rsync 一次——少一步也就少一个「构建了但线上还是旧版」的坑。
   log "构建后台前端"
   install -d -m 0755 "$APP_DIR/apps/panel/static/admin"
-  (cd "$APP_DIR/web-panel" && npm run build)
+  (cd "$APP_DIR/web-panel" && NODE_ENV=development npm run build)
 
   log "构建画布前端"
   (cd "$APP_DIR/web-canvas" && pnpm --filter @gpt-image-canvas/shared build)
@@ -700,6 +757,8 @@ MIOBOT_PORT=${env_port}
 MIOBOT_VERIFY_PORT=${env_port}
 MIOBOT_ENABLE_BOT=${env_enable_bot}
 MIOBOT_RUNTIME_DIR=${env_runtime_dir}
+MIOBOT_DATA_DIR=${env_runtime_dir}
+MIOBOT_CONFIG_VERSION_FILE=${env_runtime_dir}/config-versions.json
 MIOBOT_CONFIG_PATH=${env_config_path}
 MIOBOT_CANVAS_STATE_PATH=${env_canvas_state}
 MIOBOT_CANVAS_ASSET_DIR=${env_canvas_assets}
@@ -721,7 +780,7 @@ DATA_DIR=${env_data_dir}
 LOG_DIR=${env_log_dir}
 PATH=$(managed_path)
 EOF
-  chmod 0644 "$ENV_FILE"
+  chmod 0600 "$ENV_FILE"
 }
 
 write_systemd_unit() {
@@ -850,8 +909,17 @@ systemctl:        $(command -v systemctl 2>/dev/null || echo not-found)
 curl:             $(command -v curl 2>/dev/null || echo not-found)
 rsync:            $(command -v rsync 2>/dev/null || echo not-found)
 Config exists:    $([ -f "$CONFIG_PATH" ] && echo yes || echo no)
+Config mode:      $([ -f "$CONFIG_PATH" ] && stat -c '%a' "$CONFIG_PATH" 2>/dev/null || echo n/a)
+Data dir mode:    $([ -d "$DATA_DIR" ] && stat -c '%a' "$DATA_DIR" 2>/dev/null || echo n/a)
+Runtime dir mode: $([ -d "$RUNTIME_DIR" ] && stat -c '%a' "$RUNTIME_DIR" 2>/dev/null || echo n/a)
 Canvas state:     $([ -f "$CANVAS_STATE_PATH" ] && echo yes || echo no)
 Canvas assets:    $([ -d "$CANVAS_ASSET_DIR" ] && echo yes || echo no)
+Bot v2 build:     $([ -f "$APP_DIR/dist/apps/bot/src/start.js" ] && echo yes || echo no)
+Admin static:     $([ -f "$APP_DIR/apps/panel/static/admin/index.html" ] && echo yes || echo no)
+Canvas static:    $([ -f "$APP_DIR/apps/panel/static/canvas/index.html" ] && echo yes || echo no)
+Runtime state:    $(find "$RUNTIME_DIR" -maxdepth 1 -type f \( -name 'orchestration-*.json*' -o -name 'orchestration-*.jsonl' -o -name 'audit.jsonl' -o -name 'managed-artifacts.json' -o -name 'voice-preferences.json' \) 2>/dev/null | wc -l) file(s)
+MIOBOT_DATA_DIR:  ${MIOBOT_DATA_DIR:-未设置（使用 MIOBOT_RUNTIME_DIR）}
+Config versions:  $([ -f "${MIOBOT_CONFIG_VERSION_FILE:-$RUNTIME_DIR/config-versions.json}" ] && echo yes || echo no)
 Service exists:   $(service_exists && echo yes || echo no)
 EOF
   if have_cmd systemctl && service_exists; then
@@ -936,9 +1004,28 @@ restore_config() {
   ensure_dirs
   backup_config
   cp -a "$source" "$CONFIG_PATH"
-  chmod 0644 "$CONFIG_PATH"
+  chmod 0600 "$CONFIG_PATH"
   log "已恢复配置到：$CONFIG_PATH"
   service_restart
+}
+
+restore_runtime_data() {
+  require_root
+  local source="${1:-}"
+  [ -n "$source" ] || fail "用法：bash deploy-linux.sh restore-data /path/to/orchestration-state.tar.gz"
+  [ -f "$source" ] || fail "运行状态归档不存在：$source"
+  detect_runtime_layout
+  ensure_dirs
+  service_stop
+  backup_runtime_data
+  log "恢复编排/记忆/审批运行状态：$source"
+  tar -C "$RUNTIME_DIR" -xzf "$source"
+  find "$RUNTIME_DIR" -maxdepth 1 -type f \
+    \( -name 'orchestration-*' -o -name 'config-versions.json' -o -name 'audit.jsonl' -o -name 'managed-artifacts.json' -o -name 'voice-preferences.json' -o -name 'pending-files.json' \) \
+    -exec chmod 0600 {} + 2>/dev/null || true
+  chmod 0700 "$RUNTIME_DIR" "$RUNTIME_DIR/memory" "$RUNTIME_DIR/generated-files" "$RUNTIME_DIR/tmp-files" 2>/dev/null || true
+  service_start
+  log "运行状态恢复完成。"
 }
 
 uninstall_service() {
@@ -1007,8 +1094,9 @@ Miobot v2 Linux 运维脚本（root-only）
   logs            追踪日志，LINES=300 可调整初始行数
   health          健康检查
   backup-config   仅备份 ${CONFIG_PATH}
-  backup-data     备份配置、画廊、模板库状态和图片资源
+  backup-data     备份配置、画廊、模板库状态、图片资源和编排运行状态
   restore-config  恢复配置：restore-config /path/to/config.json
+  restore-data    恢复编排/记忆/审批运行状态：restore-data /path/to/orchestration-state.tar.gz
   uninstall       移除 systemd 服务；PURGE_DATA=1 时同时删应用和数据
 
 常用变量：
@@ -1016,6 +1104,8 @@ Miobot v2 Linux 运维脚本（root-only）
   PORT=${PORT}
   HOST=${HOST}
   DATA_DIR=${DATA_DIR}
+  MIOBOT_RUNTIME_DIR=${RUNTIME_DIR}
+  MIOBOT_DATA_DIR=${RUNTIME_DIR}
   MIOBOT_CONFIG_PATH=${CONFIG_PATH}
   MIOBOT_CANVAS_STATE_PATH=${CANVAS_STATE_PATH}
   MIOBOT_CANVAS_ASSET_DIR=${CANVAS_ASSET_DIR}
@@ -1023,6 +1113,8 @@ Miobot v2 Linux 运维脚本（root-only）
   MIOBOT_SYNC_BOT_GALLERY=${SYNC_BOT_GALLERY}
   MIOBOT_CANVAS_SYNC_TIMEOUT_MS=${CANVAS_SYNC_TIMEOUT_MS}
   MIOBOT_INLINE_REMOTE_IMAGES=${INLINE_REMOTE_IMAGES}
+  MIOBOT_BOT_RUNTIME=v2
+  MIOBOT_WEB_RUNTIME=v2
   RUN_TESTS=1
   STRICT_LOCKFILE=1
   INSTALL_CODEX_SDK=1
@@ -1059,6 +1151,7 @@ run_action() {
     backup-config) require_root; ensure_dirs; backup_config "$@" ;;
     backup-data|backup) require_root; ensure_dirs; backup_runtime_data "$@" ;;
     restore-config|restore) restore_config "$@" ;;
+    restore-data|restore-runtime) require_root; restore_runtime_data "$@" ;;
     uninstall|remove) uninstall_service "$@" ;;
     help|-h|--help) usage ;;
     *) usage; fail "未知命令：$ACTION" ;;

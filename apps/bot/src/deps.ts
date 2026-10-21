@@ -87,7 +87,7 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       const videos = (req.videos || []).filter(Boolean);
       // 群聊上下文：@bot 时拉取的最近群聊记录，作为 system 前置注入，让 bot 知道在聊什么。
       const contextSystem = req.context
-        ? { role: 'system', content: `【群内最近对话上下文】\n${req.context}\n（请根据@你的消息判断是否与上述上下文相关：相关则结合上下文回复，无关则正常回复用户，不要生硬搬运上下文内容）` }
+        ? { role: 'system', content: `【群内最近对话上下文】\n${req.context}\n（每条格式为 昵称 [QQ号]: 内容；QQ号是用户唯一身份，不同QQ号是不同的人，绝不能把不同QQ的消息当成同一个人。请结合当前提问用户和上下文判断谁在说话；相关则回复，无关则正常回复，不要生硬搬运上下文内容）` }
         : null;
       let searchSystem: { role: 'system'; content: string } | null = null;
       if (search?.shouldSearch(req.text, req.forceSearch)) {

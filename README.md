@@ -110,6 +110,44 @@ PORT=3018 HOST=0.0.0.0 bash deploy-linux.sh install
 | systemd 服务 | `miobot-v2` |
 | Web 端口 | `3018` |
 
+### v3 编排运行状态
+
+除 `config.json` 和 `canvas-state.json` 外，v3 还会在运行目录写入：
+
+| 内容 | 默认路径 |
+| --- | --- |
+| 配置版本历史 | `/var/lib/miobot-v2/config-versions.json` |
+| 待审批 / 待追问任务 | `/var/lib/miobot-v2/orchestration-pending-jobs.json` |
+| 审批状态 | `/var/lib/miobot-v2/orchestration-approvals.json` |
+| 审计 / trace | `/var/lib/miobot-v2/audit.jsonl`、`orchestration-traces.jsonl` |
+| 长期记忆 | `/var/lib/miobot-v2/memory/` |
+| 生成文件索引 / 文件管理 | `managed-artifacts.json`、`pending-files.json` |
+| 音色偏好 | `voice-preferences.json` |
+
+`MIOBOT_RUNTIME_DIR` 和 `MIOBOT_DATA_DIR` 默认指向同一个运行目录；部署脚本会显式写入
+`MIOBOT_DATA_DIR`，避免 bot 和面板读写不同位置。完整运行状态可用：
+
+```bash
+bash deploy-linux.sh backup-data
+```
+
+备份会额外生成 `orchestration-state.<时间>.tar.gz`。恢复编排运行状态（不覆盖 config）：
+
+```bash
+bash deploy-linux.sh restore-data /var/lib/miobot-v2/backups/orchestration-state.<时间>.tar.gz
+```
+
+注意：`orchestration.memory.dataDir`、Embedding 模型/维度、文件索引 TTL 等配置修改后
+需要重启 bot 才能完全生效；面板中的普通权限/审批/回复策略则可热加载。
+
+### 配置导入导出兼容性
+
+- 支持旧版 `{ version: 1, config: {...} }` 导出信封、裸配置对象，以及当前版本信封。
+- 旧配置缺少的新分区会补默认值，不会用默认值覆盖旧配置里已有的节点、命令、画布或机器人设置。
+- 当前版本完整导出再导入已覆盖编排、权限、审批、回复策略、记忆、音色和 Suno 配置。
+- 配置版本历史默认写入 `config-versions.json`，部署脚本会随运行状态一起备份。
+- **降级不保证无损**：把包含 v3 orchestration 的新导出文件导入旧版程序时，旧版程序不认识新分区，保存后可能丢弃它们。生产环境请先备份，并保持版本向前升级。
+
 
 ## Bot 生图回图与图库（Napcat 容器）
 

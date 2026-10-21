@@ -10,8 +10,11 @@ export function writeFileAtomicSync(filePath: string, data: string): void {
   const dir = path.dirname(resolved);
   fs.mkdirSync(dir, { recursive: true });
   const tmp = path.join(dir, `.${path.basename(resolved)}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  let mode = 0o600;
+  try { mode = fs.statSync(resolved).mode & 0o777; } catch { /* new file: private by default */ }
   try {
-    fs.writeFileSync(tmp, data, 'utf8');
+    fs.writeFileSync(tmp, data, { encoding: 'utf8', mode });
+    try { fs.chmodSync(tmp, mode); } catch { /* Windows may ignore mode */ }
     fs.renameSync(tmp, resolved);
   } catch (error) {
     try { fs.rmSync(tmp, { force: true }); } catch { /* best-effort cleanup */ }

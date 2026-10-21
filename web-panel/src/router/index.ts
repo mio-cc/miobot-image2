@@ -33,6 +33,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '能力分工', group: '模型', icon: 'route' },
     },
     {
+        path: '/orchestration',
+        name: 'orchestration',
+        component: () => import('../pages/OrchestrationPage.vue'),
+        meta: { title: '智能编排', group: '模型', icon: 'route' },
+    },
+    {
         path: '/nodes',
         name: 'nodes',
         component: () => import('../pages/NodesPage.vue'),
