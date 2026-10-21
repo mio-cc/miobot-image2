@@ -298,6 +298,19 @@ export function detectComfyUiPromptNodeIds(workflow: Record<string, unknown>, ne
   const preferred = candidates.filter((node) => referencedPositive.has(node.id));
   return (preferred.length ? preferred : candidates).map((node) => node.id);
 }
+function bypassFaceDetailerNodes(workflow: Record<string, any>): void {
+  for (const [detailerId, node] of Object.entries(workflow)) {
+    if (!node || typeof node !== 'object' || node.class_type !== 'FaceDetailer') continue;
+    const upstream = node.inputs?.image;
+    if (!Array.isArray(upstream) || upstream.length !== 2) continue;
+    for (const [targetId, target] of Object.entries(workflow)) {
+      if (targetId === detailerId || !target || typeof target !== 'object') continue;
+      if (!target.inputs || typeof target.inputs !== 'object') continue;
+      target.inputs = replaceNodeReference(target.inputs, detailerId, [String(upstream[0]), Number(upstream[1] || 0)]) as Record<string, unknown>;
+    }
+    delete workflow[detailerId];
+  }
+}
 const COMFY_SEED_KEYS = ['seed', 'detailerSeed', 'upscaleSeed'] as const;
 type ComfySeedKey = typeof COMFY_SEED_KEYS[number];
 
@@ -321,6 +334,7 @@ export function buildComfyUiWorkflow(profile: ComfyUiProfile, params: Record<str
   seeds?: Partial<Record<ComfySeedKey, number>>;
 } {
   const workflow = JSON.parse(JSON.stringify(profile.workflow || {})) as Record<string, any>;
+  if (profile.skipFaceDetailer) bypassFaceDetailerNodes(workflow);
   const merged = { ...(profile.defaults || {}), ...(params || {}) } as Record<string, unknown>;
   if (merged.batchSize !== undefined) {
     const n = Math.trunc(Number(merged.batchSize));
@@ -343,6 +357,7 @@ export function buildComfyUiWorkflow(profile: ComfyUiProfile, params: Record<str
   const applied: Record<string, unknown> = {};
   for (const [key, path] of Object.entries(profile.parameterMap || {})) {
     if (!path) continue;
+      if (profile.skipFaceDetailer && (key.startsWith('detailer') || key === 'guideSize')) continue;
     const value = merged[key];
     if (value === undefined) continue;
     if (key === 'batchSize' && !profile.parameterMap?.batchSize) continue;

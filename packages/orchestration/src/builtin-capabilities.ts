@@ -25,7 +25,7 @@ export function builtinCapabilityDescriptors(): CapabilityDescriptor[] {
     { ...base, id: 'voice.search', name: '搜索音色', provider: 'fish-audio', mode: 'interactive', riskLevel: 'medium', mergeable: true, outputKinds: ['text'], inputSchema: { type: 'object', properties: { title: { type: 'string' }, tags: { type: 'array' }, language: { type: 'array' }, licensedOnly: { type: 'boolean' } }, additionalProperties: true } },
     { ...base, id: 'voice.preview', name: '试听音色', provider: 'fish-audio', mode: 'interactive', queue: 'audio', riskLevel: 'medium', mergeable: false, outputKinds: ['audio', 'text'], inputSchema: { type: 'object', properties: { index: { type: 'number', minimum: 1 }, candidateId: { type: 'string' }, text: { type: 'string' } }, additionalProperties: true } },
     { ...base, id: 'voice.select', name: '选择音色', provider: 'fish-audio', mode: 'interactive', riskLevel: 'medium', mergeable: true, outputKinds: ['text'], inputSchema: { type: 'object', properties: { index: { type: 'number', minimum: 1 }, candidateId: { type: 'string' } }, additionalProperties: true } },
-    { ...base, id: 'audio.music.generate', name: 'Suno 音乐生成', provider: 'suno-official', mode: 'async_job', queue: 'audio', riskLevel: 'medium', approvalRequired: false, external: true, mergeable: false, outputKinds: ['audio', 'image'], inputSchema: { type: 'object', properties: { request: { type: 'string' }, prompt: { type: 'string' }, lyrics: { type: 'string' }, title: { type: 'string' }, style: { type: 'string' }, instrumental: { type: 'boolean' }, duration: { type: 'number', minimum: 10, maximum: 360 }, negativeTags: { type: 'string' }, vocalGender: { type: 'string', enum: ['m', 'f'] }, styleWeight: { type: 'number', minimum: 0, maximum: 1 }, weirdnessConstraint: { type: 'number', minimum: 0, maximum: 1 }, audioWeight: { type: 'number', minimum: 0, maximum: 1 }, variety: { type: 'number', minimum: 0, maximum: 4 }, model: { type: 'string' } }, additionalProperties: true } },
+    { ...base, id: 'audio.music.generate', name: 'Suno 音乐生成', provider: 'suno-official', mode: 'async_job', queue: 'audio', riskLevel: 'medium', approvalRequired: false, external: true, mergeable: false, outputKinds: ['audio'], inputSchema: { type: 'object', properties: { request: { type: 'string' }, prompt: { type: 'string' }, lyrics: { type: 'string' }, title: { type: 'string' }, style: { type: 'string' }, instrumental: { type: 'boolean' }, duration: { type: 'number', minimum: 10, maximum: 360 }, negativeTags: { type: 'string' }, vocalGender: { type: 'string', enum: ['m', 'f'] }, styleWeight: { type: 'number', minimum: 0, maximum: 1 }, weirdnessConstraint: { type: 'number', minimum: 0, maximum: 1 }, audioWeight: { type: 'number', minimum: 0, maximum: 1 }, variety: { type: 'number', minimum: 0, maximum: 4 }, model: { type: 'string' } }, additionalProperties: true } },
     { ...base, id: 'prompt.enhance', name: '提示词增强', provider: 'model', mode: 'sync', riskLevel: 'low', mergeable: true, outputKinds: ['text'] },
     { ...base, id: 'prompt.translate', name: '提示词翻译', provider: 'model', mode: 'sync', riskLevel: 'low', mergeable: true, outputKinds: ['text'] },
     { ...base, id: 'template.list', name: '模板列表', provider: 'builtin', mode: 'sync', riskLevel: 'low', mergeable: true, outputKinds: ['text'] },
@@ -208,8 +208,11 @@ export function applyRuntimeCapabilityGates(
   gates: { sunoEnabled?: boolean; externalEnabled?: boolean; allowlist?: string[] } = {},
 ): CapabilityDescriptor[] {
   return descriptors.map((descriptor) => {
-    if (descriptor.id === 'audio.music.generate' && !gates.sunoEnabled) {
-      return { ...descriptor, enabled: false };
+    // Suno 有独立的 enabled 开关和 provider allowlist，不能要求用户再打开 generic externalProviders 总开关。
+    if (descriptor.id === 'audio.music.generate') {
+      const providers = gates.allowlist || [];
+      const providerAllowed = providers.length === 0 || providers.includes(descriptor.provider);
+      return { ...descriptor, enabled: Boolean(gates.sunoEnabled) && providerAllowed };
     }
     if (descriptor.external) {
       const providers = gates.allowlist || [];

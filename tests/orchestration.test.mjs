@@ -297,12 +297,12 @@ test('orchestration: Suno client creates and polls an official-style task', asyn
   assert.ok(calls.some((call) => call.url.includes('/generate/task-1')));
 });
 
-test('orchestration: Suno capability handler returns audio and cover outputs', async () => {
+test('orchestration: Suno capability handler returns only the first audio and no cover', async () => {
   const handler = new SunoCapabilityHandler({
     getConfig: () => ({ orchestration: { suno: { enabled: true } } }),
     createClient: () => ({
       async create() { return { id: 'task-1', raw: {} }; },
-      async wait() { return { id: 'task-1', status: 'success', raw: {}, outputs: [{ url: 'https://cdn/song.mp3', coverUrl: 'https://cdn/cover.jpg', title: 'song' }] }; },
+        async wait() { return { id: 'task-1', status: 'success', raw: {}, outputs: [{ url: 'https://cdn/song.mp3', coverUrl: 'https://cdn/cover.jpg', title: 'song-1' }, { url: 'https://cdn/song-2.mp3', coverUrl: 'https://cdn/cover-2.jpg', title: 'song-2' }] }; },
     }),
   });
   const result = await handler.execute({
@@ -313,7 +313,11 @@ test('orchestration: Suno capability handler returns audio and cover outputs', a
   });
   assert.equal(result.status, 'success');
   assert.equal(result.outputs[0].kind, 'audio');
-  assert.equal(result.outputs[1].kind, 'image');
+    assert.equal(result.outputs.length, 1);
+    assert.equal(result.outputs[0].url, 'https://cdn/song.mp3');
+    assert.equal(result.outputs.some((item) => item.kind === 'image'), false);
+    assert.equal(result.diagnostics.generatedVariants, 2);
+    assert.equal(result.diagnostics.returnedAudio, 1);
 });
 
 test('orchestration: enforce path plans and executes image capability through legacy adapter', async () => {
@@ -873,6 +877,8 @@ test('orchestration: Suno capability is disabled by runtime gate until enabled',
   const enabled = applyRuntimeCapabilityGates(builtinCapabilityDescriptors(), { sunoEnabled: true, externalEnabled: true, allowlist: ['suno-official'] });
   assert.equal(disabled.find((item) => item.id === 'audio.music.generate')?.enabled, false);
   assert.equal(enabled.find((item) => item.id === 'audio.music.generate')?.enabled, true);
+  const sunoOnly = applyRuntimeCapabilityGates(builtinCapabilityDescriptors(), { sunoEnabled: true, externalEnabled: false, allowlist: ['suno-official'] });
+  assert.equal(sunoOnly.find((item) => item.id === 'audio.music.generate')?.enabled, true);
   const providerDenied = applyRuntimeCapabilityGates(builtinCapabilityDescriptors(), { sunoEnabled: true, externalEnabled: true, allowlist: ['other-provider'] });
   assert.equal(providerDenied.find((item) => item.id === 'audio.music.generate')?.enabled, false);
 });

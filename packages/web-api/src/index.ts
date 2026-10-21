@@ -466,6 +466,7 @@ export class WebApi {
                 fallbackEnabled: profile.fallbackEnabled !== false,
                 builtinRevision: profile.builtinRevision || '',
                 customized: Boolean(profile.customized),
+                skipFaceDetailer: Boolean(profile.skipFaceDetailer),
                 hasBuiltin: Boolean(builtinComfyUiProfile(profile.id)),
                 parameterMap: profile.parameterMap || {},
                 defaults: profile.defaults || {},
@@ -522,6 +523,7 @@ export class WebApi {
           stitch: current?.stitch,
           transform: current?.transform,
           lora: undefined,
+          skipFaceDetailer: body.skipFaceDetailer === undefined ? current?.skipFaceDetailer : Boolean(body.skipFaceDetailer),
           fallbackProfileId: body.fallbackProfileId === undefined ? (current?.fallbackProfileId || builtinComfyUiProfile(profileId)?.id || profileId) : String(body.fallbackProfileId || '').trim() || undefined,
           fallbackEnabled: body.fallbackEnabled === undefined ? (current?.fallbackEnabled ?? true) : Boolean(body.fallbackEnabled),
           builtinRevision: current?.builtinRevision || builtinComfyUiProfile(profileId)?.builtinRevision,
@@ -536,7 +538,8 @@ export class WebApi {
             || JSON.stringify(nextProfile.promptNodeIds) !== JSON.stringify(routeBaseline.promptNodeIds)
             || JSON.stringify(nextProfile.negativePromptNodeIds) !== JSON.stringify(routeBaseline.negativePromptNodeIds)
             || String(nextProfile.outputNodeId || '') !== String(routeBaseline.outputNodeId || '')
-            || JSON.stringify(nextProfile.promptPolicy || {}) !== JSON.stringify(routeBaseline.promptPolicy || {});
+            || JSON.stringify(nextProfile.promptPolicy || {}) !== JSON.stringify(routeBaseline.promptPolicy || {})
+            || Boolean(nextProfile.skipFaceDetailer) !== Boolean(routeBaseline.skipFaceDetailer);
           nextProfile.customized = changed;
           nextProfile.builtinRevision = routeBaseline.builtinRevision;
           if (!nextProfile.fallbackProfileId) nextProfile.fallbackProfileId = routeBaseline.id;

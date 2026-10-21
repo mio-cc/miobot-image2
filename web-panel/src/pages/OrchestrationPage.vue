@@ -56,6 +56,7 @@ const comfyParameterDrafts = ref<Record<string, any>>({});
 const comfyFallbackProfileId = ref('');
 const comfyFallbackEnabled = ref(true);
 const comfyCustomized = ref(false);
+const comfySkipFaceDetailer = ref(false);
 const comfyBuiltinRevision = ref('');
 const promptDiff = ref<any[]>([]);
 const traceReplay = ref<any>(null);
@@ -250,13 +251,17 @@ async function loadComfyWorkflows() {
     try {
         const res = await client.get('/orchestration/comfyui/workflows');
         comfyWorkflowNodes.value = res.data?.nodes || [];
+        const activeNodeIndex = Number(config.value?.llm?.imageNodeIndex ?? comfyNodeIndex.value);
         if (!comfyWorkflowNodes.value.length) return;
-        if (!comfyWorkflowNodes.value.some((item: any) => Number(item.nodeIndex) === Number(comfyNodeIndex.value))) {
-            comfyNodeIndex.value = Number(comfyWorkflowNodes.value[0].nodeIndex);
-        }
-        const node = comfyWorkflowNodes.value.find((item: any) => Number(item.nodeIndex) === Number(comfyNodeIndex.value));
-        const profile = node?.profiles?.[0];
-        if (profile) await loadComfyWorkflowProfile(Number(node.nodeIndex), String(profile.id));
+        const preferredNode = comfyWorkflowNodes.value.find((item: any) => Number(item.nodeIndex) === Number(comfyNodeIndex.value))
+          || comfyWorkflowNodes.value.find((item: any) => Number(item.nodeIndex) === activeNodeIndex)
+          || comfyWorkflowNodes.value[0];
+        comfyNodeIndex.value = Number(preferredNode.nodeIndex);
+        const activeProfileId = String(config.value?.llm?.imageModel || '');
+        const profile = preferredNode.profiles?.find((item: any) => String(item.id) === String(comfyProfileId.value))
+          || preferredNode.profiles?.find((item: any) => String(item.id) === activeProfileId)
+          || preferredNode.profiles?.[0];
+        if (profile) await loadComfyWorkflowProfile(Number(preferredNode.nodeIndex), String(profile.id));
     } catch { comfyWorkflowNodes.value = []; }
 }
 
@@ -277,6 +282,7 @@ async function loadComfyWorkflowProfile(nodeIndex = Number(comfyNodeIndex.value)
         comfyOutputNodeId.value = String(profile.outputNodeId || '');
         comfyFallbackProfileId.value = String(profile.fallbackProfileId || profile.id || '');
         comfyFallbackEnabled.value = profile.fallbackEnabled !== false;
+        comfySkipFaceDetailer.value = Boolean(profile.skipFaceDetailer);
         comfyCustomized.value = Boolean(profile.customized);
         comfyBuiltinRevision.value = String(profile.builtinRevision || '');
         comfyParameterMapJson.value = JSON.stringify(profile.parameterMap || {}, null, 2);
@@ -300,6 +306,7 @@ function newComfyWorkflowProfile() {
     comfyOutputNodeId.value = '';
     comfyParameterMapJson.value = '{}';
     comfyDefaultsJson.value = '{}';
+    comfySkipFaceDetailer.value = false;
     comfyParameterDrafts.value = {};
     comfyWorkflowNodesInfo.value = [];
     comfyWorkflowValidation.value = null;
@@ -341,6 +348,7 @@ async function saveComfyWorkflowProfile() {
             fallbackProfileId: comfyFallbackProfileId.value.trim() || id,
             fallbackEnabled: comfyFallbackEnabled.value,
             customized: comfyCustomized.value,
+            skipFaceDetailer: comfySkipFaceDetailer.value,
         });
         comfyWorkflowValidation.value = res.data?.validation || null;
         comfyWorkflowMessage.value = '保存成功，配置已热重载';
@@ -697,6 +705,7 @@ function commitHardDeny(text: string) {
         <FormField label="显示名称"><input v-model="comfyProfileName" class="input-field" /></FormField>
         <FormField label="输出节点 ID"><input v-model="comfyOutputNodeId" class="input-field font-mono" placeholder="16" /></FormField>        <FormField label="Fallback Profile"><input v-model="comfyFallbackProfileId" class="input-field font-mono" placeholder="同 id 使用内置 baseline" /></FormField>
         <div class="flex items-end"><ToggleField v-model="comfyFallbackEnabled" label="失败自动切 baseline" /></div>
+        <div class="flex items-end"><ToggleField v-model="comfySkipFaceDetailer" label="跳过 FaceDetailer 脸修" hint="仍保留放大，直接接 VAEDecode 输出" /></div>
         <FormField label="正向提示词节点 ID"><input v-model="comfyPromptNodeIds" class="input-field font-mono" placeholder="5, 13" /></FormField>
         <FormField label="负向提示词节点 ID"><input v-model="comfyNegativePromptNodeIds" class="input-field font-mono" placeholder="6" /></FormField>
         <div class="flex items-end gap-2 xl:col-span-3">

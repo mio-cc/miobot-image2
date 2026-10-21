@@ -150,13 +150,13 @@ export class SunoCapabilityHandler implements CapabilityHandler {
           outputs: [], error: `suno_task_${task.status}`, diagnostics: { taskId: created.id, raw: task.raw }, retryable: task.status !== 'failed',
         };
       }
-      const outputs = task.outputs.flatMap((item) => {
-        const list = [];
-        if (item.url) list.push({ kind: 'audio' as const, url: item.url, priority: 10, mergeable: false, meta: { title: item.title, lyrics: item.lyrics, provider: 'suno-official' } });
-        if (item.coverUrl) list.push({ kind: 'image' as const, url: item.coverUrl, priority: 8, mergeable: true, meta: { provider: 'suno-official' } });
-        return list;
-      });
-      return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success', outputs, diagnostics: { taskId: created.id } };
+      // Suno V6 对一次请求通常会返回两个 variant；这里只交付第一首，并且不返回歌曲封面。
+      const first = task.outputs.find((item) => Boolean(item.url));
+      const outputs = first?.url
+        ? [{ kind: 'audio' as const, url: first.url, priority: 10, mergeable: false, meta: { title: first.title, lyrics: first.lyrics, provider: 'suno-official' } }]
+        : [];
+      this.options.logger?.info('Suno 任务完成，只交付首曲且不发送封面', { taskId: created.id, generatedVariants: task.outputs.length, returnedAudio: outputs.length, discardedCoverCount: task.outputs.filter((item) => Boolean(item.coverUrl)).length });
+      return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success', outputs, diagnostics: { taskId: created.id, generatedVariants: task.outputs.length, returnedAudio: outputs.length } };
     } catch (error) {
       this.options.logger?.warn('Suno 能力执行失败', { error: String((error as Error)?.message || error) });
       const message = String((error as Error)?.message || error);

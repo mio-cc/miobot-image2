@@ -340,9 +340,8 @@ function availableIntentCatalog(cfg: AppConfig): IntentCatalogItem[] {
     if (item.id === 'chat') return true;
     if (item.id === 'audio.music.generate') {
       const suno = cfg.orchestration?.suno;
-      const external = cfg.orchestration?.externalProviders;
-      const allowlist = external?.allowlist || [];
-      if (!suno?.enabled || !external?.enabled || (allowlist.length > 0 && !allowlist.includes('suno-official'))) return false;
+      const allowlist = cfg.orchestration?.externalProviders?.allowlist || [];
+      if (!suno?.enabled || (allowlist.length > 0 && !allowlist.includes('suno-official'))) return false;
     }
     if (item.id === 'code.render' && (!cfg.browserRender?.enabled || cfg.codeRender?.enabled === false)) return false;
     if (item.id === 'web.screenshot' && !cfg.browserRender?.enabled) return false;

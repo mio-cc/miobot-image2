@@ -81,6 +81,8 @@ export interface ComfyUiProfile {
   customized?: boolean;
   /** 旧 10 节点 workflow 迁移前的原始快照。 */
   legacyWorkflow?: Record<string, unknown>;
+  /** 跳过 FaceDetailer 脸修阶段；放大仍从 VAEDecode 继续。 */
+  skipFaceDetailer?: boolean;
 }
 export interface ComfyUiNodeConfig { profiles: ComfyUiProfile[]; pollTimeoutMs: number; pollIntervalMs: number; maxBatchSize: number; maxConcurrent: number; maxQueue: number; queueTimeoutMs: number }
 export interface ComfyUiTransformConfig { enabled: boolean; nodeIndex: number; model: string; timeoutMs: number; maxTokens: number; promptTemplate: string }
@@ -859,6 +861,7 @@ function normComfyui(v: unknown, warnings: string[]): ComfyUiNodeConfig | undefi
     builtinRevision: str(item.builtinRevision, '', false).trim() || undefined,
     customized: item.customized === undefined ? undefined : bool(item.customized, false),
     legacyWorkflow: isObj(item.legacyWorkflow) ? clone(item.legacyWorkflow) : undefined,
+    skipFaceDetailer: item.skipFaceDetailer === undefined ? undefined : bool(item.skipFaceDetailer, false),
   })) : [];
   profiles = profiles.map((profile) => {
     const builtin = builtinComfyUiProfile(profile.id);
@@ -909,6 +912,7 @@ function normComfyui(v: unknown, warnings: string[]): ComfyUiNodeConfig | undefi
       builtinRevision: profile.builtinRevision || COMFYUI_BUILTIN_REVISION,
       customized: profile.customized === undefined ? customized : profile.customized,
       legacyWorkflow: legacyBroken ? clone(profile.workflow) : profile.legacyWorkflow,
+      skipFaceDetailer: Boolean(profile.skipFaceDetailer),
     } as ComfyUiProfile;
   });
   profiles = profiles.map((profile) => (profile.negativePromptNodeIds || []).length

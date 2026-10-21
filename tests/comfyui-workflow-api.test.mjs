@@ -358,9 +358,30 @@ test('comfyui workflow API: fallback fields sent by panel are persisted', async 
   const auth = { authorization: `Bearer ${derivePanelToken(cfg.panel.passwordSeed)}` };
   const response = await api.handle({
     method: 'PUT', path: '/api/orchestration/comfyui/workflows/0/z-image-turbo', headers: auth,
-    body: { fallbackEnabled: false, fallbackProfileId: 'z-image-turbo', customized: false },
+    body: { fallbackEnabled: false, fallbackProfileId: 'z-image-turbo', skipFaceDetailer: true, customized: false },
   });
   assert.equal(response.status, 200);
   assert.equal(response.body.profile.fallbackEnabled, false);
   assert.equal(response.body.profile.fallbackProfileId, 'z-image-turbo');
+  assert.equal(response.body.profile.skipFaceDetailer, true);
+});
+test('comfyui profile: skipFaceDetailer rewires UltimateSDUpscale directly to VAEDecode', () => {
+  for (const profile of BUILTIN_COMFYUI_PROFILES) {
+    const detailer = Object.entries(profile.workflow || {}).find(([, node]) => node?.class_type === 'FaceDetailer');
+    assert.ok(detailer, profile.id);
+    const [detailerId, detailerNode] = detailer;
+    const upstreamImage = detailerNode.inputs.image;
+    const upscale = Object.entries(profile.workflow || {}).find(([, node]) => node?.class_type === 'UltimateSDUpscale');
+    assert.ok(upscale, profile.id);
+    const [upscaleId, upscaleNode] = upscale;
+    const skipped = buildComfyUiWorkflow({ ...profile, skipFaceDetailer: true }, { prompt: 'skip face detailer' });
+    assert.equal(Object.values(skipped.workflow).some((node) => node?.class_type === 'FaceDetailer'), false);
+    assert.deepEqual(skipped.workflow[upscaleId].inputs.image, upstreamImage);
+    assert.equal(skipped.applied.detailerSeed, undefined);
+    assert.ok(skipped.seeds.seed > 0);
+    assert.ok(skipped.seeds.upscaleSeed > 0);
+    const normal = buildComfyUiWorkflow({ ...profile, skipFaceDetailer: false }, { prompt: 'normal' });
+    assert.equal(normal.workflow[detailerId].class_type, 'FaceDetailer');
+    assert.deepEqual(upscaleNode.inputs.image, [detailerId, 0]);
+  }
 });
