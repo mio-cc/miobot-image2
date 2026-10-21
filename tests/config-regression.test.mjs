@@ -1,8 +1,10 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
   CONFIG_MIGRATION_TABLE,
+  LEGACY_FREE_MODE_PROMPT_V1,
+  LEGACY_NATURAL_INTENT_PROMPT_V1,
   CONFIG_PACKAGE,
   CONFIG_SCHEMA_VERSION,
   createDefaultConfig,
@@ -66,6 +68,8 @@ test('config regression: prompt rewrite defaults preserve the user language', ()
   assert.match(defaults.llm.enhancePromptTemplate, /保留用户原始语言/);
   assert.match(defaults.llm.enhancePromptTemplate, /不要翻译成英文/);
   assert.match(defaults.promptsChat.smartPromptTemplate, /must not be translated into English/);
+  assert.match(defaults.freeMode.plannerPromptTemplate, /"action":"video"/);
+  assert.match(defaults.freeMode.plannerPromptTemplate, /"images":\[/);
   assert.match(defaults.freeMode.plannerPromptTemplate, /must not be translated into English/);
 });
 
@@ -282,4 +286,20 @@ test('config regression: v3 orchestration settings survive export/import', () =>
   assert.equal(roundTrip.config.orchestration.suno.callbackSecret, 'callback-secret');
   assert.equal(roundTrip.config.orchestration.memory.userGlobalProfileEnabled, true);
   assert.equal(roundTrip.config.orchestration.permissions.hardDenyCapabilities[0], 'file.delete');
+});
+
+test('config migration: known legacy intent and freeMode prompts upgrade to effect semantics', () => {
+  const cfg = createDefaultConfig();
+  cfg.intentRecognition.promptTemplate = LEGACY_NATURAL_INTENT_PROMPT_V1;
+  cfg.freeMode.plannerPromptTemplate = LEGACY_FREE_MODE_PROMPT_V1;
+  const normalized = normalizeConfig(cfg);
+  assert.match(normalized.intentRecognition.promptTemplate, /effect/);
+  assert.match(normalized.intentRecognition.promptTemplate, /话题词/);
+  assert.match(normalized.freeMode.plannerPromptTemplate, /outcome effect/);
+  const custom = createDefaultConfig();
+  custom.intentRecognition.promptTemplate = 'MY CUSTOM INTENT';
+  custom.freeMode.plannerPromptTemplate = 'MY CUSTOM FREE';
+  const normalizedCustom = normalizeConfig(custom);
+  assert.equal(normalizedCustom.intentRecognition.promptTemplate, 'MY CUSTOM INTENT');
+  assert.equal(normalizedCustom.freeMode.plannerPromptTemplate, 'MY CUSTOM FREE');
 });

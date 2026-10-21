@@ -13,7 +13,8 @@ import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 import { fetchGroupContext, senderIdentity, type GroupContextOptions, type NapcatHistoryMessage } from './group-context.js';
 import { extractForwardIds, extractReferenceText, formatForwardMessages, isReferencedFromBot } from './message-enrichment.js';
 import type { CanvasGallerySyncInput } from './canvas-gallery.js';
-import type { UserRequest } from '../../../packages/orchestration/src/index.js';
+import type { IntentPlan, UserRequest } from '../../../packages/orchestration/src/index.js';
+import { normalizeReplyFingerprint, replyContentHash } from '../../../packages/orchestration/src/index.js';
 import { describeImageReference, type ImageInputPreparer } from './image-input.js';
 import { DEFAULT_FILE_PARSE_LIMITS, PendingFileIndex, parseFile, formatParsedFileForModel, type FileParseLimits, type PendingFileRecord, type ParsedFileResult } from '../../../packages/file-ingest/src/index.js';
 import { DEFAULT_FILEGEN_LIMITS, generateFile, generatedFileSpecFromJson, type GeneratedFileSpec, type GeneratedFileType } from '../../../packages/filegen/src/index.js';
@@ -23,6 +24,7 @@ import { classifyNaturalLanguageIntent, type IntentCatalogItem, type IntentFallb
 import { renderTextToImage } from '../../../packages/image-compose/src/index.js';
 import type { BrowserRenderService, RenderedImage } from '../../../packages/browser-render/src/index.js';
 import { createImageProgress, type ImageProgressKind, type ImageProgressHandle } from './image-progress.js';
+import { buildHelpText } from './help-text.js';
 
 /** Napcat(OneBot) 上报的消息事件(只取本环需要的字段)。 */
 export interface NapcatMessageEvent {
@@ -102,6 +104,7 @@ export interface BotRuntimeOptions {
   /** 撤回机器人发出的图片（群聊自动撤回用）。 */
   deleteMessage?: (messageId: number | string) => Promise<boolean>;
   voice?: (text: string, context: { chatType: 'group' | 'private'; groupId?: number | string; userId?: number | string }) => Promise<string | null | undefined>;
+  voiceEligible?: (text: string, context: { chatType: 'group' | 'private'; groupId?: number | string; userId?: number | string }) => Promise<boolean> | boolean;
   /**
    * 生图/改图结果入库回调(可选)。返回用于 Napcat 发送的图片引用。
    * start.ts 注入 Canvas 图库同步器；失败时必须回退原图，不能影响回复。
@@ -117,7 +120,7 @@ export interface BotRuntimeOptions {
    * 不注入时所有埋点都是空操作。
    */
   metrics?: {
-    record(event: 'message' | 'command' | 'chat' | 'image' | 'video' | 'voice' | 'error', count?: number): void;
+    record(event: 'message' | 'command' | 'chat' | 'image' | 'video' | 'audio' | 'voice' | 'error', count?: number): void;
     recordDuration(key: string, ms: number): void;
     durationAverage?(key: string): number | undefined;
   };
@@ -152,6 +155,9 @@ export interface BotRuntimeOptions {
     groupContext?: string;
     memoryContext?: string;
     sessionId?: string;
+    plan?: IntentPlan;
+    forceLegacyExecution?: boolean;
+    onProgress?: (event: { type: 'plan'; jobId: string; requestId: string; capabilityIds: string[]; stepIds: string[] }) => void | Promise<void>;
   }) => Promise<{ handled: boolean; result?: BotEngineResult; reason?: string; problem?: { kind: string; error: string } }>;
   /** 所有异常/问题统一私聊管理员，绝不回复用户。 */
   reportProblem?: (input: {
@@ -178,6 +184,7 @@ export interface BotRuntimeOptions {
     groupContext?: string;
     memoryContext?: string;
     sessionId?: string;
+    onProgress?: (event: { type: 'plan'; jobId: string; requestId: string; capabilityIds: string[]; stepIds: string[] }) => void | Promise<void>;
   }) => Promise<{ handled: boolean; result?: BotEngineResult; reason?: string; problem?: { kind: string; error: string } }>;
   progressMessages?: boolean;
   /** 慢任务提醒间隔；默认 60 秒，0 关闭。 */
@@ -309,27 +316,34 @@ export function detectFileGenerateRequest(text: string): boolean {
   return /(?:生成|创建|制作|导出|写|整理|做|给我).{0,32}(?:md|markdown|word|docx|excel|xlsx|ppt|pptx|pdf|txt|csv|json|zip|文件|文档|表格|幻灯片|演示文稿)/i.test(value);
 }
 
-const NATURAL_INTENT_CATALOG: IntentCatalogItem[] = [
-  { id: 'chat', label: '普通聊天', description: '普通问答、解释、写作、闲聊；不要求生成文件/图片/视频，也不要求联网搜索。' },
-  { id: 'help', label: '帮助', description: '用户询问机器人怎么用、有哪些功能、怎么发命令。' },
-  { id: 'clear', label: '新对话', description: '用户要求清空上下文、重新开始对话。' },
-  { id: 'file.list', label: '文件列表', description: '用户要求查看最近上传或可读取的文件列表。' },
-  { id: 'file.read', label: '读取文件', description: '用户要求读取、总结、分析、翻译或提取当前消息/引用文件里的内容。', requires: 'files' },
-  { id: 'file.generate', label: '生成文件', description: '用户要求创建、生成、导出、整理成可下载的文件、文档、表格、幻灯片、PDF 或压缩包。' },
-  { id: 'search.web', label: '联网搜索', description: '用户要求搜索、查询最新新闻、实时信息、价格、版本、官网或外部资料。' },
-  { id: 'image.generate', label: '文生图', description: '用户要求画图、生成图片、制作海报或视觉素材。可以使用 ComfyUI 或其他图像模型；MOSS-Image、Krea 2 会自动匹配自然语言提示词策略；用户不需要提供 steps、CFG、sampler、batch_size，后台会转化参数；多图默认拼接成一张。' },
-  { id: 'image.edit', label: '改图', description: '用户要求修改、编辑、重绘、换风格已有图片。', requires: 'images' },
-  { id: 'image.interrogate', label: '图片反推', description: '用户要求描述图片、反推图片提示词、分析画面。', requires: 'images' },
-  { id: 'video.generate', label: '视频生成', description: '用户要求生成、制作视频或动画。' },
-  { id: 'code.render', label: '代码画图', description: '用户要求用 HTML、SVG、Canvas、JavaScript 或 Three.js 生成一张可视化图片。' },
-  { id: 'web.screenshot', label: '网页截屏', description: '用户要求打开一个网页并截图，或给出 URL 要求网页截图。' },
-  { id: 'template.library', label: '本地模板库', description: '用户要求查看本地生图模板库、模板列表。' },
+export const NATURAL_INTENT_CATALOG: IntentCatalogItem[] = [
+  { id: 'chat', label: '普通聊天', effect: 'answer', description: '直接回答、解释、判断、写作或对话；不创建新产物，不修改外部状态。' },
+  { id: 'help', label: '帮助', effect: 'answer', description: '用户询问机器人怎么用、有哪些功能、怎么发命令。' },
+  { id: 'clear', label: '新对话', effect: 'control', description: '用户要求清空上下文、重新开始对话。' },
+  { id: 'file.list', label: '文件列表', effect: 'retrieve', description: '用户要求查看最近上传或可读取的文件列表。' },
+  { id: 'file.read', label: '读取文件', effect: 'retrieve', description: '用户要求读取、总结、分析、翻译或提取当前消息/引用文件里的内容。', requires: 'files' },
+  { id: 'file.generate', label: '生成文件', effect: 'generate', description: '用户明确要求创建、生成、导出或制作新的可下载文件产物。' },
+  { id: 'search.web', label: '联网搜索', effect: 'retrieve', description: '获取外部或最新信息的读取型能力；用户目标只是获得信息时使用。主题词本身不能决定是否使用本能力。' },
+  { id: 'image.generate', label: '文生图', effect: 'generate', description: '创建新图片产物的生成型能力；只有用户明确要求产生新的视觉成果时才使用。' },
+  { id: 'image.edit', label: '改图', effect: 'transform', description: '对已有图片做变换；只有用户提供或引用图片并要求修改视觉结果时才使用。', requires: 'images' },
+  { id: 'image.interrogate', label: '图片反推', effect: 'retrieve', description: '分析已有图片并返回描述信息；不创建新图片。', requires: 'images' },
+  { id: 'video.generate', label: '视频生成', effect: 'generate', description: '创建新的视频或动画产物；只有用户明确要求新的视频成果时才使用。' },
+  { id: 'audio.music.generate', label: '音乐生成', effect: 'generate', description: '创建新的音乐或音频产物，支持歌曲、纯音乐、歌词、风格、时长和人声偏好。' },
+  { id: 'code.render', label: '代码画图', effect: 'generate', description: '用户明确要求用 HTML、SVG、Canvas、JavaScript 或 Three.js 生成新的可视化图片。' },
+  { id: 'web.screenshot', label: '网页截屏', effect: 'generate', description: '用户要求打开网页并生成新的截图产物。' },
+  { id: 'template.library', label: '本地模板库', effect: 'retrieve', description: '用户要求查看本地生图模板库、模板列表。' },
 ];
 
 function availableIntentCatalog(cfg: AppConfig): IntentCatalogItem[] {
   const settings = cfg.bot.features || {};
   return NATURAL_INTENT_CATALOG.filter((item) => {
     if (item.id === 'chat') return true;
+    if (item.id === 'audio.music.generate') {
+      const suno = cfg.orchestration?.suno;
+      const external = cfg.orchestration?.externalProviders;
+      const allowlist = external?.allowlist || [];
+      if (!suno?.enabled || !external?.enabled || (allowlist.length > 0 && !allowlist.includes('suno-official'))) return false;
+    }
     if (item.id === 'code.render' && (!cfg.browserRender?.enabled || cfg.codeRender?.enabled === false)) return false;
     if (item.id === 'web.screenshot' && !cfg.browserRender?.enabled) return false;
     const def = FEATURE_DEFINITIONS.find((entry) => entry.id === item.id);
@@ -783,7 +797,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
                   chatType, groupId: event.group_id, userId, senderId: userId,
                   replyToMessageId: event.message_id, botName: options.botName || 'Miobot',
                 };
-                await sendResult(ownerReply, ownerCtx, orchestrated.result, undefined, trackedReply, reportProblem, cfg.orchestration.reply.maxMessages);
+                await sendResult(ownerReply, ownerCtx, orchestrated.result, undefined, undefined, trackedReply, reportProblem, cfg.orchestration.reply.maxMessages);
               }
               return { handled: true, kind: 'owner:' + oc.command };
             }
@@ -923,6 +937,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
 
     let result: BotEngineResult | null = null;
     if (!result && decision.kind !== 'command' && cfg.orchestration?.enabled && cfg.orchestration.mode === 'enforce' && options.enforceOrchestration) {
+      let enforceProgress: ImageProgressHandle | undefined;
       try {
         const memoryContext = await loadChatMemoryContext();
         const orchestrated = await options.enforceOrchestration({
@@ -936,6 +951,12 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           groupContext: await loadGroupContext(),
           memoryContext,
           sessionId,
+          onProgress: async (event) => {
+            if (enforceProgress) return;
+            const progressKind = imageProgressKindForCapabilities(event.capabilityIds);
+            if (!progressKind) return;
+            enforceProgress = startImageProgress(engine, replyCtx, options, progressKind, log, () => { progressMessagesSent += 1; });
+          },
         });
         if (orchestrated.problem) {
           await reportProblem(orchestrated.problem.kind, orchestrated.problem.error, { intent: decision.kind });
@@ -944,6 +965,8 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         else if (orchestrated.reason) log?.info('智能编排回退旧链路', { reason: orchestrated.reason });
       } catch (error) {
         await reportProblem('enforce-orchestration-error', error, { text: stripNonTextCqSegments(rawMessage).slice(0, 200) });
+      } finally {
+        enforceProgress?.done();
       }
     }
 
@@ -1221,6 +1244,51 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
             } finally {
               progress?.done();
             }
+          } else if (intent.intent === 'audio.music.generate') {
+            const progress = startImageProgress(engine, replyCtx, options, 'audio.music.generate', log, () => { progressMessagesSent += 1; });
+            try {
+              const musicPlan: IntentPlan = {
+                planId: `legacy_music_${Date.now()}`,
+                requestId: `legacy_music_${Date.now()}`,
+                goal: intent.args,
+                understanding: {
+                  goal: intent.args,
+                  desiredOutcome: 'generate',
+                  constraints: [],
+                  missingInformation: [],
+                  confidence: intent.confidence || 1,
+                },
+                steps: [{ id: 'music', capability: 'audio.music.generate', args: { request: intent.args } }],
+                needsClarification: false,
+                confidence: intent.confidence || 1,
+                source: 'command',
+              };
+              const orchestrated = await options.enforceOrchestration?.({
+                text: intent.args,
+                chatType,
+                groupId: event.group_id,
+                userId,
+                images: modelImages,
+                files: baseFiles.map((file) => ({ ...file })),
+                referencedText: referenceText,
+                sessionId,
+                plan: musicPlan,
+                forceLegacyExecution: true,
+              });
+              if (orchestrated?.problem) {
+                await reportProblem(orchestrated.problem.kind, orchestrated.problem.error, { intent: intent.intent });
+              }
+              if (!orchestrated?.handled || !orchestrated.result) {
+                await reportProblem('music-generation-unavailable', '音乐生成链路未返回结果', { intent: intent.intent });
+                return { handled: true, kind: 'music-generation-unavailable' };
+              }
+              result = orchestrated.result;
+            } catch (error) {
+              await reportProblem('music-generation-error', error, { intent: intent.intent });
+              return { handled: true, kind: 'music-generation-error' };
+            } finally {
+              progress?.done();
+            }
           } else if (intent.intent === 'code.render') {
             try {
               const outcome = await handleCodeRenderRequest(options, intent.args, chatType, event.group_id, userId, sessionId);
@@ -1336,6 +1404,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       metrics?.record('image', (result as { images?: string[] }).images?.length || 1);
       metrics?.recordDuration('image', elapsed);
     } else if (result.kind === 'video.generate') { metrics?.record('video'); metrics?.recordDuration('video', elapsed); }
+    else if ((result as any).kind === 'audio.music.generate') { metrics?.record('audio'); metrics?.recordDuration('audio', elapsed); }
     else if (result.kind === 'image.interrogate') { metrics?.recordDuration('interrogate', elapsed); }
 
     // 只回最新：chat 文本是对话性的，被同会话更新消息取代后不再迟到刷屏；
@@ -1404,7 +1473,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       const effectiveMaxMessages = cfg.orchestration.reply.countProgressInBudget
         ? Math.max(1, cfg.orchestration.reply.maxMessages - progressMessagesSent)
         : cfg.orchestration.reply.maxMessages;
-      sent = await sendResult(engine, replyCtx, result, options.voice, trackedReply, reportProblem, effectiveMaxMessages);
+      sent = await sendResult(engine, replyCtx, result, options.voice, options.voiceEligible, trackedReply, reportProblem, effectiveMaxMessages);
     } catch (error) {
       await reportProblem('reply-send-error', error, { kind: result.kind, textChars: result.text?.length || 0 });
       return { handled: false, reason: 'reply-send-error' };
@@ -1468,11 +1537,34 @@ function imageProgressKindForIntent(intent: string): ImageProgressKind | undefin
   return undefined;
 }
 
+function imageProgressKindForCapabilities(capabilityIds: string[]): ImageProgressKind | undefined {
+  const values = new Set((capabilityIds || []).map(String));
+  if (values.has('video.generate')) return 'video.generate';
+  if (values.has('audio.music.generate')) return 'audio.music.generate';
+  if (values.has('image.edit')) return 'image.edit';
+  if (values.has('image.interrogate')) return 'image.interrogate';
+  if (values.has('image.generate')) return 'image.generate';
+  return undefined;
+}
 function imageProgressKindForCommand(command: string): ImageProgressKind | undefined {
   if (command === 'genImage') return 'image.generate';
   if (command === 'editImage' || command === 'img2Img') return 'image.edit';
   if (command === 'interrogate') return 'image.interrogate';
   return undefined;
+}
+
+export function imageProgressTextForKind(kind: ImageProgressKind, progress: AppConfig['bot']['progress']): string {
+  if (kind === 'video.generate') return progress.videoText;
+  if (kind === 'audio.music.generate') return progress.audioText;
+  if (kind === 'image.edit') return progress.editText;
+  if (kind === 'image.interrogate') return progress.interrogateText;
+  return progress.imageText;
+}
+
+export function imageProgressAverageKey(kind: ImageProgressKind): 'video' | 'audio' | 'image' {
+  if (kind === 'video.generate') return 'video';
+  if (kind === 'audio.music.generate') return 'audio';
+  return 'image';
 }
 
 function startImageProgress(
@@ -1486,11 +1578,8 @@ function startImageProgress(
   if (!options.progressMessages) return undefined;
   const progressConfig = options.getConfig().bot.progress;
   if (!progressConfig?.enabled) return undefined;
-  const text = kind === 'video.generate' ? progressConfig.videoText
-    : kind === 'image.edit' ? progressConfig.editText
-      : kind === 'image.interrogate' ? progressConfig.interrogateText
-        : progressConfig.imageText;
-  const averageKey = kind === 'video.generate' ? 'video' : 'image';
+  const text = imageProgressTextForKind(kind, progressConfig);
+  const averageKey = imageProgressAverageKey(kind);
   return createImageProgress({
     kind,
     text,
@@ -1498,7 +1587,11 @@ function startImageProgress(
     // 用户要求慢任务只提示一次；不发送 60 秒后的持续提醒。
     reminderAfterMs: 0,
     logger: log,
-    send: (text) => { onSend?.(); return engine.replyText(replyCtx, text, 'quote'); },
+    send: async (text) => {
+      const sent = await engine.replyText(replyCtx, text, 'quote');
+      if (sent?.success) onSend?.();
+      return sent;
+    },
   });
 }
 
@@ -1587,11 +1680,85 @@ function replaceReplyPlanImageUrls(plan: any, images: string[]): any {
   }));
   return { ...plan, groups };
 }
-async function sendResult(
+interface PrimaryTextTarget {
+  groupIndex: number;
+  outputIndex: number;
+  output: any;
+  text: string;
+  fingerprint: string;
+}
+
+export function allReplyPlanOutputs(plan: any): any[] {
+  return (plan?.groups || []).flatMap((group: any) => group.outputs || []);
+}
+
+function planSpeaksFingerprint(plan: any, fingerprint: string): boolean {
+  if (!fingerprint) return false;
+  return allReplyPlanOutputs(plan).some((output: any) => {
+    if (output.kind !== 'audio') return false;
+    const meta = output.meta && typeof output.meta === 'object' ? output.meta : {};
+    return normalizeReplyFingerprint(meta.spokenText) === fingerprint;
+  });
+}
+
+export function selectPrimaryTextForTts(plan: any): PrimaryTextTarget | null {
+  const candidates: Array<PrimaryTextTarget & { priority: number; composer: boolean }> = [];
+  for (let groupIndex = 0; groupIndex < (plan?.groups || []).length; groupIndex += 1) {
+    const group = plan.groups[groupIndex];
+    for (let outputIndex = 0; outputIndex < (group.outputs || []).length; outputIndex += 1) {
+      const output = group.outputs[outputIndex];
+      if (!['text', 'link', 'card'].includes(output.kind)) continue;
+      const text = String(output.text || '').trim();
+      const meta = output.meta && typeof output.meta === 'object' ? output.meta : {};
+      if (!text || meta.skipTts === true || meta.disableVoice === true) continue;
+      const fingerprint = normalizeReplyFingerprint(text);
+      if (!fingerprint || planSpeaksFingerprint(plan, fingerprint)) continue;
+      candidates.push({
+        groupIndex,
+        outputIndex,
+        output,
+        text,
+        fingerprint,
+        priority: Number(output.priority || 0),
+        composer: meta.role === 'composer',
+      });
+    }
+  }
+  candidates.sort((a, b) => Number(a.composer) - Number(b.composer) || b.priority - a.priority || a.groupIndex - b.groupIndex || a.outputIndex - b.outputIndex);
+  const best = candidates[0];
+  return best ? { groupIndex: best.groupIndex, outputIndex: best.outputIndex, output: best.output, text: best.text, fingerprint: best.fingerprint } : null;
+}
+
+export function replacePrimaryTextWithAudio(plan: any, target: PrimaryTextTarget, file: string): any {
+  const groups = (plan.groups || []).map((group: any, groupIndex: number) => {
+    if (groupIndex !== target.groupIndex) return group;
+    return {
+      ...group,
+      outputs: (group.outputs || []).map((output: any, outputIndex: number) => outputIndex === target.outputIndex ? {
+        kind: 'audio', url: file, priority: Number(output.priority || 10), mergeable: false,
+        meta: { ...(output.meta || {}), spokenText: target.text, contentHash: replyContentHash(target.text), replacesOutputId: String(output.id || replyContentHash(target.text)), voiceRequested: true, preferredVoice: true },
+      } : output),
+    };
+  });
+  return { ...plan, groups };
+}
+
+export function removePrimaryText(plan: any, target: PrimaryTextTarget): any {
+  const groups = (plan.groups || []).flatMap((group: any, groupIndex: number) => {
+    if (groupIndex !== target.groupIndex) return [group];
+    const outputs = (group.outputs || []).filter((_: any, outputIndex: number) => outputIndex !== target.outputIndex);
+    if (!outputs.length) return [];
+    return [{ ...group, outputs, messageCount: Math.max(1, Number(group.messageCount || 1)) }];
+  });
+  return { ...plan, groups, messageCount: groups.reduce((sum: number, group: any) => sum + Math.max(1, Number(group.messageCount || 1)), 0) };
+}
+
+export async function sendResult(
   engine: ReturnType<typeof createReplyStrategyEngine>,
   ctx: ReplyContext,
   result: BotEngineResult,
   voice?: (text: string, context: { chatType: 'group' | 'private'; groupId?: number | string; userId?: number | string }) => Promise<string | null | undefined>,
+  voiceEligible?: (text: string, context: { chatType: 'group' | 'private'; groupId?: number | string; userId?: number | string }) => Promise<boolean> | boolean,
   reply?: ReplyClient,
   reportProblem?: (kind: string, error: unknown, extra?: Record<string, unknown>) => Promise<void>,
   maxMessages?: number,
@@ -1599,22 +1766,29 @@ async function sendResult(
   if (result.replyPlan) {
     try {
       let planToSend = result.replyPlan;
-      if (voice) {
-        const text = singleTextFromReplyPlan(planToSend);
-        if (text) {
+      const target = voice ? selectPrimaryTextForTts(planToSend) : null;
+      if (voice && target) {
+        let eligible = true;
+        if (voiceEligible) {
+          try { eligible = await voiceEligible(target.text, { chatType: ctx.chatType, groupId: ctx.groupId, userId: ctx.userId }); }
+          catch { eligible = false; }
+        }
+        if (eligible) {
           try {
-            const file = await voice(text, { chatType: ctx.chatType, groupId: ctx.groupId, userId: ctx.userId });
+            const file = await voice(target.text, { chatType: ctx.chatType, groupId: ctx.groupId, userId: ctx.userId });
             if (file) {
-              planToSend = {
-                ...planToSend,
-                groups: [{ mode: 'direct', outputs: [{ kind: 'audio', url: file, priority: 10, mergeable: false }], messageCount: 1 }],
-                messageCount: 1,
-                maxMessages: maxMessages,
-              };
+              planToSend = replacePrimaryTextWithAudio(planToSend, target, file);
+            } else if (voiceEligible) {
+              await reportProblem?.('auto-tts-synthesize-failed', '自动 TTS 返回空文件', { textChars: target.text.length });
+              planToSend = removePrimaryText(planToSend, target);
             }
-          } catch { /* 语音生成失败时继续使用原文本计划，不产生双回复 */ }
+          } catch (error) {
+            await reportProblem?.('auto-tts-synthesize-error', error, { textChars: target.text.length });
+            planToSend = removePrimaryText(planToSend, target);
+          }
         }
       }
+      if (!allReplyPlanOutputs(planToSend).length) return null;
       const planned = await engine.replyPlan(ctx, planToSend, { maxMessages });
       if (planned.uncertain) {
         await reportProblem?.('reply-send-uncertain', planned.error || 'reply plan send uncertain', {
@@ -1635,6 +1809,8 @@ async function sendResult(
   }
   const files = (result.files || []).filter(Boolean) as Array<string | { file: string; name?: string }>;
   const audios = (result.audio || []).filter(Boolean);
+  const textBeforeAudio = result.text?.trim() || '';
+  const chatAudioCoversText = Boolean(audios.length && textBeforeAudio && result.kind === 'chat');
   if (audios.length) {
     if (!reply) {
       await reportProblem?.('audio-send-unavailable', '没有可用的语音发送通道', { count: audios.length });
@@ -1657,7 +1833,7 @@ async function sendResult(
         await reportProblem?.('audio-send-error', error, { chatType: ctx.chatType });
       }
     }
-    return null;
+    if (chatAudioCoversText) return null;
   }
 
   const videos = (result.videos || []).filter(Boolean);
@@ -1686,88 +1862,52 @@ async function sendResult(
   if (images.length === 1) return engine.replyImage(ctx, images[0]);
   if (images.length > 1) return engine.replyImages(ctx, images);
   if (result.text && result.text.trim()) {
-    // 文本结果优先尝试转语音(失败则回退文本)。
-    if (voice && reply) {
-      let voiceSendAttempted = false;
+    let tryVoice = Boolean(voice && reply);
+    if (tryVoice && voiceEligible) {
+      try { tryVoice = await voiceEligible(result.text, { chatType: ctx.chatType, groupId: ctx.groupId, userId: ctx.userId }); }
+      catch { tryVoice = false; }
+    }
+    if (tryVoice && voice) {
+      let file: string | null | undefined;
       try {
-        const file = await voice(result.text, { chatType: ctx.chatType, groupId: ctx.groupId, userId: ctx.userId });
-        if (file) {
-          voiceSendAttempted = true;
-          // 已经尝试发送语音后，无论结果是否明确失败都不再回退文字，避免语音和文字双发。
-          if (ctx.chatType === 'group' && reply.sendGroupRecord && ctx.groupId !== undefined) {
-            try {
-              const rec = await reply.sendGroupRecord(ctx.groupId, file);
-              if (rec?.success || rec?.uncertain) return null;
-              await reportProblem?.('voice-send-failed', rec?.error || 'record send failed', { chatType: ctx.chatType, groupId: ctx.groupId });
-            } catch (error) {
-              await reportProblem?.('voice-send-error', error, { chatType: ctx.chatType, groupId: ctx.groupId });
-            }
-            return null;
-          }
-          if (ctx.chatType === 'private' && reply.sendPrivateRecord && ctx.userId !== undefined) {
-            try {
-              const rec = await reply.sendPrivateRecord(ctx.userId, file);
-              if (rec?.success || rec?.uncertain) return null;
-              await reportProblem?.('voice-send-failed', rec?.error || 'record send failed', { chatType: ctx.chatType, userId: ctx.userId });
-            } catch (error) {
-              await reportProblem?.('voice-send-error', error, { chatType: ctx.chatType, userId: ctx.userId });
-            }
-            return null;
-          }
-        }
-      } catch {
-        // 语音失败,回退到文本。
+        file = await voice(result.text, { chatType: ctx.chatType, groupId: ctx.groupId, userId: ctx.userId });
+      } catch (error) {
+        await reportProblem?.('auto-tts-synthesize-error', error, { textChars: result.text.length });
+        return null;
       }
+      if (!file) {
+        if (voiceEligible) await reportProblem?.('auto-tts-synthesize-failed', '自动 TTS 返回空文件', { textChars: result.text.length });
+        else {
+          await engine.replyText(ctx, result.text);
+        }
+        return null;
+      }
+      if (ctx.chatType === 'group' && reply?.sendGroupRecord && ctx.groupId !== undefined) {
+        try {
+          const rec = await reply.sendGroupRecord(ctx.groupId, file);
+          if (!(rec?.success || rec?.uncertain)) await reportProblem?.('voice-send-failed', rec?.error || 'record send failed', { chatType: ctx.chatType, groupId: ctx.groupId });
+        } catch (error) {
+          await reportProblem?.('voice-send-error', error, { chatType: ctx.chatType, groupId: ctx.groupId });
+        }
+        return null;
+      }
+      if (ctx.chatType === 'private' && reply?.sendPrivateRecord && ctx.userId !== undefined) {
+        try {
+          const rec = await reply.sendPrivateRecord(ctx.userId, file);
+          if (!(rec?.success || rec?.uncertain)) await reportProblem?.('voice-send-failed', rec?.error || 'record send failed', { chatType: ctx.chatType, userId: ctx.userId });
+        } catch (error) {
+          await reportProblem?.('voice-send-error', error, { chatType: ctx.chatType, userId: ctx.userId });
+        }
+        return null;
+      }
+      await reportProblem?.('audio-send-unavailable', '当前回复通道不支持 record', { chatType: ctx.chatType });
+      return null;
     }
     await engine.replyText(ctx, result.text);
   }
   return null;
 }
 
-function buildHelpText(cfg: AppConfig): string {
-  const settings = (cfg.bot.features || {}) as Record<string, FeatureSetting>;
-  const lines: string[] = ['Miobot 指令:'];
-  const add = (id: string, suffix = '') => {
-    const def = FEATURE_DEFINITIONS.find((item) => item.id === id);
-    const setting = settings[id];
-    if (!def?.implemented || !setting?.enabled || !setting.aliases.length) return;
-    lines.push(`- ${def.label}: ${setting.aliases[0]}${suffix}`);
-  };
-  add('image.generate', ' <描述>');
-  add('image.img2img', ' <描述>（带图）');
-  add('image.edit', ' <描述>（带图）');
-  add('image.interrogate', '（带图）');
-  const video = settings['video.generate'];
-  if (video?.enabled) lines.push('- 视频: 自然语言说「生成视频 / 做个视频 / 视频 …」，或使用 bang 参数如 video!、6s!、720p!');
-  add('template.library');
-  add('template.referenced');
-  add('template.remoteSearch');
-  add('template.remoteSmartImage');
-  add('file.list');
-  add('file.read');
-  add('file.generate');
-  add('search.web');
-  add('code.render');
-  add('web.screenshot');
-  add('help');
-  add('clear');
-  lines.push('- 主人命令：/模型 或 /模型列表 查看模型列表（ComfyUI 会实时读取 object_info）；/切换 <模型> 切换文本模型。');
-  lines.push('- 召回命令：ch 撤回当前聊天最近 1 条机器人消息；plch 或 plch <n> 撤回最近 n 条（默认 5）。');
-  lines.push('', '【生图】');
-  lines.push('- 直接说：画一只猫 / 生成四张赛博朋克猫，横图。');
-  lines.push('- 不需要填写 steps、CFG、sampler、batch_size，后台自动转化参数。');
-  lines.push('- 多图结果默认本地拼接成一张图片后发送。');
-  lines.push('- MOSS-Image / Krea 2 会自动使用对应的自然语言提示词和参数策略，不需要手动写权重。');
-  lines.push('', '【文件】');
-  lines.push('- 支持 md、docx、xlsx、pptx、pdf、txt、csv、json、zip；可用格式名或扩展名指定。');
-  lines.push('', '【代码画图与网页截屏】');
-  lines.push('- 用 HTML/SVG/Canvas/Three.js 画一个……');
-  lines.push('- 截一下 https://example.com 或 网页截图 https://example.com 1200x800');
-  lines.push('', '【回复策略】');
-  lines.push('- 纯文本后台可选择文本转图片；渲染失败自动回退文本。');
-  lines.push('群里需 @机器人 或 回复机器人 触发；私聊直接说话即可。');
-  return lines.join('\n');
-}
 
 function buildTemplateLibraryText(cfg: AppConfig): string {
   const templates = cfg.bot.promptTemplates || [];

@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import nodePath from 'node:path';
 import {
+  builtinComfyUiProfile,
   createDefaultConfig,
   exportConfig,
   importConfig as importAppConfig,
@@ -13,7 +14,7 @@ import {
 } from '../../config/src/index.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
 import { findUnresolvedSecrets, maskConfigSecrets, unmaskConfigSecrets } from './secrets.js';
-import { applyCapabilityOverrides, applyRuntimeCapabilityGates, builtinCapabilityDescriptors, createPermissionPolicyFromDefaults, resolvePermission, evaluatePromptPromotion, diffPromptText } from '../../orchestration/src/index.js';
+import { applyCapabilityOverrides, applyRuntimeCapabilityGates, builtinCapabilityDescriptors, buildCapabilityManifest, createPermissionPolicyFromDefaults, resolvePermission, evaluatePromptPromotion, diffPromptText } from '../../orchestration/src/index.js';
 import { detectComfyUiPromptNodeIds, inspectComfyUiWorkflow, validateComfyUiProfile } from '../../comfyui/src/index.js';
 
 export const WEB_API_PACKAGE: PackageDescriptor = {
@@ -461,6 +462,11 @@ export class WebApi {
                 promptNodeIds: profile.promptNodeIds || [],
                 negativePromptNodeIds: profile.negativePromptNodeIds || [],
                 outputNodeId: profile.outputNodeId || '',
+                fallbackProfileId: profile.fallbackProfileId || '',
+                fallbackEnabled: profile.fallbackEnabled !== false,
+                builtinRevision: profile.builtinRevision || '',
+                customized: Boolean(profile.customized),
+                hasBuiltin: Boolean(builtinComfyUiProfile(profile.id)),
                 parameterMap: profile.parameterMap || {},
                 defaults: profile.defaults || {},
                 promptPolicy: profile.promptPolicy,
@@ -479,7 +485,7 @@ export class WebApi {
         if (!node || node.kind !== 'comfyui' || !node.comfyui) return json(404, { success: false, error: 'comfyui_node_not_found' });
         const profile = (node.comfyui.profiles || []).find((item) => item.id === profileId);
         if (!profile) return json(404, { success: false, error: 'comfyui_profile_not_found' });
-        return ok({ success: true, nodeIndex, profile, validation: validateComfyUiProfile(profile), nodes: inspectComfyUiWorkflow(profile.workflow || {}) });
+        return ok({ success: true, nodeIndex, profile, builtin: builtinComfyUiProfile(profile.id), validation: validateComfyUiProfile(profile), nodes: inspectComfyUiWorkflow(profile.workflow || {}) });
       }
       if (method === 'PUT' && path.startsWith('/api/orchestration/comfyui/workflows/')) {
         const parts = path.slice('/api/orchestration/comfyui/workflows/'.length).split('/').filter(Boolean);
@@ -492,7 +498,8 @@ export class WebApi {
         if (!node || node.kind !== 'comfyui' || !node.comfyui) return json(404, { success: false, error: 'comfyui_node_not_found' });
         const profiles = node.comfyui.profiles || [];
         const currentIndex = profiles.findIndex((item) => item.id === profileId);
-        const current = currentIndex >= 0 ? profiles[currentIndex] : undefined;
+        const restoreBuiltin = body.restoreBuiltin === true;
+        const current = restoreBuiltin ? (builtinComfyUiProfile(profileId) || (currentIndex >= 0 ? profiles[currentIndex] : undefined)) : (currentIndex >= 0 ? profiles[currentIndex] : undefined);
         const workflow = body.workflow && typeof body.workflow === 'object' && !Array.isArray(body.workflow) ? body.workflow as Record<string, unknown> : current?.workflow || {};
         const negativePromptNodeIds = Array.isArray(body.negativePromptNodeIds)
           ? body.negativePromptNodeIds.map(String).map((item) => item.trim()).filter(Boolean)
@@ -515,7 +522,25 @@ export class WebApi {
           stitch: current?.stitch,
           transform: current?.transform,
           lora: undefined,
+          fallbackProfileId: body.fallbackProfileId === undefined ? (current?.fallbackProfileId || builtinComfyUiProfile(profileId)?.id || profileId) : String(body.fallbackProfileId || '').trim() || undefined,
+          fallbackEnabled: body.fallbackEnabled === undefined ? (current?.fallbackEnabled ?? true) : Boolean(body.fallbackEnabled),
+          builtinRevision: current?.builtinRevision || builtinComfyUiProfile(profileId)?.builtinRevision,
+          customized: restoreBuiltin ? false : (body.customized === undefined ? (current?.customized ?? true) : Boolean(body.customized)),
         };
+        const routeBaseline = builtinComfyUiProfile(profileId);
+        if (routeBaseline && !restoreBuiltin) {
+          const changedRecord = (actual: Record<string, unknown>, base: Record<string, unknown>) => Object.keys(actual || {}).some((key) => JSON.stringify(actual?.[key]) !== JSON.stringify(base?.[key]));
+          const changed = JSON.stringify(nextProfile.workflow) !== JSON.stringify(routeBaseline.workflow)
+            || changedRecord(nextProfile.defaults as Record<string, unknown>, routeBaseline.defaults as Record<string, unknown>)
+            || changedRecord(nextProfile.parameterMap as Record<string, unknown>, routeBaseline.parameterMap as Record<string, unknown>)
+            || JSON.stringify(nextProfile.promptNodeIds) !== JSON.stringify(routeBaseline.promptNodeIds)
+            || JSON.stringify(nextProfile.negativePromptNodeIds) !== JSON.stringify(routeBaseline.negativePromptNodeIds)
+            || String(nextProfile.outputNodeId || '') !== String(routeBaseline.outputNodeId || '')
+            || JSON.stringify(nextProfile.promptPolicy || {}) !== JSON.stringify(routeBaseline.promptPolicy || {});
+          nextProfile.customized = changed;
+          nextProfile.builtinRevision = routeBaseline.builtinRevision;
+          if (!nextProfile.fallbackProfileId) nextProfile.fallbackProfileId = routeBaseline.id;
+        }
         const validation = validateComfyUiProfile(nextProfile as any);
         if (!validation.ok) return json(400, { success: false, error: 'comfyui_workflow_invalid', validation });
         const nextProfiles = currentIndex >= 0
@@ -842,7 +867,7 @@ export class WebApi {
         const cfg = this.repository.getConfig();
         const descriptors = applyCapabilityOverrides(builtinCapabilityDescriptors(), cfg.orchestration?.capabilityOverrides || {});
         const gated = applyRuntimeCapabilityGates(descriptors, { sunoEnabled: Boolean(cfg.orchestration?.suno?.enabled), externalEnabled: Boolean(cfg.orchestration?.externalProviders?.enabled), allowlist: cfg.orchestration?.externalProviders?.allowlist || [] });
-        return ok({ success: true, capabilities: gated.map((item) => ({ ...item, health: capabilityHealth(cfg, item) })) });
+        return ok({ success: true, capabilities: gated.map((item) => ({ ...item, health: capabilityHealth(cfg, item) })), manifest: buildCapabilityManifest(gated) });
       }
       if (method === 'GET' && path === '/api/config') {
         return ok({ success: true, config: this.repository.getMaskedConfig(), revision: this.repository.revision, auth: this.repository.getAuthSnapshot(false) });

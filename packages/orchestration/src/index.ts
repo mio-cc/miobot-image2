@@ -7,6 +7,7 @@ export * from './plan.js';
 export * from './commands.js';
 export * from './config.js';
 export * from './planner.js';
+export * from './capability-manifest.js';
  export * from './model-roles.js';
 export * from './builtin-capabilities.js';
 export * from './dispatcher.js';

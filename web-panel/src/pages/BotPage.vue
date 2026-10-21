@@ -167,8 +167,8 @@ const modifierFields = [
       </div>
     </SectionCard>
 
-    <SectionCard title="慢任务进度提示" hint="生图/视频开始后先回一条提示，避免用户以为机器人没收到；只发一次，不自动追发。" class="mb-4">
-      <ToggleField v-model="config.bot.progress.enabled" label="启用生图/视频进度提示" />
+    <SectionCard title="慢任务进度提示" hint="生图/视频/音乐开始后先回一条提示，避免用户以为机器人没收到；只发一次，不自动追发。" class="mb-4">
+      <ToggleField v-model="config.bot.progress.enabled" label="启用生图/视频/音乐进度提示" />
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
         <FormField label="图片生成提示" hint="支持 {eta} 占位，例如：收到，正在生成图片{eta}，请稍候…">
           <input v-model="config.bot.progress.imageText" class="input-field" />
@@ -181,6 +181,8 @@ const modifierFields = [
         </FormField>
         <FormField label="视频生成提示" hint="支持 {eta} 占位">
           <input v-model="config.bot.progress.videoText" class="input-field" />
+        </FormField>        <FormField label="音乐生成提示" hint="支持 {eta} 占位；无历史样本时会自动去掉占位符">
+          <input v-model="config.bot.progress.audioText" class="input-field" />
         </FormField>
       </div>
       <div class="mt-3">

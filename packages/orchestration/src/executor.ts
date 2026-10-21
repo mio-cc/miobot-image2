@@ -394,7 +394,7 @@ export async function executeIntentPlan(
             diagnostics: {
               ...(authorization.result.diagnostics || {}),
               failurePolicy: 'ask',
-              question: '步骤 ' + id + ' 无法执行，是否补充信息后继续？',
+              failureStage: 'preflight',
             },
           };
           haltReason = 'needs_input';
@@ -505,7 +505,7 @@ export async function executeIntentPlan(
                   diagnostics: {
                     ...(result.diagnostics || {}),
                     failurePolicy: 'ask',
-                    question: '步骤 ' + id + ' 执行失败，是否补充信息后继续？',
+                    failureStage: 'execution',
                   },
                 };
                 haltReason = 'needs_input';
@@ -544,7 +544,20 @@ export async function executeIntentPlan(
   }
 
   emitCheckpoint((haltReason as string) || 'plan_finished');
-  const outputs = order.flatMap((id) => results[id]?.outputs || []);
+  const outputs = order.flatMap((id) => {
+    const step = byId.get(id);
+    const capability = step ? options.dispatcher.getCapability(step.capability) : undefined;
+    const skipTts = capability?.ttsPolicy === 'skip';
+    return (results[id]?.outputs || []).map((output) => ({
+      ...output,
+      meta: {
+        ...(output.meta || {}),
+        sourceStepId: output.meta?.sourceStepId || id,
+        sourceCapability: output.meta?.sourceCapability || step?.capability,
+        ...(skipTts ? { skipTts: true, disableVoice: true } : {}),
+      },
+    }));
+  });
   usage.durationMs = Date.now() - startedAt;
   const base = { results, order, outputs, error: firstError, usage };
   if ((haltReason as string) === 'waiting_approval') return { ...base, status: 'waiting_approval', error: undefined };

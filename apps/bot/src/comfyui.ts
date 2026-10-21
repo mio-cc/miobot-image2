@@ -1,6 +1,6 @@
-import { inferComfyUiPromptPolicy, type AppConfig, type ApiNode, type ComfyUiProfile, type ComfyUiPromptPolicy, type ComfyUiTransformConfig } from '../../../packages/config/src/index.js';
+import { builtinComfyUiProfile, inferComfyUiPromptPolicy, type AppConfig, type ApiNode, type ComfyUiProfile, type ComfyUiPromptPolicy, type ComfyUiTransformConfig } from '../../../packages/config/src/index.js';
 import type { ImageArtifact, ImageResult, ModelClient } from '../../../packages/model/src/index.js';
-import { runComfyUiWorkflow } from '../../../packages/comfyui/src/index.js';
+import { ComfyUiError, runComfyUiWorkflow, validateComfyUiProfile } from '../../../packages/comfyui/src/index.js';
 import { stitchImages } from '../../../packages/image-compose/src/index.js';
 import { runInComfyUiQueue } from './comfyui-queue.js';
 
@@ -307,95 +307,168 @@ export async function enhanceComfyUiPrompt(options: ComfyUiGenerateOptions, prof
   return enhancePrompt(options, profile, prompt);
 }
 
+function comfyProfileFingerprint(profile: ComfyUiProfile): string {
+  return JSON.stringify({
+    workflow: profile.workflow || {},
+    promptNodeIds: profile.promptNodeIds || [],
+    negativePromptNodeIds: profile.negativePromptNodeIds || [],
+    outputNodeId: profile.outputNodeId || '',
+    parameterMap: profile.parameterMap || {},
+    defaults: profile.defaults || {},
+  });
+}
+
+function resolveFallbackProfile(node: ApiNode, primary: ComfyUiProfile): ComfyUiProfile | undefined {
+  if (primary.fallbackEnabled === false) return undefined;
+  const fallbackId = String(primary.fallbackProfileId || primary.id || '').trim();
+  if (!fallbackId) return undefined;
+  const configured = fallbackId !== primary.id
+    ? (node.comfyui?.profiles || []).find((item) => item.id === fallbackId)
+    : undefined;
+  const fallback = builtinComfyUiProfile(fallbackId) || configured;
+  if (!fallback) return undefined;
+  if (comfyProfileFingerprint(fallback) === comfyProfileFingerprint(primary)) return undefined;
+  return fallback;
+}
+
+function isFallbackEligibleError(error: unknown): boolean {
+  if (error instanceof ComfyUiError) {
+    if (['node_errors', 'execution_error', 'no_images', 'invalid_profile', 'output_node_missing'].includes(String(error.code || ''))) return true;
+    if (error.code === 'http_error' && Number(error.status || 0) >= 400 && Number(error.status || 0) < 500) return true;
+  }
+  const message = String((error as Error)?.message || error);
+  return /提示词节点不存在|负向提示词节点|输出节点|node_errors|execution_error|没有生成图片|没有返回图片|workflow|workflow invalid/i.test(message);
+}
+
 export async function generateComfyUiImages(options: ComfyUiGenerateOptions, req: ComfyUiGenerateRequest): Promise<ImageResult> {
   const startedAt = Date.now();
   const cfg = options.getConfig();
   const node = cfg.llm.apiKeys[req.nodeIndex];
   if (!node || node.kind !== 'comfyui' || !node.comfyui) throw new Error('当前生图节点不是 ComfyUI');
   const comfyConfig = node.comfyui;
-  const profile = findProfile(node, req.profileId);
-  if (!profile) throw new Error('ComfyUI 节点没有可用 profile');
-  const enhanced = await enhancePrompt(options, profile, req.prompt);
-  const fixed = fixedParams(profile, enhanced.prompt);
-  const policy = promptPolicyFor(profile);
-  options.logger?.info('ComfyUI 参数准备完成', {
-    profile: profile.id,
-    modelFamily: policy.modelFamily,
-    variant: policy.variant,
-    promptSyntax: policy.promptSyntax,
-    source: enhanced.source,
-    promptCount: String(fixed.prompt || '').length,
-    promptPreview: String(fixed.prompt || '').slice(0, 800),
-    negativePreview: String(fixed.negativePrompt || '').slice(0, 300),
-    width: fixed.width,
-    height: fixed.height,
-    steps: fixed.steps,
-    cfg: fixed.cfg,
-    sampler: fixed.sampler,
-    scheduler: fixed.scheduler,
-    shift: fixed.shift,
-    seed: fixed.seed,
-    batchSize: fixed.batchSize,
-  });
-  const queueStartedAt = Date.now();
-  const queuedResult = await runInComfyUiQueue<ImageResult>(comfyQueueKey(node.baseUrl), {
-    maxConcurrent: comfyConfig.maxConcurrent ?? 1,
-    maxQueue: comfyConfig.maxQueue ?? 10,
-    queueTimeoutMs: comfyConfig.queueTimeoutMs ?? 900000,
-    label: node.name,
-    logger: options.logger,
-  }, async () => {
-    const generationStartedAt = Date.now();
-    options.logger?.info('ComfyUI 任务开始', {
+  const primaryProfile = findProfile(node, req.profileId);
+  if (!primaryProfile) throw new Error('ComfyUI 节点没有可用 profile');
+  const fallbackProfile = resolveFallbackProfile(node, primaryProfile);
+  const enhanced = await enhancePrompt(options, primaryProfile, req.prompt);
+
+  const executeProfile = async (profile: ComfyUiProfile, isFallback: boolean): Promise<ImageResult> => {
+    const validation = validateComfyUiProfile(profile);
+    if (!validation.ok) {
+      throw new ComfyUiError('ComfyUI workflow 校验失败: ' + validation.errors.join(','), { code: 'invalid_profile' });
+    }
+    const fixed = fixedParams(profile, enhanced.prompt);
+    const policy = promptPolicyFor(profile);
+    options.logger?.info('ComfyUI 提示词准备完成', {
       profile: profile.id,
-      node: node.name || req.nodeIndex,
-      queueWaitMs: generationStartedAt - queueStartedAt,
-    });
-    const result = await runComfyUiWorkflow({
-      baseUrl: node.baseUrl,
-      apiKey: node.key,
-      headers: node.headers,
-      profile,
-      params: fixed,
-      node: comfyConfig,
-      outputNodeId: profile.outputNodeId,
-      maxImageBytes: 20 * 1024 * 1024,
-    });
-    const images = result.images;
-    if (!images.length) throw new Error('ComfyUI 没有生成图片');
-    const generationMs = Date.now() - generationStartedAt;
-    options.logger?.info('ComfyUI 生成完成', {
-      profile: profile.id,
-      node: node.name || req.nodeIndex,
-      queueWaitMs: generationStartedAt - queueStartedAt,
-      generationMs,
-      totalMs: Date.now() - startedAt,
-      imageCount: images.length,
-      seed: result.seed,
+      usedFallback: isFallback,
+      modelFamily: policy.modelFamily,
+      variant: policy.variant,
+      promptSyntax: policy.promptSyntax,
+      source: enhanced.source,
+      promptCount: String(fixed.prompt || '').length,
+      promptPreview: String(fixed.prompt || '').slice(0, 800),
+      negativePreview: String(fixed.negativePrompt || '').slice(0, 300),
       width: fixed.width,
       height: fixed.height,
+      steps: fixed.steps,
+      cfg: fixed.cfg,
+      sampler: fixed.sampler,
+      scheduler: fixed.scheduler,
+      shift: fixed.shift,
+      seed: fixed.seed,
       batchSize: fixed.batchSize,
     });
-    let output = images;
-    let outputMime = images[0].mime;
-    if (profile.stitch?.enabled !== false && images.length > 1) {
-      try {
-        const stitched = await stitchImages(images.map((item) => item.buffer), profile.stitch || { quality: 70 });
-        output = [{ filename: 'comfyui-stitched.jpg', subfolder: '', type: 'output', mime: stitched.mime, buffer: stitched.buffer }];
-        outputMime = stitched.mime;
-        options.logger?.info('ComfyUI 多图已拼接', { count: images.length, width: stitched.width, height: stitched.height, mime: stitched.mime });
-      } catch (error) {
-        options.logger?.warn('ComfyUI 多图拼接失败，发送第一张图', { error: String((error as Error)?.message || error) });
-        output = [images[0]];
+    const queueStartedAt = Date.now();
+    return runInComfyUiQueue<ImageResult>(comfyQueueKey(node.baseUrl), {
+      maxConcurrent: comfyConfig.maxConcurrent ?? 1,
+      maxQueue: comfyConfig.maxQueue ?? 10,
+      queueTimeoutMs: comfyConfig.queueTimeoutMs ?? 900000,
+      label: node.name,
+      logger: options.logger,
+    }, async () => {
+      const generationStartedAt = Date.now();
+      options.logger?.info('ComfyUI 任务开始', {
+        profile: profile.id,
+        usedFallback: isFallback,
+        node: node.name || req.nodeIndex,
+        queueWaitMs: generationStartedAt - queueStartedAt,
+      });
+      const result = await runComfyUiWorkflow({
+        baseUrl: node.baseUrl,
+        apiKey: node.key,
+        headers: node.headers,
+        profile,
+        params: fixed,
+        node: comfyConfig,
+        outputNodeId: profile.outputNodeId,
+        maxImageBytes: 20 * 1024 * 1024,
+      });
+      const images = result.images;
+      if (!images.length) throw new ComfyUiError('ComfyUI 没有生成图片', { code: 'no_images' });
+      const generationMs = Date.now() - generationStartedAt;
+      options.logger?.info('ComfyUI 生成完成', {
+        profile: profile.id,
+        usedFallback: isFallback,
+        node: node.name || req.nodeIndex,
+        queueWaitMs: generationStartedAt - queueStartedAt,
+        generationMs,
+        totalMs: Date.now() - startedAt,
+        imageCount: images.length,
+        seed: result.seed,
+        seeds: result.seeds,
+        width: fixed.width,
+        height: fixed.height,
+        batchSize: fixed.batchSize,
+      });
+      let output = images;
+      let outputMime = images[0].mime;
+      if (profile.stitch?.enabled !== false && images.length > 1) {
+        try {
+          const stitched = await stitchImages(images.map((item) => item.buffer), profile.stitch || { quality: 70 });
+          output = [{ filename: 'comfyui-stitched.jpg', subfolder: '', type: 'output', mime: stitched.mime, buffer: stitched.buffer }];
+          outputMime = stitched.mime;
+          options.logger?.info('ComfyUI 多图已拼接', { count: images.length, width: stitched.width, height: stitched.height, mime: stitched.mime });
+        } catch (error) {
+          options.logger?.warn('ComfyUI 多图拼接失败，发送第一张图', { error: String((error as Error)?.message || error) });
+          output = [images[0]];
+        }
       }
+      const artifacts: ImageArtifact[] = output.map((item, index) => ({
+        kind: 'base64',
+        data: item.buffer.toString('base64'),
+        mimeType: item.mime || outputMime,
+        index,
+      }));
+      return { images: artifacts, raw: { promptId: result.promptId, seed: result.seed, seeds: result.seeds, source: images, profileId: profile.id, usedFallback: isFallback } };
+    });
+  };
+
+  let result: ImageResult;
+  try {
+    result = await executeProfile(primaryProfile, false);
+  } catch (primaryError) {
+    const primaryMessage = String((primaryError as Error)?.message || primaryError);
+    options.logger?.warn('ComfyUI 主 workflow 失败', { profile: primaryProfile.id, error: primaryMessage, fallbackProfile: fallbackProfile?.id });
+    if (!fallbackProfile || !isFallbackEligibleError(primaryError)) throw primaryError;
+    try {
+      result = await executeProfile(fallbackProfile, true);
+      result.raw = {
+        ...(result.raw && typeof result.raw === 'object' ? result.raw as Record<string, unknown> : {}),
+        usedFallback: true,
+        primaryProfileId: primaryProfile.id,
+        fallbackProfileId: fallbackProfile.id,
+        primaryError: primaryMessage,
+      };
+    } catch (fallbackError) {
+      const fallbackMessage = String((fallbackError as Error)?.message || fallbackError);
+      throw new ComfyUiError('ComfyUI 主 workflow 和 fallback 均失败: primary=' + primaryMessage + '; fallback=' + fallbackMessage, { code: 'fallback_exhausted' });
     }
-    const artifacts: ImageArtifact[] = output.map((item, index) => ({
-      kind: 'base64',
-      data: item.buffer.toString('base64'),
-      mimeType: item.mime || outputMime,
-      index,
-    }));
-    return { images: artifacts, raw: { promptId: result.promptId, seed: result.seed, source: images } };
-  });
-  return queuedResult;
+  }
+  result.raw = {
+    ...(result.raw && typeof result.raw === 'object' ? result.raw as Record<string, unknown> : {}),
+    primaryProfileId: primaryProfile.id,
+    fallbackProfileId: fallbackProfile?.id,
+    usedFallback: Boolean((result.raw as any)?.usedFallback),
+  };
+  return result;
 }

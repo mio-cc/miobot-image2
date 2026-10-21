@@ -9,6 +9,7 @@ import {
   type ExecutionResult,
 } from '../../../packages/orchestration/src/index.js';
 import { synthesizeSpeech } from './tts.js';
+import { buildHelpText } from './help-text.js';
 
 function stringArg(args: Record<string, unknown>, keys: string[]): string | undefined {
   for (const key of keys) {
@@ -88,7 +89,7 @@ export class TtsCapabilityHandler implements CapabilityHandler {
     if (!cfg.enabled) return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'failed', outputs: [], error: 'tts_disabled' };
     const text = stringArg(invocation.step.args, ['text', 'prompt']) || invocation.request.text;
     const audio = await synthesizeSpeech(cfg, text, { logger: this.logger });
-    return baseResult(invocation, [{ kind: 'audio', url: audio.file, mime: `audio/${audio.format}`, priority: 10, mergeable: false, meta: { bytes: audio.bytes } }]);
+    return baseResult(invocation, [{ kind: 'audio', url: audio.file, mime: 'audio/' + audio.format, priority: 10, mergeable: false, meta: { bytes: audio.bytes, spokenText: text, preferredVoice: true, voiceRequested: true, sourceCapability: 'tts.speak' } }]);
   }
 }
 
@@ -113,7 +114,8 @@ export class ModelCatalogCapabilityHandler implements CapabilityHandler {
   }
 }
 export class HelpCapabilityHandler implements CapabilityHandler {
+  constructor(private readonly getConfig: () => AppConfig) {}
   async execute(invocation: CapabilityInvocation): Promise<ExecutionResult> {
-    return baseResult(invocation, [{ kind: 'text', text: '直接描述需求即可；支持聊天、生图、改图、视频、搜索、文件、语音、模板、代码画图和网页截图。', priority: 10, mergeable: true }]);
+    return baseResult(invocation, [{ kind: 'text', text: buildHelpText(this.getConfig()), priority: 10, mergeable: true, meta: { skipTts: true, disableVoice: true, help: true } }]);
   }
 }

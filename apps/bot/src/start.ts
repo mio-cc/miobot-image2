@@ -495,7 +495,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     status: /失败|未启用|缺少|不可用|不支持|不存在|异常|failed|failure|error|timeout|unsupported|not supported/i.test(message) ? 'failed' as const : 'needs_input' as const,
     outputs: [],
     error: message,
-    diagnostics: { question: message },
+    diagnostics: { missingInformation: [message] },
   });
   const runOwnerPlan = async (invocation: any, allowedActions: Set<string>) => {
     const action = String(invocation.step.args?.ownerAction || '');
@@ -811,6 +811,14 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         void problemReporter.report({ kind: 'tts-synthesize-error', error, chatType: 'private', message: 'TTS 合成失败' });
         return null;
       }
+    },
+    voiceEligible: (text, voiceCtx) => {
+      const tts = voiceService.effectiveTts(getConfig().bot.tts, {
+        chatType: voiceCtx.chatType,
+        groupId: voiceCtx.groupId === undefined ? undefined : String(voiceCtx.groupId),
+        userId: String(voiceCtx.userId || ''),
+      });
+      return shouldUseTts(tts, text);
     },
     owner: {
       ownerQQs: () => getConfig().bot.ownerQQs,

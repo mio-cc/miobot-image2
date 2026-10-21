@@ -43,10 +43,19 @@ export interface IntentStep {
   modelRounds?: number;
 }
 
+export interface PlanUnderstanding {
+  goal: string;
+  desiredOutcome: CapabilityEffect;
+  constraints: string[];
+  missingInformation: string[];
+  confidence: number;
+}
+
 export interface IntentPlan {
   planId: string;
   requestId: string;
   goal: string;
+  understanding?: PlanUnderstanding;
   language?: string;
   steps: IntentStep[];
   budget?: {
@@ -75,11 +84,21 @@ export interface ClarificationRequest {
   expiresAt: string;
 }
 
+export type CapabilityEffect = 'answer' | 'retrieve' | 'generate' | 'transform' | 'mutate' | 'delete' | 'notify' | 'control' | 'unknown';
+export type CapabilityContextRequirement = 'image' | 'file' | 'video' | 'url' | 'reply' | 'thread';
+export type CapabilitySideEffect = 'creates_artifact' | 'modifies_state' | 'deletes_data' | 'sends_message' | 'external_call';
+
 export interface CapabilityDescriptor {
   id: string;
   version: string;
   name: string;
   description?: string;
+  /** 语义结果类型：Planner 按期望结果和副作用匹配，而不是按主题词匹配。 */
+  effect?: CapabilityEffect;
+  /** 执行前必须具备的事实性上下文，例如图片、文件、URL。 */
+  requiredContext?: CapabilityContextRequirement[];
+  /** 客观副作用；不用于表达能力适用/不适用规则。 */
+  sideEffects?: CapabilitySideEffect[];
   provider: string;
   enabled: boolean;
   aliases?: string[];
@@ -89,6 +108,8 @@ export interface CapabilityDescriptor {
   permissions?: UserRole[];
   riskLevel?: RiskLevel;
   approvalRequired?: boolean;
+  /** auto: 可按用户配置自动 TTS；skip: 命令/查询类结果不进入自动 TTS。 */
+  ttsPolicy?: 'auto' | 'skip';
   mode?: 'sync' | 'async_job' | 'stream' | 'interactive';
   queue?: string;
   timeoutMs?: number;
@@ -140,6 +161,7 @@ export interface ReplyPlan {
   maxMessages?: number;
   noticeIncluded?: boolean;
   noticeSuppressed?: boolean;
+    dedupedCount?: number;
 }
 
 export interface PermissionRule {

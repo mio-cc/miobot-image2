@@ -218,6 +218,12 @@ test('web api: external Suno capability stays disabled until explicitly enabled'
   const response = await api.handle({ method: 'GET', path: '/api/orchestration/capabilities', headers: { authorization: 'Bearer ' + token } });
   assert.equal(response.status, 200);
   assert.equal(response.body.capabilities.find((item) => item.id === 'audio.music.generate')?.enabled, false);
+  assert.equal(response.body.manifest.schemaVersion, 1);
+  assert.match(response.body.manifest.version, /^cm_[0-9a-f]{8}$/);
+  const manifestImage = response.body.manifest.capabilities.find((item) => item.id === 'image.generate');
+  assert.equal(manifestImage.effect, 'generate');
+  assert.deepEqual(manifestImage.sideEffects, ['creates_artifact']);
+  assert.equal(Object.prototype.hasOwnProperty.call(manifestImage, 'notFor'), false);
 });
 test('web api: config versions are audited and can be rolled back', async () => {
   const api = createWebApi();

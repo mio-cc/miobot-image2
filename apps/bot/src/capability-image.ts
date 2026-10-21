@@ -1,4 +1,4 @@
-﻿import { promises as fs } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { CapabilityHandler, CapabilityInvocation, ExecutionResult } from '../../../packages/orchestration/src/index.js';
@@ -43,7 +43,7 @@ export class ImageStitchCapabilityHandler implements CapabilityHandler {
     if (refs.length < 2) {
       return {
         jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'needs_input', outputs: [],
-        diagnostics: { question: '请至少发送两张图片，并说明需要拼接。' },
+        diagnostics: { missingInformation: ['至少两张图片', '拼接需求说明'], detail: 'image.stitch requires at least two image references' },
       };
     }
     const buffers = await Promise.all(refs.slice(0, 8).map(imageReferenceToBuffer));

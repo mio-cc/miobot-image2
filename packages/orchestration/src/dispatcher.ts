@@ -8,7 +8,7 @@ import type {
 import type { PermissionPolicy } from './permissions.js';
 import { resolvePermission } from './permissions.js';
 import { CapabilityRegistry } from './capabilities.js';
-import { normalizeCapabilityArgs, validationQuestion, type ArgsNormalizationWarning } from './validation.js';
+import { normalizeCapabilityArgs, type ArgsNormalizationWarning } from './validation.js';
 
 export interface CapabilityInvocation {
   request: UserRequest;
@@ -115,7 +115,7 @@ export class CapabilityDispatcher {
           stepId: step.id,
           status: 'needs_input',
           outputs: [],
-          diagnostics: { validationIssues: argsNormalization.issues, question: validationQuestion(argsNormalization.issues) },
+          diagnostics: { validationIssues: argsNormalization.issues },
           retryable: false,
         },
       };

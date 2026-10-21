@@ -63,7 +63,7 @@ function normalizeSpec(raw: Record<string, unknown>, cfg: AppConfig): SunoCompos
     model,
   };
 }
-export function buildSunoComposerPrompt(args: Record<string, unknown>, request: UserRequest, cfg: AppConfig): string {
+export function buildSunoComposerPrompt(args: Record<string, unknown>, request: UserRequest, cfg: AppConfig, customTemplate?: string): string {
   const supplied = {
     request: args.request || args.prompt || request.text,
     style: args.style,
@@ -94,6 +94,21 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     variety: null,
     model: 'V6',
   };
+  const template = String(customTemplate || '').trim();
+  if (template) {
+    const values: Record<string, string> = {
+      userText: request.text,
+      supplied: JSON.stringify(supplied),
+      schema: JSON.stringify(schemaExample),
+      model: String(cfg.orchestration.suno.model || 'V6'),
+    };
+    let rendered = template;
+    for (const [key, value] of Object.entries(values)) rendered = rendered.replaceAll('{{' + key + '}}', () => value);
+    if (!template.includes('{{userText}}') && !template.includes('{{supplied}}')) rendered += '\n\n用户请求：' + values.userText;
+    if (!template.includes('{{supplied}}')) rendered += '\n\n用户结构化线索：' + values.supplied;
+    if (!template.includes('{{schema}}')) rendered += '\n\n输出结构：' + values.schema;
+    return rendered;
+  }
   return [
     '你是 Miobot 的 Suno V6 音乐创作导演、歌词作者和音乐制作参数规划器。',
     '把用户自然语言需求转换成 Suno /api/v1/generate 的结构化参数，只输出一个 JSON object。',
@@ -182,7 +197,7 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
         model,
         messages: [
           { role: 'system', content: 'You are a strict JSON Suno prompt planner. Never output markdown.' },
-          { role: 'user', content: buildSunoComposerPrompt(args, request, cfg) },
+          { role: 'user', content: buildSunoComposerPrompt(args, request, cfg, suno.composerPromptTemplate) },
         ],
         temperature: 0.6,
         maxTokens: 6000,

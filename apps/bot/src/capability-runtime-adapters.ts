@@ -1,4 +1,4 @@
-﻿import type { BotEngineResult } from '../../../packages/bot-engine/src/index.js';
+import type { BotEngineResult } from '../../../packages/bot-engine/src/index.js';
 import type { CapabilityHandler, CapabilityInvocation, ExecutionOutput, ExecutionResult } from '../../../packages/orchestration/src/index.js';
 
 export function executionFromBotResult(
@@ -13,7 +13,11 @@ export function executionFromBotResult(
   if (result.text?.trim()) outputs.push({ kind: 'text', text: result.text, priority: 10, mergeable: true });
   for (const image of result.images || []) outputs.push({ kind: 'image', url: image, priority: 9, mergeable: true });
   for (const video of result.videos || []) outputs.push({ kind: 'video', url: video, priority: 8, mergeable: true });
-  for (const audio of result.audio || []) outputs.push({ kind: 'audio', url: audio, priority: 10, mergeable: false });
+  const legacySpokenText = result.kind === 'chat' && result.text?.trim() && (result.audio || []).length ? result.text.trim() : undefined;
+  for (const audio of result.audio || []) outputs.push({
+    kind: 'audio', url: audio, priority: 10, mergeable: false,
+    ...(legacySpokenText ? { meta: { spokenText: legacySpokenText, preferredVoice: true, voiceRequested: true, sourceCapability: 'tts.speak' } } : {}),
+  });
   for (const file of result.files || []) {
     const value = typeof file === 'string' ? { file } : file;
     outputs.push({ kind: 'file', url: value.file, priority: 5, mergeable: false, meta: { name: value.name } });

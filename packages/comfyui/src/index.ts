@@ -23,6 +23,7 @@ export interface ComfyUiGeneratedImage {
 export interface ComfyUiRunResult {
   promptId: string;
   seed?: number;
+  seeds?: Partial<Record<'seed' | 'detailerSeed' | 'upscaleSeed', number>>;
   images: ComfyUiGeneratedImage[];
   raw: unknown;
 }
@@ -168,6 +169,38 @@ function hasByPath(root: unknown, dottedPath: string): boolean {
   return true;
 }
 
+function replaceNodeReference(value: unknown, nodeId: string, replacement: [string, number]): unknown {
+  if (Array.isArray(value)) {
+    if (value.length === 2 && String(value[0]) === nodeId) return [...replacement];
+    return value.map((item) => replaceNodeReference(item, nodeId, replacement));
+  }
+  if (value && typeof value === 'object') {
+    const out = value as Record<string, unknown>;
+    for (const key of Object.keys(out)) out[key] = replaceNodeReference(out[key], nodeId, replacement);
+    return out;
+  }
+  return value;
+}
+
+/** Krea2 原始工作流的 negative 是 ConditioningZeroOut；配置负向文本后把它改接到提示词节点。 */
+function rewireConfiguredNegativePrompt(profile: ComfyUiProfile, workflow: Record<string, any>, negativeText: string): void {
+  const negativeNodeId = String(profile.negativePromptNodeIds?.[0] || '').trim();
+  if (!negativeNodeId || !negativeText.trim()) return;
+  for (const [id, node] of Object.entries(workflow)) {
+    if (id === negativeNodeId || !node || typeof node !== 'object') continue;
+    if (node.class_type !== 'ConditioningZeroOut') continue;
+    for (const [targetId, target] of Object.entries(workflow)) {
+      if (targetId === id || !target || typeof target !== 'object') continue;
+      const inputs = target.inputs;
+      if (!inputs || typeof inputs !== 'object') continue;
+      const negative = inputs.negative;
+      const directlyUsedAsNegative = Array.isArray(negative) && negative.length === 2 && String(negative[0]) === id;
+      if (!directlyUsedAsNegative) continue;
+      target.inputs = replaceNodeReference(inputs, id, [negativeNodeId, 0]) as Record<string, unknown>;
+    }
+    delete workflow[id];
+  }
+}
 /** 只替换显式声明的文本节点，不改任何采样、尺寸或 LoRA 参数。 */
 function applyPromptNodes(profile: ComfyUiProfile, workflow: Record<string, any>, params: Record<string, unknown>): void {
   const positive = String(params.prompt || '').trim();
@@ -187,6 +220,7 @@ function applyPromptNodes(profile: ComfyUiProfile, workflow: Record<string, any>
     if (!('text' in node.inputs)) throw new ComfyUiError(`ComfyUI 节点 ${nodeId} 没有 text 输入`);
     node.inputs.text = negative;
   }
+  rewireConfiguredNegativePrompt(profile, workflow, negative);
 }
 
 export interface ComfyUiWorkflowValidation {
@@ -264,18 +298,47 @@ export function detectComfyUiPromptNodeIds(workflow: Record<string, unknown>, ne
   const preferred = candidates.filter((node) => referencedPositive.has(node.id));
   return (preferred.length ? preferred : candidates).map((node) => node.id);
 }
-export function buildComfyUiWorkflow(profile: ComfyUiProfile, params: Record<string, unknown>, maxBatchSize = 4): { workflow: Record<string, any>; applied: Record<string, unknown>; seed?: number } {
+const COMFY_SEED_KEYS = ['seed', 'detailerSeed', 'upscaleSeed'] as const;
+type ComfySeedKey = typeof COMFY_SEED_KEYS[number];
+
+function randomComfySeed(): number {
+  return Math.floor(Math.random() * (Number.MAX_SAFE_INTEGER - 2)) + 1;
+}
+
+function deriveComfySeed(base: number, offset: number): number {
+  return ((base - 1 + offset) % (Number.MAX_SAFE_INTEGER - 1)) + 1;
+}
+
+function positiveSeed(value: unknown): number | undefined {
+  const n = Math.trunc(Number(value));
+  return Number.isFinite(n) && n > 0 ? Math.min(Number.MAX_SAFE_INTEGER, n) : undefined;
+}
+
+export function buildComfyUiWorkflow(profile: ComfyUiProfile, params: Record<string, unknown>, maxBatchSize = 4): {
+  workflow: Record<string, any>;
+  applied: Record<string, unknown>;
+  seed?: number;
+  seeds?: Partial<Record<ComfySeedKey, number>>;
+} {
   const workflow = JSON.parse(JSON.stringify(profile.workflow || {})) as Record<string, any>;
   const merged = { ...(profile.defaults || {}), ...(params || {}) } as Record<string, unknown>;
   if (merged.batchSize !== undefined) {
     const n = Math.trunc(Number(merged.batchSize));
     merged.batchSize = Number.isFinite(n) ? Math.min(maxBatchSize, Math.max(1, n)) : 1;
   }
-  let seed: number | undefined;
-  if (merged.seed !== undefined) {
-    const n = Math.trunc(Number(merged.seed));
-    seed = Number.isFinite(n) && n > 0 ? Math.min(Number.MAX_SAFE_INTEGER, n) : Math.floor(Math.random() * (Number.MAX_SAFE_INTEGER - 1)) + 1;
-    merged.seed = seed;
+  const seedKeys = COMFY_SEED_KEYS.filter((key) => merged[key] !== undefined || profile.parameterMap?.[key]);
+  let seeds: Partial<Record<ComfySeedKey, number>> | undefined;
+  if (seedKeys.length) {
+    const requestedMainSeed = positiveSeed(merged.seed);
+    const baseSeed = requestedMainSeed || randomComfySeed();
+    const offsets: Record<ComfySeedKey, number> = { seed: 0, detailerSeed: 1, upscaleSeed: 2 };
+    seeds = {};
+    for (const key of seedKeys) {
+      const requested = key === 'seed' ? requestedMainSeed : positiveSeed(merged[key]);
+      const value = requested || deriveComfySeed(baseSeed, offsets[key]);
+      merged[key] = value;
+      seeds[key] = value;
+    }
   }
   const applied: Record<string, unknown> = {};
   for (const [key, path] of Object.entries(profile.parameterMap || {})) {
@@ -289,9 +352,8 @@ export function buildComfyUiWorkflow(profile: ComfyUiProfile, params: Record<str
   applyComfyUiLora(profile, workflow, merged);
   applyPromptNodes(profile, workflow, merged);
   normalizeKreaKsamplerCfg(profile, workflow);
-  return { workflow, applied, seed };
+  return { workflow, applied, seed: seeds?.seed, seeds };
 }
-
 export async function testComfyUiConnection(baseUrl: string, options: { apiKey?: string; headers?: Record<string, string>; timeoutMs?: number } = {}): Promise<unknown> {
   return fetchJson(`${trimBase(baseUrl)}/system_stats`, { method: 'GET', headers: mergeHeaders(options) }, options.timeoutMs || 10000);
 }
@@ -311,6 +373,15 @@ async function downloadImage(baseUrl: string, image: Record<string, any>, header
   return { filename, subfolder: String(image.subfolder || ''), type: String(image.type || 'output'), mime: response.headers.get('content-type') || 'image/png', buffer };
 }
 
+async function cancelQueuedComfyPrompt(baseUrl: string, headers: Record<string, string>, promptId: string): Promise<void> {
+  try {
+    await fetchJson(`${baseUrl}/queue`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ delete: [promptId] }),
+    }, 10000);
+  } catch { /* 取消失败不能掩盖原始超时 */ }
+}
 export async function runComfyUiWorkflow(options: ComfyUiRunOptions): Promise<ComfyUiRunResult> {
   const baseUrl = trimBase(options.baseUrl);
   if (!baseUrl) throw new ComfyUiError('ComfyUI 节点缺少 Base URL');
@@ -324,11 +395,12 @@ export async function runComfyUiWorkflow(options: ComfyUiRunOptions): Promise<Co
     headers,
     body: JSON.stringify({ prompt: built.workflow, client_id: clientId }),
   }, Math.min(60000, options.node.pollTimeoutMs));
-  const promptId = String(asRecord(submitted).prompt_id || '');
-  if (!promptId) throw new ComfyUiError('ComfyUI 没有返回 prompt_id');
-  if (asRecord(submitted).node_errors && Object.keys(asRecord(submitted).node_errors).length) {
+  const nodeErrors = asRecord(submitted).node_errors;
+  if (nodeErrors && Object.keys(nodeErrors).length) {
     throw new ComfyUiError('ComfyUI workflow 节点参数错误', { code: 'node_errors' });
   }
+  const promptId = String(asRecord(submitted).prompt_id || '');
+  if (!promptId) throw new ComfyUiError('ComfyUI 没有返回 prompt_id', { code: 'node_errors' });
 
   const deadline = Date.now() + options.node.pollTimeoutMs;
   let history: Record<string, any> = {};
@@ -342,7 +414,10 @@ export async function runComfyUiWorkflow(options: ComfyUiRunOptions): Promise<Co
     }
     await sleep(options.node.pollIntervalMs);
   }
-  if (!history.outputs) throw new ComfyUiError('ComfyUI 任务轮询超时', { code: 'poll_timeout' });
+    if (!history.outputs) {
+      await cancelQueuedComfyPrompt(baseUrl, headers, promptId);
+      throw new ComfyUiError('ComfyUI 任务轮询超时', { code: 'poll_timeout' });
+    }
 
   const outputs = asRecord(history.outputs);
   let imageNodes: Record<string, any>[] = [];
@@ -360,5 +435,5 @@ export async function runComfyUiWorkflow(options: ComfyUiRunOptions): Promise<Co
   for (const item of imageNodes.slice(0, options.node.maxBatchSize)) {
     images.push(await downloadImage(baseUrl, item, headers, Math.min(120000, options.node.pollTimeoutMs), options.maxImageBytes || 20 * 1024 * 1024));
   }
-  return { promptId, seed: built.seed, images, raw: history };
+  return { promptId, seed: built.seed, seeds: built.seeds, images, raw: history };
 }

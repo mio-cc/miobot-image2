@@ -1,4 +1,4 @@
-export type FeatureCategory = 'basic' | 'image' | 'file' | 'video' | 'template' | 'web' | 'render' | 'system';
+export type FeatureCategory = 'basic' | 'image' | 'file' | 'video' | 'audio' | 'template' | 'web' | 'render' | 'system';
 export type FeatureScope = 'private' | 'group';
 export type FeatureGroupActivation = 'direct' | 'mention' | 'reply' | 'mention-or-reply';
 export interface FeatureLimitField {
@@ -151,6 +151,11 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
   {
     id: 'video.generate', label: '视频生成', category: 'video', implemented: true,
     intentKind: 'video.generate', defaultAliases: [],
+    defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
+  },
+  {
+    id: 'audio.music.generate', label: '音乐生成', category: 'audio', implemented: true, defaultNaturalLanguage: true,
+    defaultAliases: [],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
   {

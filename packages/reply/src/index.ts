@@ -113,6 +113,78 @@ export interface ReplyPlanDispatchResult extends ReplyDispatchResult {
   warnings: string[];
   budgetEnforced: boolean;
 }
+function normalizePlanFingerprint(value: unknown): string {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[，。！？、,.!?;；:：'"”‘’()（）\[\]【】]/g, '')
+    .trim();
+}
+
+function isExplicitVoiceOutput(output: ReplyPlanOutputLike): boolean {
+  const meta = output.meta && typeof output.meta === 'object' ? output.meta : {};
+  return meta.preferredVoice === true || meta.voiceRequested === true || meta.sourceCapability === 'tts.speak';
+
+}
+
+function dedupeReplyPlanGroups(groups: ReplyPlanGroupLike[]): ReplyPlanGroupLike[] {
+  const all = groups.flatMap((group, groupIndex) => (group.outputs || []).map((output, outputIndex) => ({ group, groupIndex, output, outputIndex })));
+  const keep = new Set<string>();
+  const textSeen = new Set<string>();
+  const explicitVoiceFingerprints = new Set<string>();
+  for (const item of all) {
+    const { output } = item;
+    if (output.kind !== 'audio' || !isExplicitVoiceOutput(output)) continue;
+    const fp = normalizePlanFingerprint(output.meta?.spokenText);
+    if (fp) explicitVoiceFingerprints.add(fp);
+  }
+  for (const item of all) {
+    const { output, groupIndex, outputIndex } = item;
+    const key = groupIndex + ':' + outputIndex;
+    if (['text', 'link', 'card'].includes(String(output.kind))) {
+      const fp = normalizePlanFingerprint(output.text);
+      if (fp && explicitVoiceFingerprints.has(fp)) continue;
+      if (fp && textSeen.has(fp)) continue;
+      if (fp) textSeen.add(fp);
+      keep.add(key);
+      continue;
+    }
+    if (output.kind === 'audio') {
+      const meta = output.meta && typeof output.meta === 'object' ? output.meta : {};
+      const spokenFp = normalizePlanFingerprint(meta.spokenText);
+      if (spokenFp) {
+        if (meta.skipTts === true && !isExplicitVoiceOutput(output)) continue;
+      }
+      keep.add(key);
+      continue;
+    }
+    keep.add(key);
+  }
+  const audioGroups = new Map<string, typeof all>();
+  for (const item of all) {
+    if (item.output.kind !== 'audio') continue;
+    const key = item.groupIndex + ':' + item.outputIndex;
+    if (!keep.has(key)) continue;
+    const meta = item.output.meta && typeof item.output.meta === 'object' ? item.output.meta : {};
+    const fp = normalizePlanFingerprint(meta.spokenText) || String(item.output.url || item.output.id || '');
+    if (!fp) continue;
+    const list = audioGroups.get(fp) || [];
+    list.push(item);
+    audioGroups.set(fp, list);
+  }
+  for (const list of audioGroups.values()) {
+    if (list.length < 2) continue;
+    const winner = list.find((item) => isExplicitVoiceOutput(item.output)) || list[0];
+    for (const item of list) {
+      if (item === winner) continue;
+      keep.delete(item.groupIndex + ':' + item.outputIndex);
+    }
+  }
+  return groups.flatMap((group, groupIndex) => {
+    const outputs = (group.outputs || []).filter((_output, outputIndex) => keep.has(groupIndex + ':' + outputIndex));
+    return outputs.length ? [{ ...group, outputs }] : [];
+  });
+}
 export class ReplyStrategyEngine {
   private readonly client: ReplyClient;
   private readonly config: Required<ReplyStrategyConfig>;
@@ -375,7 +447,8 @@ export class ReplyStrategyEngine {
       return true;
     };
 
-    for (const group of plan.groups || []) {
+    const dedupedGroups = dedupeReplyPlanGroups(plan.groups || []);
+    for (const group of dedupedGroups) {
       if (sentCount >= maxMessages) {
         budgetEnforced = true;
         truncatedCount += group.outputs?.length || 0;
@@ -435,8 +508,10 @@ export class ReplyStrategyEngine {
   }
 
   private async replyPlanForwardGroup(context: ReplyContext, group: ReplyPlanGroupLike): Promise<ReplyDispatchResult> {
+    const audioOutputs = (group.outputs || []).filter((output) => output.kind === 'audio');
+    const nonAudioOutputs = (group.outputs || []).filter((output) => output.kind !== 'audio');
     const items: NapcatMixedForwardItem[] = [];
-    for (const output of group.outputs || []) {
+    for (const output of nonAudioOutputs) {
       const title = typeof output.meta?.title === 'string' ? output.meta.title : undefined;
       if ((output.kind === 'text' || output.kind === 'link' || output.kind === 'card')) {
         const text = this.replyPlanText([output]);
@@ -450,18 +525,44 @@ export class ReplyStrategyEngine {
         items.push({ kind: 'file', file: String(output.url), name, title });
       }
     }
-    if (!items.length) return this.replyText(context, '');
-    if (group.mode === 'nested_forward') {
-      const groups = [
-        items.filter((item) => item.kind === 'text'),
-        items.filter((item) => item.kind === 'image'),
-        items.filter((item) => item.kind === 'video'),
-        items.filter((item) => item.kind === 'file'),
-      ].filter((item) => item.length > 0);
-      const nested = await this.sendNestedMixedForward(context, groups, 'forward');
-      if (nested.success || nested.uncertain) return nested;
+    let forwardResult: ReplyDispatchResult | null = null;
+    if (items.length) {
+      if (group.mode === 'nested_forward') {
+        const groups = [
+          items.filter((item) => item.kind === 'text'),
+          items.filter((item) => item.kind === 'image'),
+          items.filter((item) => item.kind === 'video'),
+          items.filter((item) => item.kind === 'file'),
+        ].filter((item) => item.length > 0);
+        const nested = await this.sendNestedMixedForward(context, groups, 'forward');
+        if (nested.success || nested.uncertain) forwardResult = nested;
+      }
+      forwardResult = forwardResult || await this.sendMixedForward(context, items, 'forward');
+      if (!forwardResult.success || forwardResult.uncertain) return forwardResult;
     }
-    return this.sendMixedForward(context, items, 'forward');
+    if (!audioOutputs.length) return forwardResult || this.replyText(context, '');
+
+    const audioResults: ReplyDispatchResult[] = [];
+    for (const output of audioOutputs) {
+      const url = String(output.url || '').trim();
+      if (!url) {
+        audioResults.push(this.finish('mixed', 'plain', [{ kind: 'mixed', strategy: 'plain', method: 'validate-record', success: false, error: 'empty_audio_url' }], { success: false, error: 'empty_audio_url' }));
+        break;
+      }
+      const sent = await this.replyPlanRecord(context, url);
+      audioResults.push(sent);
+      if (sent.uncertain || !sent.success) break;
+    }
+    if (!forwardResult && audioResults.length === 1) return audioResults[0];
+    const all = [...(forwardResult ? [forwardResult] : []), ...audioResults];
+    const messageIds = uniqueIds(all.flatMap((result) => result.messageIds?.length ? result.messageIds : (result.messageId !== undefined ? [result.messageId] : [])));
+    return this.finish('mixed', 'plain', all.flatMap((result) => result.attempts || []), {
+      success: all.every((result) => result.success),
+      uncertain: all.some((result) => result.uncertain) || undefined,
+      messageId: messageIds[0],
+      messageIds,
+      error: all.find((result) => result.error)?.error,
+    });
   }
   private async replyPlanGroup(context: ReplyContext, group: ReplyPlanGroupLike, maxMessages?: number): Promise<ReplyDispatchResult> {
     const outputs = group.outputs || [];

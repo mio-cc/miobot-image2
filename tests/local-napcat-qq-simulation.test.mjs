@@ -387,6 +387,7 @@ test('local simulation: natural language enters OrchestrationEnforcer and ReplyP
   cfg.orchestration.mode = 'enforce';
   cfg.orchestration.planner.enabled = true;
   cfg.orchestration.planner.minConfidence = 0;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
   let fallbackAppCalls = 0;
   const app = makeApp(async () => {
     fallbackAppCalls += 1;
@@ -440,6 +441,7 @@ test('local simulation: ReplyPlan enforces QQ maxMessages while keeping files/au
   cfg.orchestration.mode = 'enforce';
   cfg.orchestration.planner.enabled = true;
   cfg.orchestration.planner.minConfidence = 0;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
   cfg.orchestration.reply.maxMessages = 3;
   cfg.orchestration.reply.includeTruncationNotice = true;
   let fallbackAppCalls = 0;

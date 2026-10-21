@@ -83,5 +83,6 @@ test('voice: missing preferences triggers one structured clarification', async (
     plan: { planId: 'p1' }, step: { id: 's1', capability: 'voice.search', args: {} },
   });
   assert.equal(result.status, 'needs_input');
-  assert.ok(result.diagnostics.question.includes('风格'));
+  assert.ok(result.diagnostics.missingInformation.includes('声音风格'));
+  assert.equal(result.diagnostics.question, undefined);
 });

@@ -17,10 +17,11 @@ export type MetricEvent =
   | 'chat'      // 对话回复
   | 'image'     // 生图成功
   | 'video'     // 视频生成成功
+  | 'audio'     // 音乐/音频生成成功
   | 'voice'     // 语音发送成功
   | 'error';    // 处理失败
 
-export const METRIC_EVENTS: MetricEvent[] = ['message', 'command', 'chat', 'image', 'video', 'voice', 'error'];
+export const METRIC_EVENTS: MetricEvent[] = ['message', 'command', 'chat', 'image', 'video', 'audio', 'voice', 'error'];
 
 const BUCKET_COUNT = 24;
 const HOUR_MS = 60 * 60 * 1000;

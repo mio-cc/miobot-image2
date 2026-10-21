@@ -2,6 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildReplyPlan,
+  buildCapabilityManifest,
+  DEFAULT_PLANNER_SYSTEM_PROMPT,
+  DEFAULT_PLANNER_USER_PROMPT_TEMPLATE,
+  validatePlanContext,
+  validatePlanEffectAlignment,
   buildPlannerPrompt,
   applyCapabilityOverrides,
   builtinCapabilityDescriptors,
@@ -32,15 +37,23 @@ import {
   decideApproval,
   expireApproval,
   resolvePermission,
+  verifyPlanAlignmentWithModel,
+  normalizeReplyFingerprint,
+  retrieveCapabilitiesWithModel,
+  replyContentHash,
 } from '../dist/packages/orchestration/src/index.js';
 import { ApprovalRuntime } from '../dist/apps/bot/src/approval-runtime.js';
+import { executionFromBotResult } from '../dist/apps/bot/src/capability-runtime-adapters.js';
 import { createReplyStrategyEngine } from '../dist/packages/reply/src/index.js';
 import { SunoCapabilityHandler } from '../dist/apps/bot/src/capability-suno.js';
+import { HelpCapabilityHandler, TtsCapabilityHandler } from '../dist/apps/bot/src/capability-basic.js';
 import { OrchestrationEnforcer } from '../dist/apps/bot/src/orchestration-enforce.js';
+import { buildHelpText } from '../dist/apps/bot/src/help-text.js';
 import { PendingJobStore } from '../dist/apps/bot/src/pending-job-store.js';
 import { JobRecoveryService } from '../dist/apps/bot/src/job-recovery.js';
 import { SunoPromptComposer, buildSunoComposerPrompt } from '../dist/apps/bot/src/suno-composer.js';
 import { createDefaultConfig } from '../dist/packages/config/src/index.js';
+import { allReplyPlanOutputs, selectPrimaryTextForTts, replacePrimaryTextWithAudio, removePrimaryText, sendResult } from '../dist/apps/bot/src/main.js';
 
 function request(overrides = {}) {
   return {
@@ -308,6 +321,7 @@ test('orchestration: enforce path plans and executes image capability through le
   cfg.orchestration.enabled = true;
   cfg.orchestration.mode = 'enforce';
   cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
   cfg.orchestration.planner.nodeIndex = 1;
   cfg.orchestration.planner.model = 'planner-test';
   const fakeApp = {
@@ -366,6 +380,7 @@ test('orchestration: enforcer returns partial result instead of dangerous legacy
   cfg.orchestration.enabled = true;
   cfg.orchestration.mode = 'enforce';
   cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
   cfg.orchestration.planner.nodeIndex = 1;
   cfg.orchestration.planner.model = 'planner-test';
   const fakeApp = {
@@ -384,7 +399,7 @@ test('orchestration: enforcer returns partial result instead of dangerous legacy
     },
   };
   const enforcer = new OrchestrationEnforcer({ getConfig: () => cfg, app: fakeApp, client: fakeClient });
-  const result = await enforcer.handle({ text: '先画图再读文件', chatType: 'private', userId: '1' });
+  const result = await enforcer.handle({ text: '先画图再读文件', chatType: 'private', userId: '1', files: [{ file: 'a.txt', name: 'a.txt' }] });
   assert.equal(result.handled, true);
   assert.equal(result.result.images[0], 'img-1');
   assert.equal(result.problem.kind, 'capability_failed');
@@ -972,7 +987,9 @@ test('orchestration: low-confidence plan asks clarification instead of executing
   cfg.orchestration.mode = 'enforce';
   cfg.orchestration.planner.enabled = true;
   cfg.orchestration.planner.minConfidence = 0.8;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
   let capabilityCalls = 0;
+  let modelCalls = 0;
   const handlers = new Map([['image.generate', {
     async execute({ step }) {
       capabilityCalls += 1;
@@ -984,10 +1001,17 @@ test('orchestration: low-confidence plan asks clarification instead of executing
     app: { sessions: { clear() {} }, engine: {}, handle: async () => ({}), registry: () => ({}), client: {} },
     client: {
       async chat() {
-        return { text: JSON.stringify({
+        modelCalls += 1;
+        if (modelCalls === 1) return { text: JSON.stringify({
           planId: 'low-confidence', requestId: 'ignored', goal: 'generate',
           steps: [{ id: 's1', capability: 'image.generate', args: { prompt: 'cat' } }],
           confidence: 0.2,
+        }) };
+        return { text: JSON.stringify({
+          planId: 'low-confidence-clarify', requestId: 'ignored',
+          understanding: { goal: '生成猫图片', desiredOutcome: 'generate', constraints: [], missingInformation: ['猫的具体样子'], confidence: 0.4 },
+          steps: [], needsClarification: true,
+          clarificationQuestion: '你想画一只什么样的猫？可以描述毛色、动作或画面风格。',
         }) };
       },
     },
@@ -995,8 +1019,9 @@ test('orchestration: low-confidence plan asks clarification instead of executing
   });
   const result = await enforcer.handle({ text: '画猫', chatType: 'private', userId: '1' });
   assert.equal(result.handled, true);
-  assert.match(result.result.text, /补充/);
+  assert.match(result.result.text, /你想画一只什么样的猫/);
   assert.equal(capabilityCalls, 0);
+  assert.equal(modelCalls, 2);
 });
 test('orchestration: disabled planner falls back without calling model', async () => {
   const cfg = createDefaultConfig();
@@ -1117,7 +1142,9 @@ test('orchestration: failurePolicy ask returns needs_input instead of retrying o
   assert.equal(result.status, 'needs_input');
   assert.equal(calls, 1);
   assert.equal(result.results.s.status, 'needs_input');
-  assert.match(result.results.s.diagnostics.question, /补充信息/);
+  assert.equal(result.results.s.diagnostics.failurePolicy, 'ask');
+  assert.equal(result.results.s.diagnostics.failureStage, 'execution');
+  assert.equal(result.results.s.diagnostics.question, undefined);
 });
 
 test('orchestration: layer approval preflight blocks sibling side effects', async () => {
@@ -1331,6 +1358,7 @@ test('orchestration: retriever/specialist/critic/safety/composer roles participa
       if (calls.length === 3) return { text: plan('cat refined') };
       if (calls.length === 4) return { text: plan('cat refined') };
       if (calls.length === 5) return { text: JSON.stringify({ riskLevel: 'high', reason: 'sensitive' }) };
+      if (calls.length === 6) return { text: JSON.stringify({ aligned: true, reason: 'explicit artifact creation', suggestedCapabilities: [], requiresClarification: false }) };
       return { text: '这是最终结果摘要。' };
     },
   };
@@ -1342,7 +1370,9 @@ test('orchestration: retriever/specialist/critic/safety/composer roles participa
   });
   const result = await enforcer.handle({ text: '画一只猫', chatType: 'private', userId: '1' });
   assert.equal(result.handled, true);
-  assert.equal(calls.length, 6);
+  assert.equal(calls.length, 7);
+  assert.match(calls[1], /file\.generate/);
+  assert.match(calls[1], /image\.generate/);
   assert.equal(handlerArgs.prompt, 'cat refined');
   assert.equal(handlerApprovalRequired, true);
   assert.equal(result.result.images[0], 'img.png');
@@ -1365,6 +1395,7 @@ test('orchestration: planner uses selected prompt version system content', async
   cfg.orchestration.enabled = true;
   cfg.orchestration.mode = 'enforce';
   cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
   cfg.orchestration.promptOptimization.enabled = true;
   cfg.orchestration.promptOptimization.canaryPercent = 100;
   cfg.orchestration.promptOptimization.activeVersionId = 'v1';
@@ -1461,7 +1492,9 @@ test('orchestration: clarification is hard-capped at one question per job', asyn
   const first = await enforcer.handle({ text: '帮我弄一下', chatType: 'private', userId: '7' });
   assert.ok(first.result.text.includes('请再说具体一点'));
   const second = await enforcer.handle({ text: '就是那个', chatType: 'private', userId: '7' });
-  assert.ok(second.result.text.includes('信息仍然不足'));
+  assert.equal(second.handled, true);
+  assert.equal(second.result.text, undefined);
+  assert.equal(second.problem.kind, 'clarification_resolution_failed');
   assert.equal(store.list().length, 0);
   assert.equal(calls, 2);
 });
@@ -1475,6 +1508,7 @@ test('orchestration: execution clarification resumes the same DAG and does not r
   cfg.orchestration.roles.planner.model = 'planner-test';
   cfg.orchestration.roles.planner.fallbackModel = 'planner-test';
   cfg.llm.chatModel = 'planner-test';
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
   const plan = {
     planId: 'resume-dag',
     requestId: 'ignored',
@@ -1513,6 +1547,7 @@ test('orchestration: execution clarification resumes the same DAG and does not r
       async chat() {
         plannerCalls += 1;
         if (plannerCalls === 1) return { text: JSON.stringify(plan) };
+        if (plannerCalls === 2) return { text: JSON.stringify({ question: '你想把文件导出成什么格式？', missingInformation: ['文件格式'] }) };
         return { text: JSON.stringify({ ...plan, steps: [plan.steps[0], { ...plan.steps[1], args: { format: 'docx' } }] }) };
       },
     },
@@ -1520,7 +1555,7 @@ test('orchestration: execution clarification resumes the same DAG and does not r
     pendingJobs: store,
   });
   const first = await enforcer.handle({ text: '先画猫再导出文件', chatType: 'private', userId: '8' });
-  assert.ok(first.result.text.includes('要生成什么格式'));
+  assert.ok(first.result.text.includes('你想把文件导出成什么格式'));
   const checkpoint = store.get('private:8');
   assert.equal(checkpoint.status, 'clarifying');
   assert.equal(checkpoint.pendingStepId, 's2');
@@ -1539,6 +1574,7 @@ test('orchestration: approval timeout uses configured fallback cancel', async ()
   cfg.orchestration.enabled = true;
   cfg.orchestration.mode = 'enforce';
   cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
   cfg.orchestration.planner.model = 'planner-test';
   cfg.orchestration.roles.planner.model = 'planner-test';
   cfg.orchestration.roles.planner.fallbackModel = 'planner-test';
@@ -1564,7 +1600,7 @@ test('orchestration: approval timeout uses configured fallback cancel', async ()
       },
     },
   });
-  const result = await enforcer.handle({ text: '删除文件', chatType: 'private', userId: '9' });
+  const result = await enforcer.handle({ text: '删除文件', chatType: 'private', userId: '9', files: [{ file: 'a.txt', name: 'a.txt' }] });
   assert.equal(result.problem.kind, 'approval_timeout_cancelled');
   assert.equal(store.list().length, 0);
 });
@@ -1643,6 +1679,7 @@ test('orchestration: approval timeout uses configured fallback deny', async () =
   cfg.orchestration.enabled = true;
   cfg.orchestration.mode = 'enforce';
   cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
   cfg.orchestration.planner.model = 'planner-test';
   cfg.orchestration.roles.planner.model = 'planner-test';
   cfg.orchestration.roles.planner.fallbackModel = 'planner-test';
@@ -1668,7 +1705,7 @@ test('orchestration: approval timeout uses configured fallback deny', async () =
       },
     },
   });
-  const result = await enforcer.handle({ text: '删除文件', chatType: 'private', userId: '10' });
+  const result = await enforcer.handle({ text: '删除文件', chatType: 'private', userId: '10', files: [{ file: 'a.txt', name: 'a.txt' }] });
   assert.equal(result.problem.kind, 'approval_timeout_denied');
   // 审批拒绝/超时只上报管理员，不应向用户发错误文本。
   assert.equal(result.result.text, undefined);
@@ -1835,4 +1872,632 @@ test('orchestration: Suno composer keeps unspecified null controls absent', asyn
   assert.equal(result.weirdnessConstraint, undefined);
   assert.equal(result.audioWeight, undefined);
   assert.equal(result.variety, undefined);
+});
+test('planner: prompt is generic effect-based and shows capability side-effect metadata', () => {
+  const req = {
+    requestId: 'req-effect-prompt', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' },
+    text: '这个对象现在是什么情况', attachments: [], receivedAt: new Date().toISOString(),
+  };
+  const prompt = buildPlannerPrompt(req, builtinCapabilityDescriptors());
+  assert.match(prompt, /这个对象现在是什么情况/);
+  assert.match(prompt, /capabilityManifest/);
+  assert.match(prompt, /understanding/);
+  assert.match(prompt, /desiredOutcome/);
+  assert.match(prompt, /"effect":"retrieve"/);
+  assert.match(prompt, /"effect":"generate"/);
+  assert.match(prompt, /"requiredContext":\["image"\]/);
+  assert.match(prompt, /"sideEffects":\["external_call"\]/);
+  assert.match(prompt, /"sideEffects":\["creates_artifact"\]/);
+  assert.doesNotMatch(prompt, /notFor|whenNotToUse/);
+  assert.doesNotMatch(DEFAULT_PLANNER_SYSTEM_PROMPT, /天气|新闻|价格|图片|视频|音乐|语音|文件/);
+  assert.doesNotMatch(DEFAULT_PLANNER_USER_PROMPT_TEMPLATE, /天气|新闻|价格|图片|视频|音乐|语音|文件/);
+  assert.doesNotMatch(prompt, /天气|新闻|价格/);
+  assert.doesNotMatch(prompt, /天气请求必须使用本能力/);
+  const custom = buildPlannerPrompt(req, builtinCapabilityDescriptors(), { template: '自定义前缀 {{userText}} 只输出 JSON。' });
+  assert.match(custom, /自定义前缀 这个对象现在是什么情况/);
+  assert.match(custom, /"effect":"retrieve"/);
+  assert.match(custom, /requiredContext/);
+  assert.match(custom, /输出 schema/);
+  const customManifest = buildPlannerPrompt(req, builtinCapabilityDescriptors(), { template: 'MANIFEST={{capabilityManifest}}' });
+  assert.match(customManifest, /"schemaVersion":1/);
+  const legacyPlaceholder = buildPlannerPrompt(req, builtinCapabilityDescriptors(), { template: 'LEGACY={{capabilityCatalog}}' });
+  assert.match(legacyPlaceholder, /"schemaVersion":1/);
+  const noPlaceholders = buildPlannerPrompt(req, builtinCapabilityDescriptors(), { template: '只输出 JSON，不使用任何占位符。' });
+  assert.match(noPlaceholders, /这个对象现在是什么情况/);
+  assert.match(noPlaceholders, /"schemaVersion":1/);
+  assert.match(noPlaceholders, /输出 schema/);
+});
+
+test('planner: generic alignment verifier rejects an artifact plan for an information goal', async () => {
+  const req = {
+    requestId: 'req-alignment-verifier', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' },
+    text: '这个对象现在是什么情况', attachments: [], receivedAt: new Date().toISOString(),
+  };
+  const plan = { planId: 'p', requestId: req.requestId, goal: 'lookup', steps: [{ id: 's', capability: 'image.generate', args: { prompt: '这个对象' } }], confidence: 0.9 };
+  const result = await verifyPlanAlignmentWithModel({
+    async chat() {
+      return { text: JSON.stringify({ aligned: false, reason: '用户要信息，计划却创建新产物', suggestedCapabilities: ['web.search'], requiresClarification: false }) };
+    },
+  }, req, plan, builtinCapabilityDescriptors(), { nodeIndex: 0, model: 'fake' });
+  assert.equal(result.fallback, false);
+  assert.equal(result.value.aligned, false);
+  assert.deepEqual(result.value.suggestedCapabilities, ['web.search']);
+});
+
+test('enforce planner: weather misplan is corrected to web.search before execution', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = true;
+  cfg.orchestration.planner.alignmentGuardConfidenceThreshold = 0.8;
+  cfg.orchestration.roles = { planner: { enabled: true }, retriever: { enabled: false }, specialist: { enabled: false }, critic: { enabled: false }, safety: { enabled: false }, composer: { enabled: false } };
+  cfg.orchestration.externalProviders = { enabled: true, allowlist: [] };
+  cfg.orchestration.suno.enabled = false;
+  const engineCalls = [];
+  const app = {
+    sessions: { clear() {} },
+    async handle() { return { handled: true, kind: 'chat', text: 'fallback chat' }; },
+    engine: {
+      async handleExplicit(kind, input, args) {
+        engineCalls.push({ kind, input, args });
+        return { handled: true, kind: 'chat', text: '宁波今天多云，20-26℃', decision: { kind: 'chat', source: 'model', confidence: 1, reason: 'search' }, images: [] };
+      },
+    },
+  };
+  const chat = async (_node, payload) => {
+    const text = payload.messages.map((message) => message.content).join('\n');
+    if (text.includes('意图-行动一致性复核器')) {
+      return { text: JSON.stringify({ aligned: false, reason: '目标只是获取信息，计划却创建新产物', suggestedCapabilities: ['web.search'], requiresClarification: false }) };
+    }
+    if (text.includes('通用计划修复器')) {
+      return { text: JSON.stringify({ planId: 'weather-repaired', requestId: 'ignored', goal: '查询天气', steps: [{ id: 'weather', capability: 'web.search', args: { query: '今天宁波天气' } }], needsClarification: false, confidence: 0.95 }) };
+    }
+    return { text: JSON.stringify({
+      planId: 'weather-misplan', requestId: 'ignored', goal: '查询天气',
+      steps: [{ id: 'wrong-image', capability: 'image.generate', args: { prompt: '今天宁波天气' } }],
+      needsClarification: false, confidence: 0.92,
+    }) };
+  };
+  const enforcer = new OrchestrationEnforcer({ getConfig: () => cfg, app, client: { chat } });
+  const result = await enforcer.handle({ text: '今天宁波天气怎么样', chatType: 'private', userId: '20001' });
+  assert.equal(result.handled, true);
+  assert.equal(engineCalls.length, 1);
+  assert.equal(engineCalls[0].kind, 'chat');
+  assert.match(engineCalls[0].args.prompt, /今天宁波天气/);
+  assert.match(result.result.text, /宁波今天多云/);
+  assert.equal(result.result.images, undefined);
+});
+
+test('help: full help text includes new capabilities and is marked skipTts', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.suno.enabled = true;
+  const text = buildHelpText(cfg);
+  assert.ok(text.length > 500);
+  assert.match(text, /FishAudio/);
+  assert.match(text, /Suno/);
+  assert.match(text, /长期记忆/);
+  assert.match(text, /画布图库/);
+  assert.match(text, /权限与审批/);
+  const handler = new HelpCapabilityHandler(() => cfg);
+  const invocation = {
+    request: { requestId: 'help', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' }, text: '/help' },
+    plan: { planId: 'help', requestId: 'help', goal: 'help', steps: [{ id: 'h', capability: 'help', args: {} }] },
+    step: { id: 'h', capability: 'help', args: {} },
+    dependencyResults: {},
+  };
+  const result = await handler.execute(invocation);
+  assert.equal(result.status, 'success');
+  assert.ok(String(result.outputs[0].text).length > 500);
+  assert.equal(result.outputs[0].meta.skipTts, true);
+  assert.equal(result.outputs[0].meta.disableVoice, true);
+});
+
+test('reply plan: semantic dedupe handles text/audio/composer duplicates before budget', () => {
+  assert.equal(normalizeReplyFingerprint('你好，世界！'), normalizeReplyFingerprint('你好 世界'));
+  assert.ok(replyContentHash('同样的内容'));
+  const explicitVoice = buildReplyPlan([
+    { kind: 'text', id: 't1', text: '这是一段会被朗读的内容', priority: 10, mergeable: true },
+    { kind: 'audio', id: 'a1', url: 'voice.mp3', priority: 9, mergeable: false, meta: { spokenText: '这是一段会被朗读的内容', preferredVoice: true } },
+  ], { maxMessages: 3 });
+  const explicitOutputs = explicitVoice.groups.flatMap((group) => group.outputs);
+  assert.equal(explicitOutputs.length, 1);
+  assert.equal(explicitOutputs[0].kind, 'audio');
+  assert.ok(explicitOutputs[0].meta.contentHash);
+  assert.ok(explicitVoice.dedupedCount >= 1);
+
+  const textWins = buildReplyPlan([
+    { kind: 'text', id: 't2', text: '普通回复', priority: 10, mergeable: true },
+    { kind: 'audio', id: 'a2', url: 'auto.mp3', priority: 9, mergeable: false, meta: { spokenText: '普通回复' } },
+  ], { maxMessages: 3 });
+  assert.deepEqual(textWins.groups.flatMap((group) => group.outputs).map((output) => output.kind), ['text']);
+
+  const composerDup = buildReplyPlan([
+    { kind: 'text', id: 'main', text: '同一句回答', priority: 10, mergeable: true },
+    { kind: 'text', id: 'composer', text: '同一句回答', priority: 1, mergeable: true, meta: { role: 'composer', synthetic: true } },
+  ], { maxMessages: 3 });
+  const composerOutputs = composerDup.groups.flatMap((group) => group.outputs);
+  assert.equal(composerOutputs.length, 1);
+  assert.equal(composerOutputs[0].id, 'main');
+  assert.ok(composerDup.dedupedCount >= 1);
+});
+
+test('auto TTS: mixed plan replaces only primary text and respects skip/audio dedupe', () => {
+  const plan = {
+    groups: [
+      { mode: 'direct', messageCount: 1, outputs: [
+        { kind: 'image', id: 'img', url: 'https://cdn/image.png', priority: 9, mergeable: true },
+        { kind: 'text', id: 'answer', text: '这是图片的说明文字', priority: 10, mergeable: true },
+        { kind: 'text', id: 'extra', text: '另一条不同说明', priority: 5, mergeable: true },
+      ] },
+    ],
+    messageCount: 1,
+  };
+  const target = selectPrimaryTextForTts(plan);
+  assert.ok(target);
+  assert.equal(target.output.id, 'answer');
+  const voiced = replacePrimaryTextWithAudio(plan, target, 'voice.mp3');
+  const outputs = allReplyPlanOutputs(voiced);
+  assert.deepEqual(outputs.map((output) => output.kind).sort(), ['audio', 'image', 'text']);
+  assert.equal(outputs.some((output) => output.kind === 'text' && output.text === '这是图片的说明文字'), false);
+  const audio = outputs.find((output) => output.kind === 'audio');
+  assert.equal(audio?.meta.spokenText, '这是图片的说明文字');
+  assert.equal(audio?.meta.replacesOutputId, 'answer');
+  assert.ok(audio?.meta.contentHash);
+  const stripped = removePrimaryText(plan, target);
+  assert.deepEqual(allReplyPlanOutputs(stripped).map((output) => output.kind).sort(), ['image', 'text']);
+  assert.equal(allReplyPlanOutputs(stripped).some((output) => output.text === '这是图片的说明文字'), false);
+
+  const spokenAlready = { groups: [{ mode: 'direct', messageCount: 1, outputs: [
+    { kind: 'text', text: '已经在计划里的语音内容', priority: 10 },
+    { kind: 'audio', url: 'typed.mp3', priority: 9, meta: { spokenText: '已经在计划里的语音内容', preferredVoice: true } },
+  ] }], messageCount: 1 };
+  assert.equal(selectPrimaryTextForTts(spokenAlready), null);
+
+  const skip = { groups: [{ mode: 'direct', messageCount: 1, outputs: [
+    { kind: 'text', text: '帮助文本', priority: 10, meta: { skipTts: true } },
+  ] }], messageCount: 1 };
+  assert.equal(selectPrimaryTextForTts(skip), null);
+});
+test('enforce progress: plan hook exposes generation capability for runtime progress', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  cfg.orchestration.roles = { planner: { enabled: true }, retriever: { enabled: false }, specialist: { enabled: false }, critic: { enabled: false }, safety: { enabled: false }, composer: { enabled: false } };
+  const progressEvents = [];
+  let calls = 0;
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg,
+    app: { sessions: { clear() {} }, engine: {}, handle: async () => ({}) },
+    client: { async chat() { calls += 1; return { text: JSON.stringify({ planId: 'progress-plan', requestId: 'ignored', goal: 'draw', steps: [{ id: 's1', capability: 'image.generate', args: { prompt: 'cat' } }], confidence: 0.9 }) }; } },
+    handlers: new Map([['image.generate', { async execute({ step }) { return { jobId: 'j', stepId: step.id, status: 'success', outputs: [{ kind: 'image', url: 'img.png' }] }; } }]]),
+  });
+  const result = await enforcer.handle({
+    text: '画一只猫', chatType: 'private', userId: '1',
+    onProgress: (event) => { progressEvents.push(event); },
+  });
+  assert.equal(result.handled, true);
+  assert.equal(calls, 1);
+  assert.equal(progressEvents.length, 1);
+  assert.deepEqual(progressEvents[0].capabilityIds, ['image.generate']);
+  assert.deepEqual(progressEvents[0].stepIds, ['s1']);
+});
+
+test('enforce planner: generic alignment guard also corrects non-image side-effect misrouting', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = true;
+  cfg.orchestration.roles = { planner: { enabled: true }, retriever: { enabled: false }, specialist: { enabled: false }, critic: { enabled: false }, safety: { enabled: false }, composer: { enabled: false } };
+  const calls = [];
+  const chat = async (_node, payload) => {
+    const text = payload.messages.map((message) => message.content).join('\n');
+    if (text.includes('意图-行动一致性复核器')) {
+      return { text: JSON.stringify({ aligned: false, reason: '用户要读取资料，不应创建新文件', suggestedCapabilities: ['file.read'], requiresClarification: false }) };
+    }
+    if (text.includes('通用计划修复器')) {
+      return { text: JSON.stringify({ planId: 'file-repaired', requestId: 'ignored', goal: '读取资料', steps: [{ id: 'read', capability: 'file.read', args: { file: '资料' } }], needsClarification: false, confidence: 0.9 }) };
+    }
+    return { text: JSON.stringify({
+      planId: 'wrong-file-plan', requestId: 'ignored', goal: '读取资料',
+      steps: [{ id: 'wrong-file', capability: 'file.generate', args: { prompt: '资料' } }], confidence: 0.9,
+    }) };
+  };
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg,
+    app: { sessions: { clear() {} }, engine: {}, handle: async () => ({}) },
+    client: { chat },
+    handlers: new Map([['file.read', { async execute({ step }) { calls.push(step.capability); return { jobId: 'j', stepId: step.id, status: 'success', outputs: [{ kind: 'text', text: '已读取资料' }] }; } }]]),
+  });
+  const result = await enforcer.handle({ text: '帮我看看这个资料的内容', chatType: 'private', userId: '1', files: [{ file: '资料.txt', name: '资料.txt' }] });
+  assert.equal(result.handled, true);
+  assert.deepEqual(calls, ['file.read']);
+  assert.match(result.result.text, /已读取资料/);
+});
+test('prompt entries: role override and help custom text are configurable', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.help.extraText = '本实例支持自定义审批说明。';
+  assert.match(buildHelpText(cfg), /本实例支持自定义审批说明/);
+  let captured = '';
+  const result = await retrieveCapabilitiesWithModel({
+    async chat(_node, payload) {
+      captured = payload.messages.map((message) => message.content).join('\n');
+      return { text: JSON.stringify({ capabilityIds: ['chat.reply', 'web.search'] }) };
+    },
+  }, {
+    requestId: 'role-prompt', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' },
+    text: '查询一个实时信息', attachments: [], receivedAt: new Date().toISOString(),
+  }, builtinCapabilityDescriptors(), {
+    nodeIndex: 0, model: 'fake', topK: 2,
+    promptTemplate: 'CUSTOM_ROLE_PROMPT request={{request}} catalog={{catalog}}',
+  });
+  assert.equal(result.fallback, false);
+  assert.match(captured, /CUSTOM_ROLE_PROMPT/);
+  assert.match(captured, /查询一个实时信息/);
+  assert.match(captured, /web\.search/);
+});
+
+test('suno prompt entry: custom composer template keeps supplied data and schema', () => {
+  const cfg = createDefaultConfig();
+  const req = {
+    requestId: 'suno-template', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' },
+    text: '来一首测试歌曲', attachments: [], receivedAt: new Date().toISOString(),
+  };
+  const prompt = buildSunoComposerPrompt({ request: '来一首测试歌曲', style: 'pop' }, req, cfg, 'CUSTOM {{userText}} model={{model}}');
+  assert.match(prompt, /CUSTOM 来一首测试歌曲/);
+  assert.match(prompt, /V6/);
+  assert.match(prompt, /用户结构化线索/);
+  assert.match(prompt, /输出结构/);
+    const noPlaceholderPrompt = buildSunoComposerPrompt({ request: '来一首测试歌曲', style: 'pop' }, req, cfg, 'CUSTOM_NO_PLACEHOLDERS');
+    assert.match(noPlaceholderPrompt, /CUSTOM_NO_PLACEHOLDERS/);
+    assert.match(noPlaceholderPrompt, /用户请求：来一首测试歌曲/);
+    assert.match(noPlaceholderPrompt, /用户结构化线索/);
+});
+
+test('auto TTS legacy path: eligible voice failure never sends duplicate text fallback', async () => {
+  const ctx = { chatType: 'private', userId: '1' };
+  const reports = [];
+  let textCalls = 0;
+  const engine = {
+    async replyText() { textCalls += 1; return { success: true }; },
+    async replyPlan() { return { success: true, messageIds: [], attempts: [] }; },
+  };
+  const reportProblem = async (kind, error, extra) => { reports.push({ kind, error, extra }); };
+  const failVoice = async () => { throw new Error('synthesis down'); };
+  const successReply = { async sendPrivateRecord() { return { success: true }; } };
+  await sendResult(engine, ctx, { text: '这段内容不应该再以文字发送' }, failVoice, async () => true, successReply, reportProblem);
+  assert.equal(textCalls, 0);
+  assert.ok(reports.some((item) => item.kind === 'auto-tts-synthesize-error'));
+
+  reports.length = 0;
+  await sendResult(engine, ctx, { text: '空语音也不回退文字' }, async () => null, async () => true, successReply, reportProblem);
+  assert.equal(textCalls, 0);
+  assert.ok(reports.some((item) => item.kind === 'auto-tts-synthesize-failed'));
+
+  reports.length = 0;
+  await sendResult(engine, ctx, { text: '不允许 TTS 时正常文字' }, async () => 'unused.mp3', async () => false, successReply, reportProblem);
+  assert.equal(textCalls, 1);
+
+  reports.length = 0;
+  const reply = { async sendPrivateRecord() { return { success: false, error: 'record rejected' }; } };
+  await sendResult(engine, ctx, { text: '语音发送失败也不回退文字' }, async () => 'voice.mp3', async () => true, reply, reportProblem);
+  assert.equal(textCalls, 1);
+  assert.ok(reports.some((item) => item.kind === 'voice-send-failed'));
+});
+
+test('enforce planner: configured system/user prompt templates are actually used', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  cfg.orchestration.planner.systemPromptTemplate = 'CUSTOM_SYSTEM_PROMPT';
+  cfg.orchestration.planner.userPromptTemplate = 'CUSTOM_USER_PROMPT request={{userText}} catalog={{capabilityCatalog}} schema={{outputSchema}}';
+  const prompts = [];
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg,
+    app: { sessions: { clear() {} }, engine: {}, handle: async () => ({}) },
+    client: {
+      async chat(_node, payload) {
+        prompts.push(payload.messages.map((message) => message.content).join('\n'));
+        return { text: JSON.stringify({ planId: 'custom-prompt-plan', requestId: 'ignored', goal: 'reply', steps: [{ id: 's', capability: 'chat.reply', args: { prompt: '你好' } }], confidence: 0.9 }) };
+      },
+    },
+    handlers: new Map([['chat.reply', { async execute({ step }) { return { jobId: 'j', stepId: step.id, status: 'success', outputs: [{ kind: 'text', text: '你好呀' }] }; } }]]),
+  });
+  const result = await enforcer.handle({ text: '你好', chatType: 'private', userId: '1' });
+  assert.equal(result.handled, true);
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /CUSTOM_SYSTEM_PROMPT/);
+  assert.match(prompts[0], /CUSTOM_USER_PROMPT request=你好/);
+  assert.match(prompts[0], /capabilityCatalog|"id":"chat.reply"/);
+  assert.match(prompts[0], /"planId":"plan_x"/);
+});
+test('auto TTS legacy path: successful eligible voice sends audio only', async () => {
+  const ctx = { chatType: 'private', userId: '1' };
+  let textCalls = 0;
+  let recordCalls = 0;
+  const engine = { async replyText() { textCalls += 1; return { success: true }; } };
+  const reply = { async sendPrivateRecord() { recordCalls += 1; return { success: true, messageId: 'record-1' }; } };
+  await sendResult(engine, ctx, { text: '只发语音' }, async () => 'voice.mp3', async () => true, reply, async () => {});
+  assert.equal(textCalls, 0);
+  assert.equal(recordCalls, 1);
+});
+
+test('planner: capability manifest is generated from registry and accepts new capabilities without prompt edits', () => {
+  const req = {
+    requestId: 'req-new-capability', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' },
+    text: '分析这个对象', attachments: [], receivedAt: new Date().toISOString(),
+  };
+  const custom = {
+    id: 'custom.analyze', version: '1.0.0', name: '自定义分析', description: '分析指定对象的内部结构并返回文本结果',
+    effect: 'retrieve', requiredContext: ['file'], outputKinds: ['text'], mode: 'sync',
+    riskLevel: 'low', approvalRequired: false, costClass: 'low', provider: 'custom', enabled: true, inputSchema: { type: 'object', properties: { target: { type: 'string' } } },
+  };
+  const manifest = buildCapabilityManifest([...builtinCapabilityDescriptors(), custom]);
+  assert.match(manifest.version, /^cm_[0-9a-f]{8}$/);
+  const entry = manifest.capabilities.find((item) => item.id === 'custom.analyze');
+  assert.ok(entry);
+  assert.equal(entry.effect, 'retrieve');
+  assert.deepEqual(entry.requiredContext, ['file']);
+  assert.deepEqual(entry.outputKinds, ['text']);
+  assert.equal(Object.prototype.hasOwnProperty.call(entry, 'notFor'), false);
+  const prompt = buildPlannerPrompt(req, [...builtinCapabilityDescriptors(), custom]);
+  assert.match(prompt, /custom\.analyze/);
+  assert.match(prompt, /分析指定对象的内部结构并返回文本结果/);
+  assert.match(prompt, /"requiredContext":\["file"\]/);
+});
+
+test('planner: parseIntentPlan preserves understanding and desiredOutcome', async () => {
+  const req = {
+    requestId: 'req-understanding', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' },
+    text: '帮我查一下最新情况', attachments: [], receivedAt: new Date().toISOString(),
+  };
+  const plan = await planWithModel({
+    async chat() {
+      return { text: JSON.stringify({
+        planId: 'understanding-plan', requestId: 'ignored',
+        understanding: { goal: '获取最新情况', desiredOutcome: 'retrieve', constraints: ['只要结论'], missingInformation: [], confidence: 0.93 },
+        steps: [{ id: 's1', capability: 'web.search', args: { query: '最新情况' } }],
+        needsClarification: false,
+      }) };
+    },
+  }, req, { nodeIndex: 0, model: 'fake', capabilityCatalog: builtinCapabilityDescriptors(), maxModelRounds: 1 });
+  assert.equal(plan.goal, '获取最新情况');
+  assert.equal(plan.understanding?.desiredOutcome, 'retrieve');
+  assert.deepEqual(plan.understanding?.constraints, ['只要结论']);
+  assert.equal(plan.confidence, 0.93);
+});
+
+test('planner: requiredContext validates initial attachments and prior step outputs', () => {
+  const baseReq = {
+    requestId: 'req-context', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' },
+    text: '修改这张图', attachments: [], receivedAt: new Date().toISOString(),
+  };
+  const editPlan = { planId: 'p1', requestId: 'req-context', goal: 'edit', steps: [{ id: 'e', capability: 'image.edit', args: { prompt: '水彩' } }] };
+  const missing = validatePlanContext(editPlan, builtinCapabilityDescriptors(), baseReq);
+  assert.equal(missing.ok, false);
+  assert.ok(missing.errors.includes('missing_required_context:e:image'));
+  const withImage = validatePlanContext(editPlan, builtinCapabilityDescriptors(), { ...baseReq, attachments: [{ kind: 'image', ref: 'img.png' }] });
+  assert.equal(withImage.ok, true);
+  const generatedThenStitch = validatePlanContext({
+    planId: 'p2', requestId: 'req-context', goal: 'generate and stitch',
+    steps: [
+      { id: 'gen', capability: 'image.generate', args: { prompt: 'cat' } },
+      { id: 'stitch', capability: 'image.stitch', args: {}, dependsOn: ['gen'] },
+    ],
+  }, builtinCapabilityDescriptors(), baseReq);
+  assert.equal(generatedThenStitch.ok, true);
+});
+
+test('enforce planner: missing image context asks for clarification and never executes the tool', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  let executed = 0;
+  let modelCalls = 0;
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg,
+    app: { sessions: { clear() {} }, engine: {}, handle: async () => ({}) },
+    client: { async chat() {
+      modelCalls += 1;
+      if (modelCalls === 1) return { text: JSON.stringify({ planId: 'missing-image', requestId: 'ignored', understanding: { goal: '修改图片', desiredOutcome: 'transform', constraints: [], missingInformation: [], confidence: 0.9 }, steps: [{ id: 'edit', capability: 'image.edit', args: { prompt: '改成水彩' } }], needsClarification: false }) };
+      return { text: JSON.stringify({ planId: 'missing-image-clarify', requestId: 'ignored', understanding: { goal: '修改图片', desiredOutcome: 'transform', constraints: [], missingInformation: ['缺少待修改图片'], confidence: 0.9 }, steps: [], needsClarification: true, clarificationQuestion: '我还没看到你要改的那张图，能直接发给我，或者引用那条图片消息吗？' }) };
+    } },
+    handlers: new Map([['image.edit', { async execute({ step }) { executed += 1; return { jobId: 'j', stepId: step.id, status: 'success', outputs: [{ kind: 'image', url: 'edited.png' }] }; } }]]),
+  });
+  const result = await enforcer.handle({ text: '把这张图改成水彩', chatType: 'private', userId: '1' });
+  assert.equal(result.handled, true);
+  assert.equal(executed, 0);
+  assert.match(result.result.text, /我还没看到你要改的那张图/);
+  assert.equal(modelCalls, 2);
+});
+
+test('enforce clarification: when model cannot generate a question, handler text is never leaked as fallback', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  const handlers = new Map([
+    ['image.generate', { async execute({ step }) { return { jobId: 'j', stepId: step.id, status: 'success', outputs: [{ kind: 'image', url: 'cat.png' }] }; } }],
+    ['file.generate', { async execute({ step }) { return { jobId: 'j', stepId: step.id, status: 'needs_input', outputs: [], diagnostics: { question: 'FIXED_HANDLER_QUESTION' } }; } }],
+  ]);
+  let calls = 0;
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg,
+    app: { handle: async () => ({}), engine: {}, sessions: { clear() {} }, registry: () => ({}), client: {} },
+    client: { async chat() {
+      calls += 1;
+      if (calls === 1) return { text: JSON.stringify({
+        planId: 'needs-input-no-question', requestId: 'ignored', goal: 'generate file',
+        steps: [{ id: 's1', capability: 'image.generate', args: { prompt: 'cat' } }, { id: 's2', capability: 'file.generate', args: {}, dependsOn: ['s1'] }],
+        confidence: 0.9,
+      }) };
+      return { text: '{"notQuestion":"missing"}' };
+    } },
+    handlers,
+    pendingJobs: new PendingJobStore(),
+  });
+  const result = await enforcer.handle({ text: '先画猫再导出文件', chatType: 'private', userId: '1' });
+  assert.equal(result.handled, true);
+  assert.equal(result.result.text, undefined);
+  assert.equal(result.result.replyPlan.groups.length, 0);
+  assert.equal(result.problem.kind, 'clarification_generation_failed');
+  assert.doesNotMatch(JSON.stringify(result), /FIXED_HANDLER_QUESTION/);
+});
+test('legacy music: audio.music.generate plan can force-execute when orchestration is not in enforce mode', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = false;
+  cfg.orchestration.mode = 'shadow';
+  cfg.orchestration.planner.enabled = false;
+  cfg.orchestration.suno.enabled = true;
+  cfg.orchestration.externalProviders = { enabled: true, allowlist: ['suno-official'] };
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg,
+    app: { sessions: { clear() {} }, engine: {}, handle: async () => ({}) },
+    client: { async chat() { throw new Error('music force execution should not call planner'); } },
+    handlers: new Map([['audio.music.generate', { async execute({ step }) { return { jobId: 'music-job', stepId: step.id, status: 'success', outputs: [{ kind: 'audio', url: 'music.mp3' }] }; } }]]),
+  });
+  const plan = {
+    planId: 'legacy-music-plan', requestId: 'req', goal: '来一首歌',
+    understanding: { goal: '来一首歌', desiredOutcome: 'generate', constraints: [], missingInformation: [], confidence: 1 },
+    steps: [{ id: 'music', capability: 'audio.music.generate', args: { request: '来一首歌' } }],
+    needsClarification: false, confidence: 1, source: 'command',
+  };
+  const result = await enforcer.handle({ text: '来一首歌', chatType: 'private', userId: '1', plan, forceLegacyExecution: true });
+  assert.equal(result.handled, true);
+  assert.deepEqual(result.result.audio, ['music.mp3']);
+  assert.equal(result.result.kind, 'audio.music.generate');
+});
+
+test('legacy audio adapter: chat TTS audio carries spokenText metadata', () => {
+  const result = executionFromBotResult({
+    plan: { planId: 'audio-meta-plan' },
+    step: { id: 'tts', capability: 'tts.speak', args: {} },
+    request: { requestId: 'r', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' }, text: 'hello' },
+  }, {
+    kind: 'chat', handled: true, text: '这段文本就是语音内容', audio: ['voice.mp3'],
+    decision: { kind: 'chat', source: 'model', confidence: 1, reason: 'tts', params: { prompt: '', tokens: [] }, usedPlanner: false },
+  });
+  const audio = result.outputs.find((item) => item.kind === 'audio');
+  assert.ok(audio);
+  assert.equal(audio.meta.spokenText, '这段文本就是语音内容');
+  assert.equal(audio.meta.preferredVoice, true);
+  assert.equal(audio.meta.voiceRequested, true);
+  assert.equal(audio.meta.sourceCapability, 'tts.speak');
+});
+
+test('sendResult non-chat legacy path: audio and different text are both sent', async () => {
+  const ctx = { chatType: 'private', userId: '1' };
+  const calls = [];
+  const engine = {
+    async replyText(_ctx, text) { calls.push(['text', text]); return { success: true }; },
+    async replyPlan() { return { success: true, messageIds: [], attempts: [] }; },
+  };
+  const reply = { async sendPrivateRecord(_userId, file) { calls.push(['audio', file]); return { success: true, messageId: 'audio-1' }; } };
+  await sendResult(engine, ctx, { kind: 'audio.music.generate', audio: ['music.mp3'], text: '这是一段音乐说明' }, undefined, undefined, reply, async () => {});
+  assert.deepEqual(calls, [['audio', 'music.mp3'], ['text', '这是一段音乐说明']]);
+});
+
+test('planner: deterministic desiredOutcome/effect cross-check catches read goal with artifact plan', () => {
+  const bad = {
+    planId: 'bad-effect', requestId: 'r', goal: '查询信息',
+    understanding: { goal: '查询信息', desiredOutcome: 'retrieve', constraints: [], missingInformation: [], confidence: 0.9 },
+    steps: [{ id: 's', capability: 'image.generate', args: { prompt: 'x' } }],
+  };
+  const badResult = validatePlanEffectAlignment(bad, builtinCapabilityDescriptors());
+  assert.equal(badResult.ok, false);
+  assert.match(badResult.errors.join(','), /side_effect/);
+  const good = {
+    planId: 'good-effect', requestId: 'r', goal: '查询并回答',
+    understanding: { goal: '查询并回答', desiredOutcome: 'answer', constraints: [], missingInformation: [], confidence: 0.9 },
+    steps: [{ id: 's1', capability: 'web.search', args: { query: 'x' } }, { id: 's2', capability: 'chat.reply', args: { prompt: 'x' }, dependsOn: ['s1'] }],
+  };
+  assert.equal(validatePlanEffectAlignment(good, builtinCapabilityDescriptors()).ok, true);
+});
+
+test('alignment guard: review failure fails closed for side-effect plans', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.model = 'planner-test';
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = true;
+  cfg.orchestration.roles.planner.model = 'planner-test';
+  cfg.orchestration.roles.planner.fallbackModel = 'planner-test';
+  let executed = 0;
+  const plan = {
+    planId: 'review-failure-plan', requestId: 'r', goal: '画图',
+    understanding: { goal: '画图', desiredOutcome: 'generate', constraints: [], missingInformation: [], confidence: 0.9 },
+    steps: [{ id: 'img', capability: 'image.generate', args: { prompt: 'cat' } }],
+    confidence: 0.9,
+  };
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg,
+    app: { sessions: { clear() {} }, engine: {}, handle: async () => ({}) },
+    client: { async chat(_node, payload) {
+      const text = payload.messages.map((message) => message.content).join('\n');
+      if (text.includes('意图-行动一致性复核器')) throw new Error('verifier down');
+      return { text: JSON.stringify(plan) };
+    } },
+    handlers: new Map([['image.generate', { async execute({ step }) { executed += 1; return { jobId: 'j', stepId: step.id, status: 'success', outputs: [{ kind: 'image', url: 'should-not-run.png' }] }; } }]]),
+  });
+  const result = await enforcer.handle({ text: '画猫', chatType: 'private', userId: '1' });
+  assert.equal(result.handled, true);
+  assert.equal(executed, 0);
+  assert.equal(result.problem.kind, 'alignment_review_failed');
+});
+test('capability TTS policy: query/control results are marked skipTts in aggregated outputs', async () => {
+  const descriptors = builtinCapabilityDescriptors();
+  assert.equal(descriptors.find((item) => item.id === 'template.list')?.ttsPolicy, 'skip');
+  assert.equal(descriptors.find((item) => item.id === 'help')?.ttsPolicy, 'skip');
+  assert.equal(descriptors.find((item) => item.id === 'chat.reply')?.ttsPolicy, 'auto');
+  const registry = new CapabilityRegistry();
+  const descriptor = descriptors.find((item) => item.id === 'template.list');
+  registry.register(descriptor);
+  const dispatcher = new CapabilityDispatcher(registry, createDefaultPermissionPolicy());
+  dispatcher.registerHandler('template.list', { async execute({ step }) { return { jobId: 'j', stepId: step.id, status: 'success', outputs: [{ kind: 'text', text: '模板列表' }] }; } });
+  const result = await executeIntentPlan({ requestId: 'r', chat: { type: 'private' }, user: { qq: '1', role: 'user' }, text: '模板' }, {
+    planId: 'p', requestId: 'r', goal: '模板', steps: [{ id: 's', capability: 'template.list', args: {} }],
+  }, { dispatcher });
+  assert.equal(result.outputs[0].meta.skipTts, true);
+  assert.equal(result.outputs[0].meta.disableVoice, true);
+});
+
+test('TTS capability: generated audio carries spokenText and preferred voice metadata', async () => {
+  const cfg = createDefaultConfig();
+  cfg.bot.tts = {
+    ...cfg.bot.tts,
+    enabled: true,
+    provider: 'openai-compatible',
+    apiUrl: 'https://tts.test/v1/audio/speech',
+    apiKey: 'test-key',
+    model: 'tts-test',
+    voice: 'alloy',
+    format: 'mp3',
+    timeoutMs: 5000,
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(Buffer.from('audio-bytes'), { status: 200, headers: { 'content-type': 'audio/mpeg' } });
+  try {
+    const handler = new TtsCapabilityHandler(() => cfg);
+    const result = await handler.execute({
+      plan: { planId: 'tts-plan' }, step: { id: 'tts-step', capability: 'tts.speak', args: { text: '要朗读的文本' } },
+      request: { requestId: 'r', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' }, text: '要朗读的文本' },
+    });
+    const audio = result.outputs.find((item) => item.kind === 'audio');
+    assert.ok(audio);
+    assert.equal(audio.meta.spokenText, '要朗读的文本');
+    assert.equal(audio.meta.preferredVoice, true);
+    assert.equal(audio.meta.voiceRequested, true);
+    assert.equal(audio.meta.sourceCapability, 'tts.speak');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

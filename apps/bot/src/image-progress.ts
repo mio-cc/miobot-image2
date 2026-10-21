@@ -1,4 +1,4 @@
-export type ImageProgressKind = 'image.generate' | 'image.edit' | 'image.interrogate' | 'video.generate';
+export type ImageProgressKind = 'image.generate' | 'image.edit' | 'image.interrogate' | 'video.generate' | 'audio.music.generate';
 
 export interface ImageProgressOptions {
   kind?: ImageProgressKind;
@@ -23,6 +23,7 @@ const LABELS: Record<ImageProgressKind, string> = {
   'image.edit': '图片处理',
   'image.interrogate': '图片分析',
   'video.generate': '视频生成',
+  'audio.music.generate': '音乐生成',
 };
 
 export function imageProgressLabel(kind: ImageProgressKind = 'image.generate'): string {
@@ -38,13 +39,30 @@ export function formatImageEta(averageMs?: number): string {
 }
 
 /** 慢任务提醒；只提醒一次，结束时取消。 */
+export function renderImageProgressText(template: string, kind: ImageProgressKind, averageMs?: number): string {
+  const label = imageProgressLabel(kind);
+  const eta = formatImageEta(averageMs);
+  let text = String(template || '').trim() || '收到，正在{action}{eta}，请稍候…';
+  text = text.replaceAll('{action}', label);
+  if (eta) {
+    text = text.replaceAll('{eta}', eta);
+  } else {
+    text = text
+      .replace(/[，,]?\s*(?:大概|大约|预计|通常)?\s*\{eta\}/g, '')
+      .replace(/\{eta\}/g, '')
+      .replace(/(?:大概|大约|预计|通常)\s*([，,。！？!?]?)$/g, '$1');
+  }
+  text = text.replace(/[，,]\s*([。！？!?])/g, '$1').replace(/[，,]{2,}/g, '，').replace(/\s{2,}/g, ' ').trim();
+  if (!text || /^(?:大概|大约|预计|通常)$/.test(text)) text = '收到，正在' + label + '，请稍候…';
+  else if (!/[。！？!?…]$/.test(text)) text += '，请稍候…';
+  return text;
+}
 export function createImageProgress(options: ImageProgressOptions): ImageProgressHandle {
   const kind = options.kind || 'image.generate';
   const label = imageProgressLabel(kind);
   const startedAt = (options.now || Date.now)();
-  const eta = formatImageEta(options.averageMs);
-  const template = String(options.text || '').trim() || `收到，正在${label}{eta}，请稍候…`;
-  const initial = template.replaceAll('{action}', label).replaceAll('{eta}', eta);
+  const template = String(options.text || '').trim() || '收到，正在{action}{eta}，请稍候…';
+  const initial = renderImageProgressText(template, kind, options.averageMs);
 
   let done = false;
   void Promise.resolve(options.send(initial)).catch((error) => {

@@ -97,7 +97,7 @@ export class FishAudioVoiceService {
     if (cfg.allowedScopes === 'group' && scope.chatType !== 'group') throw new Error('voice_scope_group_only');
   }
 
-  async search(scope: VoiceScope, args: Record<string, unknown>): Promise<{ needsInput?: string; candidates?: FishVoiceCandidate[]; total?: number }> {
+  async search(scope: VoiceScope, args: Record<string, unknown>): Promise<{ needsInput?: boolean; missingPreferences?: string[]; candidates?: FishVoiceCandidate[]; total?: number }> {
     this.assertEnabled(scope);
     const cfg = this.voiceConfig;
     const title = clip(args.title ?? args.query, 120);
@@ -106,7 +106,7 @@ export class FishAudioVoiceService {
       ? args.language.map((item) => normalizeLanguage(clip(item, 20))).filter(Boolean)
       : (clip(args.language, 20) ? [normalizeLanguage(clip(args.language, 20))] : []);
     if (!title && !tags.length && !languages.length) {
-      return { needsInput: '你想要什么风格、性别、语言或年龄感的声音？我可以根据这些偏好检索 FishAudio 音色。' };
+      return { needsInput: true, missingPreferences: ['声音风格', '性别', '语言', '年龄感'] };
     }
     const tts = this.options.getConfig().bot.tts;
     const apiKey = String(tts.apiKey || '').trim();
@@ -254,7 +254,7 @@ export class VoiceSearchCapabilityHandler implements CapabilityHandler {
     try {
       const result = await this.service.search(invocationScope(invocation), invocation.step.args || {});
       if (result.needsInput) {
-        return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'needs_input', outputs: [], diagnostics: { question: result.needsInput } };
+        return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'needs_input', outputs: [], diagnostics: { missingInformation: result.missingPreferences || [], detail: 'voice search preferences are insufficient' } };
       }
       return {
         jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success',

@@ -9,6 +9,16 @@ import ToggleField from '../components/ToggleField.vue';
 const configStore = useConfigStore();
 const config = computed(() => configStore.config);
 const orch = computed(() => config.value?.orchestration);
+const plannerCapabilityDescriptionsJson = computed({
+    get: () => JSON.stringify(orch.value?.planner?.capabilityDescriptions || {}, null, 2),
+    set: (text: string) => {
+        try {
+            const parsed = JSON.parse(text || '{}');
+            if (orch.value?.planner) orch.value.planner.capabilityDescriptions = parsed;
+        } catch { /* keep previous valid JSON while editing */ }
+    },
+});
+
 const adminText = ref('');
 const groupText = ref('');
 const hardDenyText = ref('');
@@ -43,6 +53,10 @@ const comfyWorkflowNodesInfo = ref<any[]>([]);
 const comfyWorkflowValidation = ref<any>(null);
 const comfyWorkflowMessage = ref('');
 const comfyParameterDrafts = ref<Record<string, any>>({});
+const comfyFallbackProfileId = ref('');
+const comfyFallbackEnabled = ref(true);
+const comfyCustomized = ref(false);
+const comfyBuiltinRevision = ref('');
 const promptDiff = ref<any[]>([]);
 const traceReplay = ref<any>(null);
 const capabilityTestResults = ref<Record<string, any>>({});
@@ -261,12 +275,16 @@ async function loadComfyWorkflowProfile(nodeIndex = Number(comfyNodeIndex.value)
         comfyPromptNodeIds.value = (profile.promptNodeIds || []).join(', ');
         comfyNegativePromptNodeIds.value = (profile.negativePromptNodeIds || []).join(', ');
         comfyOutputNodeId.value = String(profile.outputNodeId || '');
+        comfyFallbackProfileId.value = String(profile.fallbackProfileId || profile.id || '');
+        comfyFallbackEnabled.value = profile.fallbackEnabled !== false;
+        comfyCustomized.value = Boolean(profile.customized);
+        comfyBuiltinRevision.value = String(profile.builtinRevision || '');
         comfyParameterMapJson.value = JSON.stringify(profile.parameterMap || {}, null, 2);
         comfyDefaultsJson.value = JSON.stringify(profile.defaults || {}, null, 2);
         comfyParameterDrafts.value = { ...(profile.defaults || {}) };
         comfyWorkflowNodesInfo.value = res.data?.nodes || [];
         comfyWorkflowValidation.value = res.data?.validation || null;
-        comfyWorkflowMessage.value = '';
+        comfyWorkflowMessage.value = profile.legacyWorkflow ? '检测到旧 10 节点 workflow，已迁移到内置 baseline，原始 workflow 已备份。' : '';
     } catch (error: any) {
         comfyWorkflowMessage.value = error?.response?.data?.error || String(error?.message || error);
     }
@@ -288,6 +306,22 @@ function newComfyWorkflowProfile() {
     comfyWorkflowMessage.value = '';
 }
 
+async function restoreComfyBaseline() {
+    const id = comfyProfileId.value.trim();
+    if (!id) {
+        comfyWorkflowMessage.value = '请先填写 profile ID';
+        return;
+    }
+    try {
+        const res = await client.put('/orchestration/comfyui/workflows/' + comfyNodeIndex.value + '/' + encodeURIComponent(id), { restoreBuiltin: true });
+        comfyWorkflowMessage.value = '已恢复内置 baseline';
+        comfyWorkflowValidation.value = res.data?.validation || null;
+        await loadComfyWorkflows();
+        await loadComfyWorkflowProfile(Number(comfyNodeIndex.value), id);
+    } catch (error: any) {
+        comfyWorkflowMessage.value = error?.response?.data?.error || String(error?.message || error);
+    }
+}
 async function saveComfyWorkflowProfile() {
     comfyWorkflowMessage.value = '';
     try {
@@ -304,6 +338,9 @@ async function saveComfyWorkflowProfile() {
             outputNodeId: comfyOutputNodeId.value.trim(),
             parameterMap,
             defaults,
+            fallbackProfileId: comfyFallbackProfileId.value.trim() || id,
+            fallbackEnabled: comfyFallbackEnabled.value,
+            customized: comfyCustomized.value,
         });
         comfyWorkflowValidation.value = res.data?.validation || null;
         comfyWorkflowMessage.value = '保存成功，配置已热重载';
@@ -462,6 +499,21 @@ function commitHardDeny(text: string) {
           <ToggleField v-model="orch.planner.enabled" label="启用 Planner" />
         </div>
       </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+        <div class="flex items-end"><ToggleField v-model="orch.planner.actionAlignmentGuardEnabled" label="启用意图-行动一致性复核" hint="按能力 effect 检查副作用，不按关键词判断" /></div>
+        <FormField label="复核触发置信度阈值" hint="低于该置信度也触发通用复核"><input v-model.number="orch.planner.alignmentGuardConfidenceThreshold" type="number" min="0" max="1" step="0.01" class="input-field" /></FormField>
+        <FormField label="Planner 系统提示词" hint="enforce Planner 使用；能力清单自动附加">
+          <textarea v-model="orch.planner.systemPromptTemplate" rows="8" class="input-field font-mono text-xs"></textarea>
+        </FormField>
+        <FormField label="Planner 用户提示词模板" hint="支持 {{userText}}、{{capabilityManifest}}（兼容 {{capabilityCatalog}}）、{{outputSchema}} 等占位符">
+          <textarea v-model="orch.planner.userPromptTemplate" rows="8" class="input-field font-mono text-xs"></textarea>
+        </FormField>
+        <FormField label="Help 追加说明" hint="追加到完整帮助文本末尾，可写本实例专属能力" class="md:col-span-2">
+          <textarea v-model="orch.help.extraText" rows="4" class="input-field"></textarea>
+        </FormField>        <FormField label="能力描述覆盖（JSON）" hint="只覆盖正向说明文字；不要写 notFor 或路由规则，effect、requiredContext、sideEffects 由能力注册表自动生成" class="md:col-span-2">
+          <textarea v-model="plannerCapabilityDescriptionsJson" rows="8" class="input-field font-mono text-xs"></textarea>
+        </FormField>
+      </div>
     </SectionCard>
 
     <SectionCard title="多模型协作" hint="每个角色独立配置节点和模型；未启用时由主 Planner 承担" class="mb-4">
@@ -472,7 +524,9 @@ function commitHardDeny(text: string) {
             <ToggleField v-model="orch.roles[role].enabled" label="启用" />
           </div>
           <FormField label="节点索引"><input v-model.number="orch.roles[role].nodeIndex" type="number" min="0" class="input-field" /></FormField>
-          <FormField label="模型"><input v-model="orch.roles[role].model" class="input-field font-mono" placeholder="留空使用节点默认" /></FormField>
+          <FormField label="模型"><input v-model="orch.roles[role].model" class="input-field font-mono" placeholder="留空使用节点默认" /></FormField>          <FormField label="角色提示词覆盖" hint="留空用内置；支持 {{request}}、{{catalog}}、{{plan}}、{{outputs}}、{{question}}、{{answer}}">
+            <textarea v-model="orch.roles[role].promptTemplate" rows="4" class="input-field font-mono text-xs"></textarea>
+          </FormField>
         </div>
       </div>
     </SectionCard>
@@ -641,13 +695,15 @@ function commitHardDeny(text: string) {
         </FormField>
         <FormField label="Profile ID"><input v-model="comfyProfileId" class="input-field font-mono" placeholder="moss-image-sft" /></FormField>
         <FormField label="显示名称"><input v-model="comfyProfileName" class="input-field" /></FormField>
-        <FormField label="输出节点 ID"><input v-model="comfyOutputNodeId" class="input-field font-mono" placeholder="16" /></FormField>
+        <FormField label="输出节点 ID"><input v-model="comfyOutputNodeId" class="input-field font-mono" placeholder="16" /></FormField>        <FormField label="Fallback Profile"><input v-model="comfyFallbackProfileId" class="input-field font-mono" placeholder="同 id 使用内置 baseline" /></FormField>
+        <div class="flex items-end"><ToggleField v-model="comfyFallbackEnabled" label="失败自动切 baseline" /></div>
         <FormField label="正向提示词节点 ID"><input v-model="comfyPromptNodeIds" class="input-field font-mono" placeholder="5, 13" /></FormField>
         <FormField label="负向提示词节点 ID"><input v-model="comfyNegativePromptNodeIds" class="input-field font-mono" placeholder="6" /></FormField>
         <div class="flex items-end gap-2 xl:col-span-3">
           <button class="btn-outline" type="button" @click="loadComfyWorkflowProfile()">加载</button>
           <button class="btn-outline" type="button" @click="newComfyWorkflowProfile">新建</button>
-          <button class="btn-primary" type="button" @click="saveComfyWorkflowProfile">校验并保存</button>
+          <button class="btn-primary" type="button" @click="saveComfyWorkflowProfile">校验并保存</button>          <button class="btn-outline" type="button" @click="restoreComfyBaseline">恢复内置基线</button>
+          <span class="text-xs text-[color:var(--ink-3)]">Revision {{ comfyBuiltinRevision || '-' }} · {{ comfyCustomized ? '自定义' : '内置/未改' }}</span>
           <span class="text-xs text-[color:var(--ink-3)]">{{ comfyWorkflowMessage }}</span>
         </div>
       </div>
@@ -755,7 +811,9 @@ function commitHardDeny(text: string) {
         <FormField label="Callback URL" hint="V6 创建任务必填；完整地址需包含 /api/orchestration/suno/callback/&lt;Callback Secret&gt;"><input v-model="orch.suno.callbackUrl" class="input-field font-mono" placeholder="https://bot.example/api/orchestration/suno/callback/&lt;secret&gt;" /></FormField>
         <FormField label="Callback Secret" hint="用于校验回调；留空则 V6 回调不可用"><input v-model="orch.suno.callbackSecret" type="password" class="input-field font-mono" /></FormField>
         <FormField label="Composer 节点"><input v-model.number="orch.suno.composerNodeIndex" type="number" min="0" class="input-field" /></FormField>
-        <FormField label="Composer 模型"><input v-model="orch.suno.composerModel" class="input-field font-mono" placeholder="deepseek-flash" /></FormField>        <FormField label="Base URL"><input v-model="orch.suno.baseUrl" class="input-field font-mono" placeholder="https://官方 API 地址" /></FormField>
+        <FormField label="Composer 模型"><input v-model="orch.suno.composerModel" class="input-field font-mono" placeholder="deepseek-flash" /></FormField>        <FormField label="Composer 覆盖提示词" hint="留空使用内置 Suno V2；可用 {{userText}}、{{supplied}}、{{schema}}、{{model}}">
+          <textarea v-model="orch.suno.composerPromptTemplate" rows="5" class="input-field font-mono text-xs"></textarea>
+        </FormField>        <FormField label="Base URL"><input v-model="orch.suno.baseUrl" class="input-field font-mono" placeholder="https://官方 API 地址" /></FormField>
         <FormField label="模型"><input v-model="orch.suno.model" class="input-field font-mono" /></FormField>
         <FormField label="创建路径"><input v-model="orch.suno.createPath" class="input-field font-mono" placeholder="/api/v1/generate" /></FormField>
         <FormField label="状态路径"><input v-model="orch.suno.statusPath" class="input-field font-mono" placeholder="/api/v1/generate/record-info?taskId={id}" /></FormField>
@@ -945,11 +1003,14 @@ function commitHardDeny(text: string) {
       <div class="overflow-x-auto">
         <table class="w-full text-xs">
           <thead class="text-[color:var(--ink-3)] border-b border-[color:var(--hairline-2)]">
-            <tr><th class="text-left py-2 pr-3">能力</th><th class="text-left py-2 pr-3">Provider</th><th class="text-left py-2 pr-3">版本</th><th class="text-left py-2 pr-3">风险</th><th class="text-left py-2 pr-3">模式</th><th class="text-left py-2 pr-3">健康</th><th class="text-left py-2">审批</th><th class="text-left py-2">状态</th></tr>
+            <tr><th class="text-left py-2 pr-3">能力</th><th class="text-left py-2 pr-3">Effect</th><th class="text-left py-2 pr-3">前置上下文</th><th class="text-left py-2 pr-3">副作用</th><th class="text-left py-2 pr-3">Provider</th><th class="text-left py-2 pr-3">版本</th><th class="text-left py-2 pr-3">风险</th><th class="text-left py-2 pr-3">模式</th><th class="text-left py-2 pr-3">健康</th><th class="text-left py-2">审批</th><th class="text-left py-2">状态</th></tr>
           </thead>
           <tbody>
             <tr v-for="item in capabilities" :key="item.id" class="border-b border-[color:var(--hairline-2)]/60">
               <td class="py-2 pr-3"><span class="mono">{{ item.id }}</span><div class="text-[color:var(--ink-3)]">{{ item.name }}</div></td>
+              <td class="py-2 pr-3 mono">{{ item.effect || 'unknown' }}</td>
+              <td class="py-2 pr-3 mono">{{ (item.requiredContext || []).join('/') || '-' }}</td>
+              <td class="py-2 pr-3 mono">{{ (item.sideEffects || []).join('/') || '-' }}</td>
               <td class="py-2 pr-3 mono">{{ item.provider }}</td>
               <td class="py-2 pr-3 mono">{{ item.version || '-' }}</td>
               <td class="py-2 pr-3">{{ item.riskLevel || 'medium' }}</td>
@@ -958,7 +1019,7 @@ function commitHardDeny(text: string) {
               <td class="py-2"><button class="btn-outline !px-2 !py-1" type="button" @click="toggleCapability(item, 'approvalRequired')">{{ item.approvalRequired ? '需要' : '否' }}</button></td>
               <td class="py-2 space-y-1"><button class="btn-outline !px-2 !py-1" type="button" @click="toggleCapability(item, 'enabled')">{{ item.enabled ? '启用' : '停用' }}</button><div class="flex flex-wrap gap-1"><button class="btn-outline !px-2 !py-1" type="button" @click="testCapability(item, 'validate')">校验</button><button class="btn-outline !px-2 !py-1" type="button" @click="testCapability(item, 'dry_run')">干跑</button><button class="btn-outline !px-2 !py-1" type="button" @click="testCapability(item, 'live')">实跑</button></div><div v-if="capabilityTestResults[item.id]" class="text-[color:var(--ink-3)]">{{ capabilityTestResults[item.id].status }}: {{ capabilityTestResults[item.id].detail }}</div></td>
             </tr>
-            <tr v-if="!capabilities.length"><td colspan="8" class="py-3 text-[color:var(--ink-3)]">暂无能力目录数据</td></tr>
+            <tr v-if="!capabilities.length"><td colspan="11" class="py-3 text-[color:var(--ink-3)]">暂无能力目录数据</td></tr>
           </tbody>
         </table>
       </div>

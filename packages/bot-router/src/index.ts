@@ -1,4 +1,4 @@
-﻿import type { PackageDescriptor } from '@miobot-v2/shared';
+import type { PackageDescriptor } from '@miobot-v2/shared';
 
 export const BOT_ROUTER_PACKAGE: PackageDescriptor = {
   name: '@miobot-v2/bot-router',
@@ -341,7 +341,7 @@ export function startsWithCommand(text: string, trigger: string, separators = '\
 }
 
 export function findCommandPrefix(text: string, rawTriggers: CommandAliasInput): string | undefined {
-  return parseTriggers(rawTriggers).find((trigger) => startsWithCommand(text, trigger, '\\s!！:：'));
+  return parseTriggers(rawTriggers).find((trigger) => startsWithCommand(text, trigger, '\\s!！:：@'));
 }
 
 export function matchCommandPrefix(text: string, rawTriggers: CommandAliasInput): CommandPrefixMatch | undefined {
@@ -351,7 +351,7 @@ export function matchCommandPrefix(text: string, rawTriggers: CommandAliasInput)
 
 export function stripCommandPrefix(text: string, trigger: string): string {
   if (String(text || '').length === trigger.length) return '';
-  return String(text || '').substring(trigger.length).replace(/^[\s!！:：]+/, '').trim();
+  return String(text || '').substring(trigger.length).replace(/^@\S+\s*/, '').replace(/^[\s!！:：]+/, '').trim();
 }
 
 export function findBangCommandPrefix(text: string, rawTriggers: CommandAliasInput): string | undefined {

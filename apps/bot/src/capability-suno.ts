@@ -91,7 +91,7 @@ export class SunoCapabilityHandler implements CapabilityHandler {
       catch (error) { this.options.logger?.warn('Suno composer failed', { error: String((error as Error)?.message || error) }); }
     }
     if (!rawUserText && !composed?.style && !composed?.lyrics) {
-      return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'needs_input', outputs: [], diagnostics: { question: '你想生成什么主题、风格或情绪的歌曲？有没有指定歌词、纯音乐、语言或时长？' } };
+      return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'needs_input', outputs: [], diagnostics: { missingInformation: ['音乐主题', '风格或情绪', '歌词与纯音乐偏好', '语言或时长'], detail: 'music request is underspecified' } };
     }
     if (!this.options.createClient && (cfg.requestMode || 'v6') === 'v6' && !String(cfg.callbackUrl || '').trim()) {
       return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'failed', outputs: [], error: 'suno_callback_url_missing' };

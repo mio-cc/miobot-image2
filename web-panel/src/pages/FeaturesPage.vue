@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import client, { errorMessage } from '../api/client';
 import { useConfigStore } from '../stores/config';
@@ -64,7 +64,7 @@ function ensureSetting(def: FeatureDefinition): any {
 
 const grouped = computed(() => {
   const out: Array<{ category: string; label: string; items: Array<{ def: FeatureDefinition; setting: any }> }> = [];
-  for (const category of ['basic', 'image', 'file', 'video', 'template', 'web', 'render', 'system']) {
+  for (const category of ['basic', 'image', 'file', 'video', 'audio', 'template', 'web', 'render', 'system']) {
     const items = definitions.value
       .filter((def) => def.category === category)
       .map((def) => ({ def, setting: ensureSetting(def) }));

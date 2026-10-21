@@ -1,4 +1,5 @@
 import type { ApprovalQuorum, PermissionMode, PermissionRule, RiskLevel, UserRole } from './types.js';
+import { DEFAULT_PLANNER_CAPABILITY_DESCRIPTIONS, DEFAULT_PLANNER_SYSTEM_PROMPT, DEFAULT_PLANNER_USER_PROMPT_TEMPLATE } from './planner.js';
 
 export interface CapabilityOverride {
   enabled?: boolean;
@@ -16,6 +17,7 @@ export interface ModelRoleConfig {
   fallbackNodeIndex?: number;
   fallbackModel?: string;
   promptVersion?: string;
+  promptTemplate?: string;
 }
 
 export interface PromptVersionEvaluation {
@@ -89,6 +91,11 @@ export interface OrchestrationConfig {
     nodeIndex?: number;
     model?: string;
     promptVersion: string;
+    systemPromptTemplate: string;
+    userPromptTemplate: string;
+    capabilityDescriptions: Record<string, string>;
+    actionAlignmentGuardEnabled: boolean;
+    alignmentGuardConfidenceThreshold: number;
     capabilityTopK: number;
     minConfidence: number;
     maxRepairAttempts: number;
@@ -96,6 +103,7 @@ export interface OrchestrationConfig {
     clarificationTimeoutMs: number;
   };
   roles: Record<'planner' | 'retriever' | 'specialist' | 'critic' | 'safety' | 'composer', ModelRoleConfig>;
+  help: { extraText: string };
   permissions: {
     defaultLow: PermissionMode;
     defaultMedium: PermissionMode;
@@ -150,6 +158,7 @@ export interface OrchestrationConfig {
     callbackSecret: string;
     composerNodeIndex?: number;
     composerModel?: string;
+    composerPromptTemplate: string;
     timeoutMs: number;
     pollIntervalMs: number;
     maxDurationSeconds: number;
@@ -173,6 +182,7 @@ export function defaultOrchestrationConfig(): OrchestrationConfig {
   return {
     enabled: false,
     mode: 'shadow',
+    help: { extraText: '' },
     externalProviders: {
       enabled: false,
       allowlist: ['suno-official'],
@@ -220,6 +230,11 @@ export function defaultOrchestrationConfig(): OrchestrationConfig {
     planner: {
       enabled: false,
       promptVersion: 'v3-planner-1',
+      systemPromptTemplate: DEFAULT_PLANNER_SYSTEM_PROMPT,
+      userPromptTemplate: DEFAULT_PLANNER_USER_PROMPT_TEMPLATE,
+      capabilityDescriptions: { ...DEFAULT_PLANNER_CAPABILITY_DESCRIPTIONS },
+      actionAlignmentGuardEnabled: true,
+      alignmentGuardConfidenceThreshold: 0.8,
       capabilityTopK: 12,
       minConfidence: 0.55,
       maxRepairAttempts: 2,
@@ -286,6 +301,7 @@ export function defaultOrchestrationConfig(): OrchestrationConfig {
       model: 'V6',
       callbackUrl: '',
       callbackSecret: '',
+      composerPromptTemplate: '',
       timeoutMs: 600000,
       pollIntervalMs: 5000,
       maxDurationSeconds: 300,
@@ -417,6 +433,7 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
   const roles = record(raw.roles);
   const permissions = record(raw.permissions);
   const approval = record(raw.approval);
+  const help = record(raw.help);
   const reply = record(raw.reply);
   const promptOptimization = record(raw.promptOptimization);
   const suno = record(raw.suno);
@@ -435,6 +452,7 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       fallbackNodeIndex: r.fallbackNodeIndex === undefined ? fallback.fallbackNodeIndex : numberIn(r.fallbackNodeIndex, 0, 0, 10000),
       fallbackModel: r.fallbackModel === undefined ? fallback.fallbackModel : String(r.fallbackModel),
       promptVersion: r.promptVersion === undefined ? fallback.promptVersion : String(r.promptVersion),
+      promptTemplate: r.promptTemplate === undefined ? fallback.promptTemplate : String(r.promptTemplate || ''),
     };
   };
   return {
@@ -507,12 +525,18 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       nodeIndex: planner.nodeIndex === undefined ? d.planner.nodeIndex : numberIn(planner.nodeIndex, 0, 0, 10000),
       model: planner.model === undefined ? d.planner.model : String(planner.model),
       promptVersion: String(planner.promptVersion || d.planner.promptVersion),
+      systemPromptTemplate: String(planner.systemPromptTemplate || d.planner.systemPromptTemplate),
+      userPromptTemplate: String(planner.userPromptTemplate || d.planner.userPromptTemplate),
+      capabilityDescriptions: Object.fromEntries(Object.entries(planner.capabilityDescriptions && typeof planner.capabilityDescriptions === 'object' && !Array.isArray(planner.capabilityDescriptions) ? planner.capabilityDescriptions : d.planner.capabilityDescriptions).map(([key, value]) => [String(key), String(value ?? '')]).filter(([, value]) => Boolean(value))),
+      actionAlignmentGuardEnabled: bool(planner.actionAlignmentGuardEnabled ?? planner.visualIntentGuardEnabled, d.planner.actionAlignmentGuardEnabled),
+      alignmentGuardConfidenceThreshold: numberIn(planner.alignmentGuardConfidenceThreshold, d.planner.alignmentGuardConfidenceThreshold, 0, 1),
       capabilityTopK: numberIn(planner.capabilityTopK, d.planner.capabilityTopK, 1, 100),
       minConfidence: numberIn(planner.minConfidence, d.planner.minConfidence, 0, 1),
       maxRepairAttempts: numberIn(planner.maxRepairAttempts, d.planner.maxRepairAttempts, 0, 10),
       maxClarifications: Math.min(1, numberIn(planner.maxClarifications, d.planner.maxClarifications, 0, 1)),
       clarificationTimeoutMs: numberIn(planner.clarificationTimeoutMs, d.planner.clarificationTimeoutMs, 1000, 86400000),
     },
+    help: { extraText: String(help.extraText || '') },
     roles: {
       planner: normalizeRole(roles.planner, d.roles.planner),
       retriever: normalizeRole(roles.retriever, d.roles.retriever),
@@ -575,6 +599,7 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       callbackSecret: String(suno.callbackSecret || d.suno.callbackSecret).trim(),
       composerNodeIndex: suno.composerNodeIndex === undefined ? undefined : numberIn(suno.composerNodeIndex, d.suno.composerNodeIndex ?? 0, 0, 10000),
       composerModel: suno.composerModel === undefined ? undefined : String(suno.composerModel || '').trim(),
+      composerPromptTemplate: String(suno.composerPromptTemplate || ''),
       timeoutMs: numberIn(suno.timeoutMs, d.suno.timeoutMs, 1000, 3600000),
       pollIntervalMs: numberIn(suno.pollIntervalMs, d.suno.pollIntervalMs, 500, 60000),
       maxDurationSeconds: numberIn(suno.maxDurationSeconds, d.suno.maxDurationSeconds, 5, 900),

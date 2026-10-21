@@ -1,11 +1,13 @@
-﻿import type { IntentRecognitionConfig } from '../../../packages/config/src/index.js';
+import type { IntentRecognitionConfig } from '../../../packages/config/src/index.js';
 import type { GeneratedFileType } from '../../../packages/filegen/src/index.js';
 import type { ModelClient } from '../../../packages/model/src/index.js';
+import type { CapabilityEffect } from '../../../packages/orchestration/src/index.js';
 
 export interface IntentCatalogItem {
   id: string;
   label: string;
   description: string;
+  effect?: CapabilityEffect;
   requires?: 'images' | 'files';
 }
 

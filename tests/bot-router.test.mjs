@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
@@ -106,6 +106,21 @@ test('bot router: explicit image command wins over free mode in group mention fl
   assert.equal(decision.metadata.enhance.forceEnhance, true);
 });
 
+
+test('bot router: help supports @bot and @QQ command suffixes', () => {
+  const byAlias = routeBotMessage(priv('/help@bot'), config());
+  assert.equal(byAlias.kind, 'command');
+  assert.equal(byAlias.command, 'help');
+  assert.equal(byAlias.args, '');
+  const bySpaceMention = routeBotMessage(priv('/help @bot'), config());
+  assert.equal(bySpaceMention.kind, 'command');
+  assert.equal(bySpaceMention.command, 'help');
+  assert.equal(bySpaceMention.args, '');
+  const byQq = routeBotMessage(priv('/help@123456'), config());
+  assert.equal(byQq.kind, 'command');
+  assert.equal(byQq.command, 'help');
+  assert.equal(byQq.args, '');
+});
 test('bot router: help command is never stolen by free mode', () => {
   const decision = routeBotMessage(group('[CQ:at,qq=10000] help'), config({ freeModeEnabled: true }));
   assert.equal(decision.kind, 'command');

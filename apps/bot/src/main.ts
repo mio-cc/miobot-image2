@@ -1,5 +1,5 @@
 export { createSentMessageTracker, createTrackingReplyClient, sentChatKey, type SentMessageTracker } from './sent-messages.js';
-export { createImageProgress, formatImageEta, imageProgressLabel, type ImageProgressKind, type ImageProgressHandle } from './image-progress.js';
+export { createImageProgress, formatImageEta, imageProgressLabel, renderImageProgressText, type ImageProgressKind, type ImageProgressHandle } from './image-progress.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
 
 export const BOT_APP: PackageDescriptor = {
@@ -44,6 +44,14 @@ export {
   normalizeImageUrl,
   normalizeVideoUrl,
   segmentsToRaw,
+  NATURAL_INTENT_CATALOG,
+  allReplyPlanOutputs,
+  selectPrimaryTextForTts,
+  replacePrimaryTextWithAudio,
+  removePrimaryText,
+  imageProgressTextForKind,
+  imageProgressAverageKey,
+  sendResult,
   type NapcatMessageEvent,
   type BotRuntimeOptions,
   type BotRuntimeResult,

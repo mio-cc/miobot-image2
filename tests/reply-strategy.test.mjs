@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { ReplyStrategyEngine, normalizeStrategy, resolveReplyStrategy } from '../dist/packages/reply/src/index.js';
@@ -34,6 +34,8 @@ class FakeReplyClient {
   sendGroupFilesForward(groupId, files, botName) { return this.record('sendGroupFilesForward', { groupId, files, botName }, this.forwardResult); }
   sendPrivateFilesForward(userId, files, botName) { return this.record('sendPrivateFilesForward', { userId, files, botName }, this.forwardResult); }
   sendGroupMixedForward(groupId, items, botName) { return this.record('sendGroupMixedForward', { groupId, items, botName }, { success: true, forwardId: 'mixed-fwd', forwardIds: ['mixed-fwd'] }); }
+    sendGroupRecord(groupId, fileUrl) { return this.record('sendGroupRecord', { groupId, fileUrl }); }
+    sendPrivateRecord(userId, fileUrl) { return this.record('sendPrivateRecord', { userId, fileUrl }); }
   sendPrivateMixedForward(userId, items, botName) { return this.record('sendPrivateMixedForward', { userId, items, botName }, { success: true, forwardId: 'private-mixed-fwd', forwardIds: ['private-mixed-fwd'] }); }
 }
 
@@ -264,4 +266,39 @@ test('reply strategy: forward mixed results use nested mixed forward when suppor
   assert.equal(result.success, true);
   assert.equal(client.calls[0].method, 'sendGroupNestedMixedForward');
   assert.deepEqual(client.calls[0].args.groups.map((group) => group.map((item) => item.kind)), [['text'], ['image'], ['video']]);
+});
+
+test('reply plan: forward group does not drop audio outputs', async () => {
+  const client = new FakeReplyClient();
+  const engine = new ReplyStrategyEngine(client, { text: 'forward', mixed: 'forward' });
+  const plan = {
+    groups: [{
+      mode: 'flat_forward', messageCount: 1, outputs: [
+        { kind: 'text', text: '图片说明' },
+        { kind: 'image', url: 'https://cdn/image.png' },
+        { kind: 'audio', url: 'https://cdn/voice.mp3', meta: { spokenText: '图片说明', preferredVoice: true } },
+      ],
+    }],
+    messageCount: 1,
+  };
+  const result = await engine.replyPlan(groupContext, plan, { maxMessages: 3 });
+  assert.equal(result.success, true);
+  assert.deepEqual(client.calls.map((call) => call.method), ['sendGroupMixedForward', 'sendGroupRecord']);
+  assert.equal(client.calls[1].args.fileUrl, 'https://cdn/voice.mp3');
+});
+
+test('reply plan: final dispatcher dedupes same text and explicit spoken audio', async () => {
+  const client = new FakeReplyClient();
+  const engine = new ReplyStrategyEngine(client, { text: 'plain' });
+  const plan = {
+    groups: [{ mode: 'direct', messageCount: 1, outputs: [
+      { kind: 'text', text: '同一段内容', priority: 10 },
+      { kind: 'audio', url: 'same.mp3', priority: 10, meta: { spokenText: '同一段内容', preferredVoice: true, voiceRequested: true } },
+    ] }],
+    messageCount: 1,
+  };
+  const result = await engine.replyPlan(privateContext, plan, { maxMessages: 3 });
+  assert.equal(result.success, true);
+  assert.deepEqual(client.calls.map((call) => call.method), ['sendPrivateRecord']);
+  assert.equal(client.calls[0].args.fileUrl, 'same.mp3');
 });

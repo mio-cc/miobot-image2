@@ -38,6 +38,8 @@ test('comfyui workflow: mapping applies prompt, params, seed and clamps batch', 
   assert.equal(result.workflow['5'].inputs.height, 768);
   assert.equal(result.workflow['5'].inputs.batch_size, 4);
   assert.ok(result.seed && result.seed > 0);
+  assert.equal(result.workflow['3'].inputs.seed, result.seed);
+  assert.equal(result.seeds.seed, result.seed);
 });
 
 test('image compose: multiple images stitch to one JPEG quality 70', async () => {
@@ -86,7 +88,8 @@ test('comfyui prompt policy: MOSS-Image and Krea 2 are inferred from profile id'
   assert.equal(profiles[0].promptPolicy?.supportsWeights, false);
   assert.equal(profiles[1].promptPolicy?.modelFamily, 'krea-2');
   assert.equal(profiles[1].promptPolicy?.variant, 'turbo');
-  assert.equal(profiles[1].promptPolicy?.supportsNegativePrompt, false);
+  assert.equal(profiles[1].promptPolicy?.supportsNegativePrompt, true);
+  assert.deepEqual(profiles[1].negativePromptNodeIds, ['6']);
   assert.equal(profiles[2].promptPolicy?.modelFamily, 'z-image');
   assert.equal(profiles[2].promptPolicy?.variant, 'turbo');
   assert.equal(profiles[2].promptPolicy?.supportsWeights, false);
@@ -132,7 +135,7 @@ test('comfyui params: Krea Turbo removes negative prompt and weights', () => {
         comfyui: {
           pollTimeoutMs: 600000, pollIntervalMs: 2000, maxBatchSize: 4,
           profiles: [{
-            id: 'krea-2-turbo', name: 'Krea 2 Turbo',
+            id: 'custom-krea-2-turbo', name: 'Krea 2 Turbo',
             workflow: {}, parameterMap: { prompt: '1.inputs.text', cfg: '3.inputs.cfg', steps: '3.inputs.steps', neg: '2.inputs.text' },
             defaults: { prompt: '', cfg: 1, steps: 8 },
             constraints: { cfg: { type: 'number', min: 1, max: 1 }, steps: { type: 'number', min: 8, max: 8 } },
