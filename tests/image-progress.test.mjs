@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createImageProgress, formatImageEta, renderImageProgressText, imageProgressTextForKind, imageProgressAverageKey } from '../dist/apps/bot/src/main.js';
+import { createImageProgress, formatImageEta, renderImageProgressText, imageProgressTextForKind, imageProgressAverageKey, shouldSendMediaProgress } from '../dist/apps/bot/src/main.js';
 
 test('image progress: eta range comes from historical average', () => {
   assert.equal(formatImageEta(undefined), '');
@@ -54,4 +54,14 @@ test('image progress: audio generation uses audioText and audio ETA bucket', () 
   assert.equal(imageProgressAverageKey('audio.music.generate'), 'audio');
   assert.equal(imageProgressAverageKey('video.generate'), 'video');
   assert.equal(imageProgressAverageKey('image.generate'), 'image');
+});
+test('media progress: image and audio are silent by default, video remains enabled', () => {
+  const config = { enabled: true, imageEnabled: false, videoEnabled: true, audioEnabled: false };
+  assert.equal(shouldSendMediaProgress('image.generate', config), false);
+  assert.equal(shouldSendMediaProgress('image.edit', config), false);
+  assert.equal(shouldSendMediaProgress('audio.music.generate', config), false);
+  assert.equal(shouldSendMediaProgress('video.generate', config), true);
+  assert.equal(shouldSendMediaProgress('image.generate', { ...config, imageEnabled: true }), true);
+  assert.equal(shouldSendMediaProgress('audio.music.generate', { ...config, audioEnabled: true }), true);
+  assert.equal(shouldSendMediaProgress('video.generate', { ...config, enabled: false }), false);
 });

@@ -1552,6 +1552,13 @@ function imageProgressKindForCommand(command: string): ImageProgressKind | undef
   return undefined;
 }
 
+export function shouldSendMediaProgress(kind: ImageProgressKind, config: AppConfig['bot']['progress']): boolean {
+  if (!config?.enabled) return false;
+  if (kind === 'video.generate') return config.videoEnabled !== false;
+  if (kind === 'audio.music.generate') return config.audioEnabled === true;
+  return config.imageEnabled === true;
+}
+
 export function imageProgressTextForKind(kind: ImageProgressKind, progress: AppConfig['bot']['progress']): string {
   if (kind === 'video.generate') return progress.videoText;
   if (kind === 'audio.music.generate') return progress.audioText;
@@ -1576,7 +1583,7 @@ function startImageProgress(
 ): ImageProgressHandle | undefined {
   if (!options.progressMessages) return undefined;
   const progressConfig = options.getConfig().bot.progress;
-  if (!progressConfig?.enabled) return undefined;
+  if (!shouldSendMediaProgress(kind, progressConfig)) return undefined;
   const text = imageProgressTextForKind(kind, progressConfig);
   const averageKey = imageProgressAverageKey(kind);
   return createImageProgress({

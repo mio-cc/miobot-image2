@@ -559,13 +559,12 @@ test('owner: ch -> 撤回当前私聊最近一条机器人消息', async () => {
   assert.ok(sent.some(([kind, user, text]) => kind === 'text' && user === 5 && text.includes('已撤回最近 1 条')));
 });
 
-test('private genImage with progress messages -> ack then image', async () => {
+test('private genImage default progress is silent -> image only', async () => {
   const { reply, rt } = setup({ progressMessages: true, progressReminderMs: 0 });
   const r = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 22, raw_message: '生图 一只猫' });
   assert.equal(r.kind, 'image.generate');
-  assert.equal(reply.sent[0][0], 'privateText');
-  assert.match(reply.sent[0][2], /收到，正在生成图片/);
-  assert.deepEqual(reply.sent[1], ['privateImage', 5, 'data:image/png;base64,AAA']);
+  assert.equal(reply.sent.length, 1);
+  assert.deepEqual(reply.sent[0], ['privateImage', 5, 'data:image/png;base64,AAA']);
 });
 
 test('voice: record 发送结果不确定时不再回退文字，避免语音和文字双发', async () => {

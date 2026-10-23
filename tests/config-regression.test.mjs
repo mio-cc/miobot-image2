@@ -69,6 +69,9 @@ test('config regression: prompt rewrite defaults preserve the user language', ()
   assert.match(defaults.llm.enhancePromptTemplate, /不要翻译成英文/);
   assert.match(defaults.promptsChat.smartPromptTemplate, /must not be translated into English/);
   assert.match(defaults.freeMode.plannerPromptTemplate, /"action":"video"/);
+  assert.equal(defaults.bot.progress.imageEnabled, false);
+  assert.equal(defaults.bot.progress.audioEnabled, false);
+  assert.equal(defaults.bot.progress.videoEnabled, true);
   assert.match(defaults.freeMode.plannerPromptTemplate, /"images":\[/);
   assert.match(defaults.freeMode.plannerPromptTemplate, /must not be translated into English/);
 });

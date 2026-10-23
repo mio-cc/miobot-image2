@@ -167,22 +167,22 @@ const modifierFields = [
       </div>
     </SectionCard>
 
-    <SectionCard title="慢任务进度提示" hint="生图/视频/音乐开始后先回一条提示，避免用户以为机器人没收到；只发一次，不自动追发。" class="mb-4">
-      <ToggleField v-model="config.bot.progress.enabled" label="启用生图/视频/音乐进度提示" />
+    <SectionCard title="慢任务进度提示" hint="默认关闭图片和音乐进度，避免等待时刷屏；需要时可分别开启。视频默认开启。" class="mb-4">
+      <ToggleField v-model="config.bot.progress.enabled" label="启用慢任务进度提示" />`n      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">`n        <ToggleField v-model="config.bot.progress.imageEnabled" label="图片生成/改图/反推进度" />`n        <ToggleField v-model="config.bot.progress.videoEnabled" label="视频生成进度" />`n        <ToggleField v-model="config.bot.progress.audioEnabled" label="音乐生成进度" />`n      </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
         <FormField label="图片生成提示" hint="支持 {eta} 占位，例如：收到，正在生成图片{eta}，请稍候…">
-          <input v-model="config.bot.progress.imageText" class="input-field" />
+          <input v-model="config.bot.progress.imageText" :disabled="!config.bot.progress.imageEnabled" class="input-field" />
         </FormField>
         <FormField label="改图/图片处理提示" hint="支持 {eta} 占位">
-          <input v-model="config.bot.progress.editText" class="input-field" />
+          <input v-model="config.bot.progress.editText" :disabled="!config.bot.progress.imageEnabled" class="input-field" />
         </FormField>
         <FormField label="图片反推提示" hint="支持 {eta} 占位">
-          <input v-model="config.bot.progress.interrogateText" class="input-field" />
+          <input v-model="config.bot.progress.interrogateText" :disabled="!config.bot.progress.imageEnabled" class="input-field" />
         </FormField>
         <FormField label="视频生成提示" hint="支持 {eta} 占位">
-          <input v-model="config.bot.progress.videoText" class="input-field" />
+          <input v-model="config.bot.progress.videoText" :disabled="!config.bot.progress.videoEnabled" class="input-field" />
         </FormField>        <FormField label="音乐生成提示" hint="支持 {eta} 占位；无历史样本时会自动去掉占位符">
-          <input v-model="config.bot.progress.audioText" class="input-field" />
+          <input v-model="config.bot.progress.audioText" :disabled="!config.bot.progress.audioEnabled" class="input-field" />
         </FormField>
       </div>
       <div class="mt-3">

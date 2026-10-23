@@ -49,6 +49,7 @@ export {
   selectPrimaryTextForTts,
   replacePrimaryTextWithAudio,
   removePrimaryText,
+  shouldSendMediaProgress,
   imageProgressTextForKind,
   imageProgressAverageKey,
   sendResult,
