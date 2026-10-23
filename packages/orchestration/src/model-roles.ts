@@ -39,6 +39,7 @@ function renderConfiguredRolePrompt(options: RoleCallOptions, fallbackPrompt: st
   if (values.outputs && !template.includes('{{outputs}}')) rendered += '\n\n执行结果：' + values.outputs;
   if (values.question && !template.includes('{{question}}')) rendered += '\n\n追问：' + values.question;
   if (values.answer && !template.includes('{{answer}}')) rendered += '\n\n用户回答：' + values.answer;
+  if (values.context && !template.includes('{{context}}')) rendered += '\n\n追问上下文/可选项：' + values.context;
   if (values.issues && !template.includes('{{issues}}')) rendered += '\n\n结构化问题：' + values.issues;
   return rendered;
 }
@@ -443,6 +444,7 @@ export async function resolveClarificationWithModel(
     answer: string;
     originalText?: string;
     maxSteps?: number;
+    context?: string;
   },
 ): Promise<RoleCallResult<IntentPlan | undefined>> {
   const fallbackPrompt = [
@@ -454,11 +456,12 @@ export async function resolveClarificationWithModel(
     '',
     '原始请求：' + String(options.originalText || request.text),
     '唯一追问：' + options.question,
+    '追问上下文/可选项：' + String(options.context || ''),
     '用户回答：' + options.answer,
     '当前计划：' + JSON.stringify(plan || null),
     '能力清单：' + JSON.stringify(compactCatalog(catalog)),
   ].join('\n');
-  const prompt = renderConfiguredRolePrompt(options, fallbackPrompt, { request: request.text, plan: JSON.stringify(plan || null), catalog: JSON.stringify(compactCatalog(catalog)), question: options.question, answer: options.answer });
+  const prompt = renderConfiguredRolePrompt(options, fallbackPrompt, { request: request.text, plan: JSON.stringify(plan || null), catalog: JSON.stringify(compactCatalog(catalog)), question: options.question, answer: options.answer, context: String(options.context || '') });
   try {
     const text = await callRole(client, { ...options, temperature: 0 }, roleMessages(
       'You merge one clarification answer into an existing plan. Never ask another question. Output only one JSON object.',

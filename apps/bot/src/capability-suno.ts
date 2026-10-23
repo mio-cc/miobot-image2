@@ -3,12 +3,14 @@ import { SunoClient } from '../../../packages/orchestration/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 import type { SunoComposedSpec } from './suno-composer.js';
+import type { SunoSongHistoryStore } from './suno-song-history.js';
 
 export interface SunoCapabilityOptions {
   getConfig: () => AppConfig;
   logger?: StructuredLogger;
   createClient?: (config: AppConfig['orchestration']['suno']) => Pick<SunoClient, 'create' | 'wait'>;
   compose?: (args: Record<string, unknown>, request: any) => Promise<SunoComposedSpec>;
+  history?: SunoSongHistoryStore;
 }
 
 function appendLanguageHint(value: string | undefined, language: string | undefined, maxLength = 1000): string | undefined {
@@ -169,8 +171,29 @@ export class SunoCapabilityHandler implements CapabilityHandler {
       }
       // Suno V6 对一次请求通常会返回两个 variant；这里只交付第一首，并且不返回歌曲封面。
       const first = task.outputs.find((item) => Boolean(item.url));
+      let historyRecord: ReturnType<SunoSongHistoryStore["add"]> | undefined;
+      if (first?.url && this.options.history) {
+        try {
+          historyRecord = this.options.history.add({
+            chatType: invocation.request.chat.type,
+            groupId: invocation.request.chat.groupId,
+            userQq: invocation.request.user.qq,
+            requestText: rawUserText,
+            taskId: created.id,
+            audioId: first.audioId,
+            title: first.title,
+            lyrics: first.lyrics,
+            audioUrl: first.url,
+            duration: first.duration,
+            model: composed?.model || cfg.model,
+            style: composed?.style || stringArg(args, "style"),
+          });
+        } catch (error) {
+          this.options.logger?.warn("Suno 歌曲历史写入失败", { error: String((error as Error)?.message || error) });
+        }
+      }
       const outputs = first?.url
-        ? [{ kind: 'audio' as const, url: first.url, priority: 10, mergeable: false, meta: { title: first.title, lyrics: first.lyrics, provider: 'suno-official' } }]
+        ? [{ kind: "audio" as const, url: first.url, priority: 10, mergeable: false, meta: { title: first.title, lyrics: first.lyrics, audioId: first.audioId, duration: first.duration, historyId: historyRecord?.id, historySeq: historyRecord?.seq, provider: "suno-official" } }]
         : [];
       this.options.logger?.info('Suno 任务完成，只交付首曲且不发送封面', { taskId: created.id, generatedVariants: task.outputs.length, returnedAudio: outputs.length, discardedCoverCount: task.outputs.filter((item) => Boolean(item.coverUrl)).length });
       return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success', outputs, diagnostics: { taskId: created.id, generatedVariants: task.outputs.length, returnedAudio: outputs.length } };

@@ -836,6 +836,8 @@ function commitHardDeny(text: string) {
         <FormField label="默认人声性别" hint="auto 由模型决定；m/f 仅在 customMode 下传给 Suno，且官方说明只是偏好、不保证命中"><select v-model="orch.suno.defaultVocalGender" class="input-field"><option value="auto">auto / 不指定</option><option value="m">男声 m</option><option value="f">女声 f</option></select></FormField>
         <FormField label="默认歌词语言" hint="留空或 auto 跟随用户；例如 中文、日语、English。Suno 没有独立 language 字段，会写入 prompt/style/lyrics"><input v-model="orch.suno.defaultLanguage" class="input-field" placeholder="auto" /></FormField>
         <div class="flex items-end"><ToggleField v-model="orch.suno.sendLyricsWithMusic" label="同步发送歌词" hint="使用 Suno 返回的真实 lyrics，走合并转发；需要 reply.maxMessages ≥ 2" /></div>
+        <FormField label="歌曲历史保留" hint="每个会话/用户最多保留多少首"><input v-model.number="orch.suno.historyMaxRecords" type="number" min="1" max="1000" class="input-field" /></FormField>
+        <FormField label="Planner 注入历史" hint="每次规划注入最近多少首歌曲摘要"><input v-model.number="orch.suno.historyPromptLimit" type="number" min="1" max="50" class="input-field" /></FormField>
         <FormField label="Base URL"><input v-model="orch.suno.baseUrl" class="input-field font-mono" placeholder="https://官方 API 地址" /></FormField>
         <FormField label="模型"><input v-model="orch.suno.model" class="input-field font-mono" /></FormField>
         <FormField label="创建路径"><input v-model="orch.suno.createPath" class="input-field font-mono" placeholder="/api/v1/generate" /></FormField>

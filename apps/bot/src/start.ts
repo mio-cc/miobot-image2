@@ -33,6 +33,7 @@ import { OrchestrationTraceWriter } from './orchestration-trace.js';
 import { RuntimeAdapterCapabilityHandler, executionFromBotResult } from './capability-runtime-adapters.js';
 import { ImageStitchCapabilityHandler } from './capability-image.js';
 import { CanvasGalleryCapabilityHandler } from './capability-canvas.js';
+import { SunoSongHistoryStore } from './suno-song-history.js';
 import { CanvasStore } from '../../../packages/canvas-service/src/index.js';
 import type { CapabilityHandler, CapabilityInvocation, ExecutionResult } from '../../../packages/orchestration/src/index.js';
 import { createWebSearchService } from '../../../packages/search/src/index.js';
@@ -95,6 +96,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // 否则 web 和 bot 是两个进程，面板那句「无需重启」对机器人是假的。
   const getConfig = (): AppConfig => (store ? store.loadIfChanged() : config);
   const dataDir = options.dataDir || (options.configFilePath ? path.dirname(options.configFilePath) : path.resolve('.runtime'));
+    const sunoSongHistory = new SunoSongHistoryStore({ filePath: path.join(dataDir, "suno-song-history.json"), maxRecords: () => getConfig().orchestration.suno.historyMaxRecords || 100, logger });
   const auditService = new AuditService({
     filePath: process.env.MIOBOT_AUDIT_FILE || path.join(dataDir, 'audit.jsonl'),
     enabled: () => getConfig().orchestration.audit.enabled,
@@ -601,6 +603,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     approvalRuntime,
     pendingJobs: pendingJobStore,
     voiceService,
+      sunoHistory: sunoSongHistory,
     logger,
     handlers: orchestrationHandlers,
     trace: (trace) => traceWriter.append(trace),

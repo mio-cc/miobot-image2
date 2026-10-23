@@ -25,10 +25,34 @@ export interface SunoGenerateInput {
 
 export interface SunoAudioOutput {
   url?: string;
+  audioId?: string;
+  duration?: number;
   title?: string;
   lyrics?: string;
   coverUrl?: string;
   raw?: unknown;
+}
+
+export interface SunoReplaceSectionInput {
+  taskId: string;
+  audioId: string;
+  prompt: string;
+  tags: string;
+  title: string;
+  infillStartS: number;
+  infillEndS: number;
+  fullLyrics: string;
+  lyrics?: string;
+  negativeTags?: string;
+  vocalGender?: "m" | "f";
+  styleWeight?: number;
+  weirdnessConstraint?: number;
+  audioWeight?: number;
+  variety?: number;
+  personaId?: string;
+  personaModel?: "style_persona" | "voice_persona";
+  model?: string;
+  callBackUrl?: string;
 }
 
 export interface SunoTask {
@@ -46,6 +70,7 @@ export interface SunoClientOptions {
   callbackUrl?: string;
   createPath?: string;
   statusPath?: string;
+  replacePath?: string;
   authHeader?: string;
   authPrefix?: string;
   timeoutMs?: number;
@@ -88,6 +113,8 @@ function collectAudio(value: any): SunoAudioOutput[] {
       if (!url) continue;
       out.push({
         url,
+        audioId: typeof item === 'object' ? getFirstString(item, ['audioId', 'audio_id', 'sunoAudioId', 'suno_audio_id', 'id']) : undefined,
+        duration: typeof item === 'object' ? (Number(item.duration ?? item.audio_duration ?? item.duration_seconds) || undefined) : undefined,
         title: typeof item === 'object' ? getFirstString(item, ['title', 'name']) : undefined,
         lyrics: typeof item === 'object' ? getFirstString(item, ['lyrics', 'lyric']) : undefined,
         coverUrl: typeof item === 'object' ? getFirstString(item, ['cover_url', 'coverUrl', 'image_url', 'imageUrl']) : undefined,
@@ -103,6 +130,7 @@ export class SunoClient {
   private readonly baseUrl: string;
   private readonly createPath: string;
   private readonly statusPath: string;
+  private readonly replacePath: string;
   private readonly requestMode: 'v6' | 'legacy';
 
   constructor(private readonly options: SunoClientOptions) {
@@ -111,6 +139,7 @@ export class SunoClient {
     this.requestMode = options.requestMode === 'legacy' ? 'legacy' : 'v6';
     this.createPath = String(options.createPath || (this.requestMode === 'v6' ? '/api/v1/generate' : '/generate'));
     this.statusPath = String(options.statusPath || (this.requestMode === 'v6' ? '/api/v1/generate/record-info?taskId={id}' : '/generate/{id}'));
+    this.replacePath = String(options.replacePath || "/api/v1/generate/replace-section");
   }
 
   private headers(): Record<string, string> {
@@ -200,6 +229,30 @@ export class SunoClient {
       getFirstString(data?.data, ['id', 'taskId', 'task_id', 'jobId', 'job_id']);
     if (!id) throw new Error('suno_task_id_missing');
     return { id, raw: data };
+  }
+
+  async replaceSection(input: SunoReplaceSectionInput): Promise<{ id: string; raw: unknown }> {
+    if (!this.baseUrl) throw new Error("suno_base_url_missing");
+    const callbackUrl = String(input.callBackUrl || this.options.callbackUrl || "").trim();
+    if (!callbackUrl) throw new Error("suno_callback_url_missing");
+    if (!input.taskId || !input.audioId) throw new Error("suno_source_audio_missing");
+    const data = await this.requestJson(this.replacePath, {
+      method: "POST",
+      body: JSON.stringify({ ...input, callBackUrl: callbackUrl, model: input.model || this.options.model || "V6" }),
+    });
+    const id = getFirstString(data, ["id", "taskId", "task_id", "jobId", "job_id"]) || getFirstString(data?.data, ["id", "taskId", "task_id", "jobId", "job_id"]);
+    if (!id) throw new Error("suno_task_id_missing");
+    return { id, raw: data };
+  }
+
+  async getTimestampedLyrics(taskId: string, audioId: string): Promise<any> {
+    if (!this.baseUrl) throw new Error("suno_base_url_missing");
+    if (!taskId || !audioId) throw new Error("suno_lyrics_source_missing");
+    const data = await this.requestJson("/api/v1/generate/get-timestamped-lyrics", {
+      method: "POST",
+      body: JSON.stringify({ taskId, audioId }),
+    });
+    return (data as any)?.data ?? data;
   }
 
   async get(id: string): Promise<SunoTask> {

@@ -163,6 +163,8 @@ export interface OrchestrationConfig {
     composerMaxTokens: number;
     composerTemperature: number;
     sendLyricsWithMusic: boolean;
+    historyMaxRecords: number;
+    historyPromptLimit: number;
     defaultVocalGender: 'auto' | 'm' | 'f';
     defaultLanguage: string;
     timeoutMs: number;
@@ -312,6 +314,8 @@ export function defaultOrchestrationConfig(): OrchestrationConfig {
       composerMaxTokens: 6000,
       composerTemperature: 0.6,
       sendLyricsWithMusic: false,
+      historyMaxRecords: 100,
+      historyPromptLimit: 10,
       defaultVocalGender: 'auto',
       defaultLanguage: '',
       timeoutMs: 600000,
@@ -616,6 +620,8 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
         composerMaxTokens: numberIn(suno.composerMaxTokens, d.suno.composerMaxTokens, 1, 200000),
         composerTemperature: numberIn(suno.composerTemperature, d.suno.composerTemperature, 0, 2),
         sendLyricsWithMusic: bool(suno.sendLyricsWithMusic, d.suno.sendLyricsWithMusic),
+        historyMaxRecords: numberIn(suno.historyMaxRecords, d.suno.historyMaxRecords, 1, 1000),
+        historyPromptLimit: numberIn(suno.historyPromptLimit, d.suno.historyPromptLimit, 1, 50),
       defaultVocalGender: suno.defaultVocalGender === 'm' || suno.defaultVocalGender === 'f' ? suno.defaultVocalGender : 'auto',
       defaultLanguage: String(suno.defaultLanguage || '').trim().slice(0, 80),
       timeoutMs: numberIn(suno.timeoutMs, d.suno.timeoutMs, 1000, 3600000),

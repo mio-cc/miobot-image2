@@ -41,6 +41,8 @@ import { LegacyEngineCapabilityHandler, type LegacyCapabilityKind } from './capa
 import { VoiceCurrentCapabilityHandler, VoicePreviewCapabilityHandler, VoiceSearchCapabilityHandler, VoiceSelectCapabilityHandler, type FishAudioVoiceService } from './voice-service.js';
 import { SunoPromptComposer } from './suno-composer.js';
 import { SunoCapabilityHandler } from './capability-suno.js';
+import type { SunoSongHistoryStore } from './suno-song-history.js';
+import { SunoHistoryCapabilityHandler, SunoReplayCapabilityHandler, SunoReplaceSectionCapabilityHandler } from './capability-suno-library.js';
 import { HelpCapabilityHandler, ModelCatalogCapabilityHandler, PromptCapabilityHandler, SearchCapabilityHandler, TemplateListCapabilityHandler, TtsCapabilityHandler } from './capability-basic.js';
 import type { ApprovalRuntime } from './approval-runtime.js';
 import type { PendingJobRecord, PendingJobStore } from './pending-job-store.js';
@@ -113,6 +115,7 @@ export class OrchestrationEnforcer {
     pendingJobs?: PendingJobStore;
     voiceService?: FishAudioVoiceService;
     logger?: StructuredLogger;
+    sunoHistory?: SunoSongHistoryStore;
     trace?: (trace: OrchestrationTrace) => void;
     handlers?: Map<string, CapabilityHandler>;
   }) {
@@ -125,8 +128,16 @@ export class OrchestrationEnforcer {
       this.dispatcher.registerHandler(kind, handler);
     }
     const sunoComposer = new SunoPromptComposer(this.options.client, this.options.getConfig, this.options.logger);
-    const suno = this.options.handlers?.get('audio.music.generate') || new SunoCapabilityHandler({ getConfig: this.options.getConfig, logger: this.options.logger, compose: (args, request) => sunoComposer.compose(args, request) });
+    const suno = this.options.handlers?.get('audio.music.generate') || new SunoCapabilityHandler({ getConfig: this.options.getConfig, logger: this.options.logger, history: this.options.sunoHistory, compose: (args, request) => sunoComposer.compose(args, request) });
     this.dispatcher.registerHandler('audio.music.generate', suno);
+    if (this.options.sunoHistory) {
+      const historyHandler = this.options.handlers?.get('audio.music.history') || new SunoHistoryCapabilityHandler(this.options.sunoHistory);
+      const replayHandler = this.options.handlers?.get('audio.music.replay') || new SunoReplayCapabilityHandler(this.options.sunoHistory);
+      const replaceHandler = this.options.handlers?.get('audio.music.replace_section') || new SunoReplaceSectionCapabilityHandler({ getConfig: this.options.getConfig, store: this.options.sunoHistory, client: this.options.client });
+      this.dispatcher.registerHandler('audio.music.history', historyHandler);
+      this.dispatcher.registerHandler('audio.music.replay', replayHandler);
+      this.dispatcher.registerHandler('audio.music.replace_section', replaceHandler);
+    }
     this.dispatcher.registerHandler('web.search', new SearchCapabilityHandler(this.options.app));
     this.dispatcher.registerHandler('prompt.enhance', new PromptCapabilityHandler(this.options.client, this.options.getConfig, 'enhance'));
     this.dispatcher.registerHandler('prompt.translate', new PromptCapabilityHandler(this.options.client, this.options.getConfig, 'translate'));
@@ -447,6 +458,11 @@ export class OrchestrationEnforcer {
       history: incomingHistory ? [{ role: 'system', content: incomingHistory }] : undefined,
       receivedAt: new Date().toISOString(),
     };
+    if (this.options.sunoHistory) {
+      const scopeKey = this.options.sunoHistory.scopeKey(request.chat.type, request.chat.groupId, request.user.qq);
+      const songHistory = this.options.sunoHistory.promptContext(scopeKey, cfg.orchestration.suno.historyPromptLimit || 10);
+      if (songHistory) request.history = [{ role: 'system', content: songHistory }, ...(request.history || [])];
+    }
     const clarificationCount = Math.max(0, Math.trunc(Number(pending?.clarificationCount ?? pending?.attempts ?? 0)));
     const jobStartedAt = Number(pending?.startedAt) || Date.now();
     let resumePlan = pending?.plan;
@@ -533,6 +549,7 @@ export class OrchestrationEnforcer {
             answer: text,
             originalText,
             maxSteps: cfg.orchestration.execution.maxSteps,
+            context: this.clarificationContext(pending.results),
           },
         ));
         roleRoundsUsed += resolved.rounds;
@@ -1032,7 +1049,7 @@ export class OrchestrationEnforcer {
           startedAt: jobStartedAt,
         });
         appendTrace('plan', '执行阶段发起唯一一次追问', { jobId, stepId: pendingResult?.stepId, question });
-        return { handled: true, result: this.messageEngineResult(question) };
+        return { handled: true, result: this.clarificationResult(question, Array.isArray(pendingResult?.outputs) ? pendingResult.outputs : []) };
       }
       if (execution.status === 'denied') {
         this.options.pendingJobs?.delete(pendingKey);
@@ -1052,7 +1069,8 @@ export class OrchestrationEnforcer {
 
       this.options.pendingJobs?.delete(pendingKey);
       const hasAudioOutput = outputs.some((output) => output.kind === 'audio');
-      if (!hasAudioOutput && plan.source === 'model' && cfg.orchestration.roles.composer.enabled) {
+      const hasStructuredTextOutput = outputs.some((output) => output.meta?.role === 'suno_history');
+      if (!hasAudioOutput && !hasStructuredTextOutput && plan.source === 'model' && cfg.orchestration.roles.composer.enabled) {
         const maxModelRounds = Math.max(1, Number(cfg.orchestration.execution.maxModelRounds || 1));
         if (execution.usage.modelRounds < maxModelRounds) {
           const composed = await this.runRoleWithFallback(this.roleOptions(cfg, 'composer'), (opts) => composeResultTextWithModel(
@@ -1133,6 +1151,28 @@ export class OrchestrationEnforcer {
       result: this.emptyEngineResult(),
       problem: { kind, error },
     };
+  }
+  private clarificationContext(results: Record<string, any> | undefined): string {
+    const outputs = Object.values(results || {}).flatMap((result: any) => Array.isArray(result?.outputs) ? result.outputs : []);
+    return outputs
+      .filter((output: any) => output?.kind === 'text' && (output?.meta?.role === 'suno_history' || output?.meta?.clarificationContext))
+      .map((output: any) => String(output.text || ''))
+      .filter(Boolean)
+      .join('\n\n');
+  }
+  private clarificationResult(question: string, extraOutputs: any[] = []): BotEngineResult {
+    const questionOutput = {
+      kind: 'text' as const,
+      text: question,
+      priority: 10,
+      mergeable: false,
+      meta: { skipTts: true, disableVoice: true, role: 'clarification_question' },
+    };
+    const replyPlan = this.makeReplyPlan([...(extraOutputs || []), questionOutput] as ExecutionOutput[]);
+    const visibleOutputs = replyPlan.groups.flatMap((group) => group.outputs);
+    const result = this.toEngineResult(visibleOutputs) || this.emptyEngineResult();
+    result.replyPlan = replyPlan;
+    return result;
   }
   private musicOnlyOutputs(outputs: any[], musicRequested = false): any[] {
     const musicAudio = outputs.find((output) => output.kind === "audio"

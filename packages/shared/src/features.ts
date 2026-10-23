@@ -158,6 +158,21 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
     defaultAliases: [],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
+    {
+      id: 'audio.music.history', label: '歌曲历史', category: 'audio', implemented: true, defaultNaturalLanguage: true,
+      description: '列出当前会话中已生成的歌曲，以稳定序号和合并转发列表展示；可与重发/编辑能力独立选择。',
+      defaultAliases: [], defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
+    },
+    {
+      id: 'audio.music.replay', label: '歌曲重发', category: 'audio', implemented: true, defaultNaturalLanguage: true,
+      description: '把历史中已生成的一首歌原样重新发送，不重新生成；目标不明确时由模型追问并附歌曲历史列表。',
+      defaultAliases: [], defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
+    },
+    {
+      id: 'audio.music.replace_section', label: '歌曲局部编辑', category: 'audio', implemented: true, defaultNaturalLanguage: true,
+      description: '基于已生成歌曲替换指定时间段，用新的提示词、歌词和风格生成编辑后的歌曲。',
+      defaultAliases: [], defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
+    },
   {
     id: 'file.list', label: '文件列表', category: 'file', implemented: true, defaultNaturalLanguage: true,
     legacyCommand: 'fileList', defaultAliases: ['文件列表', '最近文件'],
