@@ -2507,3 +2507,55 @@ test('TTS capability: generated audio carries spokenText and preferred voice met
     globalThis.fetch = originalFetch;
   }
 });
+
+test('auto TTS: existing audio in ReplyPlan suppresses a second synthesized voice', async () => {
+  const ctx = { chatType: 'private', userId: '1' };
+  let voiceCalls = 0;
+  let sentPlan = null;
+  const engine = {
+    async replyPlan(_ctx, plan) { sentPlan = plan; return { success: true, messageIds: [], attempts: [] }; },
+  };
+  const plan = {
+    groups: [{ mode: 'direct', messageCount: 1, outputs: [
+      { kind: 'text', text: '这是一段歌曲说明', priority: 10, mergeable: true },
+      { kind: 'audio', url: 'song.mp3', priority: 10, mergeable: false, meta: { sourceCapability: 'audio.music.generate' } },
+    ] }],
+    messageCount: 1,
+  };
+  await sendResult(engine, ctx, { kind: 'audio.music.generate', handled: true, audio: ['song.mp3'], replyPlan: plan }, async () => {
+    voiceCalls += 1;
+    return 'tts.mp3';
+  }, async () => true, {}, async () => {});
+  assert.equal(voiceCalls, 0);
+  assert.ok(sentPlan);
+  assert.deepEqual(allReplyPlanOutputs(sentPlan).map((output) => output.kind).sort(), ['audio', 'text']);
+});
+
+test('orchestration: composer does not add text when music audio already exists', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.suno.enabled = true;
+  cfg.orchestration.externalProviders = { enabled: false, allowlist: ['suno-official'] };
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  cfg.orchestration.roles.composer.enabled = true;
+  let composerCalls = 0;
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg,
+    app: { sessions: { clear() {} }, engine: {}, handle: async () => ({}) },
+    client: { async chat() { composerCalls += 1; return { text: '不该出现的歌曲说明' }; } },
+    handlers: new Map([['audio.music.generate', { async execute({ step }) { return { jobId: 'music', stepId: step.id, status: 'success', outputs: [{ kind: 'audio', url: 'song.mp3', priority: 10, mergeable: false }] }; } }]]),
+  });
+  const plan = {
+    planId: 'music-no-composer', requestId: 'r', goal: '写歌',
+    understanding: { goal: '写歌', desiredOutcome: 'generate', constraints: [], missingInformation: [], confidence: 1 },
+    steps: [{ id: 'music', capability: 'audio.music.generate', args: { request: '写一首歌' } }],
+    confidence: 1, source: 'model',
+  };
+  const result = await enforcer.handle({ text: '写一首歌', chatType: 'private', userId: '1', plan });
+  assert.equal(result.handled, true);
+  assert.equal(composerCalls, 0);
+  assert.equal(result.result.text, undefined);
+  assert.deepEqual(result.result.audio, ['song.mp3']);
+});

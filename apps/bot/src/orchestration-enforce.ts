@@ -1051,7 +1051,8 @@ export class OrchestrationEnforcer {
       }
 
       this.options.pendingJobs?.delete(pendingKey);
-      if (plan.source === 'model' && cfg.orchestration.roles.composer.enabled) {
+      const hasAudioOutput = outputs.some((output) => output.kind === 'audio');
+      if (!hasAudioOutput && plan.source === 'model' && cfg.orchestration.roles.composer.enabled) {
         const maxModelRounds = Math.max(1, Number(cfg.orchestration.execution.maxModelRounds || 1));
         if (execution.usage.modelRounds < maxModelRounds) {
           const composed = await this.runRoleWithFallback(this.roleOptions(cfg, 'composer'), (opts) => composeResultTextWithModel(

@@ -1772,7 +1772,8 @@ export async function sendResult(
   if (result.replyPlan) {
     try {
       let planToSend = result.replyPlan;
-      const target = voice ? selectPrimaryTextForTts(planToSend) : null;
+      const planHasAudio = allReplyPlanOutputs(planToSend).some((output) => output.kind === 'audio');
+      const target = voice && !planHasAudio ? selectPrimaryTextForTts(planToSend) : null;
       if (voice && target) {
         let eligible = true;
         if (voiceEligible) {
