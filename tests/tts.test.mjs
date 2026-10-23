@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildTtsRequest, synthesizeSpeech, shouldUseTts, activeFishVoiceId, fishVoiceCandidates } from '../dist/apps/bot/src/main.js';
+import { buildTtsRequest, synthesizeSpeech, shouldUseTts, activeFishVoiceId, fishVoiceCandidates, ttsTimeoutForText } from '../dist/apps/bot/src/main.js';
 import { createDefaultConfig } from '../dist/packages/config/src/index.js';
 
 function fishTts(overrides = {}) {
@@ -101,4 +101,10 @@ test('synthesizeSpeech: Fish 音色失败时自动尝试备用音色，并记录
   assert.equal(requestLog.data.modelHeader, 's2.1-pro-free');
   assert.ok(logs.some((entry) => entry.message === 'TTS voice failed; trying fallback voice'));
   assert.ok(logs.some((entry) => entry.message === 'TTS request completed' && entry.data.model === 's2.1-pro-free'));
+});
+
+test('tts timeout: long text gets a longer timeout than the fixed 60 seconds', () => {
+  assert.equal(ttsTimeoutForText({ timeoutMs: 60000 }, 819), 152850);
+  assert.equal(ttsTimeoutForText({ timeoutMs: 60000 }, 2000), 300000);
+  assert.equal(ttsTimeoutForText({ timeoutMs: 200000 }, 100), 200000);
 });

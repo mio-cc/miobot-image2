@@ -90,13 +90,17 @@ export function buildTtsRequest(tts: BotTtsConfig, text: string): TtsRequestPlan
 }
 
 /** 合成语音,返回 napcat record 可用的 base64:// 文件引用。 */
+export function ttsTimeoutForText(tts: Pick<BotTtsConfig, 'timeoutMs'>, textLength: number): number {
+  const configured = Math.max(5000, Number(tts.timeoutMs || 60000));
+  return Math.min(300000, Math.max(configured, 30000 + Math.max(0, textLength) * 150));
+}
 export async function synthesizeSpeech(
   tts: BotTtsConfig,
   text: string,
   options: TtsSynthesizeOptions = {},
 ): Promise<TtsAudio> {
   const provider: 'fish-audio' | 'openai-compatible' = tts.provider === 'openai-compatible' ? 'openai-compatible' : 'fish-audio';
-  const timeoutMs = Math.max(5000, Number(tts.timeoutMs || 60000));
+  const timeoutMs = ttsTimeoutForText(tts, text.length);
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== 'function') throw new Error('TTS fetch is unavailable');
 

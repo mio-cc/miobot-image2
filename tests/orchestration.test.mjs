@@ -2167,7 +2167,7 @@ test('suno prompt entry: custom composer template keeps supplied data and schema
     assert.match(noPlaceholderPrompt, /用户结构化线索/);
 });
 
-test('auto TTS legacy path: eligible voice failure never sends duplicate text fallback', async () => {
+test('auto TTS legacy path: synthesis failure falls back to text but record send failure does not', async () => {
   const ctx = { chatType: 'private', userId: '1' };
   const reports = [];
   let textCalls = 0;
@@ -2178,23 +2178,23 @@ test('auto TTS legacy path: eligible voice failure never sends duplicate text fa
   const reportProblem = async (kind, error, extra) => { reports.push({ kind, error, extra }); };
   const failVoice = async () => { throw new Error('synthesis down'); };
   const successReply = { async sendPrivateRecord() { return { success: true }; } };
-  await sendResult(engine, ctx, { text: '这段内容不应该再以文字发送' }, failVoice, async () => true, successReply, reportProblem);
-  assert.equal(textCalls, 0);
+  await sendResult(engine, ctx, { text: '合成失败时回退文字' }, failVoice, async () => true, successReply, reportProblem);
+  assert.equal(textCalls, 1);
   assert.ok(reports.some((item) => item.kind === 'auto-tts-synthesize-error'));
 
   reports.length = 0;
-  await sendResult(engine, ctx, { text: '空语音也不回退文字' }, async () => null, async () => true, successReply, reportProblem);
-  assert.equal(textCalls, 0);
+  await sendResult(engine, ctx, { text: '空语音也回退文字' }, async () => null, async () => true, successReply, reportProblem);
+  assert.equal(textCalls, 2);
   assert.ok(reports.some((item) => item.kind === 'auto-tts-synthesize-failed'));
 
   reports.length = 0;
   await sendResult(engine, ctx, { text: '不允许 TTS 时正常文字' }, async () => 'unused.mp3', async () => false, successReply, reportProblem);
-  assert.equal(textCalls, 1);
+  assert.equal(textCalls, 3);
 
   reports.length = 0;
   const reply = { async sendPrivateRecord() { return { success: false, error: 'record rejected' }; } };
   await sendResult(engine, ctx, { text: '语音发送失败也不回退文字' }, async () => 'voice.mp3', async () => true, reply, reportProblem);
-  assert.equal(textCalls, 1);
+  assert.equal(textCalls, 3);
   assert.ok(reports.some((item) => item.kind === 'voice-send-failed'));
 });
 
@@ -2606,4 +2606,17 @@ test('suno handler: configured defaults reach generation input and language hint
   assert.equal(captured.customMode, true);
   assert.equal(captured.vocalGender, 'f');
   assert.match(captured.style, /language: Japanese/i);
+});
+
+test('auto TTS plan path: synthesis failure keeps the original text in ReplyPlan', async () => {
+  const ctx = { chatType: 'private', userId: '1' };
+  let sentPlan = null;
+  const engine = {
+    async replyPlan(_ctx, plan) { sentPlan = plan; return { success: true, messageIds: [], attempts: [] }; },
+  };
+  const plan = { groups: [{ mode: 'direct', messageCount: 1, outputs: [{ kind: 'text', text: '合成失败时保留这段文字', priority: 10, mergeable: true }] }], messageCount: 1 };
+  await sendResult(engine, ctx, { replyPlan: plan }, async () => { throw new Error('synthesis down'); }, async () => true, {}, async () => {});
+  assert.ok(sentPlan);
+  const outputs = allReplyPlanOutputs(sentPlan);
+  assert.equal(outputs.some((output) => output.kind === 'text' && output.text === '合成失败时保留这段文字'), true);
 });

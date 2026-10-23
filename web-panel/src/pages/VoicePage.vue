@@ -89,7 +89,7 @@ const isFish = computed(() => tts.value?.provider === 'fish-audio');
         <FormField label="自动朗读上限（字）" hint="超过这个长度就只发文字，不合成语音">
           <input v-model.number="tts.autoTextMaxChars" type="number" min="0" max="2000" step="10" class="input-field" />
         </FormField>
-        <FormField label="超时 (ms)">
+        <FormField label="超时 (ms)" hint="长文本会按字数自动延长，最高 300000ms">
           <input v-model.number="tts.timeoutMs" type="number" min="5000" step="5000" class="input-field" />
         </FormField>
         <FormField label="语速" hint="1 为正常">

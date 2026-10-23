@@ -1787,11 +1787,11 @@ export async function sendResult(
               planToSend = replacePrimaryTextWithAudio(planToSend, target, file);
             } else if (voiceEligible) {
               await reportProblem?.('auto-tts-synthesize-failed', '自动 TTS 返回空文件', { textChars: target.text.length });
-              planToSend = removePrimaryText(planToSend, target);
+              // 合成为空没有产生音频，保留文本作为安全回退。
             }
           } catch (error) {
             await reportProblem?.('auto-tts-synthesize-error', error, { textChars: target.text.length });
-            planToSend = removePrimaryText(planToSend, target);
+            // 合成抛错时 voice 尚未发送音频，保留文本，避免用户收不到回复。
           }
         }
       }
@@ -1880,13 +1880,12 @@ export async function sendResult(
         file = await voice(result.text, { chatType: ctx.chatType, groupId: ctx.groupId, userId: ctx.userId });
       } catch (error) {
         await reportProblem?.('auto-tts-synthesize-error', error, { textChars: result.text.length });
+        await engine.replyText(ctx, result.text);
         return null;
       }
       if (!file) {
         if (voiceEligible) await reportProblem?.('auto-tts-synthesize-failed', '自动 TTS 返回空文件', { textChars: result.text.length });
-        else {
-          await engine.replyText(ctx, result.text);
-        }
+        await engine.replyText(ctx, result.text);
         return null;
       }
       if (ctx.chatType === 'group' && reply?.sendGroupRecord && ctx.groupId !== undefined) {
