@@ -44,6 +44,7 @@ import {
 } from '../dist/packages/orchestration/src/index.js';
 import { ApprovalRuntime } from '../dist/apps/bot/src/approval-runtime.js';
 import { executionFromBotResult } from '../dist/apps/bot/src/capability-runtime-adapters.js';
+import { LegacyEngineCapabilityHandler } from '../dist/apps/bot/src/capability-legacy.js';
 import { createReplyStrategyEngine } from '../dist/packages/reply/src/index.js';
 import { SunoCapabilityHandler } from '../dist/apps/bot/src/capability-suno.js';
 import { HelpCapabilityHandler, TtsCapabilityHandler } from '../dist/apps/bot/src/capability-basic.js';
@@ -2717,4 +2718,31 @@ test('orchestration: sendLyricsWithMusic forwards actual Suno lyrics and keeps a
   const forwardGroup = result.result.replyPlan.groups.find((group) => group.outputs.some((output) => output.kind === 'text'));
   assert.ok(forwardGroup);
   assert.notEqual(forwardGroup.mode, 'direct');
+});
+
+test('legacy chat.reply bypasses auto intent routing on internal prompt text', async () => {
+  let autoHandleCalls = 0;
+  let explicitKind = null;
+  let explicitPrompt = null;
+  const handler = new LegacyEngineCapabilityHandler({
+    async handle() { autoHandleCalls += 1; return { kind: 'image.generate', handled: true, images: ['wrong.png'] }; },
+    engine: {
+      async handleExplicit(kind, _input, params) {
+        explicitKind = kind;
+        explicitPrompt = params.prompt;
+        return { kind: 'chat', handled: true, text: '我是 Miobot。', decision: { kind: 'chat', source: 'signal', confidence: 1, reason: 'explicit-command', params: { prompt: params.prompt, tokens: [] }, usedPlanner: false } };
+      },
+    },
+    sessions: { clear() {} },
+  }, 'chat.reply');
+  const result = await handler.execute({
+    plan: { planId: 'chat-plan' },
+    step: { id: 'chat', capability: 'chat.reply', args: { prompt: '用户问你是谁，请介绍自己并说明可以生成图片和音乐。' } },
+    request: { text: '你是谁啊', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' }, attachments: [] },
+  });
+  assert.equal(autoHandleCalls, 0);
+  assert.equal(explicitKind, 'chat');
+  assert.match(explicitPrompt, /生成图片/);
+  assert.equal(result.status, 'success');
+  assert.equal(result.outputs[0].text, '我是 Miobot。');
 });

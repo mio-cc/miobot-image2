@@ -1,4 +1,4 @@
-﻿import type { BotApp } from './app.js';
+import type { BotApp } from './app.js';
 import type { BotEngineInput, BotEngineResult } from '../../../packages/bot-engine/src/index.js';
 import type { CapabilityHandler, CapabilityInvocation, ExecutionOutput, ExecutionResult } from '../../../packages/orchestration/src/index.js';
 
@@ -36,7 +36,7 @@ export class LegacyEngineCapabilityHandler implements CapabilityHandler {
     const input = this.input(invocation);
     let result: BotEngineResult;
     if (this.kind === 'chat.reply') {
-      result = await this.app.handle(input);
+      result = await this.app.engine.handleExplicit('chat', input, { prompt: input.text });
     } else {
       const args = invocation.step.args || {};
       result = await this.app.engine.handleExplicit(this.kind as any, input, {

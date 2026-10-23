@@ -163,7 +163,7 @@ export function parseIntentPlan(text: string, request: UserRequest, options: { m
   const json = extractJsonObject(text);
   if (!json) throw new Error('planner_no_json');
   let raw: any;
-  try { raw = JSON.parse(json); } catch { throw new Error('planner_invalid_json'); }
+    try { raw = JSON.parse(json); } catch { const preview = json.replace(/\s+/g, '').slice(0, 300); throw new Error(`planner_invalid_json:chars=${json.length}:preview=${preview}`); }
   const validEffects = new Set(['answer', 'retrieve', 'generate', 'transform', 'mutate', 'delete', 'notify', 'control', 'unknown']);
   const rawUnderstanding = raw.understanding && typeof raw.understanding === 'object' ? raw.understanding : {};
   const desiredOutcome = validEffects.has(String(rawUnderstanding.desiredOutcome || ''))
