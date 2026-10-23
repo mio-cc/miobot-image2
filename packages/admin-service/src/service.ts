@@ -197,7 +197,7 @@ function parseLogQuery(rawPath: string): LogQuery {
   const contains = params.get('contains') || params.get('q');
   if (contains) out.contains = contains;
   const limit = params.get('limit');
-  if (limit && Number.isFinite(Number(limit))) out.limit = Math.max(0, Math.trunc(Number(limit)));
+  if (limit && Number.isFinite(Number(limit))) out.limit = Math.min(10000, Math.max(0, Math.trunc(Number(limit))));
   return out;
 }
 

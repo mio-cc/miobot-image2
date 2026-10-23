@@ -2439,7 +2439,9 @@ test('alignment guard: review failure fails closed for side-effect plans', async
   cfg.orchestration.planner.enabled = true;
   cfg.orchestration.planner.model = 'planner-test';
   cfg.orchestration.planner.actionAlignmentGuardEnabled = true;
+  cfg.orchestration.planner.alignmentReviewMaxTokens = 1234;
   cfg.orchestration.roles.planner.model = 'planner-test';
+  let verifierMaxTokens;
   cfg.orchestration.roles.planner.fallbackModel = 'planner-test';
   let executed = 0;
   const plan = {
@@ -2453,7 +2455,7 @@ test('alignment guard: review failure fails closed for side-effect plans', async
     app: { sessions: { clear() {} }, engine: {}, handle: async () => ({}) },
     client: { async chat(_node, payload) {
       const text = payload.messages.map((message) => message.content).join('\n');
-      if (text.includes('意图-行动一致性复核器')) throw new Error('verifier down');
+      if (text.includes('意图-行动一致性复核器')) { verifierMaxTokens = payload.maxTokens; throw new Error('verifier down'); }
       return { text: JSON.stringify(plan) };
     } },
     handlers: new Map([['image.generate', { async execute({ step }) { executed += 1; return { jobId: 'j', stepId: step.id, status: 'success', outputs: [{ kind: 'image', url: 'should-not-run.png' }] }; } }]]),
@@ -2462,6 +2464,7 @@ test('alignment guard: review failure fails closed for side-effect plans', async
   assert.equal(result.handled, true);
   assert.equal(executed, 0);
   assert.equal(result.problem.kind, 'alignment_review_failed');
+  assert.equal(verifierMaxTokens, 1234);
 });
 test('capability TTS policy: query/control results are marked skipTts in aggregated outputs', async () => {
   const descriptors = builtinCapabilityDescriptors();
@@ -2568,8 +2571,11 @@ test('suno composer: configured default gender and language are applied', async 
   const cfg = createDefaultConfig();
   cfg.orchestration.suno.defaultVocalGender = 'm';
   cfg.orchestration.suno.defaultLanguage = '粤语';
+  cfg.orchestration.suno.composerMaxTokens = 7000;
+  cfg.orchestration.suno.composerTemperature = 0.4;
+  let composerPayload;
   const composer = new SunoPromptComposer({
-    async chat() {
+    async chat(_node, payload) { composerPayload = payload;
       return { text: JSON.stringify({ customMode: false, instrumental: false, musicBrief: 'Cantopop love song', style: 'cantopop, romantic', model: 'V6' }) };
     },
   }, () => cfg);
@@ -2580,6 +2586,8 @@ test('suno composer: configured default gender and language are applied', async 
   assert.equal(spec.customMode, true);
   assert.equal(spec.vocalGender, 'm');
   assert.equal(spec.language, '粤语');
+  assert.equal(composerPayload.maxTokens, 7000);
+  assert.equal(composerPayload.temperature, 0.4);
 });
 
 test('suno handler: configured defaults reach generation input and language hint', async () => {
@@ -2619,4 +2627,94 @@ test('auto TTS plan path: synthesis failure keeps the original text in ReplyPlan
   assert.ok(sentPlan);
   const outputs = allReplyPlanOutputs(sentPlan);
   assert.equal(outputs.some((output) => output.kind === 'text' && output.text === '合成失败时保留这段文字'), true);
+});
+test('planner: alignment verifier diagnostics expose node/model/maxTokens and response preview', async () => {
+  const req = {
+    requestId: 'req-alignment-no-json', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' },
+    text: '这个对象现在是什么情况', attachments: [], receivedAt: new Date().toISOString(),
+  };
+  const plan = { planId: 'p', requestId: req.requestId, goal: 'lookup', steps: [{ id: 's', capability: 'image.generate', args: { prompt: '这个对象' } }], confidence: 0.9 };
+  const result = await verifyPlanAlignmentWithModel({
+    async chat() { return { text: 'I think the plan is probably fine.' }; },
+  }, req, plan, builtinCapabilityDescriptors(), { nodeIndex: 3, model: 'diagnostic-model', maxTokens: 700 });
+  assert.equal(result.fallback, true);
+  assert.match(result.error, /plan_alignment_no_json/);
+  assert.match(result.error, /node=3/);
+  assert.match(result.error, /model=diagnostic-model/);
+  assert.match(result.error, /maxTokens=700/);
+  assert.match(result.error, /preview=I think the plan is probably fine\./);
+});
+
+test('orchestration: music plans drop sibling text outputs so only the song is sent', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  cfg.orchestration.roles.composer.enabled = false;
+  cfg.orchestration.suno.enabled = true;
+  cfg.orchestration.externalProviders = { enabled: false, allowlist: ['suno-official'] };
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg,
+    app: { sessions: { clear() {} }, engine: {}, handle: async () => ({}) },
+    client: { async chat() { throw new Error('should not call model'); } },
+    handlers: new Map([
+      ['chat.reply', { async execute({ step }) { return { jobId: 'text', stepId: step.id, status: 'success', outputs: [{ kind: 'text', text: '这是另外生成的歌词说明', priority: 10, mergeable: true }] }; } }],
+      ['audio.music.generate', { async execute({ step }) { return { jobId: 'music', stepId: step.id, status: 'success', outputs: [{ kind: 'audio', url: 'song.mp3', priority: 10, mergeable: false }] }; } }],
+    ]),
+  });
+  const plan = {
+    planId: 'music-with-narration', requestId: 'r', goal: '写歌',
+    understanding: { goal: '写歌', desiredOutcome: 'generate', constraints: [], missingInformation: [], confidence: 1 },
+    steps: [
+      { id: 'text', capability: 'chat.reply', args: { prompt: '写歌词' } },
+      { id: 'music', capability: 'audio.music.generate', args: { request: '写歌' } },
+    ],
+    confidence: 1, source: 'model',
+  };
+  const result = await enforcer.handle({ text: '写一首歌', chatType: 'private', userId: '1', plan });
+  assert.equal(result.handled, true);
+  assert.equal(result.result.text, undefined);
+  assert.deepEqual(result.result.audio, ['song.mp3']);
+  assert.deepEqual(allReplyPlanOutputs(result.result.replyPlan).map((output) => output.kind), ['audio']);
+});
+test('orchestration: sendLyricsWithMusic forwards actual Suno lyrics and keeps audio', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  cfg.orchestration.roles.composer.enabled = false;
+  cfg.orchestration.suno.enabled = true;
+  cfg.orchestration.suno.sendLyricsWithMusic = true;
+  cfg.orchestration.externalProviders = { enabled: false, allowlist: ['suno-official'] };
+  cfg.orchestration.reply.maxMessages = 3;
+  cfg.orchestration.reply.maxResultItems = 20;
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg,
+    app: { sessions: { clear() {} }, engine: {}, handle: async () => ({}) },
+    client: { async chat() { throw new Error('should not call model'); } },
+    handlers: new Map([['audio.music.generate', { async execute({ step }) {
+      return { jobId: 'music', stepId: step.id, status: 'success', outputs: [{ kind: 'audio', url: 'song.mp3', priority: 10, mergeable: false, meta: { title: '真实歌名', lyrics: '第一句真实歌词\n第二句真实歌词' } }] };
+    } }]]),
+  });
+  const plan = {
+    planId: 'music-with-lyrics', requestId: 'r', goal: '写歌',
+    understanding: { goal: '写歌', desiredOutcome: 'generate', constraints: [], missingInformation: [], confidence: 1 },
+    steps: [{ id: 'music', capability: 'audio.music.generate', args: { request: '写歌' } }],
+    confidence: 1, source: 'model',
+  };
+  const result = await enforcer.handle({ text: '写一首歌', chatType: 'private', userId: '1', plan });
+  assert.equal(result.handled, true);
+  const outputs = allReplyPlanOutputs(result.result.replyPlan);
+  const lyrics = outputs.find((output) => output.kind === 'text');
+  const audio = outputs.find((output) => output.kind === 'audio');
+  assert.ok(lyrics);
+  assert.ok(audio);
+  assert.match(lyrics.text, /真实歌名/);
+  assert.match(lyrics.text, /第一句真实歌词/);
+  assert.equal(lyrics.meta.skipTts, true);
+  const forwardGroup = result.result.replyPlan.groups.find((group) => group.outputs.some((output) => output.kind === 'text'));
+  assert.ok(forwardGroup);
+  assert.notEqual(forwardGroup.mode, 'direct');
 });

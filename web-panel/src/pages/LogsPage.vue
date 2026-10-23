@@ -20,7 +20,8 @@ interface LogEntry {
 const source = ref<'main' | 'canvas'>('main');
 const level = ref('all');
 const search = ref('');
-const limit = ref(300);
+const savedLogLimit = Number(window.localStorage.getItem('miobot.logLimit') || 300);
+const limit = ref(Number.isFinite(savedLogLimit) ? Math.min(10000, Math.max(1, Math.trunc(savedLogLimit))) : 300);
 const entries = ref<LogEntry[]>([]);
 const total = ref(0);
 const loading = ref(false);
@@ -39,6 +40,13 @@ function keyOf(entry: LogEntry) {
 let timer: number | undefined;
 
 const basePath = computed(() => (source.value === 'canvas' ? '/canvas/logs' : '/logs'));
+
+function applyLogLimit() {
+  const value = Number(limit.value);
+  limit.value = Number.isFinite(value) ? Math.min(10000, Math.max(1, Math.trunc(value))) : 300;
+  window.localStorage.setItem('miobot.logLimit', String(limit.value));
+  void fetchLogs();
+}
 
 async function fetchLogs(showLoading = true) {
     if (showLoading) loading.value = true;
@@ -125,7 +133,7 @@ function levelClass(value: string) {
     return 'status-good';
 }
 
-watch([source, level, limit], () => fetchLogs());
+watch([source, level], () => fetchLogs());
 watch(autoRefresh, startTimer);
 
 onMounted(() => { fetchLogs(); startTimer(); });
@@ -155,10 +163,11 @@ onBeforeUnmount(stopTimer);
       <input v-model="search" @keyup.enter="fetchLogs()" class="input-field !w-auto flex-1 min-w-[200px]"
         placeholder="搜索 scope / 关键字，回车生效" />
 
-      <select v-model.number="limit" class="input-field !w-auto">
-        <option :value="100">100 条</option><option :value="300">300 条</option>
-        <option :value="500">500 条</option><option :value="1000">1000 条</option>
-      </select>
+      <label class="flex items-center gap-1.5 text-xs text-[color:var(--ink-3)]">
+        显示
+        <input v-model.number="limit" @change="applyLogLimit" @keyup.enter="applyLogLimit" type="number" min="1" max="10000" step="100" class="input-field !w-[110px]" />
+        条
+      </label>
 
       <label class="flex items-center gap-1.5 text-xs text-[color:var(--ink-3)]">
         <input type="checkbox" v-model="autoRefresh" />自动刷新

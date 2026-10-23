@@ -150,7 +150,7 @@ export interface BotFilesConfig {
 export type WebSearchProvider = 'deepseek' | 'tavily' | 'brave' | 'serper' | 'bing' | 'google' | 'searxng' | 'exa';
 export type WebSearchAutoMode = 'off' | 'auto' | 'always';
 export type WebSearchFetchProvider = 'provider' | 'deepseek' | 'jina' | 'none';
-export interface IntentRecognitionConfig { enabled: boolean; nodeIndex: number; model: string; timeoutMs: number; minConfidence: number; promptTemplate: string }
+export interface IntentRecognitionConfig { enabled: boolean; nodeIndex: number; model: string; timeoutMs: number; maxTokens: number; minConfidence: number; promptTemplate: string }
 
 export interface BrowserRenderConfig {
   enabled: boolean;
@@ -426,7 +426,7 @@ const DEFAULT_CONFIG: AppConfig = {
   promptsChat: { enabled: false, endpoint: '', apiKey: '', requestTimeoutMs: 20000, cacheTtlSeconds: 600, searchLimit: 20, displayLimit: 5, searchType: '', smartSearchLimit: 24, smartCandidateLimit: 6, smartCandidateContentChars: 1800, queryRewriteEnabled: true, smartNodeIndex: 0, smartModel: 'gpt-4o-mini', searchQueryPromptTemplate: P.pcQuery, smartPromptTemplate: P.pcSmart, fallbackToRawPrompt: true },
   canvas: { enabled: true, access: 'public', rateLimitPerMinute: 20, imageNodeIndex: 0, imageModel: 'gpt-image-2', editNodeIndex: 0, editModel: 'gpt-image-2', imageEditRequestMode: 'auto', imageTimeoutMs: 300000, imageRetryCount: 1, imageRetryDelayMs: 2500, defaultQuality: 'auto', defaultOutputFormat: 'png', defaultCount: 1, defaultSizePresetId: 'auto', defaultStylePresetId: 'none', interrogateNodeIndex: 0, interrogateModel: 'gpt-4o-mini', interrogatePromptTemplate: P.interrogate, interrogateTemplateNodeIndex: 0, interrogateTemplateModel: 'gpt-4o-mini', interrogateTemplatePromptTemplate: P.interrogateTpl, interrogateTimeoutMs: 300000, interrogateTemplateTimeoutMs: 300000, maxHistory: 50, brand: { logoText: 'Mio', pageTitle: 'Mio \u56fe\u50cf\u753b\u5e03', faviconUrl: '/canvas/favicon.ico' }, logs: { enabled: true, level: 'info', maxMemoryEntries: 1000 } },
   freeMode: { enabled: false, nodeIndex: 0, model: 'gpt-4o-mini', timeoutMs: 120000, maxInputImages: 6, maxOutputImages: 4, includeQuotedMessage: true, preferEditWhenImagePresent: true, plannerPromptTemplate: P.free },
-  intentRecognition: { enabled: true, nodeIndex: 0, model: '', timeoutMs: 12000, minConfidence: 0.65, promptTemplate: P.naturalIntent },
+  intentRecognition: { enabled: true, nodeIndex: 0, model: '', timeoutMs: 12000, maxTokens: 240, minConfidence: 0.65, promptTemplate: P.naturalIntent },
   browserRender: { enabled: true, executablePath: '', noSandbox: true, enableWebgl: true, timeoutMs: 45000, launchTimeoutMs: 20000, idleCloseMs: 60000, maxConcurrency: 1, maxQueue: 3, maxCodeChars: 200000, maxWidth: 4096, maxHeight: 4096, defaultWidth: 1080, defaultHeight: 1080, maxScreenshotBytes: 20971520, allowPrivateHosts: false },
   codeRender: { enabled: true, nodeIndex: 0, model: '', timeoutMs: 30000, maxTokens: 4096, promptTemplate: P.codeRender },
   comfyuiTransform: { enabled: true, nodeIndex: 0, model: '', timeoutMs: 20000, maxTokens: 2400, promptTemplate: COMFYUI_PROMPT_ONLY_TEMPLATE_V5 },

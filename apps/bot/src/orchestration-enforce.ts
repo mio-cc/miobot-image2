@@ -617,7 +617,7 @@ export class OrchestrationEnforcer {
             request,
             plan,
             catalog,
-            { ...opts, maxTokens: Math.min(700, Number(opts.maxTokens || 700)), temperature: 0 },
+              { ...opts, maxTokens: Number(cfg.orchestration.planner.alignmentReviewMaxTokens || opts.maxTokens || 1000), temperature: 0 },
           ));
           roleRoundsUsed += review.rounds;
           if (!review.fallback && !review.value.aligned) {
@@ -1073,6 +1073,12 @@ export class OrchestrationEnforcer {
           appendTrace('reply', 'composer 完成', { fallback: composed.fallback, hasText: Boolean(composed.value), error: composed.error });
         }
       }
+      const musicRequested = plan.steps.some((step) => step.capability === 'audio.music.generate');
+      if (musicRequested && outputs.some((output) => output.kind === 'audio')) {
+        const before = outputs.length;
+        outputs = this.musicOnlyOutputs(outputs, true);
+        appendTrace('reply', '音乐结果按配置处理歌词与音频', { droppedOutputs: before - outputs.filter((output) => output.kind === 'audio').length });
+      }
       const replyPlan = buildReplyPlan(outputs, {
         maxMessages: cfg.orchestration.reply.maxMessages,
         maxResultItems: cfg.orchestration.reply.maxResultItems,
@@ -1128,8 +1134,30 @@ export class OrchestrationEnforcer {
       problem: { kind, error },
     };
   }
+  private musicOnlyOutputs(outputs: any[], musicRequested = false): any[] {
+    const musicAudio = outputs.find((output) => output.kind === "audio"
+      && (output.meta?.sourceCapability === "audio.music.generate" || musicRequested));
+    if (!musicAudio) return outputs;
+    const audioOnly = outputs.filter((output) => output.kind === "audio");
+    const cfg = this.options.getConfig();
+    const lyrics = String(musicAudio.meta?.lyrics || "").trim();
+    if (!cfg.orchestration.suno.sendLyricsWithMusic || !lyrics) return audioOnly;
+    if (cfg.orchestration.reply.maxMessages < 2 || cfg.orchestration.reply.maxResultItems < 2) return audioOnly;
+    const title = String(musicAudio.meta?.title || "").trim();
+    return [
+      {
+        id: "suno-lyrics",
+        kind: "text" as const,
+        text: title ? title + "\n\n" + lyrics : lyrics,
+        priority: 5,
+        mergeable: true,
+        meta: { synthetic: true, role: "suno_lyrics", sourceCapability: "audio.music.generate", skipTts: true, disableVoice: true, title },
+      },
+      ...audioOnly,
+    ];
+  }
   private partialResult(outputs: any[], kind: string, error: string): EnforceOrchestrationResult {
-    const replyPlan = this.makeReplyPlan(outputs as ExecutionOutput[]);
+    const replyPlan = this.makeReplyPlan(this.musicOnlyOutputs(outputs) as ExecutionOutput[]);
     const visibleOutputs = replyPlan.groups.flatMap((group) => group.outputs);
     const result = this.toEngineResult(visibleOutputs) || this.emptyEngineResult();
     result.replyPlan = replyPlan;

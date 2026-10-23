@@ -70,7 +70,7 @@ export async function classifyNaturalLanguageIntent(options: IntentClassifierOpt
       model: config.model,
       messages: [{ role: 'user', content: prompt }],
       timeoutMs: config.timeoutMs,
-      maxTokens: 240,
+      maxTokens: config.maxTokens,
     });
     const parsed = parseJsonObject(String(result.text || ''));
     if (!parsed) return fallback('invalid-json');

@@ -408,6 +408,9 @@ onMounted(() => {
                   <FormField label="意图识别超时 (ms)">
                     <input v-model.number="config.intentRecognition.timeoutMs" type="number" min="3000" max="60000" step="1000" class="input-field" />
                   </FormField>
+                  <FormField label="意图识别 maxTokens" hint="限制分类器 JSON 输出长度">
+                    <input v-model.number="config.intentRecognition.maxTokens" type="number" min="1" max="200000" step="10" class="input-field" />
+                  </FormField>
                   <FormField label="最低置信度" hint="低于此值回退正则 / FreeMode 兜底">
                     <input v-model.number="config.intentRecognition.minConfidence" type="number" min="0" max="1" step="0.05" class="input-field" />
                   </FormField>

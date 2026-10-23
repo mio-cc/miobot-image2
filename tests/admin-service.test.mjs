@@ -99,3 +99,13 @@ test('config 导出委派给 web-api', async () => {
   assert.equal(r.status, 200);
   assert.ok(r.body.export.config);
 });
+
+test('logs: custom display limit', async () => {
+  const service = createAdminService();
+  for (let index = 1; index <= 5; index += 1) {
+    service.logs.system.append({ timestamp: `2026-05-27T00:00:0${index}.000Z`, level: 'info', scope: 'bot', message: `m${index}` });
+  }
+  const result = await service.handle({ method: 'GET', path: '/api/logs?limit=2', headers: authedHeaders(service) });
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.items.map((item) => item.message), ['m4', 'm5']);
+});

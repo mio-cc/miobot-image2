@@ -80,7 +80,7 @@ export async function retrieveCapabilitiesWithModel(
   ].join('\n');
   const prompt = renderConfiguredRolePrompt(options, fallbackPrompt, { request: request.text, catalog: JSON.stringify(compactCatalog(enabled)) });
   try {
-    const text = await callRole(client, { ...options, maxTokens: Math.min(options.maxTokens || 800, 1200), temperature: 0 }, roleMessages(
+    const text = await callRole(client, { ...options, maxTokens: options.maxTokens || 800, temperature: 0 }, roleMessages(
       'You are a strict semantic capability retriever. Output only one JSON object.',
       prompt,
     ));
@@ -137,9 +137,13 @@ export async function verifyPlanAlignmentWithModel(
       prompt,
     ));
     const json = extractJsonObject(text);
-    if (!json) throw new Error('plan_alignment_no_json');
-    const parsed = JSON.parse(json) as Record<string, unknown>;
-    if (typeof parsed.aligned !== 'boolean') throw new Error('plan_alignment_bad_result');
+    const outputPreview = String(text || '').replace(/\s+/g, ' ').slice(0, 300);
+    const diagnostics = `node=${options.nodeIndex} model=${options.model} maxTokens=${options.maxTokens ?? "unset"} chars=${String(text || "").length}`;
+    if (!json) throw new Error('plan_alignment_no_json:' + diagnostics + ':preview=' + (outputPreview || '<empty>'));
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(json) as Record<string, unknown>; }
+    catch { throw new Error('plan_alignment_invalid_json:' + diagnostics + ':preview=' + outputPreview); }
+    if (typeof parsed.aligned !== 'boolean') throw new Error('plan_alignment_bad_result:' + diagnostics + ':preview=' + outputPreview);
     const enabled = catalog.filter((item) => item.enabled);
     const byId = new Map(enabled.map((item) => [item.id, item]));
     const suggested = Array.isArray(parsed.suggestedCapabilities)

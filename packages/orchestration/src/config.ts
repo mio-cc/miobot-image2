@@ -96,6 +96,7 @@ export interface OrchestrationConfig {
     capabilityDescriptions: Record<string, string>;
     actionAlignmentGuardEnabled: boolean;
     alignmentGuardConfidenceThreshold: number;
+    alignmentReviewMaxTokens: number;
     capabilityTopK: number;
     minConfidence: number;
     maxRepairAttempts: number;
@@ -159,6 +160,9 @@ export interface OrchestrationConfig {
     composerNodeIndex?: number;
     composerModel?: string;
     composerPromptTemplate: string;
+    composerMaxTokens: number;
+    composerTemperature: number;
+    sendLyricsWithMusic: boolean;
     defaultVocalGender: 'auto' | 'm' | 'f';
     defaultLanguage: string;
     timeoutMs: number;
@@ -237,6 +241,7 @@ export function defaultOrchestrationConfig(): OrchestrationConfig {
       capabilityDescriptions: { ...DEFAULT_PLANNER_CAPABILITY_DESCRIPTIONS },
       actionAlignmentGuardEnabled: true,
       alignmentGuardConfidenceThreshold: 0.8,
+      alignmentReviewMaxTokens: 1000,
       capabilityTopK: 12,
       minConfidence: 0.55,
       maxRepairAttempts: 2,
@@ -304,6 +309,9 @@ export function defaultOrchestrationConfig(): OrchestrationConfig {
       callbackUrl: '',
       callbackSecret: '',
       composerPromptTemplate: '',
+      composerMaxTokens: 6000,
+      composerTemperature: 0.6,
+      sendLyricsWithMusic: false,
       defaultVocalGender: 'auto',
       defaultLanguage: '',
       timeoutMs: 600000,
@@ -534,6 +542,7 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       capabilityDescriptions: Object.fromEntries(Object.entries(planner.capabilityDescriptions && typeof planner.capabilityDescriptions === 'object' && !Array.isArray(planner.capabilityDescriptions) ? planner.capabilityDescriptions : d.planner.capabilityDescriptions).map(([key, value]) => [String(key), String(value ?? '')]).filter(([, value]) => Boolean(value))),
       actionAlignmentGuardEnabled: bool(planner.actionAlignmentGuardEnabled ?? planner.visualIntentGuardEnabled, d.planner.actionAlignmentGuardEnabled),
       alignmentGuardConfidenceThreshold: numberIn(planner.alignmentGuardConfidenceThreshold, d.planner.alignmentGuardConfidenceThreshold, 0, 1),
+      alignmentReviewMaxTokens: numberIn(planner.alignmentReviewMaxTokens, d.planner.alignmentReviewMaxTokens, 1, 200000),
       capabilityTopK: numberIn(planner.capabilityTopK, d.planner.capabilityTopK, 1, 100),
       minConfidence: numberIn(planner.minConfidence, d.planner.minConfidence, 0, 1),
       maxRepairAttempts: numberIn(planner.maxRepairAttempts, d.planner.maxRepairAttempts, 0, 10),
@@ -604,6 +613,9 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       composerNodeIndex: suno.composerNodeIndex === undefined ? undefined : numberIn(suno.composerNodeIndex, d.suno.composerNodeIndex ?? 0, 0, 10000),
       composerModel: suno.composerModel === undefined ? undefined : String(suno.composerModel || '').trim(),
       composerPromptTemplate: String(suno.composerPromptTemplate || ''),
+        composerMaxTokens: numberIn(suno.composerMaxTokens, d.suno.composerMaxTokens, 1, 200000),
+        composerTemperature: numberIn(suno.composerTemperature, d.suno.composerTemperature, 0, 2),
+        sendLyricsWithMusic: bool(suno.sendLyricsWithMusic, d.suno.sendLyricsWithMusic),
       defaultVocalGender: suno.defaultVocalGender === 'm' || suno.defaultVocalGender === 'f' ? suno.defaultVocalGender : 'auto',
       defaultLanguage: String(suno.defaultLanguage || '').trim().slice(0, 80),
       timeoutMs: numberIn(suno.timeoutMs, d.suno.timeoutMs, 1000, 3600000),

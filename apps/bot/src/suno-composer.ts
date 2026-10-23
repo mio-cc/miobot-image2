@@ -216,8 +216,8 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
           { role: 'system', content: 'You are a strict JSON Suno prompt planner. Never output markdown.' },
           { role: 'user', content: buildSunoComposerPrompt(args, request, cfg, suno.composerPromptTemplate) },
         ],
-        temperature: 0.6,
-        maxTokens: 6000,
+        temperature: Number(cfg.orchestration.suno.composerTemperature ?? 0.6),
+        maxTokens: Number(cfg.orchestration.suno.composerMaxTokens ?? 6000),
         timeoutMs: Math.max(30000, Number(cfg.orchestration.suno.timeoutMs || 60000)),
       });
       const json = extractJsonObject(String(response.text || ''));

@@ -510,6 +510,7 @@ function commitHardDeny(text: string) {
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
         <div class="flex items-end"><ToggleField v-model="orch.planner.actionAlignmentGuardEnabled" label="启用意图-行动一致性复核" hint="按能力 effect 检查副作用，不按关键词判断" /></div>
         <FormField label="复核触发置信度阈值" hint="低于该置信度也触发通用复核"><input v-model.number="orch.planner.alignmentGuardConfidenceThreshold" type="number" min="0" max="1" step="0.01" class="input-field" /></FormField>
+          <FormField label="一致性复核 maxTokens" hint="复核模型输出 JSON 的上限；推理模型建议 1200 到 2000"><input v-model.number="orch.planner.alignmentReviewMaxTokens" type="number" min="1" max="200000" step="100" class="input-field" /></FormField>
         <FormField label="Planner 系统提示词" hint="enforce Planner 使用；能力清单自动附加">
           <textarea v-model="orch.planner.systemPromptTemplate" rows="8" class="input-field font-mono text-xs"></textarea>
         </FormField>
@@ -532,7 +533,13 @@ function commitHardDeny(text: string) {
             <ToggleField v-model="orch.roles[role].enabled" label="启用" />
           </div>
           <FormField label="节点索引"><input v-model.number="orch.roles[role].nodeIndex" type="number" min="0" class="input-field" /></FormField>
-          <FormField label="模型"><input v-model="orch.roles[role].model" class="input-field font-mono" placeholder="留空使用节点默认" /></FormField>          <FormField label="角色提示词覆盖" hint="留空用内置；支持 {{request}}、{{catalog}}、{{plan}}、{{outputs}}、{{question}}、{{answer}}">
+            <FormField label="模型"><input v-model="orch.roles[role].model" class="input-field font-mono" placeholder="留空使用节点默认" /></FormField>
+            <FormField label="超时 (ms)" hint="留空使用模型默认"><input v-model.number="orch.roles[role].timeoutMs" type="number" min="1000" step="1000" class="input-field" /></FormField>
+            <FormField label="温度" hint="留空使用模型默认；建议 0 到 1"><input v-model.number="orch.roles[role].temperature" type="number" min="0" max="2" step="0.05" class="input-field" /></FormField>
+            <FormField label="maxTokens" hint="留空使用模型默认"><input v-model.number="orch.roles[role].maxTokens" type="number" min="1" max="200000" step="100" class="input-field" /></FormField>
+            <FormField label="Fallback 节点索引"><input v-model.number="orch.roles[role].fallbackNodeIndex" type="number" min="0" class="input-field" /></FormField>
+            <FormField label="Fallback 模型"><input v-model="orch.roles[role].fallbackModel" class="input-field font-mono" placeholder="留空使用同角色模型" /></FormField>
+            <FormField label="角色提示词覆盖" hint="留空用内置；支持 {{request}}、{{catalog}}、{{plan}}、{{outputs}}、{{question}}、{{answer}}">
             <textarea v-model="orch.roles[role].promptTemplate" rows="4" class="input-field font-mono text-xs"></textarea>
           </FormField>
         </div>
@@ -820,11 +827,15 @@ function commitHardDeny(text: string) {
         <FormField label="Callback URL" hint="V6 创建任务必填；完整地址需包含 /api/orchestration/suno/callback/&lt;Callback Secret&gt;"><input v-model="orch.suno.callbackUrl" class="input-field font-mono" placeholder="https://bot.example/api/orchestration/suno/callback/&lt;secret&gt;" /></FormField>
         <FormField label="Callback Secret" hint="用于校验回调；留空则 V6 回调不可用"><input v-model="orch.suno.callbackSecret" type="password" class="input-field font-mono" /></FormField>
         <FormField label="Composer 节点"><input v-model.number="orch.suno.composerNodeIndex" type="number" min="0" class="input-field" /></FormField>
-        <FormField label="Composer 模型"><input v-model="orch.suno.composerModel" class="input-field font-mono" placeholder="deepseek-flash" /></FormField>        <FormField label="Composer 覆盖提示词" hint="留空使用内置 Suno V2；可用 {{userText}}、{{supplied}}、{{schema}}、{{model}}、{{defaultVocalGender}}、{{defaultLanguage}}">
+        <FormField label="Composer 模型"><input v-model="orch.suno.composerModel" class="input-field font-mono" placeholder="deepseek-flash" /></FormField>
+        <FormField label="Composer 温度" hint="建议 0.3 到 0.8"><input v-model.number="orch.suno.composerTemperature" type="number" min="0" max="2" step="0.05" class="input-field" /></FormField>
+        <FormField label="Composer maxTokens" hint="生成歌词和 JSON 的上限；复杂完整歌词建议 6000 以上"><input v-model.number="orch.suno.composerMaxTokens" type="number" min="1" max="200000" step="100" class="input-field" /></FormField>
+        <FormField label="Composer 覆盖提示词" hint="留空使用内置 Suno V2；可用 {{userText}}、{{supplied}}、{{schema}}、{{model}}、{{defaultVocalGender}}、{{defaultLanguage}}">
           <textarea v-model="orch.suno.composerPromptTemplate" rows="5" class="input-field font-mono text-xs"></textarea>
         </FormField>
         <FormField label="默认人声性别" hint="auto 由模型决定；m/f 仅在 customMode 下传给 Suno，且官方说明只是偏好、不保证命中"><select v-model="orch.suno.defaultVocalGender" class="input-field"><option value="auto">auto / 不指定</option><option value="m">男声 m</option><option value="f">女声 f</option></select></FormField>
         <FormField label="默认歌词语言" hint="留空或 auto 跟随用户；例如 中文、日语、English。Suno 没有独立 language 字段，会写入 prompt/style/lyrics"><input v-model="orch.suno.defaultLanguage" class="input-field" placeholder="auto" /></FormField>
+        <div class="flex items-end"><ToggleField v-model="orch.suno.sendLyricsWithMusic" label="同步发送歌词" hint="使用 Suno 返回的真实 lyrics，走合并转发；需要 reply.maxMessages ≥ 2" /></div>
         <FormField label="Base URL"><input v-model="orch.suno.baseUrl" class="input-field font-mono" placeholder="https://官方 API 地址" /></FormField>
         <FormField label="模型"><input v-model="orch.suno.model" class="input-field font-mono" /></FormField>
         <FormField label="创建路径"><input v-model="orch.suno.createPath" class="input-field font-mono" placeholder="/api/v1/generate" /></FormField>
