@@ -72,6 +72,8 @@ test('config regression: prompt rewrite defaults preserve the user language', ()
   assert.equal(defaults.bot.progress.imageEnabled, false);
   assert.equal(defaults.bot.progress.audioEnabled, false);
   assert.equal(defaults.bot.progress.videoEnabled, true);
+  assert.equal(defaults.orchestration.suno.defaultVocalGender, 'auto');
+  assert.equal(defaults.orchestration.suno.defaultLanguage, '');
   assert.match(defaults.freeMode.plannerPromptTemplate, /"images":\[/);
   assert.match(defaults.freeMode.plannerPromptTemplate, /must not be translated into English/);
 });

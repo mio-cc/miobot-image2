@@ -820,9 +820,12 @@ function commitHardDeny(text: string) {
         <FormField label="Callback URL" hint="V6 创建任务必填；完整地址需包含 /api/orchestration/suno/callback/&lt;Callback Secret&gt;"><input v-model="orch.suno.callbackUrl" class="input-field font-mono" placeholder="https://bot.example/api/orchestration/suno/callback/&lt;secret&gt;" /></FormField>
         <FormField label="Callback Secret" hint="用于校验回调；留空则 V6 回调不可用"><input v-model="orch.suno.callbackSecret" type="password" class="input-field font-mono" /></FormField>
         <FormField label="Composer 节点"><input v-model.number="orch.suno.composerNodeIndex" type="number" min="0" class="input-field" /></FormField>
-        <FormField label="Composer 模型"><input v-model="orch.suno.composerModel" class="input-field font-mono" placeholder="deepseek-flash" /></FormField>        <FormField label="Composer 覆盖提示词" hint="留空使用内置 Suno V2；可用 {{userText}}、{{supplied}}、{{schema}}、{{model}}">
+        <FormField label="Composer 模型"><input v-model="orch.suno.composerModel" class="input-field font-mono" placeholder="deepseek-flash" /></FormField>        <FormField label="Composer 覆盖提示词" hint="留空使用内置 Suno V2；可用 {{userText}}、{{supplied}}、{{schema}}、{{model}}、{{defaultVocalGender}}、{{defaultLanguage}}">
           <textarea v-model="orch.suno.composerPromptTemplate" rows="5" class="input-field font-mono text-xs"></textarea>
-        </FormField>        <FormField label="Base URL"><input v-model="orch.suno.baseUrl" class="input-field font-mono" placeholder="https://官方 API 地址" /></FormField>
+        </FormField>
+        <FormField label="默认人声性别" hint="auto 由模型决定；m/f 仅在 customMode 下传给 Suno，且官方说明只是偏好、不保证命中"><select v-model="orch.suno.defaultVocalGender" class="input-field"><option value="auto">auto / 不指定</option><option value="m">男声 m</option><option value="f">女声 f</option></select></FormField>
+        <FormField label="默认歌词语言" hint="留空或 auto 跟随用户；例如 中文、日语、English。Suno 没有独立 language 字段，会写入 prompt/style/lyrics"><input v-model="orch.suno.defaultLanguage" class="input-field" placeholder="auto" /></FormField>
+        <FormField label="Base URL"><input v-model="orch.suno.baseUrl" class="input-field font-mono" placeholder="https://官方 API 地址" /></FormField>
         <FormField label="模型"><input v-model="orch.suno.model" class="input-field font-mono" /></FormField>
         <FormField label="创建路径"><input v-model="orch.suno.createPath" class="input-field font-mono" placeholder="/api/v1/generate" /></FormField>
         <FormField label="状态路径"><input v-model="orch.suno.statusPath" class="input-field font-mono" placeholder="/api/v1/generate/record-info?taskId={id}" /></FormField>

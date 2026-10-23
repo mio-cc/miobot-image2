@@ -1788,7 +1788,7 @@ test('orchestration: Suno composer turns natural language into V6 mode-specific 
     text: '来一首适合深夜开车的温柔日语女声歌曲', attachments: [], receivedAt: new Date().toISOString(),
   }, cfg);
   assert.ok(prompt.includes('customMode=false'));
-  assert.ok(prompt.includes('普通点歌请求一律 customMode=false'));
+  assert.ok(prompt.includes('普通点歌请求使用 customMode=false'));
   assert.ok(prompt.includes('副歌必须有一个短、可重复、易记的核心 hook'));
   assert.ok(prompt.includes('用户提供的歌词必须逐字保留'));
   assert.ok(prompt.includes('style'));
@@ -2156,6 +2156,10 @@ test('suno prompt entry: custom composer template keeps supplied data and schema
   assert.match(prompt, /CUSTOM 来一首测试歌曲/);
   assert.match(prompt, /V6/);
   assert.match(prompt, /用户结构化线索/);
+  cfg.orchestration.suno.defaultVocalGender = 'f';
+  cfg.orchestration.suno.defaultLanguage = '日语';
+  const defaultsPrompt = buildSunoComposerPrompt({ request: '来一首测试歌曲' }, req, cfg, 'GENDER={{defaultVocalGender}} LANG={{defaultLanguage}}');
+  assert.match(defaultsPrompt, /GENDER=f LANG=日语/);
   assert.match(prompt, /输出结构/);
     const noPlaceholderPrompt = buildSunoComposerPrompt({ request: '来一首测试歌曲', style: 'pop' }, req, cfg, 'CUSTOM_NO_PLACEHOLDERS');
     assert.match(noPlaceholderPrompt, /CUSTOM_NO_PLACEHOLDERS/);
@@ -2558,4 +2562,48 @@ test('orchestration: composer does not add text when music audio already exists'
   assert.equal(composerCalls, 0);
   assert.equal(result.result.text, undefined);
   assert.deepEqual(result.result.audio, ['song.mp3']);
+});
+
+test('suno composer: configured default gender and language are applied', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.suno.defaultVocalGender = 'm';
+  cfg.orchestration.suno.defaultLanguage = '粤语';
+  const composer = new SunoPromptComposer({
+    async chat() {
+      return { text: JSON.stringify({ customMode: false, instrumental: false, musicBrief: 'Cantopop love song', style: 'cantopop, romantic', model: 'V6' }) };
+    },
+  }, () => cfg);
+  const spec = await composer.compose({ request: '来一首粤语情歌' }, {
+    requestId: 'r', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' }, text: '来一首粤语情歌',
+    attachments: [], receivedAt: new Date().toISOString(),
+  });
+  assert.equal(spec.customMode, true);
+  assert.equal(spec.vocalGender, 'm');
+  assert.equal(spec.language, '粤语');
+});
+
+test('suno handler: configured defaults reach generation input and language hint', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.suno.enabled = true;
+  cfg.orchestration.suno.defaultVocalGender = 'f';
+  cfg.orchestration.suno.defaultLanguage = 'Japanese';
+  let captured = null;
+  const handler = new SunoCapabilityHandler({
+    getConfig: () => cfg,
+    compose: async () => ({ customMode: true, instrumental: false, style: 'city pop', lyrics: '[Verse] test', model: 'V6' }),
+    createClient: () => ({
+      async create(input) { captured = input; return { id: 'task', raw: {} }; },
+      async wait() { return { id: 'task', status: 'success', outputs: [{ url: 'song.mp3' }], raw: {} }; },
+    }),
+  });
+  const result = await handler.execute({
+    request: { requestId: 'r', chat: { type: 'private' }, user: { qq: '1', role: 'user' }, text: '歌' },
+    plan: { planId: 'p', requestId: 'r', goal: 'music', steps: [] },
+    step: { id: 's1', capability: 'audio.music.generate', args: { request: '女声歌曲' } },
+    dependencyResults: {},
+  });
+  assert.equal(result.status, 'success');
+  assert.equal(captured.customMode, true);
+  assert.equal(captured.vocalGender, 'f');
+  assert.match(captured.style, /language: Japanese/i);
 });

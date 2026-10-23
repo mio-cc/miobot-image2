@@ -11,6 +11,14 @@ export interface SunoCapabilityOptions {
   compose?: (args: Record<string, unknown>, request: any) => Promise<SunoComposedSpec>;
 }
 
+function appendLanguageHint(value: string | undefined, language: string | undefined, maxLength = 1000): string | undefined {
+  const text = String(value || '').trim();
+  const lang = String(language || '').trim();
+  if (!lang || /^auto$/i.test(lang)) return text || undefined;
+  if (text && text.toLowerCase().includes(lang.toLowerCase())) return text.slice(0, maxLength);
+  const suffix = `language: ${lang}`;
+  return (text ? `${text}, ${suffix}` : suffix).slice(0, maxLength);
+}
 function stringArg(args: Record<string, unknown>, key: string): string | undefined {
   const value = args[key];
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -115,20 +123,28 @@ export class SunoCapabilityHandler implements CapabilityHandler {
     const requestedDuration = Number.isFinite(requestedDurationRaw) && requestedDurationRaw > 0
       ? Math.min(Number(requestedDurationRaw), cfg.maxDurationSeconds)
       : undefined;
+    const instrumental = composed ? composed.instrumental : Boolean(args.instrumental);
+    const language = composed?.language
+      || stringArg(args, 'language')
+      || (cfg.defaultLanguage && !/^auto$/i.test(cfg.defaultLanguage) ? cfg.defaultLanguage : undefined);
+    const argumentGender = args.vocalGender === 'm' || args.vocalGender === 'f' ? args.vocalGender : undefined;
+    const configuredGender = cfg.defaultVocalGender === 'm' || cfg.defaultVocalGender === 'f' ? cfg.defaultVocalGender : undefined;
+    const vocalGender = instrumental ? undefined : (composed?.vocalGender || argumentGender || configuredGender);
+    const customMode = composed ? composed.customMode : Boolean(vocalGender);
     const generationInput = {
-      prompt: composed?.customMode ? '' : (composed?.musicBrief || rawUserText || ''),
+      prompt: customMode ? '' : (appendLanguageHint(composed?.musicBrief || rawUserText, language, 3000) || ''),
       lyrics: composed?.lyrics || stringArg(args, 'lyrics'),
       title: composed?.title || stringArg(args, 'title'),
-      style: composed?.style || stringArg(args, 'style'),
-      instrumental: composed ? composed.instrumental : Boolean(args.instrumental),
-      customMode: composed?.customMode,
+      style: appendLanguageHint(composed?.style || stringArg(args, 'style'), language, 1000),
+      instrumental,
+      customMode,
       model: composed?.model || cfg.model,
       callbackUrl: cfg.callbackUrl,
       duration: requestedDuration,
       referenceAudio: stringArg(args, 'referenceAudio'),
       format: cfg.format,
       negativeTags: composed?.negativeTags || stringArg(args, 'negativeTags'),
-      vocalGender: composed?.vocalGender || (args.vocalGender === 'm' || args.vocalGender === 'f' ? args.vocalGender : undefined),
+      vocalGender,
       styleWeight: composed?.styleWeight,
       weirdnessConstraint: composed?.weirdnessConstraint,
       audioWeight: composed?.audioWeight,
@@ -138,7 +154,8 @@ export class SunoCapabilityHandler implements CapabilityHandler {
       audioUrls: Array.isArray(args.audioUrls) ? args.audioUrls.map(String) : undefined,
       personaId: stringArg(args, 'personaId'),
       personaModel: args.personaModel === 'voice_persona' ? 'voice_persona' as const : args.personaModel === 'style_persona' ? 'style_persona' as const : undefined,
-    };    let acquired = false;
+    };
+    let acquired = false;
     try {
       await this.acquireSlot(cfg, invocation.request.user.qq);
       acquired = true;

@@ -15,6 +15,7 @@ export interface SunoComposedSpec {
   vocalGender?: 'm' | 'f';
   duration?: number;
   styleWeight?: number;
+  language?: string;
   weirdnessConstraint?: number;
   audioWeight?: number;
   variety?: number;
@@ -37,14 +38,19 @@ function numberIn(value: unknown, min: number, max: number): number | undefined 
 }
 
 function normalizeSpec(raw: Record<string, unknown>, cfg: AppConfig): SunoComposedSpec {
-  const customMode = Boolean(raw.customMode);
   const instrumental = Boolean(raw.instrumental);
+  const configuredGender = cfg.orchestration.suno.defaultVocalGender;
+  const requestedGender = raw.vocalGender === 'm' || raw.vocalGender === 'f'
+    ? raw.vocalGender
+    : configuredGender === 'm' || configuredGender === 'f' ? configuredGender : undefined;
+  const customMode = Boolean(raw.customMode) || Boolean(requestedGender && !instrumental);
   const lyrics = customMode && !instrumental ? nullableClip(raw.lyrics, 5000) : undefined;
-  const style = nullableClip(raw.style, 1000);
-  const title = customMode ? nullableClip(raw.title, 80) : undefined;
   const musicBrief = nullableClip(raw.musicBrief, 3000);
+  const style = nullableClip(raw.style, 1000) || (customMode ? nullableClip(raw.musicBrief, 1000) : undefined);
+  const title = customMode ? nullableClip(raw.title, 80) : undefined;
   const negativeTags = customMode ? nullableClip(raw.negativeTags, 1000) : undefined;
-  const vocalGender = customMode && (raw.vocalGender === 'm' || raw.vocalGender === 'f') ? raw.vocalGender : undefined;
+  const vocalGender = customMode && !instrumental ? requestedGender : undefined;
+  const language = nullableClip(raw.language, 80) || nullableClip(cfg.orchestration.suno.defaultLanguage, 80);
   const model = ['V6', 'V6_WILD', 'V6_MINI'].includes(String(raw.model || '')) ? String(raw.model) : (cfg.orchestration.suno.model || 'V6');
   return {
     customMode,
@@ -55,6 +61,7 @@ function normalizeSpec(raw: Record<string, unknown>, cfg: AppConfig): SunoCompos
     lyrics,
     negativeTags,
     vocalGender,
+    language,
     duration: customMode ? numberIn(raw.duration, 10, Math.min(360, cfg.orchestration.suno.maxDurationSeconds)) : undefined,
     styleWeight: customMode ? numberIn(raw.styleWeight, 0, 1) : undefined,
     weirdnessConstraint: customMode ? numberIn(raw.weirdnessConstraint, 0, 1) : undefined,
@@ -73,6 +80,9 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     duration: args.duration,
     negativeTags: args.negativeTags,
     vocalGender: args.vocalGender,
+    language: args.language,
+    defaultVocalGender: cfg.orchestration.suno.defaultVocalGender,
+    defaultLanguage: cfg.orchestration.suno.defaultLanguage,
     styleWeight: args.styleWeight,
     weirdnessConstraint: args.weirdnessConstraint,
     audioWeight: args.audioWeight,
@@ -87,6 +97,7 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     lyrics: null,
     negativeTags: null,
     vocalGender: null,
+    language: null,
     duration: null,
     styleWeight: null,
     weirdnessConstraint: null,
@@ -99,6 +110,8 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     const values: Record<string, string> = {
       userText: request.text,
       supplied: JSON.stringify(supplied),
+      defaultVocalGender: String(cfg.orchestration.suno.defaultVocalGender || 'auto'),
+      defaultLanguage: String(cfg.orchestration.suno.defaultLanguage || 'auto'),
       schema: JSON.stringify(schemaExample),
       model: String(cfg.orchestration.suno.model || 'V6'),
     };
@@ -122,9 +135,10 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     '5. 默认 model 为 ' + String(cfg.orchestration.suno.model || 'V6') + '，只能选择 V6、V6_WILD、V6_MINI。',
     '',
     '【模式选择】',
-    '6. customMode=false 用于普通歌曲需求。musicBrief 写清主题、情绪、genre、编曲、人声、节奏和歌曲结构；Suno 自动生成歌词。此时不要输出 title、negativeTags、duration、vocalGender、styleWeight、weirdnessConstraint、audioWeight、variety。',
-    '7. customMode=true 只用于用户明确提出以下控制之一：提供歌词；明确要求完整歌词、写出歌词或把歌词给我；明确要求纯音乐；明确指定歌名、时长、排除项、人声性别或创作权重。不要因为模型可以写歌词就主动选择 customMode=true。',
-    '8. 普通点歌请求一律 customMode=false，让 Suno 自动生成歌词。例如 来一首适合雨夜散步的日语女声歌曲 / 放一首轻松的爵士 / 做一首有氛围感的电子歌 都必须使用 false。',
+    '5a. 后台默认人声性别为 ' + String(cfg.orchestration.suno.defaultVocalGender || 'auto') + '；后台默认歌词语言为 ' + String(cfg.orchestration.suno.defaultLanguage || 'auto') + '。用户明确指定时以用户为准；后台默认不是 auto 时必须执行。',
+    '6. customMode=false 用于普通歌曲需求。musicBrief 写清主题、情绪、genre、编曲、人声、节奏和歌曲结构；Suno 自动生成歌词。后台默认人声性别为 auto 时，不要输出 title、negativeTags、duration、vocalGender、styleWeight、weirdnessConstraint、audioWeight、variety。',
+    '7. customMode=true 用于用户明确提出以下控制之一：提供歌词；明确要求完整歌词、写出歌词或把歌词给我；明确要求纯音乐；明确指定歌名、时长、排除项、人声性别或创作权重；或后台默认人声性别为 m/f。不要因为模型可以写歌词就主动选择 customMode=true。',
+    '8. 后台默认人声性别为 auto 且默认语言为 auto 时，普通点歌请求使用 customMode=false，让 Suno 自动生成歌词。例如 来一首适合雨夜散步的日语女声歌曲 / 放一首轻松的爵士 / 做一首有氛围感的电子歌。',
     '9. customMode=true 时，Suno 的 prompt 字段可能被当作歌词。禁止把音乐 brief 放入 prompt；音乐风格只放 style，歌词只放 lyrics。',
     '10. instrumental=true 时不要输出 lyrics，也不要输出 vocalGender 或 audioWeight。',
     '',
@@ -148,6 +162,7 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     '22. 副歌必须有一个短、可重复、易记的核心 hook。歌名或 hook 短语可在副歌中自然重复 2 到 4 次。',
     '23. 每段保持稳定的句长和演唱呼吸点。押韵自然，不为了押韵破坏语义；中文歌词避免翻译腔和机械堆字。',
     '24. 语言必须与用户要求一致。用户没有指定时跟随用户消息的主要语言。不要擅自把中文歌词翻成英文，也不要中英混杂除非用户要求。',
+    '24a. 后台默认歌词语言是 ' + String(cfg.orchestration.suno.defaultLanguage || 'auto') + '。用户未指定语言且默认不是 auto 时，歌词必须使用该语言；language 字段输出最终语言。',
     '25. 使用标准结构标记，每个标记独占一行：[Intro]、[Verse 1]、[Pre-Chorus]、[Chorus]、[Verse 2]、[Bridge]、[Outro]。必要时可使用 [Instrumental Break]、[Guitar Solo]、[Drop]、[Spoken Word]。',
     '26. 结构标记后不要写解释、制作备注、和弦或参数。只写要演唱的歌词。',
     '27. 默认写完整但不过长的歌曲：2 个 verse、1 个 pre-chorus、2 到 3 个 chorus、1 个 bridge、1 个 outro。纯器乐则不要歌词。',
@@ -163,6 +178,8 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     '【控制参数】',
     '34. duration 仅 custom 模式且 10 到 360 秒；用户没有明确时长时用 null，不要默认写 10 或 20。',
     '35. vocalGender 仅在 custom 模式且用户明确或强烈暗示时输出 m 或 f；不要仅凭 genre 推断。',
+    '35a. 后台默认人声性别不是 auto 时，即使普通点歌也必须使用 customMode=true 并输出对应的 vocalGender；如果 instrumental=true 则不要输出。',
+    '35b. language 是最终歌词语言的内部选择，不直接作为 Suno 请求字段；必须同步影响 lyrics 和 style。',
     '36. styleWeight 仅在 custom 模式输出 0 到 1。默认 0.6；用户强调必须忠实风格时 0.75 到 0.9；用户想要探索时 0.35 到 0.55。',
     '37. weirdnessConstraint 仅在 custom 模式输出 0 到 1。常规歌曲 0.2 到 0.35；明显实验或先锋 0.6 到 0.85；默认 null。',
     '38. audioWeight 仅在 custom 模式、有人声且存在音频参考时输出 0 到 1；否则 null。',
@@ -215,7 +232,11 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
       const userText = clip(args.request || args.prompt || request.text, 3000);
       const lyrics = nullableClip(args.lyrics, 5000);
       const instrumental = Boolean(args.instrumental);
-      const customMode = Boolean(lyrics || instrumental || args.title || args.duration || args.negativeTags || args.vocalGender || args.styleWeight || args.weirdnessConstraint || args.audioWeight || args.variety);
+      const configuredGender = suno.defaultVocalGender;
+      const requestedGender = args.vocalGender === 'm' || args.vocalGender === 'f'
+        ? args.vocalGender
+        : configuredGender === 'm' || configuredGender === 'f' ? configuredGender : undefined;
+      const customMode = Boolean(lyrics || instrumental || args.title || args.duration || args.negativeTags || requestedGender || args.styleWeight || args.weirdnessConstraint || args.audioWeight || args.variety);
       return {
         customMode,
         instrumental,
@@ -224,7 +245,8 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
         style: nullableClip(args.style, 1000) || (customMode ? userText.slice(0, 1000) : undefined),
         lyrics: customMode && !instrumental ? lyrics : undefined,
         negativeTags: customMode ? nullableClip(args.negativeTags, 1000) : undefined,
-        vocalGender: customMode && (args.vocalGender === 'm' || args.vocalGender === 'f') ? args.vocalGender : undefined,
+        vocalGender: customMode && !instrumental ? requestedGender : undefined,
+        language: nullableClip(args.language, 80) || nullableClip(suno.defaultLanguage, 80),
         duration: customMode ? numberIn(args.duration, 10, Math.min(360, suno.maxDurationSeconds)) : undefined,
         styleWeight: customMode ? numberIn(args.styleWeight, 0, 1) : undefined,
         weirdnessConstraint: customMode ? numberIn(args.weirdnessConstraint, 0, 1) : undefined,

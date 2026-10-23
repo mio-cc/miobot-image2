@@ -159,6 +159,8 @@ export interface OrchestrationConfig {
     composerNodeIndex?: number;
     composerModel?: string;
     composerPromptTemplate: string;
+    defaultVocalGender: 'auto' | 'm' | 'f';
+    defaultLanguage: string;
     timeoutMs: number;
     pollIntervalMs: number;
     maxDurationSeconds: number;
@@ -302,6 +304,8 @@ export function defaultOrchestrationConfig(): OrchestrationConfig {
       callbackUrl: '',
       callbackSecret: '',
       composerPromptTemplate: '',
+      defaultVocalGender: 'auto',
+      defaultLanguage: '',
       timeoutMs: 600000,
       pollIntervalMs: 5000,
       maxDurationSeconds: 300,
@@ -600,6 +604,8 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       composerNodeIndex: suno.composerNodeIndex === undefined ? undefined : numberIn(suno.composerNodeIndex, d.suno.composerNodeIndex ?? 0, 0, 10000),
       composerModel: suno.composerModel === undefined ? undefined : String(suno.composerModel || '').trim(),
       composerPromptTemplate: String(suno.composerPromptTemplate || ''),
+      defaultVocalGender: suno.defaultVocalGender === 'm' || suno.defaultVocalGender === 'f' ? suno.defaultVocalGender : 'auto',
+      defaultLanguage: String(suno.defaultLanguage || '').trim().slice(0, 80),
       timeoutMs: numberIn(suno.timeoutMs, d.suno.timeoutMs, 1000, 3600000),
       pollIntervalMs: numberIn(suno.pollIntervalMs, d.suno.pollIntervalMs, 500, 60000),
       maxDurationSeconds: numberIn(suno.maxDurationSeconds, d.suno.maxDurationSeconds, 5, 900),
