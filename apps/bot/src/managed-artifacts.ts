@@ -162,7 +162,32 @@ export class ManagedArtifactRegistry {
       for (const record of parsed.artifacts || []) {
         if (record?.artifactId && record?.localPath) this.records.set(record.artifactId, record);
       }
+      this.pruneOnLoad();
     } catch { /* first run or corrupt index: start empty */ }
+  }
+
+  /**
+   * T2.7：加载时治理——软删记录只增不减会让索引文件无限增长。
+   * 删除 30 天前的软删记录；活跃记录总量超 5000 时按 createdAt 淘汰最旧。
+   */
+  private pruneOnLoad(): void {
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    let changed = false;
+    for (const [id, record] of this.records) {
+      const deletedAt = Date.parse(String(record.deletedAt || ''));
+      if (Number.isFinite(deletedAt) && deletedAt < cutoff) {
+        this.records.delete(id);
+        changed = true;
+      }
+    }
+    if (this.records.size > 5000) {
+      const sorted = Array.from(this.records.entries())
+        .sort((a, b) => Date.parse(String(a[1].createdAt || 0)) - Date.parse(String(b[1].createdAt || 0)));
+      const excess = this.records.size - 5000;
+      for (let i = 0; i < excess && i < sorted.length; i += 1) this.records.delete(sorted[i][0]);
+      changed = true;
+    }
+    if (changed) this.flush();
   }
 
   private flush(): void {

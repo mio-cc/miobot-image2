@@ -113,6 +113,13 @@ export class SunoSongHistoryStore {
     const scoped = this.records.filter((item) => item.scopeKey === scopeKey).sort((a, b) => b.seq - a.seq).slice(0, limit);
     const keep = new Set(scoped.map((item) => item.id));
     this.records = this.records.filter((item) => item.scopeKey !== scopeKey || keep.has(item.id));
+    // T2.7：全局上限（每范围上限×20）——跨会话总量随用户/群数增长，防文件无限膨胀。
+    const globalLimit = limit * 20;
+    if (this.records.length > globalLimit) {
+      this.records = this.records
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+        .slice(0, globalLimit);
+    }
     this.save();
     return record;
   }
