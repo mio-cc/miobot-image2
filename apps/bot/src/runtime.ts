@@ -176,7 +176,7 @@ export interface BotRuntimeOptions {
   sentMessages?: SentMessageTracker;
   /** 触发意图判断器（关键词触发 + 对话延续共用）；start.ts 注入。 */
   triggerIntentChecker?: {
-    checkKeywordIntent(input: { userText: string; userName: string; context: string; triggerWord: string }): Promise<boolean>;
+    checkKeywordIntent(input: { userText: string; userName: string; context: string; triggerWord: string; allTriggerWords?: string[] }): Promise<boolean>;
     checkContinueIntent(input: { userText: string; userName: string; botLastReply: string }): Promise<boolean>;
   };
   /** 精确命令网关：命令直接生成 IntentPlan 并走功能层权限/审批。 */
@@ -962,6 +962,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
             userName: String(event.sender?.card || event.sender?.nickname || userId || ''),
             context: contextText,
             triggerWord,
+            allTriggerWords: cfg.bot.keywordTrigger.words || [],
           });
           log?.info('关键词触发判断', { triggerWord, hasIntent: Boolean(hasIntent), contextLines: contextText.split('\n').length });
           if (hasIntent) {

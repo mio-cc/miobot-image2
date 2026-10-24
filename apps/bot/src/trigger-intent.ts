@@ -38,18 +38,15 @@ export class TriggerIntentChecker {
     userName: string;
     context: string;
     triggerWord: string;
+    allTriggerWords?: string[];
   }): Promise<boolean> {
     const { nodeIndex, model } = this.chatNode();
+    const words = (input.allTriggerWords && input.allTriggerWords.length ? input.allTriggerWords : [input.triggerWord]).join('、');
     const prompt = [
       '你是群聊消息意图判定器。判断下面这条消息的用户是否有在跟机器人沟通的意图。',
       '',
-      '重要：触发词「' + input.triggerWord + '」是用户给机器人起的昵称或称呼。用户使用这个词就是在叫机器人。',
-      '',
-      '判断标准：',
-      '- 用户用触发词叫机器人、提问、下指令、聊天、叫它说话/出来/回答 → 有意图(true)',
-      '- 用户在跟其他人聊天，碰巧提到了这个词但不是在叫机器人（比如讨论"这个词是什么意思"）→ 无意图(false)',
-      '- 用户在引用/回应机器人的历史回复 → 有意图(true)',
-      '- 消息含"在不在""说话""出来""回答""帮我""给我"等指令性词语时，大概率是有意图',
+      '以下触发词都是用户给机器人起的昵称或称呼：' + words,
+      '用户在消息中使用这些词就是在叫机器人。由你根据上下文语义判断用户是否真的在跟机器人说话。',
       '',
       '只输出 JSON：{"intent": true} 或 {"intent": false}',
       '',
