@@ -7,7 +7,9 @@ export type OwnerCommand =
   | { command: 'switchTtsVoice'; index: number }
   | { command: 'recall'; count: number }
   | { command: 'blacklist'; targetUserId: string }
-  | { command: 'whitelist'; targetUserId: string };
+  | { command: 'whitelist'; targetUserId: string }
+  /** T3.7：高危命令的二次确认指令（/ok 或 /确认）。 */
+  | { command: 'confirm' };
 
 export interface OwnerParseContext {
   chatType: 'group' | 'private';
@@ -57,6 +59,10 @@ export function parseOwnerCommand(text: string, ctx: OwnerParseContext): OwnerCo
 
   const switchM = t.match(/(?:^|\s)\/\s*(?:切换|q)\s*([a-z0-9_.-]+)(?:\s|$)/i);
   if (switchM) return { command: 'switchModel', code: switchM[1].toLowerCase().replace(/_/g, '.') };
+
+  // T3.7：高危命令二次确认指令。
+  const confirm = t.match(/(?:^|\s)\/\s*(?:ok|确认)(?:\s|$)/i);
+  if (confirm) return { command: 'confirm' };
 
   return undefined;
 }

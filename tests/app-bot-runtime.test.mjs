@@ -1066,3 +1066,23 @@ test('runtime T2.2b: 好友请求——accept 调 action、notify 私聊 owner�
   assert.equal(actions.length, 1);
   assert.equal(i.reply.sent.length, 0);
 });
+
+test('runtime T3.7: 高危 owner 命令二次确认——/plch 20 先确认，/ok 后执行', async () => {
+  const handled = [];
+  const { reply, rt } = setup({
+    owner: {
+      ownerQQs: () => ['5'],
+      handle: async (command) => { handled.push(command.command); return null; },
+    },
+  });
+  const first = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 900, raw_message: '/plch 20' });
+  assert.equal(first.kind, 'owner:confirm-required');
+  assert.equal(handled.length, 0, '未确认前不得执行');
+  assert.match(reply.sent[0][2], /批量撤回 20 条消息/);
+  const confirm = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 901, raw_message: '/ok' });
+  assert.equal(confirm.kind, 'owner:recall');
+  assert.equal(handled.length, 1);
+  // 无待确认时 /ok 得到过期提示。
+  const stray = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 902, raw_message: '/ok' });
+  assert.equal(stray.kind, 'owner:confirm-expired');
+});

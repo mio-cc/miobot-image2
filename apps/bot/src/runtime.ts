@@ -806,8 +806,28 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     }
 
     if (options.owner && isOwner(userId, options.owner.ownerQQs())) {
-      const oc = parseOwnerCommand(stripNonTextCqSegments(rawMessage), { chatType, mentions: extractMentions(event), botId: options.selfId?.() ?? cfg.bot.botQqId });
+      let oc: OwnerCommand | undefined = parseOwnerCommand(stripNonTextCqSegments(rawMessage), { chatType, mentions: extractMentions(event), botId: options.selfId?.() ?? cfg.bot.botQqId });
       if (oc) {
+        // T3.7：高危 owner 命令二次确认——防 owner 账号被盗即全控（批量撤回/拉黑拉白）。
+        // 高危命令首次调用只登记并回复确认提示，60s 内回复 /ok 才真正执行；
+        // 确认后的命令重新走完整 owner 路径（含命令编排网关）。
+        if (oc.command === 'confirm') {
+          const pending = ownerConfirmPending.get(String(userId));
+          ownerConfirmPending.delete(String(userId));
+          if (!pending || Date.now() > pending.expiresAt) {
+            const ownerReply0 = createReplyStrategyEngine(options.reply, toReplyStrategyConfig(cfg));
+            await ownerReply0.replyText({ chatType, groupId: event.group_id, userId, senderId: userId, botName: options.botName || 'Miobot' }, '没有待确认的高危命令（或已超过 60 秒）。');
+            return { handled: true, kind: 'owner:confirm-expired' };
+          }
+          oc = pending.oc;
+        } else if (oc.command === 'recall' && oc.count >= 10 || oc.command === 'blacklist' || oc.command === 'whitelist') {
+          ownerConfirmPending.set(String(userId), { oc, expiresAt: Date.now() + 60_000 });
+          if (ownerConfirmPending.size > 100) ownerConfirmPending.clear();
+          const describe = oc.command === 'recall' ? `批量撤回 ${oc.count} 条消息` : oc.command === 'blacklist' ? '拉黑用户' : '拉白用户';
+          const ownerReply0 = createReplyStrategyEngine(options.reply, toReplyStrategyConfig(cfg));
+          await ownerReply0.replyText({ chatType, groupId: event.group_id, userId, senderId: userId, botName: options.botName || 'Miobot' }, `即将执行高危操作：${describe}。60 秒内回复 /ok 确认执行。`);
+          return { handled: true, kind: 'owner:confirm-required' };
+        }
         const gateway = ownerGatewayCommand(oc);
         if (gateway && cfg.orchestration?.enabled && cfg.orchestration.mode === 'enforce' && options.commandOrchestration) {
           try {
@@ -1567,6 +1587,8 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     });
   }
 
+  /** T3.7：高危 owner 命令的待确认状态（userId → 命令+过期时间）。 */
+  const ownerConfirmPending = new Map<string, { oc: OwnerCommand; expiresAt: number }>();
   /** 戳一戳响应：只回应"戳 bot 本人"的事件，按用户冷却防刷，回复文案随机取自配置。 */
   const pokeCooldowns = new Map<string, number>();
   /** 入群欢迎：每群冷却（批量入群只迎第一条），bot 自身入群不欢迎。 */
