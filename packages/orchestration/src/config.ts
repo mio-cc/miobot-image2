@@ -318,7 +318,7 @@ export function defaultOrchestrationConfig(): OrchestrationConfig {
       composerTemperature: 0.6,
       sendLyricsWithMusic: false,
       historyMaxRecords: 100,
-      historyPromptLimit: 10,
+      historyPromptLimit: 5,
       defaultVocalGender: 'auto',
       defaultLanguage: '',
       timeoutMs: 600000,

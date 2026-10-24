@@ -82,7 +82,7 @@ test('config regression: prompt rewrite defaults preserve the user language', ()
   assert.equal(defaults.orchestration.suno.composerTemperature, 0.6);
   assert.equal(defaults.orchestration.suno.sendLyricsWithMusic, false);
     assert.equal(defaults.orchestration.suno.historyMaxRecords, 100);
-    assert.equal(defaults.orchestration.suno.historyPromptLimit, 10);
+    assert.equal(defaults.orchestration.suno.historyPromptLimit, 5, 'C8 瘦身：默认注入条数减半');
   assert.equal(defaults.intentRecognition.maxTokens, 240);
   assert.equal(defaults.orchestration.suno.defaultLanguage, '');
   assert.match(defaults.freeMode.plannerPromptTemplate, /"images":\[/);

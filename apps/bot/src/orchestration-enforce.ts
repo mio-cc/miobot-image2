@@ -638,10 +638,10 @@ export class OrchestrationEnforcer {
           canaryPercent: cfg.orchestration.promptOptimization.canaryPercent,
         });
         const plannerRole = this.roleOptions(cfg, 'planner');
-        plan = await planWithModel(modelAdapter, request, {
+        const plannerCall = (overrides: { nodeIndex?: number; model?: string } = {}) => planWithModel(modelAdapter, request, {
           ...plannerRole,
-          nodeIndex: Number(cfg.orchestration.planner.nodeIndex ?? plannerRole.nodeIndex ?? 0),
-          model: String(cfg.orchestration.planner.model || plannerRole.model || ''),
+          nodeIndex: Number(overrides.nodeIndex ?? cfg.orchestration.planner.nodeIndex ?? plannerRole.nodeIndex ?? 0),
+          model: String(overrides.model || cfg.orchestration.planner.model || plannerRole.model || ''),
           capabilityCatalog: catalog,
           maxRepairAttempts: cfg.orchestration.planner.maxRepairAttempts,
           maxModelRounds: Math.max(1, maxModelRounds - roleRoundsUsed),
@@ -651,6 +651,19 @@ export class OrchestrationEnforcer {
           userPromptTemplate: cfg.orchestration.planner.userPromptTemplate,
           capabilityDescriptions: cfg.orchestration.planner.capabilityDescriptions,
         });
+        // T2.9b：planner 主节点失败（限流/网络）时切 fallback 节点重试一次，
+        // 避免"免费档限流 → 静默回退收费 legacy 链路"的成本转移。
+        try {
+          plan = await plannerCall();
+        } catch (plannerError) {
+          const fallbackNode = Number(plannerRole.fallbackNodeIndex ?? cfg.orchestration.planner.nodeIndex ?? 0);
+          const fallbackModel = String(plannerRole.fallbackModel || cfg.orchestration.planner.model || '');
+          const primaryNode = Number(cfg.orchestration.planner.nodeIndex ?? plannerRole.nodeIndex ?? 0);
+          const primaryModel = String(cfg.orchestration.planner.model || plannerRole.model || '');
+          if (fallbackNode === primaryNode && fallbackModel === primaryModel) throw plannerError;
+          appendTrace('plan', 'planner 主节点失败，切换 fallback 节点', { error: String((plannerError as Error)?.message || plannerError), from: `${primaryNode}/${primaryModel}`, to: `${fallbackNode}/${fallbackModel}` });
+          plan = await plannerCall({ nodeIndex: fallbackNode, model: fallbackModel });
+        }
         roleRoundsUsed += Number(plan.modelRoundsUsed || 0);
         for (const reviewRole of ['specialist', 'critic'] as const) {
           if (!cfg.orchestration.roles[reviewRole].enabled || maxModelRounds - roleRoundsUsed <= 0) continue;

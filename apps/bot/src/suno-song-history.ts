@@ -153,7 +153,7 @@ export class SunoSongHistoryStore {
     if (!records.length) return '';
     return [
       '当前用户最近生成的歌曲（用于重发/编辑目标定位；序号稳定；不要按关键词硬匹配）：',
-      ...records.map((item) => JSON.stringify({ seq: item.seq, recordId: item.id, title: item.title || '', request: item.requestText, createdAt: item.createdAt, duration: item.duration || null })),
+      ...records.map((item) => JSON.stringify({ seq: item.seq, recordId: item.id, title: item.title || '', request: String(item.requestText || '').slice(0, 40), duration: item.duration || null })),
     ].join('\n');
   }
 }
