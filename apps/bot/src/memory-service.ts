@@ -562,7 +562,45 @@ export class ChatMemoryService {
   private async insertDocument(ns: MemoryNamespace, doc: MemoryDocument): Promise<void> {
     const db = await this.getDb(ns);
     await insert(db, { ...doc, embedding: doc.embedding.slice(0, this.embedding.dimensions) });
-    await this.persistKey(namespaceKey(ns, this.embedding.model, this.embedding.dimensions));
+    await this.schedulePersist(namespaceKey(ns, this.embedding.model, this.embedding.dimensions));
+  }
+
+  // T3.4：防抖落盘——活跃群里每条消息都 insert，若每次都全量 persist 一个 JSON 索引文件，
+  // 是持续 IO+CPU 放大（1c2g 上的真实负担）。改为：标记 dirty，5s 防抖合并写；
+  // 未落盘条目超过 64 或 60s 强制 flush，崩溃最多丢最近几十条记忆（可接受，非关键数据）。
+  private readonly dirtyKeys = new Map<string, { timer: ReturnType<typeof setTimeout> | null; pending: number; firstDirtyAt: number }>();
+  private schedulePersist(key: string, immediate?: { reason: string }): Promise<void> {
+    const state = this.dirtyKeys.get(key) || { timer: null, pending: 0, firstDirtyAt: Date.now() };
+    const force = Boolean(immediate) || state.pending >= 64 || Date.now() - state.firstDirtyAt > 60_000;
+    state.pending += 1;
+    this.dirtyKeys.set(key, state);
+    if (force) {
+      if (state.timer) { clearTimeout(state.timer); state.timer = null; }
+      state.pending = 0;
+      state.firstDirtyAt = Date.now();
+      return this.persistKey(key);
+    }
+    if (!state.timer) {
+      state.timer = setTimeout(() => {
+        state.timer = null;
+        state.pending = 0;
+        state.firstDirtyAt = Date.now();
+        void this.persistKey(key);
+      }, 5000);
+      state.timer.unref?.();
+    }
+    return Promise.resolve();
+  }
+
+  /** 优雅退出/测试重启前调用：把所有防抖中的 dirty 命名空间立即落盘。 */
+  async flush(): Promise<void> {
+    const keys = [...this.dirtyKeys.keys()];
+    for (const key of keys) {
+      const state = this.dirtyKeys.get(key);
+      if (state?.timer) { clearTimeout(state.timer); state.timer = null; }
+      this.dirtyKeys.delete(key);
+      await this.persistKey(key);
+    }
   }
 
   private async persistKey(key: string): Promise<void> {

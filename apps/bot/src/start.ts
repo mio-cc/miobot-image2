@@ -945,6 +945,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     approvalActionConsumer.stop();
     capabilityTestConsumer.stop();
     memoryActionConsumer.stop();
+    // T3.4：记忆防抖落盘的优雅退出 flush。
+    try { await memoryService.flush(); } catch { /* best effort */ }
     adapter.disconnect();
     await Promise.race([
       Promise.all([approvalPersistQueue, pendingJobPersistQueue]),

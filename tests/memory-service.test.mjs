@@ -68,6 +68,8 @@ test('memory: persists across service restart and falls back when embedding fail
   const embedding = new FakeEmbedding();
   const first = new ChatMemoryService({ rootDir: root, getConfig: () => config(root), embedding });
   await first.ingest({ botId: 'bot', chatType: 'private', userId: 'u1', authorName: 'u1', role: 'user', text: 'cat memory', messageId: 'p1' });
+  // 防抖落盘（T3.4）后，重启前需优雅 flush——对应生产路径 SIGTERM → stop() → flush。
+  await first.flush();
   const second = new ChatMemoryService({ rootDir: root, getConfig: () => config(root), embedding });
   const restored = await second.retrieve({ botId: 'bot', chatType: 'private', userId: 'u1', query: 'cat' });
   assert.ok(restored.context.includes('cat memory'));
