@@ -211,9 +211,8 @@ onMounted(() => {
 
     <slot name="intro" />
 
-    <SectionCard v-if="featureSetting" title="启用与配额" hint="消息入口的 FeatureGate 配额（C6）：冷却、每日上限、并发与触发方式" class="mb-4">
+    <SectionCard v-if="featureSetting" title="启用与配额" hint="消息入口的 FeatureGate 配额（C6）：冷却、每日上限、并发与触发方式；启停跟随页顶「启用能力」开关（单源）" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div class="flex items-end"><ToggleField v-model="featureSetting.enabled" label="启用消息入口" /></div>
         <FormField label="命令别名" hint="逗号分隔；最长别名优先匹配">
           <input :value="aliasesText(featureSetting)" @change="updateAliases(featureSetting, $event)" class="input-field font-mono text-xs" placeholder="例如：生图, 画, draw" />
         </FormField>

@@ -37,16 +37,20 @@ interface Row {
     node: string;
     model: string;
     toggle?: string;
+    /** 注册表能力 id：有值时启停写 orch.capabilityOverrides 单源（TR.5）。 */
+    capabilityId?: string;
     /** 详细配置在别的页面时给个跳转，不在这里重复一遍。 */
     detailLink?: { to: string; text: string };
 }
 
 // 生图类（文生图/改图/反推/画布三件套）已迁到 /cap-image 单入口（§2.6.4 动作5）。
+// TR.5 开关单源：有 capabilityId 的行启停写 orch.capabilityOverrides；
+// freeMode / intentRecognition / promptsChat / enhance 是管线开关，保留原字段。
 const rows: Row[] = [
     { key: 'chat', label: '日常对话', trigger: '@bot / 私聊', capability: 'chat',
-      node: 'llm.chatNodeIndex', model: 'llm.chatModel', toggle: 'llm.chatEnabled' },
+      node: 'llm.chatNodeIndex', model: 'llm.chatModel', capabilityId: 'chat.reply' },
     { key: 'video', label: '视频生成', trigger: '视频 / video', capability: 'video.generate',
-      node: 'llm.videoNodeIndex', model: 'llm.videoModel', toggle: 'llm.videoEnabled' },
+      node: 'llm.videoNodeIndex', model: 'llm.videoModel', toggle: 'llm.videoEnabled', capabilityId: 'video.generate' },
     { key: 'enhance', label: '提示词润色', trigger: '画 润色 …', capability: 'chat',
       node: 'llm.enhanceNodeIndex', model: 'llm.enhanceModel', toggle: 'llm.enhanceEnabled' },
     { key: 'template', label: '本地模板填充', trigger: 'mb_1!', capability: 'chat',
@@ -60,7 +64,7 @@ const rows: Row[] = [
     { key: 'intentRecognition', label: '自然语言意图识别', trigger: '自然语言 → 命令 / 功能', capability: 'chat',
       node: 'intentRecognition.nodeIndex', model: 'intentRecognition.model', toggle: 'intentRecognition.enabled' },
     { key: 'codeRender', label: '代码画图', trigger: 'HTML / SVG / Canvas / Three.js', capability: 'chat',
-      node: 'codeRender.nodeIndex', model: 'codeRender.model', toggle: 'codeRender.enabled',
+      node: 'codeRender.nodeIndex', model: 'codeRender.model', toggle: 'codeRender.enabled', capabilityId: 'code.render',
       detailLink: { to: '/render', text: '代码与网页渲染页' } },
     { key: 'comfyuiTransform', label: 'ComfyUI 参数转化', trigger: '自然语言 → prompt + 参数', capability: 'chat',
       node: 'comfyuiTransform.nodeIndex', model: 'comfyuiTransform.model', toggle: 'comfyuiTransform.enabled',
@@ -108,9 +112,15 @@ function nodeNameOf(row: Row) {
     return resolveNodeName(names, stateOf(row), capabilities.bindings.find(item => item.key === row.key));
 }
 
+function rowEnabled(row: Row): boolean {
+    if (row.capabilityId) return configStore.capabilityEnabled(row.capabilityId);
+    if (row.toggle) return get(row.toggle) !== false;
+    return true;
+}
+
 function statusOf(row: Row) {
     const binding = capabilities.bindings.find(item => item.key === row.key);
-    return resolveRowStatus(binding, stateOf(row), { enabled: row.toggle ? get(row.toggle) !== false : true });
+    return resolveRowStatus(binding, stateOf(row), { enabled: rowEnabled(row) });
 }
 
 /** 徽标按模型名查：能力是模型的属性，跟选哪个节点无关，所以换节点不该让徽标消失。 */
@@ -251,7 +261,10 @@ onMounted(() => {
                   </FormField>
 
                   <div class="flex flex-col gap-2">
-                    <ToggleField v-if="row.toggle" label="启用该能力"
+                    <ToggleField v-if="row.capabilityId" label="启用该能力"
+                      :model-value="configStore.capabilityEnabled(row.capabilityId)"
+                      @update:model-value="configStore.setCapabilityEnabled(row.capabilityId, $event)" />
+                    <ToggleField v-else-if="row.toggle" label="启用该能力"
                       :model-value="get(row.toggle) !== false"
                       @update:model-value="set(row.toggle!, $event)" />
                     <button class="btn-outline text-xs" @click.stop="openOverride(row)">能力不对？手动指定</button>

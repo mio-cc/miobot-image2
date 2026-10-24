@@ -226,8 +226,7 @@ onMounted(loadComfyWorkflows);
           </FormField>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
-          <div class="flex items-end"><ToggleField v-model="config.llm.imageEnabled" label="启用机器人生图" /></div>
-          <FormField label="一次生成张数" hint="大于 1 时会合成编号预览图">
+          <FormField label="一次生成张数" hint="大于 1 时会合成编号预览图；生图启停用页顶「启用能力」开关">
             <input v-model.number="config.llm.imageCount" type="number" min="1" max="4" class="input-field" />
           </FormField>
           <FormField label="改图请求格式" hint="auto 会按模型自动排序：官方 gpt-image 只认 multipart，xAI 只认 JSON，多数中转认 json-images">

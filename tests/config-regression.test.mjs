@@ -348,3 +348,43 @@ test('config regression T2.2: 每用户消息频率上限默认值与归一化',
   const off = normalizeConfig({ ...createDefaultConfig(), bot: { ...createDefaultConfig().bot, messageRateLimitPerMinute: 0 } });
   assert.equal(off.bot.messageRateLimitPerMinute, 0);
 });
+
+test('config regression TR.5: 旧开关的关闭状态物化为 orch.capabilityOverrides 单源', () => {
+  const result = importConfig({
+    llm: { imageEnabled: false, videoEnabled: false },
+    codeRender: { enabled: false },
+    bot: { features: { 'file.list': { enabled: false }, 'search.web': { enabled: false } } },
+  });
+  const overrides = result.config.orchestration.capabilityOverrides;
+  assert.equal(overrides['image.generate']?.enabled, false, 'llm.imageEnabled=false 应物化 image.generate 关闭');
+  assert.equal(overrides['video.generate']?.enabled, false, 'llm.videoEnabled=false 应物化 video.generate 关闭');
+  assert.equal(overrides['code.render']?.enabled, false, 'codeRender.enabled=false 应物化 code.render 关闭');
+  assert.equal(overrides['file.list']?.enabled, false, 'features.file.list 关闭应物化 file.list 关闭');
+  assert.equal(overrides['web.search']?.enabled, false, 'features.search.web 关闭应物化 web.search 关闭');
+  // 旧开关保持原值：v2 链路继续读它们，行为不变
+  assert.equal(result.config.llm.imageEnabled, false);
+  assert.equal(result.config.codeRender.enabled, false);
+  assert.equal(result.config.bot.features['file.list'].enabled, false);
+  assert.ok(result.migrations.some((item) => item.id === 'switches-to-orch.capabilityOverrides'));
+});
+
+test('config regression TR.5: 显式 override 优先并回填旧开关（含缺失的 feature 设置）', () => {
+  const result = importConfig({
+    llm: { imageEnabled: false },
+    orchestration: { capabilityOverrides: { 'image.generate': { enabled: true }, 'help': { enabled: false } } },
+  });
+  assert.equal(result.config.orchestration.capabilityOverrides['image.generate'].enabled, true, '显式 override 不被旧开关覆盖');
+  assert.equal(result.config.llm.imageEnabled, true, '显式 override 回填 llm.imageEnabled');
+  assert.equal(result.config.bot.features['image.generate'].enabled, true, '显式 override 回填 feature 设置');
+  assert.equal(result.config.bot.features['help'].enabled, false, '缺失的 feature 设置按 override 补齐');
+});
+
+test('config regression TR.5: 默认开启的能力不物化 override（保持稀疏）', () => {
+  const result = importConfig({});
+  const overrides = result.config.orchestration.capabilityOverrides;
+  assert.equal(overrides['image.generate'], undefined);
+  assert.equal(overrides['chat.reply'], undefined);
+  assert.equal(overrides['video.generate'], undefined);
+  assert.equal(overrides['code.render'], undefined);
+  assert.ok(!result.migrations.some((item) => item.id === 'switches-to-orch.capabilityOverrides'));
+});

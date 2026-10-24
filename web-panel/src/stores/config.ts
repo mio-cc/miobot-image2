@@ -222,9 +222,62 @@ export const useConfigStore = defineStore('config', () => {
         if (value) set(configPath, value);
     }
 
+    /* ── TR.5 开关单源：能力启停 = orchestration.capabilityOverrides ──
+       别名字段本地同步（服务端归一化也会回填），保证 v2 链路与 FeatureGate 看到一致状态。 */
+
+    const CAPABILITY_LEGACY_SWITCHES: Record<string, { llmField?: string; featureId?: string; section?: 'codeRender' }> = {
+        'chat.reply': { llmField: 'chatEnabled' },
+        'image.generate': { llmField: 'imageEnabled', featureId: 'image.generate' },
+        'video.generate': { llmField: 'videoEnabled', featureId: 'video.generate' },
+        'code.render': { section: 'codeRender', featureId: 'code.render' },
+        'help': { featureId: 'help' },
+        'session.clear': { featureId: 'clear' },
+        'image.edit': { featureId: 'image.edit' },
+        'image.interrogate': { featureId: 'image.interrogate' },
+        'audio.music.generate': { featureId: 'audio.music.generate' },
+        'audio.music.history': { featureId: 'audio.music.history' },
+        'audio.music.replay': { featureId: 'audio.music.replay' },
+        'audio.music.replace_section': { featureId: 'audio.music.replace_section' },
+        'file.list': { featureId: 'file.list' },
+        'file.read': { featureId: 'file.read' },
+        'file.generate': { featureId: 'file.generate' },
+        'web.search': { featureId: 'search.web' },
+        'browser.render': { featureId: 'web.screenshot' },
+    };
+
+    /** 能力当前启停：显式 override 优先，否则回退旧开关（与归一化语义一致）。 */
+    function capabilityEnabled(capabilityId: string): boolean {
+        const c = config.value;
+        if (!c) return true;
+        const explicit = c.orchestration?.capabilityOverrides?.[capabilityId]?.enabled;
+        if (typeof explicit === 'boolean') return explicit;
+        const alias = CAPABILITY_LEGACY_SWITCHES[capabilityId];
+        if (alias?.llmField) return (c.llm as any)?.[alias.llmField] !== false;
+        if (alias?.section === 'codeRender') return (c as any).codeRender?.enabled !== false;
+        if (alias?.featureId) return (c.bot?.features as any)?.[alias.featureId]?.enabled !== false;
+        return true;
+    }
+
+    /** 写能力开关（单源 override + 别名本地同步）。 */
+    function setCapabilityEnabled(capabilityId: string, value: boolean) {
+        const c = config.value;
+        if (!c) return;
+        c.orchestration ||= {} as any;
+        (c.orchestration as any).capabilityOverrides ||= {};
+        const overrides = (c.orchestration as any).capabilityOverrides;
+        overrides[capabilityId] = { ...(overrides[capabilityId] || {}), enabled: value };
+        const alias = CAPABILITY_LEGACY_SWITCHES[capabilityId];
+        if (alias?.llmField && c.llm) (c.llm as any)[alias.llmField] = value;
+        if (alias?.section === 'codeRender') (c as any).codeRender.enabled = value;
+        if (alias?.featureId) {
+            const features = c.bot?.features as any;
+            if (features?.[alias.featureId]) features[alias.featureId].enabled = value;
+        }
+    }
+
     return {
         config, defaultPrompts, saveStatus, saving, revision, loaded, dirty, dirtySections,
-        nodeOptions, modelsForNode, get, set, resetPrompt,
+        nodeOptions, modelsForNode, get, set, resetPrompt, capabilityEnabled, setCapabilityEnabled,
         fetchConfig, fetchDefaultPrompts, save, importConfig, exportConfig, reset, applyServerConfig, markSaved,
     };
 });

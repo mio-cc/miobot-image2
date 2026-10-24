@@ -1,5 +1,5 @@
 import type { ConfigSourceFormat, LegacyReplyFormat, MigrationNotice, PackageDescriptor, ReplyStrategy } from '@miobot-v2/shared';
-import { defaultFeatureSettings, normalizeFeatureSettings, type FeatureSettings } from '../../shared/src/features.js';
+import { defaultFeatureSettings, FEATURE_DEFINITIONS, normalizeFeatureSettings, type FeatureSettings } from '../../shared/src/features.js';
 import { COMFYUI_BUILTIN_REVISION, builtinComfyUiProfile } from './comfyui-builtins.js';
 export { BUILTIN_COMFYUI_PROFILES, COMFYUI_BUILTIN_REVISION, builtinComfyUiProfile, builtinComfyUiProfileIds } from './comfyui-builtins.js';
 import { defaultOrchestrationConfig, normalizeOrchestrationConfig, type OrchestrationConfig } from '../../orchestration/src/config.js';
@@ -457,6 +457,7 @@ export const CONFIG_MIGRATION_TABLE: ConfigMigrationDefinition[] = [
   { id: 'bot.commands.draw-to-genImage', from: 'bot.commands.draw', to: 'bot.commands.genImage', reason: '显式生图命令归一到 genImage。', introducedIn: 2 },
   { id: 'bot.commands.imageCount-default', from: 'missing bot.commands.imageCount', to: 'bot.commands.imageCount', reason: '补齐多图张数 bang 参数命令入口。', introducedIn: 2 },
   { id: 'bot.commands-to-features', from: 'bot.commands.{genImage,...}', to: 'bot.features', reason: '命令别名迁移到统一功能注册表，后台按功能目录动态渲染。', introducedIn: 2 },
+  { id: 'switches-to-orch.capabilityOverrides', from: 'llm.{chat,image,video}Enabled / bot.features.*.enabled / codeRender.enabled', to: 'orchestration.capabilityOverrides', reason: '能力开关三轨收敛为单源：无显式 override 时旧的关闭状态物化为 override；显式 override 优先并回填旧开关，v2 链路行为不变。llm.enhanceEnabled 是管线自动润色开关（默认关），与注册表 prompt.enhance（默认开）语义不同，不参与收敛。', introducedIn: 2 },
 ];
 
 export function createDefaultConfig(): AppConfig { return clone(DEFAULT_CONFIG); }
@@ -514,7 +515,7 @@ export function importConfig(input: unknown): ConfigImportResult {
     payload = clone(input); sourceVersion = typeof input.version === 'number' ? input.version : undefined;
   }
   applyMigrations(payload, migrations);
-  return { config: normalizeAppConfig(payload, warnings), sourceFormat, sourceVersion, migrations: dedupe(migrations), warnings };
+  return { config: normalizeAppConfig(payload, warnings, migrations), sourceFormat, sourceVersion, migrations: dedupe(migrations), warnings };
 }
 
 function applyMigrations(c: R, m: MigrationNotice[]) {
@@ -542,7 +543,55 @@ function applyMigrations(c: R, m: MigrationNotice[]) {
   if (bot.commands && bot.features === undefined) m.push(notice('bot.commands-to-features'));
 }
 
-function normalizeAppConfig(input: R, warnings: string[]): AppConfig {
+/** TR.5 开关三轨收敛：llm.*Enabled → 能力注册表 id 的别名映射（enhance 为管线开关，语义不同不参与）。 */
+const LLM_SWITCH_TO_CAPABILITY: Array<[string, string]> = [
+  ['chatEnabled', 'chat.reply'],
+  ['imageEnabled', 'image.generate'],
+  ['videoEnabled', 'video.generate'],
+];
+
+/**
+ * TR.5 开关三轨收敛（§2.6.4 动作3）：目标单源 = orchestration.capabilityOverrides。
+ * 在 normalizeAppConfig 末尾（默认值已烘焙）执行，保证导出再导入幂等：
+ * - 无显式 override 且旧开关为「关闭」→ 物化为 override（enabled:false），v2 链路读旧开关不受影响；
+ * - 有显式 override → override 优先，回填旧开关（llm.*Enabled / codeRender.enabled /
+ *   bot.features[capabilityId 映射项].enabled），注册表、v2 引擎闸与 FeatureGate 三处一致；
+ * - 默认开启的能力不物化，override 保持稀疏。
+ */
+function collapseCapabilitySwitches(
+  llm: Record<string, unknown>,
+  bot: { features: Record<string, { enabled?: boolean }> },
+  codeRender: { enabled?: boolean },
+  orchestration: { capabilityOverrides: Record<string, { enabled?: boolean }> },
+  migrations: MigrationNotice[],
+) {
+  const overrides = orchestration.capabilityOverrides;
+  let migrated = false;
+  const collapse = (legacyEnabled: boolean, capabilityId: string, backfill: (value: boolean) => void) => {
+    const explicit = overrides[capabilityId]?.enabled;
+    if (typeof explicit !== 'boolean') {
+      if (!legacyEnabled) {
+        overrides[capabilityId] = { ...overrides[capabilityId], enabled: false };
+        migrated = true;
+      }
+    } else {
+      backfill(explicit);
+    }
+  };
+  for (const [field, capabilityId] of LLM_SWITCH_TO_CAPABILITY) {
+    collapse(llm[field] !== false, capabilityId, value => { llm[field] = value; });
+  }
+  collapse(codeRender.enabled !== false, 'code.render', value => { codeRender.enabled = value; });
+  for (const def of FEATURE_DEFINITIONS) {
+    if (!def.capabilityId) continue;
+    const setting = bot.features[def.id];
+    if (!setting) continue;
+    collapse(setting.enabled !== false, def.capabilityId, value => { setting.enabled = value; });
+  }
+  if (migrated) migrations.push(notice('switches-to-orch.capabilityOverrides'));
+}
+
+function normalizeAppConfig(input: R, warnings: string[], migrations: MigrationNotice[]): AppConfig {
   const cfg = deepMerge(createDefaultConfig() as unknown as R, input) as unknown as AppConfig;
   const panel = { ...DEFAULT_CONFIG.panel, ...obj((cfg as any).panel) };
   const nap = { ...DEFAULT_CONFIG.napcat, ...obj((cfg as any).napcat) };
@@ -630,7 +679,10 @@ function normalizeAppConfig(input: R, warnings: string[]): AppConfig {
     comfyuiTransform.maxTokens = Math.max(comfyuiTransform.maxTokens, 2400);
   }
   dropRetired({ napcat: nap, llm, promptsChat: pc, canvas, bot, huggingFace: hf, freeMode: free });
-  return { panel: { port: clamp(panel.port, 3018, 1, 65535, true), passwordSeed: str(panel.passwordSeed, 'change-me-on-first-login', false) }, napcat: { wsUrl: str(nap.wsUrl, DEFAULT_CONFIG.napcat.wsUrl), token: str(nap.token, ''), mountOutputDir: str(nap.mountOutputDir, '').trim(), mountOutputContainerDir: str(nap.mountOutputContainerDir, '').trim(), actionTimeoutMs: clamp(nap.actionTimeoutMs, 15000, 3000, 60000), textSendTimeoutMs: clamp(nap.textSendTimeoutMs, 15000, 3000, 180000), imageSendTimeoutMs: clamp(nap.imageSendTimeoutMs, 120000, 10000, 300000), fileSendTimeoutMs: clamp(nap.fileSendTimeoutMs, nap.forwardSendTimeoutMs || 300000, 10000, 600000), fileSendRetryCount: clamp(nap.fileSendRetryCount, 1, 0, 10, true), fileSendRetryDelayMs: clamp(nap.fileSendRetryDelayMs, 1200, 0, 30000, true), forwardSendTimeoutMs: clamp(nap.forwardSendTimeoutMs, 300000, 10000, 600000), getMessageTimeoutMs: clamp(nap.getMessageTimeoutMs, 10000, 3000, 60000) }, promptsChat: pc, canvas, freeMode: free, intentRecognition, browserRender, codeRender, comfyuiTransform, huggingFace: hf, search, llm, bot, orchestration: normalizeOrchestrationConfig(obj((cfg as any).orchestration)) };
+  const orchestration = normalizeOrchestrationConfig(obj((cfg as any).orchestration));
+  // TR.5 开关三轨收敛：在默认值烘焙后执行，导出再导入幂等。
+  collapseCapabilitySwitches(llm, bot, codeRender, orchestration, migrations);
+  return { panel: { port: clamp(panel.port, 3018, 1, 65535, true), passwordSeed: str(panel.passwordSeed, 'change-me-on-first-login', false) }, napcat: { wsUrl: str(nap.wsUrl, DEFAULT_CONFIG.napcat.wsUrl), token: str(nap.token, ''), mountOutputDir: str(nap.mountOutputDir, '').trim(), mountOutputContainerDir: str(nap.mountOutputContainerDir, '').trim(), actionTimeoutMs: clamp(nap.actionTimeoutMs, 15000, 3000, 60000), textSendTimeoutMs: clamp(nap.textSendTimeoutMs, 15000, 3000, 180000), imageSendTimeoutMs: clamp(nap.imageSendTimeoutMs, 120000, 10000, 300000), fileSendTimeoutMs: clamp(nap.fileSendTimeoutMs, nap.forwardSendTimeoutMs || 300000, 10000, 600000), fileSendRetryCount: clamp(nap.fileSendRetryCount, 1, 0, 10, true), fileSendRetryDelayMs: clamp(nap.fileSendRetryDelayMs, 1200, 0, 30000, true), forwardSendTimeoutMs: clamp(nap.forwardSendTimeoutMs, 300000, 10000, 600000), getMessageTimeoutMs: clamp(nap.getMessageTimeoutMs, 10000, 3000, 60000) }, promptsChat: pc, canvas, freeMode: free, intentRecognition, browserRender, codeRender, comfyuiTransform, huggingFace: hf, search, llm, bot, orchestration };
 }
 
 function notice(id: string): MigrationNotice { const r = CONFIG_MIGRATION_TABLE.find(x => x.id === id); return r ? { id: r.id, from: r.from, to: r.to, reason: r.reason } : { id, from: 'unknown', to: 'unknown', reason: '未登记迁移规则。' }; }

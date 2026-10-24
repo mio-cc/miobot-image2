@@ -59,6 +59,12 @@ export interface FeatureDefinition {
   intentKind?: FeatureIntentKind;
   /** 是否默认允许自然语言意图模型路由到该功能；命令-only 的功能也可开启。 */
   defaultNaturalLanguage?: boolean;
+  /**
+   * 对应的能力注册表 id（TR.5 开关三轨收敛）。
+   * 有值的功能启停以 orchestration.capabilityOverrides 为单源，
+   * 归一化时旧开关（bot.features.*.enabled）会合并/回填。
+   */
+  capabilityId?: string;
   defaultAliases: string[];
   defaultScopes: FeatureScope[];
   defaultGroupActivation: FeatureGroupActivation;
@@ -82,17 +88,17 @@ const BOTH: FeatureScope[] = ['private', 'group'];
 
 export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
   {
-    id: 'help', label: '帮助', category: 'basic', implemented: true, defaultNaturalLanguage: true,
+    id: 'help', label: '帮助', capabilityId: 'help', category: 'basic', implemented: true, defaultNaturalLanguage: true,
     legacyCommand: 'help', defaultAliases: ['/help', 'help', '帮助', '使用方法'],
     defaultScopes: BOTH, defaultGroupActivation: 'direct',
   },
   {
-    id: 'clear', label: '新对话', category: 'basic', implemented: true, defaultNaturalLanguage: true,
+    id: 'clear', label: '新对话', capabilityId: 'session.clear', category: 'basic', implemented: true, defaultNaturalLanguage: true,
     legacyCommand: 'clear', defaultAliases: ['/clear', '新对话', '清除对话', '清空对话', 'clear'],
     defaultScopes: BOTH, defaultGroupActivation: 'direct',
   },
   {
-    id: 'image.generate', label: '文生图', category: 'image', implemented: true,
+    id: 'image.generate', label: '文生图', capabilityId: 'image.generate', category: 'image', implemented: true,
     description: '自然语言生图；支持 ComfyUI 或其它图像模型，MOSS-Image / Krea 2 会自动使用对应的提示词策略，参数由后台转化模型处理，多图默认拼接成一张。',
     legacyCommand: 'genImage', intentKind: 'image.generate',
     defaultAliases: ['生图', '画', 'draw'],
@@ -101,7 +107,7 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
     defaultLimits: { maxCount: 4 },
   },
   {
-    id: 'image.edit', label: '改图', category: 'image', implemented: true,
+    id: 'image.edit', label: '改图', capabilityId: 'image.edit', category: 'image', implemented: true,
     legacyCommand: 'editImage', intentKind: 'image.edit',
     defaultAliases: ['改图', '编辑', 'edit'],
     defaultScopes: BOTH, defaultGroupActivation: 'direct',
@@ -113,7 +119,7 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
     defaultScopes: BOTH, defaultGroupActivation: 'direct',
   },
   {
-    id: 'image.interrogate', label: '图片反推', category: 'image', implemented: true,
+    id: 'image.interrogate', label: '图片反推', capabilityId: 'image.interrogate', category: 'image', implemented: true,
     legacyCommand: 'interrogate', intentKind: 'image.interrogate',
     defaultAliases: ['反推', '看图', '描述', 'prompt'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
@@ -149,58 +155,58 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
     defaultScopes: BOTH, defaultGroupActivation: 'direct',
   },
   {
-    id: 'video.generate', label: '视频生成', category: 'video', implemented: true,
+    id: 'video.generate', label: '视频生成', capabilityId: 'video.generate', category: 'video', implemented: true,
     intentKind: 'video.generate', defaultAliases: [],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
   {
-    id: 'audio.music.generate', label: '音乐生成', category: 'audio', implemented: true, defaultNaturalLanguage: true,
+    id: 'audio.music.generate', label: '音乐生成', capabilityId: 'audio.music.generate', category: 'audio', implemented: true, defaultNaturalLanguage: true,
     defaultAliases: [],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
     {
-      id: 'audio.music.history', label: '歌曲历史', category: 'audio', implemented: true, defaultNaturalLanguage: true,
+      id: 'audio.music.history', label: '歌曲历史', capabilityId: 'audio.music.history', category: 'audio', implemented: true, defaultNaturalLanguage: true,
       description: '列出当前会话中已生成的歌曲，以稳定序号和合并转发列表展示；可与重发/编辑能力独立选择。',
       defaultAliases: [], defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
     },
     {
-      id: 'audio.music.replay', label: '歌曲重发', category: 'audio', implemented: true, defaultNaturalLanguage: true,
+      id: 'audio.music.replay', label: '歌曲重发', capabilityId: 'audio.music.replay', category: 'audio', implemented: true, defaultNaturalLanguage: true,
       description: '把历史中已生成的一首歌原样重新发送，不重新生成；目标不明确时由模型追问并附歌曲历史列表。',
       defaultAliases: [], defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
     },
     {
-      id: 'audio.music.replace_section', label: '歌曲局部编辑', category: 'audio', implemented: true, defaultNaturalLanguage: true,
+      id: 'audio.music.replace_section', label: '歌曲局部编辑', capabilityId: 'audio.music.replace_section', category: 'audio', implemented: true, defaultNaturalLanguage: true,
       description: '基于已生成歌曲替换指定时间段，用新的提示词、歌词和风格生成编辑后的歌曲。',
       defaultAliases: [], defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
     },
   {
-    id: 'file.list', label: '文件列表', category: 'file', implemented: true, defaultNaturalLanguage: true,
+    id: 'file.list', label: '文件列表', capabilityId: 'file.list', category: 'file', implemented: true, defaultNaturalLanguage: true,
     legacyCommand: 'fileList', defaultAliases: ['文件列表', '最近文件'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
   {
-    id: 'file.read', label: '读取文件', category: 'file', implemented: true, defaultNaturalLanguage: true,
+    id: 'file.read', label: '读取文件', capabilityId: 'file.read', category: 'file', implemented: true, defaultNaturalLanguage: true,
     legacyCommand: 'fileRead', defaultAliases: ['读取文件', '分析文件'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
   {
-    id: 'file.generate', label: '生成文件', category: 'file', implemented: true, defaultNaturalLanguage: true,
+    id: 'file.generate', label: '生成文件', capabilityId: 'file.generate', category: 'file', implemented: true, defaultNaturalLanguage: true,
     legacyCommand: 'fileGenerate', defaultAliases: ['生成文件', '生成文档', '导出文件'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
   {
-    id: 'search.web', label: '联网搜索', category: 'web', implemented: true, defaultNaturalLanguage: true,
+    id: 'search.web', label: '联网搜索', capabilityId: 'web.search', category: 'web', implemented: true, defaultNaturalLanguage: true,
     legacyCommand: 'webSearch', defaultAliases: ['搜索', '联网搜索', '查一下', '搜一下', 'websearch'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
   {
-    id: 'code.render', label: '代码画图', category: 'render', implemented: true,
+    id: 'code.render', label: '代码画图', capabilityId: 'code.render', category: 'render', implemented: true,
     legacyCommand: 'codeRender', defaultNaturalLanguage: true,
     defaultAliases: ['代码画图', 'HTML画图', 'SVG画图', 'Canvas画图', 'Three画图', 'codeart'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
   {
-    id: 'web.screenshot', label: '网页截屏', category: 'render', implemented: true,
+    id: 'web.screenshot', label: '网页截屏', capabilityId: 'browser.render', category: 'render', implemented: true,
     legacyCommand: 'webScreenshot', defaultNaturalLanguage: true,
     defaultAliases: ['网页截屏', '网页截图', '截屏', '截图网页', 'screenshot'],
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',

@@ -14,6 +14,8 @@ interface FeatureDefinition {
   implemented: boolean;
   intentKind?: string;
   defaultNaturalLanguage?: boolean;
+  /** TR.5：有值的功能启停写 orch.capabilityOverrides 单源。 */
+  capabilityId?: string;
   defaultAliases: string[];
   defaultScopes: string[];
   defaultGroupActivation: string;
@@ -110,7 +112,7 @@ const quickCommands = computed(() => definitions.value
       id: def.id,
       label: def.label,
       aliases: (setting.aliases || []).slice(0, 8),
-      enabled: Boolean(setting.enabled),
+      enabled: def.capabilityId ? configStore.capabilityEnabled(def.capabilityId) : Boolean(setting.enabled),
     };
   }));
 
@@ -226,7 +228,10 @@ onMounted(loadFeatures);
             <span class="font-medium text-sm">{{ def.label }}</span>
             <span v-if="!def.implemented" class="tag">未实现</span>
             <span class="flex-1"></span>
-            <ToggleField v-model="setting.enabled" label="启用" :disabled="!def.implemented" />
+            <ToggleField v-if="def.capabilityId" :model-value="configStore.capabilityEnabled(def.capabilityId)"
+              label="启用" :disabled="!def.implemented"
+              @update:model-value="configStore.setCapabilityEnabled(def.capabilityId, $event)" />
+            <ToggleField v-else v-model="setting.enabled" label="启用" :disabled="!def.implemented" />
           </div>
 
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
