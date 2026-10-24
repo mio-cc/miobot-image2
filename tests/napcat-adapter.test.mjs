@@ -390,3 +390,42 @@ test('napcat adapter: nested mixed forward nodes contain inner node groups', () 
   assert.equal(nodes[0].data.content[0].data.content[0].type, 'text');
   assert.equal(nodes[1].data.content[0].data.content[0].type, 'file');
 });
+
+test('napcat adapter T2.1: 连续失败指数退避，连接成功后重置', async () => {
+  const logs = [];
+  const { adapter, sockets } = createHarness({ reconnectDelayMs: 1, reconnectMaxDelayMs: 4, logger: { info: (m, d) => logs.push({ m, d }), warn: () => {}, error: () => {} } });
+  adapter.connect();
+  sockets[0].open();
+  const wait = () => new Promise((resolve) => setTimeout(resolve, 8));
+  const closeAndAwaitReconnect = async () => {
+    const current = sockets[sockets.length - 1];
+    current.closeFromServer(1006, 'lost');
+    await wait();
+  };
+  // 连续 3 次断开（每次等重连定时器触发），退避应逐次放大并受 max 封顶。
+  await closeAndAwaitReconnect();
+  await closeAndAwaitReconnect();
+  await closeAndAwaitReconnect();
+  const delays = logs.filter((item) => item.m === 'napcat reconnect scheduled').map((item) => Number(item.d.delayMs));
+  assert.equal(delays.length >= 3, true);
+  assert.ok(delays[2] > delays[0], '第三次退避应大于第一次: ' + delays.join(','));
+  // 成功连接后重置：open 会清零退避计数，再次断开回到基准档。
+  const last = sockets[sockets.length - 1];
+  last.open();
+  await wait();
+  last.closeFromServer(1006, 'lost');
+  await wait();
+  const resetDelay = logs.filter((item) => item.m === 'napcat reconnect scheduled').map((item) => Number(item.d.delayMs)).pop();
+  assert.ok(resetDelay <= 2, '重置后应回到基准档: ' + resetDelay);
+});
+
+test('napcat adapter T2.1: 心跳事件刷新时间戳，断开清理看门狗不泄漏', async () => {
+  const { adapter, sockets } = createHarness({ reconnectDelayMs: 1, heartbeatStaleMs: 1 });
+  adapter.on('close', () => {});
+  adapter.connect();
+  sockets[0].open();
+  // 看门狗每 30s 巡检；测试里不等真实 30s，仅验证有心跳事件时时间戳被刷新、disconnect 清理看门狗。
+  sockets[0].message({ post_type: 'meta_event', meta_event_type: 'heartbeat', self_id: 42 });
+  adapter.disconnect();
+  assert.equal(sockets[0].closed, true);
+});

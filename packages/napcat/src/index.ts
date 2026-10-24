@@ -25,6 +25,8 @@ export interface NapcatSocketLike {
   readyState: number;
   send(data: string, callback?: (error?: Error) => void): void;
   close(code?: number, reason?: string): void;
+  /** 强制断开（不等握手）；心跳死链看门狗优先使用。 */
+  terminate?(): void;
   on(event: NapcatSocketEvent, handler: (...args: any[]) => void): void;
   removeAllListeners?(): void;
 }
@@ -45,6 +47,10 @@ export interface NapcatAdapterOptions {
   forwardSendTimeoutMs?: number;
   getMessageTimeoutMs?: number;
   reconnectDelayMs?: number;
+  /** T2.1：指数退避上限（默认 30s）。 */
+  reconnectMaxDelayMs?: number;
+  /** T2.1：心跳死链阈值（默认 150s，0=关闭）。 */
+  heartbeatStaleMs?: number;
   autoReconnect?: boolean;
   socketFactory?: NapcatSocketFactory;
   logger?: StructuredLogger;
@@ -155,6 +161,11 @@ export class NapcatAdapter {
   private socket: NapcatSocketLike | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private manualClose = false;
+  /** T2.1：连续重连失败次数（指数退避），连接成功清零。 */
+  private reconnectAttempts = 0;
+  /** T2.1：最近一次收到任意 post_type 事件的时间，用于心跳死链检测。 */
+  private lastHeartbeatAt = 0;
+  private heartbeatWatchdog: ReturnType<typeof setInterval> | null = null;
   private readonly pendingActions = new Map<string, PendingAction>();
   private readonly pendingStreams = new Map<string, PendingStream>();
   private readonly handlers = new Map<string, Set<NapcatEventHandler>>();
@@ -178,6 +189,8 @@ export class NapcatAdapter {
       forwardSendTimeoutMs: positiveInt(options.forwardSendTimeoutMs, 300000),
       getMessageTimeoutMs: positiveInt(options.getMessageTimeoutMs, 10000),
       reconnectDelayMs: Math.max(0, positiveInt(options.reconnectDelayMs, 5000)),
+      reconnectMaxDelayMs: Math.max(0, positiveInt(options.reconnectMaxDelayMs, 30000)),
+      heartbeatStaleMs: Math.max(0, positiveInt(options.heartbeatStaleMs, 150000)),
       autoReconnect: options.autoReconnect !== false,
       forwardUserId: options.forwardUserId,
     };
@@ -256,6 +269,10 @@ export class NapcatAdapter {
   disconnect(): void {
     this.manualClose = true;
     this.clearReconnectTimer();
+    if (this.heartbeatWatchdog) {
+      clearInterval(this.heartbeatWatchdog);
+      this.heartbeatWatchdog = null;
+    }
     this.rejectPendingActions(new Error('Napcat WebSocket disconnected'));
     const socket = this.socket;
     this.socket = null;
@@ -723,8 +740,32 @@ export class NapcatAdapter {
 
   private handleOpen(): void {
     this.lastConnectedAt = Date.now();
+    // T2.1：连接成功即重置退避计数，并启动心跳死链看门狗。
+    this.reconnectAttempts = 0;
+    this.lastHeartbeatAt = Date.now();
+    this.ensureHeartbeatWatchdog();
     this.logger?.info('napcat connected', this.getConnectionSnapshot());
     void this.emit('open', this.getConnectionSnapshot());
+  }
+
+  /**
+   * T2.1：心跳死链检测。NapCat 会周期上报 meta_event（heartbeat/lifecycle）；
+   * 一旦观察到过心跳，超过 heartbeatStaleMs（默认 150s，0=关闭）没有任何事件，
+   * 视为半开连接，主动断开触发重连——不用等 TCP 超时。
+   */
+  private ensureHeartbeatWatchdog(): void {
+    const staleMs = Math.max(0, Number(this.options.heartbeatStaleMs) || 150000);
+    if (staleMs <= 0 || this.heartbeatWatchdog) return;
+    this.heartbeatWatchdog = setInterval(() => {
+      if (this.manualClose || !this.socket) return;
+      if (!this.lastHeartbeatAt) return;
+      const silentMs = Date.now() - this.lastHeartbeatAt;
+      if (silentMs > staleMs) {
+        this.logger?.warn('napcat heartbeat stale, forcing reconnect', { silentMs });
+        try { if (this.socket.terminate) this.socket.terminate(); else this.socket.close(); } catch { /* 断开不得抛出 */ }
+      }
+    }, 30000);
+    this.heartbeatWatchdog.unref?.();
   }
 
   private async handleRawMessage(raw: unknown): Promise<void> {
@@ -738,6 +779,7 @@ export class NapcatAdapter {
     }
 
     if (data?.self_id && !this.selfQqId) this.selfQqId = String(data.self_id);
+    if (data?.post_type) this.lastHeartbeatAt = Date.now();
     this.resolveActionResponse(data);
     if (data?.post_type) {
       await this.emit(data.post_type, data);
@@ -778,8 +820,18 @@ export class NapcatAdapter {
     if (!this.manualClose && this.options.autoReconnect) this.scheduleReconnect();
   }
 
+  /**
+   * T2.1：指数退避重连。连续失败按 reconnectDelayMs * 2^attempt 递增（上限 reconnectMaxDelayMs，
+   * 默认 30s）加 ±20% 抖动；连接成功（open）后计数清零。避免对端故障/风控期固定 5s 疯狂重连。
+   */
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return;
+    const base = Math.max(0, Number(this.options.reconnectDelayMs) || 5000);
+    const cap = Math.max(base, Number(this.options.reconnectMaxDelayMs) || 30000);
+    const backoff = Math.min(cap, base * Math.pow(2, this.reconnectAttempts));
+    const jitter = backoff * (0.8 + Math.random() * 0.4);
+    this.reconnectAttempts += 1;
+    this.logger?.info('napcat reconnect scheduled', { attempt: this.reconnectAttempts, delayMs: Math.round(jitter) });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       try { this.connect(); }
@@ -787,7 +839,7 @@ export class NapcatAdapter {
         this.logger?.error('napcat reconnect failed', { error: normalizeError(error) });
         if (!this.manualClose && this.options.autoReconnect) this.scheduleReconnect();
       }
-    }, this.options.reconnectDelayMs);
+    }, Math.max(0, jitter));
   }
 
   private clearReconnectTimer(): void {
