@@ -27,16 +27,46 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '总览', group: '', icon: 'grid' },
     },
     {
+        path: '/planner',
+        name: 'planner',
+        component: () => import('../pages/PlannerPage.vue'),
+        meta: { title: '规划器', group: '编排', icon: 'route' },
+    },
+    {
+        path: '/permissions',
+        name: 'permissions',
+        component: () => import('../pages/PermissionsPage.vue'),
+        meta: { title: '权限与审批', group: '编排', icon: 'check' },
+    },
+    {
+        path: '/cap-image',
+        name: 'cap-image',
+        component: () => import('../pages/CapImagePage.vue'),
+        meta: { title: '图片生成', group: '能力中心', icon: 'canvas' },
+    },
+    {
+        path: '/cap-music',
+        name: 'cap-music',
+        component: () => import('../pages/CapMusicPage.vue'),
+        meta: { title: '音乐（Suno）', group: '能力中心', icon: 'voice' },
+    },
+    {
+        path: '/cap-voice',
+        name: 'cap-voice',
+        component: () => import('../pages/CapVoicePage.vue'),
+        meta: { title: '语音', group: '能力中心', icon: 'voice' },
+    },
+    {
+        path: '/cap-memory',
+        name: 'cap-memory',
+        component: () => import('../pages/CapMemoryPage.vue'),
+        meta: { title: '记忆', group: '能力中心', icon: 'grid' },
+    },
+    {
         path: '/routing',
         name: 'routing',
         component: () => import('../pages/RoutingPage.vue'),
         meta: { title: '能力分工', group: '模型', icon: 'route' },
-    },
-    {
-        path: '/orchestration',
-        name: 'orchestration',
-        component: () => import('../pages/OrchestrationPage.vue'),
-        meta: { title: '智能编排', group: '模型', icon: 'route' },
     },
     {
         path: '/nodes',
@@ -57,16 +87,22 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '命令与意图', group: '对话', icon: 'template' },
     },
     {
+        path: '/templates',
+        name: 'templates',
+        component: () => import('../pages/TemplatesPage.vue'),
+        meta: { title: '提示词模板', group: '对话', icon: 'template' },
+    },
+    {
         path: '/search',
         name: 'search',
         component: () => import('../pages/WebSearchPage.vue'),
-        meta: { title: '联网搜索', group: '工具', icon: 'search' },
+        meta: { title: '联网搜索', group: '能力中心', icon: 'search' },
     },
     {
         path: '/render',
         name: 'render',
         component: () => import('../pages/RenderPage.vue'),
-        meta: { title: '代码与网页渲染', group: '工具', icon: 'canvas' },
+        meta: { title: '代码与网页渲染', group: '能力中心', icon: 'canvas' },
     },
     {
         path: '/voice',
@@ -75,22 +111,22 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '语音 / TTS', group: '媒体', icon: 'voice' },
     },
     {
-        path: '/templates',
-        name: 'templates',
-        component: () => import('../pages/TemplatesPage.vue'),
-        meta: { title: '提示词模板', group: '对话', icon: 'template' },
-    },
-    {
         path: '/canvas',
         name: 'canvas',
         component: () => import('../pages/CanvasPage.vue'),
         meta: { title: '画布 / 图库', group: '媒体', icon: 'canvas' },
     },
     {
+        path: '/observability',
+        name: 'observability',
+        component: () => import('../pages/ObservabilityPage.vue'),
+        meta: { title: '观测中心', group: '观测', icon: 'logs' },
+    },
+    {
         path: '/logs',
         name: 'logs',
         component: () => import('../pages/LogsPage.vue'),
-        meta: { title: '运行日志', group: '系统', icon: 'logs' },
+        meta: { title: '运行日志', group: '观测', icon: 'logs' },
     },
     {
         path: '/settings',
@@ -98,6 +134,8 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../pages/SettingsPage.vue'),
         meta: { title: '系统设置', group: '系统', icon: 'settings' },
     },
+    // 旧链接重定向：TR.1 拆页后 /orchestration 的内容分到了 /planner 等页。
+    { path: '/orchestration', redirect: '/planner' },
     { path: '/:pathMatch(.*)*', redirect: '/overview' },
 ];
 
