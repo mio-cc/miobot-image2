@@ -33,6 +33,8 @@ export interface PendingJobRecord {
   approvalPayloadHash?: string;
   clarificationUsed?: boolean;
   clarificationCount?: number;
+  /** T0.4：执行阶段（needs_input）追问次数，与规划阶段 clarificationCount 分开计量。 */
+  executionClarificationCount?: number;
   startedAt?: number;
   lastError?: string;
 }

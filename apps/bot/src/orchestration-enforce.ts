@@ -465,6 +465,9 @@ export class OrchestrationEnforcer {
       if (songHistory) request.history = [{ role: 'system', content: songHistory }, ...(request.history || [])];
     }
     const clarificationCount = Math.max(0, Math.trunc(Number(pending?.clarificationCount ?? pending?.attempts ?? 0)));
+    // T0.4：执行阶段（needs_input）追问与规划阶段追问分开计量，各享 maxClarifications 次额度，
+    // 避免"规划问一次 + 执行再缺信息"的两段式交互因共享额度而静默终止。
+    const executionClarificationCount = Math.max(0, Math.trunc(Number(pending?.executionClarificationCount ?? 0)));
     const jobStartedAt = Number(pending?.startedAt) || Date.now();
     let resumePlan = pending?.plan;
     let resumeResults: Record<string, any> = pending?.results ? { ...pending.results } : {};
@@ -702,6 +705,9 @@ export class OrchestrationEnforcer {
         }
       }
     } catch (error) {
+      // T0.3/C4：这是唯一保留 legacy 回退的出口（规划期失败，尚无副作用）。
+      // trace 打 fallback_legacy 标记（不打 problem：免费模型限流期可能高频发生，避免刷管理员私报）。
+      appendTrace('plan', 'planner 失败，回退旧链路 fallback_legacy', { error: String((error as Error)?.message || error) });
       this.options.logger?.warn('智能编排规划失败，回退旧链路', { error: String((error as Error)?.message || error) });
       return { handled: false, reason: 'planner_failed' };
     }
@@ -794,7 +800,7 @@ export class OrchestrationEnforcer {
     const validation = validateIntentPlan(plan, { maxSteps: cfg.orchestration.execution.maxSteps });
     if (!validation.ok) return { handled: false, reason: `invalid_plan:${validation.errors.join(',')}` };
     if (plan.needsClarification) {
-      const maxClarifications = Math.min(1, Math.max(0, Number(cfg.orchestration.planner.maxClarifications ?? 1)));
+      const maxClarifications = Math.max(0, Number(cfg.orchestration.planner.maxClarifications ?? 1));
       if (clarificationCount >= maxClarifications) {
         this.options.pendingJobs?.delete(pendingKey);
         return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'clarification_limit_reached', error: '达到最大追问次数' } };
@@ -999,9 +1005,9 @@ export class OrchestrationEnforcer {
 
       if (execution.status === 'needs_input') {
         const pendingResult: any = Object.values(execution.results).find((result: any) => result.status === 'needs_input');
-        if (clarificationCount >= Math.min(1, Math.max(0, Number(cfg.orchestration.planner.maxClarifications ?? 1)))) {
+        if (executionClarificationCount >= Math.max(0, Number(cfg.orchestration.planner.maxClarifications ?? 1))) {
           this.options.pendingJobs?.delete(pendingKey);
-          return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'clarification_limit_reached', error: '达到最大追问次数' } };
+          return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'clarification_limit_reached', error: '达到执行阶段最大追问次数' } };
         }
         const validationIssues = Array.isArray(pendingResult?.diagnostics?.validationIssues) ? pendingResult.diagnostics.validationIssues : [];
         const missingInformation = Array.isArray(pendingResult?.diagnostics?.missingInformation) ? pendingResult.diagnostics.missingInformation.map(String).filter(Boolean) : [];
@@ -1030,7 +1036,7 @@ export class OrchestrationEnforcer {
           key: pendingKey,
           originalText: originalText || effectiveText,
           question,
-          attempts: clarificationCount + 1,
+          attempts: clarificationCount,
           createdAt: pending?.createdAt || now,
           updatedAt: now,
           expiresAt: new Date(Date.now() + Math.max(1000, Number(cfg.orchestration.planner.clarificationTimeoutMs || 300000))).toISOString(),
@@ -1046,10 +1052,11 @@ export class OrchestrationEnforcer {
           pendingStepId: pendingResult?.stepId,
           pendingQuestion: question,
           clarificationUsed: true,
-          clarificationCount: clarificationCount + 1,
+          clarificationCount,
+          executionClarificationCount: executionClarificationCount + 1,
           startedAt: jobStartedAt,
         });
-        appendTrace('plan', '执行阶段发起唯一一次追问', { jobId, stepId: pendingResult?.stepId, question });
+        appendTrace('plan', '执行阶段发起追问（独立额度）', { jobId, stepId: pendingResult?.stepId, question, executionClarificationCount: executionClarificationCount + 1 });
         return { handled: true, result: this.clarificationResult(question, Array.isArray(pendingResult?.outputs) ? pendingResult.outputs : []) };
       }
       if (execution.status === 'denied') {
@@ -1061,7 +1068,11 @@ export class OrchestrationEnforcer {
         if (execution.usage.stepsExecuted > 0) {
           return this.partialResult(outputs, 'execution_failed', execution.error || 'capability_failed', plan, execution.results);
         }
-        return { handled: false, reason: execution.error || 'capability_failed', problem: { kind: 'execution_failed', error: execution.error || 'capability_failed' } };
+        // T0.3：0 步失败不再 handled:false 回退旧链路——旧链路没有编排层的权限/审批/能力覆盖，
+        // 回退等于旁路（如 video 在编排层是 high→ask_admin，旧引擎会直接生成）。
+        // 改为部分结果（含确定性步骤摘要）+ problem 上报；仅 planner_failed（规划期，无副作用）保留 legacy 回退。
+        appendTrace('reply', '执行前置校验失败，已拦截不回退旧链路', { error: execution.error });
+        return this.partialResult(outputs, 'execution_preflight_failed', execution.error || 'capability_failed', plan, execution.results);
       }
       if (execution.status === 'partial') {
         this.options.pendingJobs?.delete(pendingKey);
