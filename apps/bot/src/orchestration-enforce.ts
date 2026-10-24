@@ -585,6 +585,26 @@ export class OrchestrationEnforcer {
       } else if (resumedFromJob && resumePlan) {
         plan = resumePlan;
         appendTrace('plan', '从 Job checkpoint 恢复计划', { jobId, status: pending?.status, completedSteps: Object.keys(resumeResults) });
+        // T2.8（安全子集）：崩溃恢复防双计费。分层执行下，第一个"依赖已就绪但仍无结果"的步骤
+        // 就是崩溃时的在途步骤；若它是外部异步任务（生图/音乐等，副作用已可能发生），
+        // 标记为 interrupted 跳过重放——宁可这次不交付也不重复生成重复计费；
+        // 结果按失败进入 partial + problem 上报，管理员可见。
+        if (pending?.status === 'running') {
+          const settled = (id: string) => resumeResults[id]?.status === 'success' || resumeResults[id]?.status === 'partial';
+          const interrupted = plan.steps.find((step) => !settled(step.id) && (step.dependsOn || []).every((dep) => settled(dep)));
+          if (interrupted) {
+            const descriptor = this.registry.get(interrupted.capability);
+            const isExternalAsync = descriptor?.mode === 'async_job' && (descriptor?.sideEffects || []).includes('external_call');
+            if (isExternalAsync) {
+              resumeResults[interrupted.id] = {
+                jobId, stepId: interrupted.id, status: 'failed', outputs: [],
+                error: 'interrupted_external_task', retryable: false,
+                diagnostics: { recovery: 'crash_interrupted', capability: interrupted.capability },
+              };
+              appendTrace('plan', '崩溃时在途的外部任务标记为中断，跳过重放防双计费', { stepId: interrupted.id, capability: interrupted.capability });
+            }
+          }
+        }
       } else if (pending?.status === 'clarifying') {
         const question = pending.pendingQuestion || pending.question;
         const resolved = await this.runRoleWithFallback(this.roleOptions(cfg, 'planner'), (opts) => resolveClarificationWithModel(
