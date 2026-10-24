@@ -162,6 +162,9 @@ async function restoreComfyBaseline() {
         const res = await client.put('/orchestration/comfyui/workflows/' + comfyNodeIndex.value + '/' + encodeURIComponent(id), { restoreBuiltin: true });
         comfyWorkflowMessage.value = '已恢复内置 baseline';
         comfyWorkflowValidation.value = res.data?.validation || null;
+        // 专用 PUT 直写服务端配置，必须回刷 store——否则本地 llm 区块是旧值，
+        // 之后顶栏"保存并热重载"会 POST 整份旧配置，把这次修改静默回滚。
+        await configStore.fetchConfig();
         await loadComfyWorkflows();
         await loadComfyWorkflowProfile(Number(comfyNodeIndex.value), id);
     } catch (error: any) {
@@ -193,6 +196,8 @@ async function saveComfyWorkflowProfile() {
         comfyWorkflowValidation.value = res.data?.validation || null;
         comfyWorkflowMessage.value = '保存成功，配置已热重载';
         comfyProfileExists.value = true;
+        // 同上：专用 PUT 直写服务端，回刷 store 防止顶栏整份保存回滚本次修改。
+        await configStore.fetchConfig();
         await loadComfyWorkflows();
         await loadComfyWorkflowProfile(Number(comfyNodeIndex.value), id);
     } catch (error: any) {
