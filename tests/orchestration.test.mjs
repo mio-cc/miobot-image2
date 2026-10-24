@@ -2965,3 +2965,125 @@ test('orchestration T1.1: dispatcher 渲染依赖输出引用，缺失时 needs_
   assert.equal(issues[0].code, 'missing_step_reference');
   assert.equal(chatCalls, 1);
 });
+
+test('orchestration C2: PendingJobStore.move 迁移键并应用补丁，listActive 覆盖 job: 键', () => {
+  const now = new Date().toISOString();
+  const store = new PendingJobStore();
+  store.set({
+    key: 'private:9', originalText: '生成视频', question: '', attempts: 0,
+    createdAt: now, updatedAt: now, expiresAt: new Date(Date.now() + 600000).toISOString(),
+    schemaVersion: 2,
+  });
+  const moved = store.move('private:9', 'job:job_move_1', { status: 'waiting_approval' });
+  assert.equal(moved?.key, 'job:job_move_1');
+  assert.equal(moved?.status, 'waiting_approval');
+  assert.equal(store.get('private:9'), undefined, '旧会话键应已释放');
+  assert.equal(store.get('job:job_move_1')?.status, 'waiting_approval');
+  assert.ok(store.listActive().some((job) => job.key === 'job:job_move_1'), 'listActive 必须覆盖 job: 键记录');
+  assert.equal(store.move('private:not-exist', 'job:x'), undefined, '不存在的键返回 undefined');
+});
+
+test('orchestration C2: 审批等待释放会话闸——新消息即时应答，审批通过后原任务续跑', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  cfg.orchestration.planner.nodeIndex = 1;
+  cfg.orchestration.planner.model = 'planner-test';
+  cfg.orchestration.approval.enabled = true;
+  cfg.orchestration.approval.adminQqIds = ['900', '901'];
+  const fakeApp = {
+    handle: async () => ({ kind: 'chat', handled: true, text: '今天晴天', decision: { kind: 'chat', source: 'fallback', confidence: 1, reason: '', params: { prompt: '', tokens: [] }, usedPlanner: false } }),
+    engine: { handleExplicit: async () => null },
+    sessions: { clear() {} },
+    registry: () => ({}),
+    client: {},
+  };
+  let plannerCalls = 0;
+  const fakeClient = {
+    async chat() {
+      plannerCalls += 1;
+      if (plannerCalls === 1) {
+        return { text: JSON.stringify({ planId: 'p1', requestId: 'r1', goal: 'generate', steps: [{ id: 's1', capability: 'video.generate', args: { prompt: 'cat video' } }], confidence: 0.9 }) };
+      }
+      return { text: JSON.stringify({ planId: 'p2', requestId: 'r2', goal: 'answer', steps: [{ id: 's1', capability: 'chat.reply', args: { prompt: '今天天气怎么样' } }], confidence: 0.9 }) };
+    },
+  };
+  let handlerCalls = 0;
+  const handler = {
+    async execute() {
+      handlerCalls += 1;
+      return { jobId: 'j1', stepId: 's1', status: 'success', outputs: [{ kind: 'video', url: 'data:video/mp4;base64,AA' }] };
+    },
+  };
+  const pendingJobs = new PendingJobStore();
+  const approvalRuntime = new ApprovalRuntime({
+    adminQqIds: () => ['900', '901'],
+    allowGroupReply: () => true,
+    allowedGroupIds: () => [],
+    sendPrivate: async () => ({ success: true }),
+    sendGroup: async () => ({ success: true }),
+  });
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg, app: fakeApp, client: fakeClient,
+    handlers: new Map([['video.generate', handler]]),
+    approvalRuntime, pendingJobs,
+  });
+  // 请求者是管理员 901：默认策略对 admin 的高风险动作是 ask_admin（user 是 deny），审批人 900 与请求者分离
+  const first = enforcer.handle({ text: '生成一个视频', chatType: 'private', userId: '900' });
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const pendingApproval = approvalRuntime.getBroker().list('pending')[0];
+  assert.ok(pendingApproval, '高风险视频步骤应已创建审批请求');
+  const waitingJob = pendingJobs.listActive().find((job) => job.status === 'waiting_approval');
+  assert.ok(waitingJob, '等待审批的任务应有持久化记录');
+  assert.ok(waitingJob.key.startsWith('job:'), '等待审批记录应挪到 job: 键');
+  assert.equal(pendingJobs.get('private:901'), undefined, '会话键应已释放，新消息不被排队');
+  // 同会话新消息在审批等待期必须立即应答（C2 解锁验收）
+  const second = await Promise.race([
+    enforcer.handle({ text: '今天天气怎么样', chatType: 'private', userId: '901' }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('C2 回归：等待期新消息仍被审批闸阻塞')), 3000)),
+  ]);
+  assert.equal(second.handled, true, '等待期新消息应正常处理');
+  assert.equal(handlerCalls, 0, '新消息不应执行原视频任务的能力');
+  const stillWaiting = pendingJobs.listActive().find((job) => job.status === 'waiting_approval');
+  assert.ok(stillWaiting && stillWaiting.key.startsWith('job:'), '原任务 job: 记录不应被新请求覆盖');
+  approvalRuntime.decideFromPanel(pendingApproval.code, 'approve');
+  const firstResult = await Promise.race([
+    first,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('C2 回归：审批通过后原任务未续跑')), 3000)),
+  ]);
+  assert.equal(firstResult.handled, true);
+  assert.equal(handlerCalls, 1, '审批通过后原任务能力恰好执行一次');
+  const leftovers = pendingJobs.listActive().filter((job) => job.status === 'waiting_approval' || job.status === 'running');
+  assert.equal(leftovers.length, 0, '任务完成后记录应清理');
+});
+
+test('orchestration C2: job: 键的等待审批记录经恢复流程挪回会话键续跑', async () => {
+  const now = new Date().toISOString();
+  const store = new PendingJobStore();
+  store.set({
+    key: 'job:job_recovery_1',
+    originalText: '生成视频', question: '', attempts: 0,
+    createdAt: now, updatedAt: now, expiresAt: new Date(Date.now() + 600000).toISOString(),
+    schemaVersion: 2, jobId: 'job_recovery_1', requestId: 'req_1',
+    status: 'waiting_approval',
+    originalRequest: { requestId: 'req_1', chat: { type: 'private', userId: '9' }, user: { qq: '9', role: 'user' }, text: '生成视频' },
+    approvalId: 'appr_1',
+  });
+  const runtime = new ApprovalRuntime({
+    adminQqIds: () => ['900'],
+    allowGroupReply: () => true,
+    allowedGroupIds: () => [],
+    sendPrivate: async () => ({ success: true }),
+    sendGroup: async () => ({ success: true }),
+  });
+  let resumed = null;
+  const service = new JobRecoveryService({ jobs: store, approvals: runtime, resume: async (job) => { resumed = job; } });
+  service.onDecision({ approvalId: 'appr_1', status: 'approved' });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.ok(resumed, '恢复回调应被调用');
+  assert.equal(resumed.key, 'private:9', '恢复前记录应挪回会话键（合成消息按会话键查找）');
+  assert.equal(store.get('job:job_recovery_1'), undefined, 'job: 键应已释放');
+  assert.ok(store.get('private:9'), '会话键应有等待审批记录');
+});

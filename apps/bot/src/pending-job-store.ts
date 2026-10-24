@@ -39,6 +39,15 @@ export interface PendingJobRecord {
   lastError?: string;
 }
 
+/**
+ * 会话键的唯一算法：enforcer 的 pending 读写与 jobRecovery 的记录迁回都必须用它，
+ * 两处各自手写一旦漂移，恢复就找不到记录。
+ */
+export function pendingSessionKey(chat: { type?: string; groupId?: string | number | null; userId?: string | number | null }): string {
+  const userId = String(chat.userId || '');
+  return chat.type === 'group' ? `group:${chat.groupId ?? ''}:${userId}` : `private:${userId}`;
+}
+
 export class PendingJobStore {
   private readonly records = new Map<string, PendingJobRecord>();
 
@@ -72,6 +81,17 @@ export class PendingJobStore {
     const current = this.records.get(String(key));
     if (!current) return undefined;
     const next = this.clone({ ...current, ...patch, key: current.key, schemaVersion: 2, updatedAt: new Date().toISOString() });
+    this.records.set(next.key, next);
+    this.flush();
+    return this.clone(next);
+  }
+
+  /** C2：把记录挪到新键（如审批等待期 session 键 → job:<jobId> 键），可同时打补丁；旧键释放。 */
+  move(oldKey: string, newKey: string, patch?: Partial<PendingJobRecord>): PendingJobRecord | undefined {
+    const current = this.records.get(String(oldKey));
+    if (!current) return undefined;
+    this.records.delete(String(oldKey));
+    const next = this.clone({ ...current, ...patch, key: String(newKey), schemaVersion: 2, updatedAt: new Date().toISOString() });
     this.records.set(next.key, next);
     this.flush();
     return this.clone(next);

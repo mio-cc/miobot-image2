@@ -1,7 +1,7 @@
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 import type { ApprovalRequest } from '../../../packages/orchestration/src/index.js';
 import type { ApprovalRuntime } from './approval-runtime.js';
-import type { PendingJobRecord, PendingJobStore } from './pending-job-store.js';
+import { pendingSessionKey, type PendingJobRecord, type PendingJobStore } from './pending-job-store.js';
 
 export interface JobRecoveryOptions {
   jobs: PendingJobStore;
@@ -39,10 +39,20 @@ export class JobRecoveryService {
   }
 
   private async recover(job: PendingJobRecord): Promise<void> {
-    const key = job.key;
-    if (this.active.has(key)) return;
-    this.active.add(key);
+    // C2：等待审批的任务记录在 job:<jobId> 键；恢复前挪回会话键，
+    // 合成消息走 handleInner 的会话键查找才能续上。dedupe 用 jobId（键会变）。
+    const dedupeKey = String(job.jobId || job.key);
+    if (this.active.has(dedupeKey)) return;
+    this.active.add(dedupeKey);
     try {
+      const chat = job.originalRequest?.chat;
+      if (chat?.type && chat.userId) {
+        const sessionKey = pendingSessionKey(chat);
+        if (job.key !== sessionKey) {
+          this.options.jobs.move(job.key, sessionKey);
+          job = { ...job, key: sessionKey };
+        }
+      }
       await this.options.resume(job);
     } catch (error) {
       this.options.logger?.warn('恢复任务失败', {
@@ -51,7 +61,7 @@ export class JobRecoveryService {
         error: String((error as Error)?.message || error),
       });
     } finally {
-      this.active.delete(key);
+      this.active.delete(dedupeKey);
     }
   }
 }

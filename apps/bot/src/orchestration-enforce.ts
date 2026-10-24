@@ -47,7 +47,7 @@ import type { SunoSongHistoryStore } from './suno-song-history.js';
 import { SunoHistoryCapabilityHandler, SunoReplayCapabilityHandler, SunoReplaceSectionCapabilityHandler } from './capability-suno-library.js';
 import { HelpCapabilityHandler, ModelCatalogCapabilityHandler, PromptCapabilityHandler, SearchCapabilityHandler, TemplateListCapabilityHandler, TtsCapabilityHandler } from './capability-basic.js';
 import type { ApprovalRuntime } from './approval-runtime.js';
-import type { PendingJobRecord, PendingJobStore } from './pending-job-store.js';
+import { pendingSessionKey, type PendingJobRecord, type PendingJobStore } from './pending-job-store.js';
 
 export interface OrchestrationProgressEvent {
   type: 'plan';
@@ -418,24 +418,44 @@ export class OrchestrationEnforcer {
       return this.handleInner(input);
     }
     const userId = String(input.userId || '');
-    const pendingKey = input.chatType === 'group'
-      ? `group:${input.groupId ?? ''}:${userId}`
-      : `private:${userId}`;
+    const pendingKey = pendingSessionKey({ type: input.chatType, groupId: input.groupId, userId: input.userId });
     const inFlight = this.sessionInFlight.get(pendingKey);
     if (inFlight) {
       try { await inFlight; } catch { /* 在途任务异常不阻塞新请求 */ }
     }
     let release: () => void = () => {};
-    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let gate = new Promise<void>((resolve) => { release = resolve; });
     this.sessionInFlight.set(pendingKey, gate);
+    let released = false;
+    // C2：审批等待期可控释放——等待中的新消息不再排队（正常应答），
+    // 审批结果返回后重新占闸（先等在途新消息完成）再继续原任务，串行语义在闸内保持。
+    const releaseLatch = () => {
+      if (released) return;
+      released = true;
+      release();
+      if (this.sessionInFlight.get(pendingKey) === gate) this.sessionInFlight.delete(pendingKey);
+    };
+    const reacquireLatch = async () => {
+      if (!released) return;
+      released = false;
+      const inFlightNow = this.sessionInFlight.get(pendingKey);
+      if (inFlightNow) {
+        try { await inFlightNow; } catch { /* 在途任务异常不阻塞恢复 */ }
+        if (released) return;
+      }
+      let nextRelease: () => void = () => {};
+      gate = new Promise<void>((resolve) => { nextRelease = resolve; });
+      release = nextRelease;
+      this.sessionInFlight.set(pendingKey, gate);
+    };
     try {
-      return await this.handleInner(input);
+      return await this.handleInner(input, { release: releaseLatch, reacquire: reacquireLatch });
     } finally {
       release();
       if (this.sessionInFlight.get(pendingKey) === gate) this.sessionInFlight.delete(pendingKey);
     }
   }
-  private async handleInner(input: EnforceOrchestrationInput): Promise<EnforceOrchestrationResult> {
+  private async handleInner(input: EnforceOrchestrationInput, latch?: { release: () => void; reacquire: () => Promise<void> }): Promise<EnforceOrchestrationResult> {
     const cfg = this.options.getConfig();
     const forcedPlan = input.forceLegacyExecution && input.plan;
     if (!forcedPlan && (!cfg.orchestration?.enabled || cfg.orchestration.mode !== 'enforce')) {
@@ -445,9 +465,7 @@ export class OrchestrationEnforcer {
     const text = String(input.text || '').trim();
     if (!text && !input.plan) return { handled: false, reason: 'empty_text' };
     const userId = String(input.userId || '');
-    const pendingKey = input.chatType === 'group'
-      ? `group:${input.groupId ?? ''}:${userId}`
-      : `private:${userId}`;
+    const pendingKey = pendingSessionKey({ type: input.chatType, groupId: input.groupId, userId: input.userId });
     const pending = input.plan ? undefined : this.options.pendingJobs?.get(pendingKey);
     if (input.plan) this.options.pendingJobs?.delete(pendingKey);
     const role = (cfg.bot.ownerQQs || []).map(String).includes(userId) ? 'owner'
@@ -958,6 +976,8 @@ export class OrchestrationEnforcer {
       startedAt: jobStartedAt,
     };
     this.options.pendingJobs?.set(baseJob);
+    // C2：循环内落库键——审批等待期挪到 job:<jobId> 后，后续 checkpoint/清理都用它。
+    let storeKey = pendingKey;
     while (true) {
       const execution = await executeIntentPlan(request, plan, {
         dispatcher: this.dispatcher,
@@ -974,7 +994,7 @@ export class OrchestrationEnforcer {
         initialModelRounds: plan.modelRoundsUsed || (plan.source === 'model' ? 1 : 0),
         startedAt: jobStartedAt,
         onCheckpoint: (checkpoint) => {
-          this.options.pendingJobs?.update(pendingKey, {
+          this.options.pendingJobs?.update(storeKey, {
             status: 'running',
             plan,
             results: checkpoint.results,
@@ -996,7 +1016,7 @@ export class OrchestrationEnforcer {
         const step = waitingId ? byId.get(waitingId) : undefined;
         if (!step) return this.partialResult(outputs, 'approval_invalid', '审批步骤不存在', plan, execution.results);
         if (!this.options.approvalRuntime || !cfg.orchestration.approval.enabled) {
-          this.options.pendingJobs?.delete(pendingKey);
+          this.options.pendingJobs?.delete(storeKey);
           return this.approvalFailureResult('该操作需要管理员审批，但当前没有可用审批配置，已拒绝执行。', 'approval_unavailable', 'approval_unavailable');
         }
         approvalRounds += 1;
@@ -1006,7 +1026,10 @@ export class OrchestrationEnforcer {
         const capability = this.registry.get(step.capability);
         const approvalPayloadHash = hashApprovalPayload(step.args);
         const waitingExpiresAt = new Date(Date.now() + Math.max(60000, Number(cfg.orchestration.approval.timeoutMs || 120000)) + 60000).toISOString();
-        this.options.pendingJobs?.update(pendingKey, {
+        // C2：任务记录挪到 job:<jobId> 键并释放会话闸——等待期同会话新消息走全新请求，
+        // 不再互相覆盖 checkpoint；审批结果返回后重新占闸继续，后续落库都在 job: 键。
+        const jobKey = `job:${jobId}`;
+        this.options.pendingJobs?.move(storeKey, jobKey, {
           status: 'waiting_approval',
           plan,
           results: execution.results,
@@ -1019,6 +1042,8 @@ export class OrchestrationEnforcer {
           startedAt: jobStartedAt,
           expiresAt: waitingExpiresAt,
         });
+        storeKey = jobKey;
+        latch?.release();
         const outcome = await this.options.approvalRuntime.request({
           requestId: request.requestId,
           jobId,
@@ -1033,16 +1058,17 @@ export class OrchestrationEnforcer {
           summary: `${step.capability} 需要管理员审批`,
           ttlMs: cfg.orchestration.approval.timeoutMs,
           onCreated: (approval) => {
-            this.options.pendingJobs?.update(pendingKey, {
+            this.options.pendingJobs?.update(storeKey, {
               approvalId: approval.approvalId,
               approvalPayloadHash: approval.payloadHash,
               status: 'waiting_approval',
             });
           },
         });
+        await latch?.reacquire();
         appendTrace('approval', '管理员审批结果', { step: step.id, status: outcome.status, approvalId: outcome.approval?.approvalId });
         if (outcome.status !== 'approved') {
-          this.options.pendingJobs?.delete(pendingKey);
+          this.options.pendingJobs?.delete(storeKey);
           const fallback = cfg.orchestration.approval.fallback;
           if (outcome.status === 'failed') {
             return this.approvalFailureResult('审批通知发送失败，任务已按安全策略终止。', ('approval_delivery_failed_' + fallback) as string, 'approval_delivery_failed');
@@ -1058,12 +1084,12 @@ export class OrchestrationEnforcer {
           );
         }
         if (outcome.approval && approvalPayloadHash !== outcome.approval.payloadHash) {
-          this.options.pendingJobs?.delete(pendingKey);
+          this.options.pendingJobs?.delete(storeKey);
           return this.partialResult(outputs, 'approval_payload_changed', '审批参数已变化，原审批失效，已拒绝执行。', plan, execution.results);
         }
         delete initialResults[step.id];
         approvedStepIds.add(step.id);
-        this.options.pendingJobs?.update(pendingKey, {
+        this.options.pendingJobs?.update(storeKey, {
           status: 'running',
           results: initialResults,
           approvedStepIds: Array.from(approvedStepIds),
@@ -1077,7 +1103,7 @@ export class OrchestrationEnforcer {
       if (execution.status === 'needs_input') {
         const pendingResult: any = Object.values(execution.results).find((result: any) => result.status === 'needs_input');
         if (executionClarificationCount >= Math.max(0, Number(cfg.orchestration.planner.maxClarifications ?? 1))) {
-          this.options.pendingJobs?.delete(pendingKey);
+          this.options.pendingJobs?.delete(storeKey);
           return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'clarification_limit_reached', error: '达到执行阶段最大追问次数' } };
         }
         const validationIssues = Array.isArray(pendingResult?.diagnostics?.validationIssues) ? pendingResult.diagnostics.validationIssues : [];
@@ -1097,7 +1123,7 @@ export class OrchestrationEnforcer {
         const generated = await this.askClarificationUsingModel(cfg, request, plan, catalog, modelAdapter, issues);
         roleRoundsUsed += generated.rounds;
         if (!generated.question) {
-          this.options.pendingJobs?.delete(pendingKey);
+          this.options.pendingJobs?.delete(storeKey);
           appendTrace('plan', '执行阶段追问生成失败', { issues, error: generated.error });
           return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'clarification_generation_failed', error: generated.error || '模型未能生成追问' } };
         }
@@ -1131,11 +1157,11 @@ export class OrchestrationEnforcer {
         return { handled: true, result: this.clarificationResult(question, Array.isArray(pendingResult?.outputs) ? pendingResult.outputs : []) };
       }
       if (execution.status === 'denied') {
-        this.options.pendingJobs?.delete(pendingKey);
+        this.options.pendingJobs?.delete(storeKey);
         return this.partialResult(outputs, 'permission_denied', execution.error || '该操作没有执行权限。', plan, execution.results);
       }
       if (execution.status === 'failed') {
-        this.options.pendingJobs?.delete(pendingKey);
+        this.options.pendingJobs?.delete(storeKey);
         if (execution.usage.stepsExecuted > 0) {
           return this.partialResult(outputs, 'execution_failed', execution.error || 'capability_failed', plan, execution.results);
         }
@@ -1146,11 +1172,11 @@ export class OrchestrationEnforcer {
         return this.partialResult(outputs, 'execution_preflight_failed', execution.error || 'capability_failed', plan, execution.results);
       }
       if (execution.status === 'partial') {
-        this.options.pendingJobs?.delete(pendingKey);
+        this.options.pendingJobs?.delete(storeKey);
         return this.partialResult(outputs, 'capability_failed', execution.error || '部分步骤执行失败', plan, execution.results);
       }
 
-      this.options.pendingJobs?.delete(pendingKey);
+      this.options.pendingJobs?.delete(storeKey);
       const hasAudioOutput = outputs.some((output) => output.kind === 'audio');
       const hasStructuredTextOutput = outputs.some((output) => output.meta?.role === 'suno_history');
       if (!hasAudioOutput && !hasStructuredTextOutput && plan.source === 'model' && cfg.orchestration.roles.composer.enabled) {
