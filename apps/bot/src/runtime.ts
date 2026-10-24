@@ -223,6 +223,21 @@ function runFileTask<T>(task: () => Promise<T>): Promise<T> {
   return next;
 }
 
+/** T2.2/C6：每用户滑动窗口消息频率（模块级共享）。 */
+const userMessageTimes = new Map<string, number[]>();
+function isUserRateLimited(userId: string, limitPerMinute: number, now = Date.now()): boolean {
+  if (limitPerMinute <= 0 || !userId) return false;
+  if (userMessageTimes.size > 5000) userMessageTimes.clear();
+  const window = (userMessageTimes.get(userId) || []).filter((at) => now - at < 60_000);
+  if (window.length >= limitPerMinute) {
+    userMessageTimes.set(userId, window);
+    return true;
+  }
+  window.push(now);
+  userMessageTimes.set(userId, window);
+  return false;
+}
+
 function formatBytes(value: number): string {
   const n = Number(value || 0);
   if (n < 1024) return `${n} B`;
@@ -643,6 +658,14 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
   // chat 文本结果发送前若已有更新消息，则丢弃这份迟到回复（图/视频等昂贵产物不丢）。
   let messageSeq = 0;
   const latestSessionSeq = new Map<string, number>();
+  /** T2.4：会话序列表封顶（5000），超限淘汰最早插入的键，防随会话数无限增长。 */
+  const recordSessionSeq = (sessionId: string, seq: number): void => {
+    latestSessionSeq.set(sessionId, seq);
+    if (latestSessionSeq.size > 5000) {
+      const oldest = latestSessionSeq.keys().next().value;
+      if (oldest !== undefined) latestSessionSeq.delete(oldest);
+    }
+  };
   const processedEvents = new Map<string, number>();
   const processedEventTtlMs = 5 * 60 * 1000;
   async function handleMessageEvent(event: NapcatMessageEvent): Promise<BotRuntimeResult> {
@@ -749,6 +772,15 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       for (const [key, at] of processedEvents) {
         if (at < cutoff || processedEvents.size > 2000) processedEvents.delete(key);
       }
+    }
+
+    // T2.2/C6 第一道闸：每用户消息频率上限（默认 6/分钟，0=关闭）。超出静默丢弃——
+    // 不回"你太快了"（防刷屏原则），只留日志供日报统计；去重/陈旧检查之后，
+    // 重连补推的重复消息不占额度。
+    const rateLimitPerMinute = Math.max(0, Math.trunc(Number(cfg.bot.messageRateLimitPerMinute ?? 0)) || 0);
+    if (rateLimitPerMinute > 0 && isUserRateLimited(String(userId ?? ''), rateLimitPerMinute)) {
+      log?.info('消息被忽略', { reason: 'user-rate-limited', userId: String(userId ?? ''), limitPerMinute: rateLimitPerMinute });
+      return { handled: false, reason: 'user-rate-limited' };
     }
     // 主人命令优先于普通路由。
     if (options.handleApprovalReply) {
@@ -922,7 +954,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
 
     // 本会话的最新消息序号——迟到的 chat 回复发送前会核对，被更新消息取代则不发。
     const seq = ++messageSeq;
-    latestSessionSeq.set(sessionId, seq);
+    recordSessionSeq(sessionId, seq);
 
     const replyCtx: ReplyContext = {
       chatType,

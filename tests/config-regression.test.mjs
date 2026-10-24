@@ -337,3 +337,14 @@ test('config regression T0.7: reply 文本兜底与 overflow 默认值', () => {
   assert.equal(normalized.orchestration.reply.textFallback, 'always');
   assert.equal(normalized.orchestration.reply.overflowPolicy, 'forward');
 });
+
+test('config regression T2.2: 每用户消息频率上限默认值与归一化', () => {
+  const defaults = createDefaultConfig();
+  assert.equal(defaults.bot.messageRateLimitPerMinute, 0, '默认关闭，防刷屏静默丢弃需面板显式开启');
+  const cfg = createDefaultConfig();
+  cfg.bot.messageRateLimitPerMinute = 999;
+  const normalized = normalizeConfig(cfg);
+  assert.equal(normalized.bot.messageRateLimitPerMinute, 60);
+  const off = normalizeConfig({ ...createDefaultConfig(), bot: { ...createDefaultConfig().bot, messageRateLimitPerMinute: 0 } });
+  assert.equal(off.bot.messageRateLimitPerMinute, 0);
+});

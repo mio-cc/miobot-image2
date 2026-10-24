@@ -191,6 +191,12 @@ export class FishAudioVoiceService {
       const audio = await synthesizeSpeech({ ...tts, voiceId: candidate.voiceId, voiceIds: [] }, clip(args.text, cfg.previewMaxChars) || '你好，这是当前音色的试听。', { logger: this.options.logger });
       audioFile = audio.file;
     }
+    // T2.4：写入时清理非当日的死键（每个会话一条，长期运行随会话数增长）。
+    if (this.previewUsage.size > 500) {
+      for (const [existingKey, value] of this.previewUsage) {
+        if (value.day !== day) this.previewUsage.delete(existingKey);
+      }
+    }
     this.previewUsage.set(usageKey, { day, count: (usage?.day === day ? usage.count : 0) + 1, lastAt: Date.now() });
     return { candidate, audioFile: audioPayload(audioFile) };
   }

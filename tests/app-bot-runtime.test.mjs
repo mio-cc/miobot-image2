@@ -965,3 +965,17 @@ test('runtime: ignored group message is not written into long-term memory', asyn
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(ingested.length, 0);
 });
+
+test('runtime T2.2: 每用户消息频率超限静默丢弃，不回复不报错', async () => {
+  const { reply, rt } = setup({ getConfig: () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; c.bot.messageRateLimitPerMinute = 3; return c; } });
+  const results = [];
+  for (let i = 1; i <= 5; i += 1) {
+    results.push(await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 700 + i, raw_message: '第' + i + '条' }));
+  }
+  assert.equal(results[0].handled, true);
+  assert.equal(results[2].handled, true);
+  assert.equal(results[3].handled, false);
+  assert.equal(results[3].reason, 'user-rate-limited');
+  assert.equal(results[4].reason, 'user-rate-limited');
+  assert.equal(reply.sent.length, 3, '限流后的消息不再产生回复（防刷屏静默）');
+});

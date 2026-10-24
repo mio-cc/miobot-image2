@@ -41,6 +41,10 @@ export class SunoCapabilityHandler implements CapabilityHandler {
     if (quota <= 0) return;
     const key = this.quotaKey(userQq);
     const day = key.slice(0, 10);
+    // T2.4：写入时清理非当日的过期键（date:qq 键随天数×用户数增长，不清理即慢性泄漏）。
+    for (const [existingKey, value] of this.usage) {
+      if (value.day !== day) this.usage.delete(existingKey);
+    }
     const current = this.usage.get(key);
     const count = current?.day === day ? current.count : 0;
     if (count >= quota) throw new Error('suno_quota_exceeded');
