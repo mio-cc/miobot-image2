@@ -335,6 +335,28 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     },
   });
 
+  // T2.3：会话持久化——启动恢复快照、每 60s 落盘、退出 flush，重启不再失忆。
+  const sessionsFile = path.join(dataDir, 'sessions.json');
+  try {
+    const parsed = JSON.parse(readFileSync(sessionsFile, 'utf8'));
+    const restored = app.sessions?.restore?.(parsed) || 0;
+    if (restored > 0) logger?.info('会话快照已恢复', { restored });
+  } catch { /* 首次启动或快照损坏 */ }
+  const writeSessionsSnapshot = async (): Promise<void> => {
+    try {
+      const dump = app.sessions?.dump?.();
+      if (!dump) return;
+      await fs.mkdir(path.dirname(sessionsFile), { recursive: true });
+      const temp = sessionsFile + '.tmp';
+      await fs.writeFile(temp, JSON.stringify(dump), 'utf8');
+      await fs.rename(temp, sessionsFile);
+    } catch (error) {
+      logger?.warn('会话快照写入失败', { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+  const sessionPersistTimer = setInterval(() => { void writeSessionsSnapshot(); }, 60_000);
+  sessionPersistTimer.unref?.();
+
   const canvasGallerySync = createCanvasGallerySync({ getConfig, logger });
 
   const nap = config.napcat;
@@ -941,12 +963,15 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     if (cleanupTimer) clearInterval(cleanupTimer);
     clearInterval(retentionTimer);
     clearInterval(fileCleanupTimer);
+    clearInterval(sessionPersistTimer);
     auditService.stop();
     approvalActionConsumer.stop();
     capabilityTestConsumer.stop();
     memoryActionConsumer.stop();
     // T3.4：记忆防抖落盘的优雅退出 flush。
     try { await memoryService.flush(); } catch { /* best effort */ }
+    // T2.3：会话快照退出 flush。
+    await writeSessionsSnapshot();
     adapter.disconnect();
     await Promise.race([
       Promise.all([approvalPersistQueue, pendingJobPersistQueue]),

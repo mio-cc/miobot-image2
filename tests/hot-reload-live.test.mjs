@@ -185,3 +185,22 @@ test('传 registry 实例不再是「悄悄关掉热重载」的陷阱——也�
   overrides = [{ model: 'weird-model-x', operations: ['video.generate'] }];
   assert.equal(app.registry().can('weird-model-x', 'video.generate'), true, '传函数时热重载要保持有效');
 });
+
+test('session store T2.3: dump/restore 持久化往返（TTL 过滤与裁剪防御）', () => {
+  const a = new SessionStore({ maxRounds: () => 4, maxChars: () => 100000 });
+  a.append('private:1', { role: 'user', content: '你好' }, { role: 'assistant', content: '在的' });
+  a.append('private:1', { role: 'user', content: '画猫' }, { role: 'assistant', content: '好' });
+  const snapshot = a.dump();
+  const b = new SessionStore({ maxRounds: () => 4, maxChars: () => 100000 });
+  assert.equal(b.restore(snapshot), 1);
+  assert.deepEqual(b.get('private:1'), a.get('private:1'));
+  // 损坏数据防御：非对象/非数组/缺字段项全部跳过。
+  assert.equal(b.restore(null), 0);
+  assert.equal(b.restore({ bad: 'not-array', ok2: [{ role: 'user', content: 'x' }] }), 1);
+  // TTL：过期会话不进 dump。
+  let now = 1000;
+  const c = new SessionStore({ ttlMs: () => 60_000, clock: () => now });
+  c.append('s', { role: 'user', content: 'x' }, { role: 'assistant', content: 'y' });
+  now += 61_000;
+  assert.equal(Object.keys(c.dump()).length, 0);
+});

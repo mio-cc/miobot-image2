@@ -297,6 +297,34 @@ export class SessionStore {
     return removed;
   }
 
+  /** T2.3：可持久化快照（仅活跃会话；TTL>0 时排除已过期项）。 */
+  dump(): Record<string, SessionMessage[]> {
+    const out: Record<string, SessionMessage[]> = {};
+    const ttlMs = this.getTtlMs();
+    const t = this.clock();
+    for (const [key, messages] of this.store) {
+      if (ttlMs > 0 && t - (this.accessedAt.get(key) ?? 0) > ttlMs) continue;
+      out[key] = [...messages];
+    }
+    return out;
+  }
+
+  /** T2.3：从快照恢复（每会话重走裁剪，防御损坏/超限数据）。 */
+  restore(snapshot: unknown): number {
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return 0;
+    let restored = 0;
+    for (const [key, value] of Object.entries(snapshot as Record<string, unknown>)) {
+      if (!key || !Array.isArray(value)) continue;
+      const messages = value.filter((item): item is SessionMessage =>
+        Boolean(item) && typeof item === 'object' && typeof (item as SessionMessage).role === 'string' && typeof (item as SessionMessage).content === 'string');
+      if (!messages.length) continue;
+      this.store.set(key, this.prune(messages));
+      this.accessedAt.set(key, this.clock());
+      restored += 1;
+    }
+    return restored;
+  }
+
   private prune(messages: SessionMessage[]): SessionMessage[] {
     let items = messages.slice(-this.getMaxRounds() * 2);
     const maxChars = this.getMaxChars();
