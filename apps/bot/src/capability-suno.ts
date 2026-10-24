@@ -10,6 +10,7 @@ export interface SunoCapabilityOptions {
   logger?: StructuredLogger;
   createClient?: (config: AppConfig['orchestration']['suno']) => Pick<SunoClient, 'create' | 'wait'>;
   compose?: (args: Record<string, unknown>, request: any) => Promise<SunoComposedSpec>;
+  composeSafeFallback?: (args: Record<string, unknown>, request: any) => SunoComposedSpec;
   history?: SunoSongHistoryStore;
 }
 
@@ -102,7 +103,14 @@ export class SunoCapabilityHandler implements CapabilityHandler {
     let composed: SunoComposedSpec | undefined;
     if (this.options.compose) {
       try { composed = await this.options.compose(args, invocation.request); }
-      catch (error) { this.options.logger?.warn('Suno composer failed', { error: String((error as Error)?.message || error) }); }
+      catch (error) {
+        this.options.logger?.warn('Suno composer failed', { error: String((error as Error)?.message || error) });
+        // safe fallback：用用户原文直传 Suno（不做模型编排，保证歌一定能出）。
+        const composer = this.options as { composeSafeFallback?: (args: Record<string, unknown>, request: any) => SunoComposedSpec };
+        if (typeof composer.composeSafeFallback === 'function') {
+          composed = composer.composeSafeFallback(args, invocation.request);
+        }
+      }
     }
     if (!rawUserText && !composed?.style && !composed?.lyrics) {
       return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'needs_input', outputs: [], diagnostics: { missingInformation: ['音乐主题', '风格或情绪', '歌词与纯音乐偏好', '语言或时长'], detail: 'music request is underspecified' } };
@@ -199,9 +207,26 @@ export class SunoCapabilityHandler implements CapabilityHandler {
         }
       }
       const outputs = first?.url
-        ? [{ kind: "audio" as const, url: first.url, priority: 10, mergeable: false, meta: { title: first.title, lyrics: first.lyrics, audioId: first.audioId, duration: first.duration, historyId: historyRecord?.id, historySeq: historyRecord?.seq, provider: "suno-official" } }]
+        ? [{ kind: "audio" as const, url: first.url, priority: 10, mergeable: false, meta: {
+            title: first.title,
+            // Suno V6 状态响应不总是带 lyrics 字段——API 没返回时用 composer/用户提供的歌词回退，
+            // 保证 sendLyricsWithMusic 开启后歌词一定能随歌发出。
+            lyrics: first.lyrics || composed?.lyrics || stringArg(args, 'lyrics') || undefined,
+            audioId: first.audioId,
+            duration: first.duration,
+            historyId: historyRecord?.id,
+            historySeq: historyRecord?.seq,
+            provider: "suno-official",
+          } }]
         : [];
-      this.options.logger?.info('Suno 任务完成，只交付首曲且不发送封面', { taskId: created.id, generatedVariants: task.outputs.length, returnedAudio: outputs.length, discardedCoverCount: task.outputs.filter((item) => Boolean(item.coverUrl)).length });
+      this.options.logger?.info('Suno 任务完成，只交付首曲且不发送封面', {
+        taskId: created.id,
+        generatedVariants: task.outputs.length,
+        returnedAudio: outputs.length,
+        discardedCoverCount: task.outputs.filter((item) => Boolean(item.coverUrl)).length,
+        hasLyrics: Boolean(outputs[0]?.meta?.lyrics),
+        lyricsSource: first?.lyrics ? 'api' : composed?.lyrics ? 'composer' : stringArg(args, 'lyrics') ? 'args' : 'none',
+      });
       return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success', outputs, diagnostics: { taskId: created.id, generatedVariants: task.outputs.length, returnedAudio: outputs.length } };
     } catch (error) {
       this.options.logger?.warn('Suno 能力执行失败', { error: String((error as Error)?.message || error) });

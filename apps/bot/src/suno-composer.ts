@@ -209,51 +209,80 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     const suno = cfg.orchestration.suno;
     const nodeIndex = Number(suno.composerNodeIndex ?? cfg.orchestration.planner.nodeIndex ?? cfg.llm.chatNodeIndex ?? 0);
     const model = String(suno.composerModel || cfg.orchestration.planner.model || cfg.llm.chatModel || '');
-    try {
-      const response = await this.client.chat(nodeIndex, {
-        model,
-        messages: [
-          { role: 'system', content: 'You are a strict JSON Suno prompt planner. Never output markdown.' },
-          { role: 'user', content: buildSunoComposerPrompt(args, request, cfg, suno.composerPromptTemplate) },
-        ],
-        temperature: Number(cfg.orchestration.suno.composerTemperature ?? 0.6),
-        maxTokens: Number(cfg.orchestration.suno.composerMaxTokens ?? 6000),
-        timeoutMs: Math.max(30000, Number(cfg.orchestration.suno.timeoutMs || 60000)),
-      });
-      const json = extractJsonObject(String(response.text || ''));
-      if (!json) throw new Error('suno_composer_no_json');
-      const normalized = normalizeSpec(JSON.parse(json) as Record<string, unknown>, cfg);
-      if (normalized.customMode && !normalized.style && !normalized.lyrics && !normalized.negativeTags && !normalized.musicBrief) {
-        throw new Error('suno_composer_custom_content_missing');
+    // 免费档模型对复杂 JSON 输出不稳定——重试一次（带纠错提示），失败才走 safe fallback。
+    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+      { role: 'system', content: 'You are a strict JSON Suno prompt planner. Never output markdown.' },
+      { role: 'user', content: buildSunoComposerPrompt(args, request, cfg, suno.composerPromptTemplate) },
+    ];
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        const response = await this.client.chat(nodeIndex, {
+          model,
+          messages,
+          temperature: Number(cfg.orchestration.suno.composerTemperature ?? 0.6),
+          maxTokens: Number(cfg.orchestration.suno.composerMaxTokens ?? 6000),
+          timeoutMs: Math.max(30000, Number(cfg.orchestration.suno.timeoutMs || 60000)),
+        });
+        const raw = String(response.text || '');
+        const json = extractJsonObject(raw);
+        if (!json) {
+          // 记录模型实际返回了什么，方便诊断（截断防刷日志）。
+          this.logger?.warn('Suno composer 第 ' + attempt + ' 次未输出 JSON', {
+            attempt,
+            chars: raw.length,
+            preview: raw.replace(/\s+/g, ' ').slice(0, 200),
+            model,
+          });
+          if (attempt < 2) {
+            messages.push({ role: 'assistant', content: raw.slice(0, 500) });
+            messages.push({ role: 'user', content: '你的输出不是有效 JSON。请重新输出，只输出一个 JSON object，不要 Markdown 代码块、解释或任何其他文字。' });
+            continue;
+          }
+          throw new Error('suno_composer_no_json:chars=' + raw.length + ':preview=' + raw.replace(/\s+/g, ' ').slice(0, 120));
+        }
+        const normalized = normalizeSpec(JSON.parse(json) as Record<string, unknown>, cfg);
+        if (normalized.customMode && !normalized.style && !normalized.lyrics && !normalized.negativeTags && !normalized.musicBrief) {
+          throw new Error('suno_composer_custom_content_missing');
+        }
+        return normalized;
+      } catch (error) {
+        if (attempt >= 2 || !/no_json|invalid_json/.test(String((error as Error)?.message || ''))) {
+          throw error;
+        }
+        // JSON 类错误且还有重试次数 → continue 到下一轮
       }
-      return normalized;
-    } catch (error) {
-      this.logger?.warn('Suno prompt composer failed; using safe fallback', { error: String((error as Error)?.message || error) });
-      const userText = clip(args.request || args.prompt || request.text, 3000);
-      const lyrics = nullableClip(args.lyrics, 5000);
-      const instrumental = Boolean(args.instrumental);
-      const configuredGender = suno.defaultVocalGender;
-      const requestedGender = args.vocalGender === 'm' || args.vocalGender === 'f'
-        ? args.vocalGender
-        : configuredGender === 'm' || configuredGender === 'f' ? configuredGender : undefined;
-      const customMode = Boolean(lyrics || instrumental || args.title || args.duration || args.negativeTags || requestedGender || args.styleWeight || args.weirdnessConstraint || args.audioWeight || args.variety);
-      return {
-        customMode,
-        instrumental,
-        title: customMode ? nullableClip(args.title, 80) : undefined,
-        musicBrief: customMode ? undefined : userText,
-        style: nullableClip(args.style, 1000) || (customMode ? userText.slice(0, 1000) : undefined),
-        lyrics: customMode && !instrumental ? lyrics : undefined,
-        negativeTags: customMode ? nullableClip(args.negativeTags, 1000) : undefined,
-        vocalGender: customMode && !instrumental ? requestedGender : undefined,
-        language: nullableClip(args.language, 80) || nullableClip(suno.defaultLanguage, 80),
-        duration: customMode ? numberIn(args.duration, 10, Math.min(360, suno.maxDurationSeconds)) : undefined,
-        styleWeight: customMode ? numberIn(args.styleWeight, 0, 1) : undefined,
-        weirdnessConstraint: customMode ? numberIn(args.weirdnessConstraint, 0, 1) : undefined,
-        audioWeight: customMode && !instrumental ? numberIn(args.audioWeight, 0, 1) : undefined,
-        variety: customMode ? numberIn(args.variety, 0, 4) : undefined,
-        model: suno.model || 'V6',
-      };
     }
+    throw new Error('suno_composer_exhausted');
+  }
+
+  /** safe fallback：用用户原文直传 Suno，不做模型编排。 */
+  composeSafeFallback(args: Record<string, unknown>, request: UserRequest): SunoComposedSpec {
+    const cfg = this.getConfig();
+    const suno = cfg.orchestration.suno;
+    const userText = clip(args.request || args.prompt || request.text, 3000);
+    const lyrics = nullableClip(args.lyrics, 5000);
+    const instrumental = Boolean(args.instrumental);
+    const configuredGender = suno.defaultVocalGender;
+    const requestedGender = args.vocalGender === 'm' || args.vocalGender === 'f'
+      ? args.vocalGender
+      : configuredGender === 'm' || configuredGender === 'f' ? configuredGender : undefined;
+    const customMode = Boolean(lyrics || instrumental || args.title || args.duration || args.negativeTags || requestedGender || args.styleWeight || args.weirdnessConstraint || args.audioWeight || args.variety);
+    return {
+      customMode,
+      instrumental,
+      title: customMode ? nullableClip(args.title, 80) : undefined,
+      musicBrief: customMode ? undefined : userText,
+      style: nullableClip(args.style, 1000) || (customMode ? userText.slice(0, 1000) : undefined),
+      lyrics: customMode && !instrumental ? lyrics : undefined,
+      negativeTags: customMode ? nullableClip(args.negativeTags, 1000) : undefined,
+      vocalGender: customMode && !instrumental ? requestedGender : undefined,
+      language: nullableClip(args.language, 80) || nullableClip(suno.defaultLanguage, 80),
+      duration: customMode ? numberIn(args.duration, 10, Math.min(360, suno.maxDurationSeconds)) : undefined,
+      styleWeight: customMode ? numberIn(args.styleWeight, 0, 1) : undefined,
+      weirdnessConstraint: customMode ? numberIn(args.weirdnessConstraint, 0, 1) : undefined,
+      audioWeight: customMode && !instrumental ? numberIn(args.audioWeight, 0, 1) : undefined,
+      variety: customMode ? numberIn(args.variety, 0, 4) : undefined,
+      model: suno.model || 'V6',
+    };
   }
 }

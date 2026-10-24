@@ -154,7 +154,7 @@ export class OrchestrationEnforcer {
       this.dispatcher.registerHandler(kind, handler);
     }
     const sunoComposer = new SunoPromptComposer(this.options.client, this.options.getConfig, this.options.logger);
-    const suno = this.options.handlers?.get('audio.music.generate') || new SunoCapabilityHandler({ getConfig: this.options.getConfig, logger: this.options.logger, history: this.options.sunoHistory, compose: (args, request) => sunoComposer.compose(args, request) });
+    const suno = this.options.handlers?.get('audio.music.generate') || new SunoCapabilityHandler({ getConfig: this.options.getConfig, logger: this.options.logger, history: this.options.sunoHistory, compose: (args, request) => sunoComposer.compose(args, request), composeSafeFallback: (args, request) => sunoComposer.composeSafeFallback(args, request) });
     this.dispatcher.registerHandler('audio.music.generate', suno);
     if (this.options.sunoHistory) {
       const historyHandler = this.options.handlers?.get('audio.music.history') || new SunoHistoryCapabilityHandler(this.options.sunoHistory);
