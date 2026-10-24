@@ -50,6 +50,9 @@ export interface ChatRequest {
   maxTokens?: number;
   temperature?: number;
   reasoningEffort?: ReasoningEffort;
+  /** T3.2：OpenAI 兼容 function calling——tools / tool_choice 原样透传，不支持的服务会报错或忽略。 */
+  tools?: unknown[];
+  toolChoice?: unknown;
 }
 
 export interface VisionRequest {
@@ -132,7 +135,14 @@ export interface TextUsage {
   cost?: number;
 }
 
-export interface TextResult { text: string; raw: unknown; status?: number; usage?: TextUsage }
+/** T3.2：FC 出参——message.tool_calls 的规范化形态（arguments 已解析为对象）。 */
+export interface ToolCall {
+  id?: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface TextResult { text: string; raw: unknown; status?: number; usage?: TextUsage; toolCalls?: ToolCall[] }
 
 export type ImageArtifactKind = 'base64' | 'url';
 export interface ImageArtifact { kind: ImageArtifactKind; data: string; mimeType?: string; revisedPrompt?: string; index: number }

@@ -16,14 +16,19 @@ export interface PlannerModel {
       maxTokens?: number;
       temperature?: number;
       timeoutMs?: number;
+      /** T3.2：FC 通道——tools/tool_choice 透传给底层模型客户端。 */
+      tools?: unknown[];
+      toolChoice?: unknown;
     },
-  ): Promise<{ text: string }>;
+  ): Promise<{ text: string; toolCalls?: Array<{ name: string; arguments: Record<string, unknown> }> }>;
 }
 
 export interface PlannerOptions {
   nodeIndex: number;
   model: string;
   capabilityCatalog: CapabilityDescriptor[];
+  /** T3.2：优先走 function calling 出参（tools/tool_choice）；失败自动落 JSON 通道。 */
+  useTools?: boolean;
   maxRepairAttempts?: number;
   maxModelRounds?: number;
   systemPrompt?: string;
@@ -168,6 +173,14 @@ export function parseIntentPlan(text: string, request: UserRequest, options: { m
   if (!json) throw new Error('planner_no_json');
   let raw: any;
     try { raw = JSON.parse(json); } catch { const preview = json.replace(/\s+/g, '').slice(0, 300); throw new Error(`planner_invalid_json:chars=${json.length}:preview=${preview}`); }
+  return normalizeIntentPlanObject(raw, request, options);
+}
+
+/**
+ * T3.2：把“计划原始对象”规范化为 IntentPlan——JSON 通道（parseIntentPlan）与
+ * FC 通道（tool_calls.arguments）共用，保证两通道产出等价计划。
+ */
+export function normalizeIntentPlanObject(raw: any, request: UserRequest, options: { maxSteps?: number } = {}): IntentPlan {
   const validEffects = new Set(['answer', 'retrieve', 'generate', 'transform', 'mutate', 'delete', 'notify', 'control', 'unknown']);
   const rawUnderstanding = raw.understanding && typeof raw.understanding === 'object' ? raw.understanding : {};
   const desiredOutcome = validEffects.has(String(rawUnderstanding.desiredOutcome || ''))
@@ -206,11 +219,53 @@ export function parseIntentPlan(text: string, request: UserRequest, options: { m
   if (!validation.ok) throw new Error(`planner_invalid_plan:${validation.errors.join(',')}`);
   return plan;
 }
+/** T3.2：FC 通道的唯一工具——模型调用 submit_plan 提交整份计划（与 JSON 通道同一规范化/校验）。 */
+const SUBMIT_PLAN_TOOL = {
+  type: 'function',
+  function: {
+    name: 'submit_plan',
+    description: '提交任务执行计划。不要输出任何文本，直接调用本工具。',
+    parameters: {
+      type: 'object',
+      properties: {
+        goal: { type: 'string', description: '任务目标' },
+        understanding: {
+          type: 'object',
+          properties: {
+            goal: { type: 'string' },
+            desiredOutcome: { type: 'string', description: 'answer/retrieve/generate/transform/mutate/notify/control' },
+            constraints: { type: 'array', items: { type: 'string' } },
+            missingInformation: { type: 'array', items: { type: 'string' } },
+            confidence: { type: 'number' },
+          },
+        },
+        steps: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              capability: { type: 'string', description: '必须来自 capabilityManifest' },
+              args: { type: 'object' },
+              dependsOn: { type: 'array', items: { type: 'string' } },
+              optional: { type: 'boolean' },
+              iterate: { type: 'boolean' },
+            },
+            required: ['id', 'capability', 'args'],
+          },
+        },
+        confidence: { type: 'number' },
+      },
+      required: ['goal', 'steps'],
+    },
+  },
+};
+
 export async function planWithModel(
   client: PlannerModel,
   request: UserRequest,
   options: PlannerOptions,
-): Promise<IntentPlan> {
+): Promise<IntentPlan & { channel?: 'function_calling' }> {
   const messages: PlannerChatMessage[] = [
     { role: 'system', content: String(options.systemPrompt || '').trim() || 'You are a strict JSON planner. Never use keyword matching. Output only one JSON object.' },
     { role: 'user', content: buildPlannerPrompt(request, options.capabilityCatalog, { template: options.userPromptTemplate, capabilityDescriptions: options.capabilityDescriptions }) },
@@ -218,18 +273,48 @@ export async function planWithModel(
   const requestedAttempts = Math.max(0, Math.trunc(Number(options.maxRepairAttempts) || 0)) + 1;
   const configuredRounds = Math.trunc(Number(options.maxModelRounds));
   const maxModelRounds = Number.isFinite(configuredRounds) && configuredRounds > 0 ? configuredRounds : Number.POSITIVE_INFINITY;
-  const maxAttempts = Math.min(requestedAttempts, maxModelRounds);
   let modelRoundsUsed = 0;
   let lastError: unknown;
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+  // T3.2 FC 原生通道：tool_choice 强制 submit_plan 出参，直接拿计划对象；
+  // 节点不支持 FC / 出参异常时静默落 JSON 通道——带回的纯文本不丢弃，
+  // 直接作为 JSON 通道首轮结果复用（不重发请求，不多花一轮预算）。
+  let pendingText: string | undefined;
+  if (options.useTools) {
     modelRoundsUsed += 1;
-    const result = await client.chat(options.nodeIndex, {
-      model: options.model,
-      messages,
-      maxTokens: options.maxTokens,
-      temperature: options.temperature,
-      timeoutMs: options.timeoutMs,
-    });
+    try {
+      const result = await client.chat(options.nodeIndex, {
+        model: options.model,
+        messages,
+        maxTokens: options.maxTokens,
+        temperature: options.temperature,
+        timeoutMs: options.timeoutMs,
+        tools: [SUBMIT_PLAN_TOOL],
+        toolChoice: { type: 'function', function: { name: 'submit_plan' } },
+      });
+      const call = (result.toolCalls || []).find((item) => item.name === 'submit_plan');
+      if (call?.arguments && Object.keys(call.arguments).length) {
+        const plan = normalizeIntentPlanObject(call.arguments, request, { maxSteps: options.maxSteps });
+        return { ...plan, modelRoundsUsed, channel: 'function_calling' };
+      }
+      if (String(result.text || '').trim()) pendingText = String(result.text);
+    } catch { /* 不支持 FC 的节点会报错或忽略 tools：落 JSON 通道 */ }
+  }
+  const maxAttempts = Math.max(1, Math.min(requestedAttempts, maxModelRounds === Number.POSITIVE_INFINITY ? requestedAttempts : maxModelRounds - modelRoundsUsed));
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    let result: { text: string };
+    if (pendingText !== undefined) {
+      result = { text: pendingText };
+      pendingText = undefined;
+    } else {
+      modelRoundsUsed += 1;
+      result = await client.chat(options.nodeIndex, {
+        model: options.model,
+        messages,
+        maxTokens: options.maxTokens,
+        temperature: options.temperature,
+        timeoutMs: options.timeoutMs,
+      });
+    }
     try {
       const plan = parseIntentPlan(result.text, request, { maxSteps: options.maxSteps });
       return { ...plan, modelRoundsUsed };

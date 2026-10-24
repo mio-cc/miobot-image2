@@ -120,6 +120,8 @@ export class OrchestrationEnforcer {
   private configFingerprint = '';
   /** T0.1：会话键 → 在途编排 Promise，用于同会话串行化。 */
   private readonly sessionInFlight = new Map<string, Promise<unknown>>();
+  /** T3.2：FC 探测缓存——不支持 function calling 的节点|模型记住后直接走 JSON 通道，避免每次规划多一次失败调用。 */
+  private readonly fcUnsupportedNodes = new Set<string>();
 
   constructor(private readonly options: {
     getConfig: () => AppConfig;
@@ -360,6 +362,9 @@ export class OrchestrationEnforcer {
           maxTokens: req.maxTokens,
           temperature: req.temperature,
           timeoutMs: req.timeoutMs,
+          // T3.2：FC 通道的 tools/tool_choice 透传（其他角色调用不携带，等价于 undefined）。
+          ...(req.tools ? { tools: req.tools } : {}),
+          ...(req.toolChoice !== undefined ? { toolChoice: req.toolChoice } : {}),
         });
         // T3.6：所有角色模型调用（planner/修复/追问/composer/检索）的唯一漏斗，usage 累计进 trace。
         if (collector && result?.usage) {
@@ -768,8 +773,11 @@ export class OrchestrationEnforcer {
           canaryPercent: cfg.orchestration.promptOptimization.canaryPercent,
         });
         const plannerRole = this.roleOptions(cfg, 'planner');
+        // T3.2：FC 探测缓存——节点|模型级别；首次尝试 FC，不支持则记住后续直接 JSON。
+        const plannerNodeKey = (overrides: { nodeIndex?: number; model?: string } = {}) => `${Number(overrides.nodeIndex ?? cfg.orchestration.planner.nodeIndex ?? plannerRole.nodeIndex ?? 0)}|${String(overrides.model || cfg.orchestration.planner.model || plannerRole.model || '')}`;
         const plannerCall = (overrides: { nodeIndex?: number; model?: string } = {}) => planWithModel(modelAdapter, request, {
           ...plannerRole,
+          useTools: !this.fcUnsupportedNodes.has(plannerNodeKey(overrides)),
           nodeIndex: Number(overrides.nodeIndex ?? cfg.orchestration.planner.nodeIndex ?? plannerRole.nodeIndex ?? 0),
           model: String(overrides.model || cfg.orchestration.planner.model || plannerRole.model || ''),
           capabilityCatalog: catalog,
@@ -795,6 +803,12 @@ export class OrchestrationEnforcer {
           plan = await plannerCall({ nodeIndex: fallbackNode, model: fallbackModel });
         }
         roleRoundsUsed += Number(plan.modelRoundsUsed || 0);
+        // T3.2：FC 探测——主/fallback 节点都没走通 FC 就记入缓存；走通则打通道标记。
+        if ((plan as any).channel !== 'function_calling') {
+          this.fcUnsupportedNodes.add(plannerNodeKey());
+        } else {
+          appendTrace('plan', '规划走 function calling 通道', { node: plannerNodeKey(), rounds: plan.modelRoundsUsed });
+        }
         for (const reviewRole of ['specialist', 'critic'] as const) {
           if (!cfg.orchestration.roles[reviewRole].enabled || maxModelRounds - roleRoundsUsed <= 0) continue;
           const reviewed = await this.runRoleWithFallback(this.roleOptions(cfg, reviewRole), (opts) => refinePlanWithModel(modelAdapter, request, plan, catalog, { ...opts, role: reviewRole }));

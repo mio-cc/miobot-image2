@@ -26,6 +26,8 @@ export const openAiDialect: Dialect = {
   buildChat(node: ModelNode, req: ChatRequest): RequestPlan {
     const body: Record<string, unknown> = { model: req.model, messages: req.messages };
     applyChatParams(body, req);
+    if (req.tools) body.tools = req.tools;
+    if (req.toolChoice !== undefined) body.tool_choice = req.toolChoice;
     return { method: 'POST', url: joinUrl(node.baseUrl, '/chat/completions'), headers: bearerHeaders(node.apiKey, node.headers), body };
   },
   parseChat: parseOpenAiText,

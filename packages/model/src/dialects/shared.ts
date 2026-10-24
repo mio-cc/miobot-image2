@@ -58,6 +58,20 @@ export function parseOpenAiText(data: unknown): TextResult {
   for (const choice of choices) {
     const item = asRecord(choice);
     const message = asRecord(item.message);
+    // T3.2：FC 出参——tool_calls 优先（此时 content 通常为 null）；arguments 容错解析。
+    const rawCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+    const toolCalls = rawCalls.map((raw: unknown) => {
+      const call = asRecord(raw);
+      const fn = asRecord(call.function);
+      let args: Record<string, unknown> = {};
+      if (typeof fn.arguments === 'string' && fn.arguments.trim()) {
+        try { args = JSON.parse(fn.arguments) as Record<string, unknown>; } catch { args = {}; }
+      } else if (fn.arguments && typeof fn.arguments === 'object') {
+        args = fn.arguments as Record<string, unknown>;
+      }
+      return { ...(call.id ? { id: String(call.id) } : {}), name: String(fn.name || ''), arguments: args };
+    }).filter((call) => call.name);
+    if (toolCalls.length) return { text: '', raw: data, toolCalls };
     const text = flattenTextContent(message.content ?? item.text);
     if (text.trim()) return { text, raw: data };
     // 部分推理模型把正文放在 reasoning_content 里。注意 content 常常是空字符串而不是 null，
