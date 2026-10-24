@@ -3087,3 +3087,125 @@ test('orchestration C2: job: 键的等待审批记录经恢复流程挪回会话
   assert.equal(store.get('job:job_recovery_1'), undefined, 'job: 键应已释放');
   assert.ok(store.get('private:9'), '会话键应有等待审批记录');
 });
+
+test('orchestration T2.8: 崩溃恢复对账——远端已成功则补投递，不重放', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  const fakeApp = {
+    handle: async () => ({ kind: 'chat', handled: true, text: 'chat', decision: { kind: 'chat', source: 'fallback', confidence: 1, reason: '', params: { prompt: '', tokens: [] }, usedPlanner: false } }),
+    engine: { handleExplicit: async () => null },
+    sessions: { clear() {} }, registry: () => ({}), client: {},
+  };
+  const fakeClient = { async chat() { throw new Error('resume 不应调用 planner'); } };
+  let handlerCalls = 0;
+  const handler = { async execute() { handlerCalls += 1; return { jobId: 'j1', stepId: 's1', status: 'success', outputs: [] }; } };
+  const now = new Date().toISOString();
+  const pendingJobs = new PendingJobStore();
+  // 模拟"提交后、轮询中"崩溃：running 记录 + 已上报的 ComfyUI prompt_id，无已结算步骤
+  pendingJobs.set({
+    key: 'private:9', originalText: '画一只猫', question: '', attempts: 0,
+    createdAt: now, updatedAt: now, expiresAt: new Date(Date.now() + 600000).toISOString(),
+    schemaVersion: 2, jobId: 'job_rc_1', requestId: 'req_rc_1', status: 'running',
+    originalRequest: { requestId: 'req_rc_1', chat: { type: 'private', userId: '9' }, user: { qq: '9', role: 'user' }, text: '画一只猫' },
+    plan: { planId: 'p1', requestId: 'req_rc_1', goal: 'generate', steps: [{ id: 's1', capability: 'image.generate', args: { prompt: 'cat' } }], confidence: 0.9 },
+    results: {}, order: ['s1'], approvedStepIds: [],
+    externalTasks: { s1: { capability: 'image.generate', taskId: 'prompt-abc', reportedAt: now } },
+  });
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg, app: fakeApp, client: fakeClient,
+    handlers: new Map([['image.generate', handler]]),
+    pendingJobs,
+    externalTaskProbe: async ({ taskId }) => taskId === 'prompt-abc'
+      ? { status: 'success', outputs: [{ kind: 'image', url: 'data:image/png;base64,RECONCILED' }] }
+      : undefined,
+  });
+  const result = await enforcer.handle({ text: '继续', chatType: 'private', userId: '9' });
+  assert.equal(handlerCalls, 0, '对账成功后不得重放能力（防双计费）');
+  assert.equal(result.handled, true);
+  const urls = [...(result.result?.images || []), ...((result.result?.replyPlan?.groups || []).flatMap((group) => group.outputs.map((item) => item.url)))];
+  assert.ok(urls.includes('data:image/png;base64,RECONCILED'), '远端取回的图片应补投递：' + JSON.stringify(urls));
+  assert.equal(pendingJobs.get('private:9'), undefined, '恢复完成后记录应清理');
+});
+
+test('orchestration T2.8: 崩溃恢复对账——远端未完成/失败维持 interrupted，不重放', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  const fakeApp = {
+    handle: async () => ({ kind: 'chat', handled: true, text: 'chat', decision: { kind: 'chat', source: 'fallback', confidence: 1, reason: '', params: { prompt: '', tokens: [] }, usedPlanner: false } }),
+    engine: { handleExplicit: async () => null },
+    sessions: { clear() {} }, registry: () => ({}), client: {},
+  };
+  const fakeClient = { async chat() { throw new Error('resume 不应调用 planner'); } };
+  let handlerCalls = 0;
+  const handler = { async execute() { handlerCalls += 1; return { jobId: 'j1', stepId: 's1', status: 'success', outputs: [] }; } };
+  const now = new Date().toISOString();
+  const pendingJobs = new PendingJobStore();
+  pendingJobs.set({
+    key: 'private:9', originalText: '画一只猫', question: '', attempts: 0,
+    createdAt: now, updatedAt: now, expiresAt: new Date(Date.now() + 600000).toISOString(),
+    schemaVersion: 2, jobId: 'job_rc_2', requestId: 'req_rc_2', status: 'running',
+    originalRequest: { requestId: 'req_rc_2', chat: { type: 'private', userId: '9' }, user: { qq: '9', role: 'user' }, text: '画一只猫' },
+    plan: { planId: 'p1', requestId: 'req_rc_2', goal: 'generate', steps: [{ id: 's1', capability: 'image.generate', args: { prompt: 'cat' } }], confidence: 0.9 },
+    results: {}, order: ['s1'], approvedStepIds: [],
+    externalTasks: { s1: { capability: 'image.generate', taskId: 'prompt-still-running', reportedAt: now } },
+  });
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg, app: fakeApp, client: fakeClient,
+    handlers: new Map([['image.generate', handler]]),
+    pendingJobs,
+    externalTaskProbe: async () => ({ status: 'running' }),
+  });
+  const result = await enforcer.handle({ text: '继续', chatType: 'private', userId: '9' });
+  assert.equal(handlerCalls, 0, '远端未完成时同样不得重放（防双计费）');
+  assert.equal(result.handled, true);
+  assert.ok(result.problem, '维持 interrupted 应带 problem 上报：' + JSON.stringify(result.problem || null));
+});
+
+test('orchestration T2.8: handler 提交外部任务后 taskId 立即落盘进 Job 记录', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  cfg.orchestration.planner.nodeIndex = 1;
+  cfg.orchestration.planner.model = 'planner-test';
+  const fakeApp = {
+    handle: async () => ({ kind: 'chat', handled: true, text: 'chat', decision: { kind: 'chat', source: 'fallback', confidence: 1, reason: '', params: { prompt: '', tokens: [] }, usedPlanner: false } }),
+    engine: { handleExplicit: async () => null },
+    sessions: { clear() {} }, registry: () => ({}), client: {},
+  };
+  const fakeClient = {
+    async chat() {
+      return { text: JSON.stringify({ planId: 'p1', requestId: 'r1', goal: 'generate', steps: [{ id: 's1', capability: 'image.generate', args: { prompt: 'cat' } }], confidence: 0.9 }) };
+    },
+  };
+  const handler = {
+    async execute(invocation) {
+      invocation.reportExternalTask?.('task-pipe-9');
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      return { jobId: 'j1', stepId: 's1', status: 'success', outputs: [{ kind: 'image', url: 'data:image/png;base64,CC' }] };
+    },
+  };
+  const pendingJobs = new PendingJobStore();
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg, app: fakeApp, client: fakeClient,
+    handlers: new Map([['image.generate', handler]]),
+    pendingJobs,
+  });
+  const running = enforcer.handle({ text: '画一只猫', chatType: 'private', userId: '9' });
+  let reported = null;
+  for (let i = 0; i < 40 && !reported; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const record = pendingJobs.get('private:9');
+    reported = record?.externalTasks?.s1 || null;
+  }
+  assert.equal(reported?.taskId, 'task-pipe-9', '提交后 taskId 应立即落盘（不等轮询完成）');
+  assert.equal(reported?.capability, 'image.generate');
+  const result = await running;
+  assert.equal(result.handled, true);
+  assert.equal(pendingJobs.get('private:9'), undefined, '完成后记录清理');
+});

@@ -1,4 +1,5 @@
-import type { CapabilityDescriptor, ExecutionResult, IntentPlan, IntentStep, UserRequest } from './types.js';
+import { runWithExternalTaskScope } from './external-task-context.js';
+import type { CapabilityDescriptor, ExecutionOutput, ExecutionResult, IntentPlan, IntentStep, UserRequest } from './types.js';
 import { topologicalStepOrder, validateIntentPlan } from './plan.js';
 import { CapabilityDispatcher, type DispatchResult } from './dispatcher.js';
 
@@ -27,10 +28,29 @@ export interface PlanExecutionCheckpoint {
   reason?: string;
 }
 
+/**
+ * T2.8：崩溃恢复时查远端外部任务的探针结果。
+ * success 时返回输出（走正常 buildReplyPlan 链补投递）；
+ * running/failed 维持 interrupted（防双计费不重放）。
+ */
+export interface ExternalTaskProbeResult {
+  status: 'running' | 'success' | 'failed';
+  outputs?: ExecutionOutput[];
+  error?: string;
+}
+
 export interface ExecutePlanOptions {
   dispatcher: CapabilityDispatcher;
   /** 每完成/阻塞一个步骤后落盘，用于 bot 重启后的严格断点恢复。 */
   onCheckpoint?: (checkpoint: PlanExecutionCheckpoint) => void;
+  /** T2.8：handler 提交远端任务后立即上报 taskId，供恢复对账。 */
+  onExternalTask?: (info: { stepId: string; capability: string; taskId: string }) => void;
+  /**
+   * T2.8：恢复时明确跳过的步骤（如崩溃时在途的外部异步任务，
+   * 已标记 interrupted）。settled() 只认 success/partial，
+   * 没有这个集合 failed 结果会被重跑——双计费。
+   */
+  skipStepIds?: Set<string>;
   maxSteps?: number;
   maxParallelSteps?: number;
   maxDepth?: number;
@@ -240,11 +260,17 @@ async function dispatchStepWithPolicy(
       ? Math.min(configuredTimeout, remaining)
       : remaining;
     const controller = new AbortController();
+    const reportTask = (taskId: string) => options.onExternalTask?.({ stepId: step.id, capability: step.capability, taskId });
     const { dispatched, timedOut } = await withTimeout(
-      dispatcher.dispatch(request, plan, step, dependencyResults, {
-        approvalGranted: options.approvedStepIds?.has(step.id),
-        signal: controller.signal,
-      }),
+      // T2.8：ALS 把上报通道带到拿不到 invocation 的深层提交点（如 ComfyUI 管线）。
+      runWithExternalTaskScope(
+        { stepId: step.id, capability: step.capability, report: reportTask },
+        () => dispatcher.dispatch(request, plan, step, dependencyResults, {
+          approvalGranted: options.approvedStepIds?.has(step.id),
+          signal: controller.signal,
+          reportExternalTask: reportTask,
+        }),
+      ),
       timeoutMs,
       () => controller.abort(new Error('step_timeout')),
     );
@@ -339,7 +365,10 @@ export async function executeIntentPlan(
   }
 
   let haltReason: 'waiting_approval' | 'needs_input' | 'denied' | 'failed' | 'duration' | null = null;
-  let anyFailure = false;
+  // T2.8：被 skipStepIds 跳过且维持 failed 的步骤（如崩溃中断的外部任务）
+  // 算本次运行的失败，否则"全部跳过 + 一个 interrupted"会被误判为 success；
+  // 未被跳过的存量 failed（恢复重试）不计入——重跑成功后应报 success。
+  let anyFailure = [...(options.skipStepIds || [])].some((id) => results[id]?.status === 'failed');
   let anySuccess = Object.values(results).some((result) => result?.status === 'success' || result?.status === 'partial');
   let sawPartial = Object.values(results).some((result) => result?.status === 'partial');
   let firstError: string | undefined = Object.values(results).find((result) => result?.error)?.error;
@@ -356,7 +385,7 @@ export async function executeIntentPlan(
     // 任一步需要审批、追问或被拒绝时，同层兄弟步骤不会先产生副作用。
     for (const id of layer) {
       const step = byId.get(id);
-      if (!step || settled(results[id])) continue;
+      if (!step || settled(results[id]) || options.skipStepIds?.has(id)) continue;
       if ((step.dependsOn || []).some((dep) => !dependencySatisfied(results[dep]))) continue;
       if (!evaluateStepCondition(step.condition, step, results)) {
         results[id] = skippedConditionResult(plan, step);
@@ -421,7 +450,7 @@ export async function executeIntentPlan(
         if (layerIndex >= layer.length) return;
         const id = layer[layerIndex];
         const step = byId.get(id);
-        if (!step || settled(results[id]) || preflightBlocked.has(id)) continue;
+        if (!step || settled(results[id]) || options.skipStepIds?.has(id) || preflightBlocked.has(id)) continue;
 
         if (Date.now() >= deadline) {
           results[id] = failedResult(plan, id, 'max_duration_exceeded', { budget: 'maxDurationMs' });
@@ -536,7 +565,7 @@ export async function executeIntentPlan(
 
   if (haltReason === 'duration') {
     for (const id of order) {
-      if (settled(results[id])) continue;
+      if (settled(results[id]) || options.skipStepIds?.has(id)) continue;
       results[id] = failedResult(plan, id, 'max_duration_exceeded', { budget: 'maxDurationMs' });
       anyFailure = true;
       firstError ||= 'max_duration_exceeded';

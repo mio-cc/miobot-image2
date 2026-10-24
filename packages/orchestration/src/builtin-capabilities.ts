@@ -130,6 +130,11 @@ export function builtinCapabilityDescriptors(): CapabilityDescriptor[] {
     'browser.render': ['url'],
   };
   const sideEffects: Record<string, CapabilityDescriptor['sideEffects']> = {
+    // T2.8 修复：生图/改图/视频是 async_job + 外部提交（ComfyUI prompt_id / 视频任务 id），
+    // 漏标 external_call 会让崩溃恢复把它们当可重放步骤直接重跑——双计费。
+    'image.generate': ['creates_artifact', 'external_call'],
+    'image.edit': ['creates_artifact', 'external_call'],
+    'video.generate': ['creates_artifact', 'external_call'],
     'web.search': ['external_call'],
     'browser.render': ['creates_artifact', 'external_call'],
     'audio.music.generate': ['creates_artifact', 'external_call'],

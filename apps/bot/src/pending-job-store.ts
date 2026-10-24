@@ -37,6 +37,8 @@ export interface PendingJobRecord {
   executionClarificationCount?: number;
   startedAt?: number;
   lastError?: string;
+  /** T2.8：stepId → 外部异步任务信息（提交后立即上报）；崩溃恢复时据此对账远端。 */
+  externalTasks?: Record<string, { capability: string; taskId: string; reportedAt: string }>;
 }
 
 /**

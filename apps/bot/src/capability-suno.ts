@@ -166,6 +166,8 @@ export class SunoCapabilityHandler implements CapabilityHandler {
       await this.acquireSlot(cfg, invocation.request.user.qq);
       acquired = true;
       const created = await this.withRetry(() => client.create(generationInput), cfg.maxRetries);
+      // T2.8：提交成功即上报 taskId——崩溃恢复时才有对账依据（不重放、防双计费）。
+      invocation.reportExternalTask?.(created.id);
       const task = await this.withRetry(() => client.wait(created.id, { timeoutMs: cfg.timeoutMs }), cfg.maxRetries);
       if (task.status !== 'success') {
         return {

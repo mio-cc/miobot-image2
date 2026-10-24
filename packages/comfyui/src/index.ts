@@ -10,6 +10,8 @@ export interface ComfyUiRunOptions {
   node: Pick<ComfyUiNodeConfig, 'pollTimeoutMs' | 'pollIntervalMs' | 'maxBatchSize'>;
   outputNodeId?: string;
   maxImageBytes?: number;
+  /** T2.8：prompt_id 一到手立即回调（崩溃恢复对账依据）；抛错不影响生成。 */
+  onSubmitted?: (promptId: string) => void;
 }
 
 export interface ComfyUiGeneratedImage {
@@ -47,6 +49,15 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// 不在模块加载时抓住 fetch 引用：既有测试会事后替换 globalThis.fetch，
+// 调用时动态解析才能看到替换后的实现。
+let fetchImpl: typeof fetch | undefined;
+
+/** 测试注入用：替换本包内所有 ComfyUI HTTP 调用；不传则回落全局 fetch。 */
+export function setComfyUiFetchImpl(impl?: typeof fetch): void {
+  fetchImpl = impl;
+}
+
 function mergeHeaders(options: Pick<ComfyUiRunOptions, 'apiKey' | 'headers'>): Record<string, string> {
   const headers: Record<string, string> = { Accept: 'application/json', ...(options.headers || {}) };
   if (options.apiKey && !Object.keys(headers).some((key) => key.toLowerCase() === 'authorization')) {
@@ -56,7 +67,7 @@ function mergeHeaders(options: Pick<ComfyUiRunOptions, 'apiKey' | 'headers'>): R
 }
 
 async function fetchText(url: string, init: RequestInit, timeoutMs: number): Promise<{ response: Response; text: string }> {
-  const response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  const response = await (fetchImpl || fetch)(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   return { response, text: await response.text() };
 }
 
@@ -381,7 +392,7 @@ async function downloadImage(baseUrl: string, image: Record<string, any>, header
   const filename = String(image.filename || '');
   if (!filename) throw new ComfyUiError('ComfyUI 输出缺少 filename');
   const query = new URLSearchParams({ filename, subfolder: String(image.subfolder || ''), type: String(image.type || 'output') });
-  const response = await fetch(`${trimBase(baseUrl)}/view?${query.toString()}`, { headers, signal: AbortSignal.timeout(timeoutMs) });
+  const response = await (fetchImpl || fetch)(`${trimBase(baseUrl)}/view?${query.toString()}`, { headers, signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) throw new ComfyUiError(`ComfyUI 图片下载失败 HTTP ${response.status}`, { status: response.status });
   const buffer = Buffer.from(await response.arrayBuffer());
   if (buffer.length > maxBytes) throw new ComfyUiError(`ComfyUI 单张图片超过上限 ${maxBytes} bytes`, { code: 'image_too_large' });
@@ -397,6 +408,43 @@ async function cancelQueuedComfyPrompt(baseUrl: string, headers: Record<string, 
     }, 10000);
   } catch { /* 取消失败不能掩盖原始超时 */ }
 }
+/**
+ * T2.8 崩溃恢复对账探针：按 promptId 单次查询 ComfyUI history。
+ * - history 无条目 → running（仍在队列/执行中）
+ * - status.status_str === 'error' → failed
+ * - outputs 有内容 → 下载全部输出节点的图片并返回 success
+ * 不知道原 profile 的 outputNodeId，取全部输出节点（与 runComfyUiWorkflow 无 outputNodeId 的回退路径一致）。
+ */
+export async function probeComfyUiPrompt(options: {
+  baseUrl: string;
+  apiKey?: string;
+  headers?: Record<string, string>;
+  promptId: string;
+  timeoutMs?: number;
+  maxImageBytes?: number;
+}): Promise<{ status: 'running' | 'success' | 'failed'; images: ComfyUiGeneratedImage[]; error?: string }> {
+  const baseUrl = trimBase(options.baseUrl);
+  if (!baseUrl) throw new ComfyUiError('ComfyUI 节点缺少 Base URL');
+  const headers = mergeHeaders(options);
+  const data = asRecord(await fetchJson(`${baseUrl}/history/${encodeURIComponent(options.promptId)}`, { method: 'GET', headers }, options.timeoutMs || 30000));
+  const entry = asRecord(data[options.promptId]);
+  if (!entry || !Object.keys(entry).length) return { status: 'running', images: [] };
+  const status = asRecord(entry.status);
+  if (status.status_str === 'error') return { status: 'failed', images: [], error: 'comfyui_execution_error' };
+  const outputs = asRecord(entry.outputs);
+  const imageNodes: Record<string, any>[] = [];
+  for (const output of Object.values(outputs)) {
+    const images = asRecord(output).images;
+    if (Array.isArray(images)) imageNodes.push(...images);
+  }
+  if (!imageNodes.length) return { status: 'running', images: [] };
+  const images: ComfyUiGeneratedImage[] = [];
+  for (const item of imageNodes.slice(0, 16)) {
+    images.push(await downloadImage(baseUrl, item, headers, options.timeoutMs || 30000, options.maxImageBytes || 20 * 1024 * 1024));
+  }
+  return { status: 'success', images };
+}
+
 export async function runComfyUiWorkflow(options: ComfyUiRunOptions): Promise<ComfyUiRunResult> {
   const baseUrl = trimBase(options.baseUrl);
   if (!baseUrl) throw new ComfyUiError('ComfyUI 节点缺少 Base URL');
@@ -416,6 +464,7 @@ export async function runComfyUiWorkflow(options: ComfyUiRunOptions): Promise<Co
   }
   const promptId = String(asRecord(submitted).prompt_id || '');
   if (!promptId) throw new ComfyUiError('ComfyUI 没有返回 prompt_id', { code: 'node_errors' });
+  try { options.onSubmitted?.(promptId); } catch { /* 上报失败不影响生成 */ }
 
   const deadline = Date.now() + options.node.pollTimeoutMs;
   let history: Record<string, any> = {};

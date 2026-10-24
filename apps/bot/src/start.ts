@@ -39,7 +39,8 @@ import { CanvasStore } from '../../../packages/canvas-service/src/index.js';
 import type { CapabilityHandler, CapabilityInvocation, ExecutionResult } from '../../../packages/orchestration/src/index.js';
 import { createWebSearchService } from '../../../packages/search/src/index.js';
 import { createBrowserRenderer } from '../../../packages/browser-render/src/index.js';
-import { fetchComfyUiObjectInfo } from '../../../packages/comfyui/src/index.js';
+import { fetchComfyUiObjectInfo, probeComfyUiPrompt } from '../../../packages/comfyui/src/index.js';
+import { SunoClient } from '../../../packages/orchestration/src/suno.js';
 import { PendingFileIndex, DEFAULT_FILE_PARSE_LIMITS } from '../../../packages/file-ingest/src/index.js';
 import { derivePanelToken } from '../../../packages/web-api/src/index.js';
 import { promises as fs, readFileSync } from 'node:fs';
@@ -680,6 +681,56 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     featureGate,
     handlers: orchestrationHandlers,
     trace: (trace) => traceWriter.append(trace),
+    // T2.8：崩溃恢复对账——Suno 查 statusPath，ComfyUI 查 /history/{promptId}；
+    // 成功则带回输出补投递，未完成/失败维持 interrupted（防双计费不重放）。
+    externalTaskProbe: async ({ capability, taskId }) => {
+      const cfg = getConfig();
+      if (capability.startsWith('audio.music')) {
+        if (!cfg.orchestration.suno.enabled) return undefined;
+        const client = new SunoClient({
+          baseUrl: cfg.orchestration.suno.baseUrl,
+          apiKey: cfg.orchestration.suno.apiKey,
+          model: cfg.orchestration.suno.model,
+          requestMode: cfg.orchestration.suno.requestMode,
+          callbackUrl: cfg.orchestration.suno.callbackUrl,
+          createPath: cfg.orchestration.suno.createPath,
+          statusPath: cfg.orchestration.suno.statusPath,
+          authHeader: cfg.orchestration.suno.authHeader,
+          authPrefix: cfg.orchestration.suno.authPrefix,
+          timeoutMs: cfg.orchestration.suno.timeoutMs,
+          pollIntervalMs: cfg.orchestration.suno.pollIntervalMs,
+        });
+        try {
+          const task = await client.get(taskId);
+          if (task.status === 'success') {
+            // 与 SunoCapabilityHandler 同款映射：Suno 原始输出 → 编排 ExecutionOutput。
+            const outputs = task.outputs
+              .filter((item) => Boolean(item.url))
+              .map((item) => ({
+                kind: 'audio' as const,
+                url: item.url,
+                priority: 10,
+                mergeable: false,
+                meta: { title: item.title, lyrics: item.lyrics, audioId: item.audioId, duration: item.duration, provider: 'suno-official' },
+              }));
+            return outputs.length ? { status: 'success' as const, outputs } : { status: 'failed' as const, error: 'suno_task_no_audio' };
+          }
+          if (task.status === 'failed') return { status: 'failed' as const, error: 'suno_task_failed' };
+          return { status: 'running' as const };
+        } catch { return undefined; }
+      }
+      if (capability.startsWith('image.')) {
+        const node = cfg.llm.apiKeys?.[cfg.llm.imageNodeIndex];
+        if (!node || node.kind !== 'comfyui') return undefined;
+        try {
+          const probed = await probeComfyUiPrompt({ baseUrl: node.baseUrl, apiKey: node.key, headers: node.headers, promptId: taskId, timeoutMs: 30000 });
+          if (probed.status !== 'success') return { status: probed.status, error: probed.error };
+          const outputs = probed.images.map((image) => ({ kind: 'image' as const, url: `data:${image.mime};base64,${image.buffer.toString('base64')}` }));
+          return outputs.length ? { status: 'success' as const, outputs } : { status: 'running' as const };
+        } catch { return undefined; }
+      }
+      return undefined;
+    },
   });
   // 编排器就绪后接入能力默认配额解析（featureGate 先于 enforcer 创建，用闭包晚绑定）。
   describeCapabilityForGate = (id) => orchestrationEnforcer.describeCapabilityForGate(id);

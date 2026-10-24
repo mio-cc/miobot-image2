@@ -32,6 +32,7 @@ import {
   validatePlanEffectAlignment,
   type CapabilityHandler,
   type CapabilityRateGate,
+  type ExternalTaskProbeResult,
   type IntentPlan,
   type IntentStep,
   type ExecutionOutput,
@@ -124,6 +125,11 @@ export class OrchestrationEnforcer {
     featureGate?: CapabilityRateGate;
     trace?: (trace: OrchestrationTrace) => void;
     handlers?: Map<string, CapabilityHandler>;
+    /**
+     * T2.8：崩溃恢复对账探针——按 capability + taskId 查远端任务状态。
+     * success 返回输出（补投递走正常 buildReplyPlan 链）；running/failed 维持 interrupted 防双计费。
+     */
+    externalTaskProbe?: (info: { capability: string; taskId: string }) => Promise<ExternalTaskProbeResult | undefined>;
   }) {
     this.dispatcher = new CapabilityDispatcher(this.registry, createPermissionPolicyFromDefaults({
       low: 'allow', medium: 'allow', high: 'ask_admin', critical: 'ask_admin',
@@ -537,6 +543,8 @@ export class OrchestrationEnforcer {
     const resumeApprovedStepIds = new Set<string>(pending?.approvedStepIds || []);
     let resumePendingStepId = pending?.pendingStepId;
     let resumedFromJob = false;
+    // T2.8：恢复时被标记 interrupted 的步骤——executor 显式跳过，防 failed 结果被重跑（双计费）。
+    const recoverySkipStepIds = new Set<string>();
 
     // 审批通过后的恢复不依赖原进程 waiter；这里用持久化 Job + 审批终态重建执行上下文。
     if (pending?.status === 'waiting_approval') {
@@ -614,12 +622,38 @@ export class OrchestrationEnforcer {
             const descriptor = this.registry.get(interrupted.capability);
             const isExternalAsync = descriptor?.mode === 'async_job' && (descriptor?.sideEffects || []).includes('external_call');
             if (isExternalAsync) {
-              resumeResults[interrupted.id] = {
-                jobId, stepId: interrupted.id, status: 'failed', outputs: [],
-                error: 'interrupted_external_task', retryable: false,
-                diagnostics: { recovery: 'crash_interrupted', capability: interrupted.capability },
+              const interruptedMark = (recovery: string, extra?: Record<string, unknown>) => {
+                recoverySkipStepIds.add(interrupted.id);
+                resumeResults[interrupted.id] = {
+                  jobId, stepId: interrupted.id, status: 'failed', outputs: [],
+                  error: 'interrupted_external_task', retryable: false,
+                  diagnostics: { recovery, capability: interrupted.capability, ...extra },
+                };
+                appendTrace('plan', '崩溃时在途的外部任务标记为中断，跳过重放防双计费', { stepId: interrupted.id, capability: interrupted.capability, recovery });
               };
-              appendTrace('plan', '崩溃时在途的外部任务标记为中断，跳过重放防双计费', { stepId: interrupted.id, capability: interrupted.capability });
+              // T2.8 完整对账：提交时已上报 taskId → 查远端；成功则补投递，未完成/失败维持中断。
+              const external = pending.externalTasks?.[interrupted.id];
+              if (external?.taskId && this.options.externalTaskProbe) {
+                appendTrace('plan', '崩溃对账：查询远端外部任务', { stepId: interrupted.id, capability: interrupted.capability, taskId: external.taskId });
+                let probe: ExternalTaskProbeResult | undefined;
+                try {
+                  probe = await this.options.externalTaskProbe({ capability: interrupted.capability, taskId: external.taskId });
+                } catch (error) {
+                  appendTrace('plan', '崩溃对账：远端查询失败，维持中断', { stepId: interrupted.id, error: String((error as Error)?.message || error) });
+                }
+                if (probe?.status === 'success' && (probe.outputs || []).length) {
+                  resumeResults[interrupted.id] = {
+                    jobId, stepId: interrupted.id, status: 'success',
+                    outputs: probe.outputs || [],
+                    diagnostics: { recovery: 'external_task_reconciled', capability: interrupted.capability, taskId: external.taskId },
+                  };
+                  appendTrace('plan', '远端任务已成功，恢复结果补投递', { stepId: interrupted.id, capability: interrupted.capability, taskId: external.taskId, outputs: (probe.outputs || []).length });
+                } else {
+                  interruptedMark(probe?.status === 'failed' ? 'external_task_failed' : 'crash_interrupted', { taskId: external.taskId });
+                }
+              } else {
+                interruptedMark('crash_interrupted');
+              }
             }
           }
         }
@@ -1007,6 +1041,18 @@ export class OrchestrationEnforcer {
             lastError: checkpoint.reason,
           });
         },
+        // T2.8：handler 提交远端任务后立即落盘 taskId，崩溃恢复时据此对账。
+        onExternalTask: (info) => {
+          const current = this.options.pendingJobs?.get(storeKey);
+          if (!current) return;
+          this.options.pendingJobs?.update(storeKey, {
+            externalTasks: {
+              ...(current.externalTasks || {}),
+              [info.stepId]: { capability: info.capability, taskId: info.taskId, reportedAt: new Date().toISOString() },
+            },
+          });
+        },
+        skipStepIds: recoverySkipStepIds,
       });
       initialResults = execution.results;
       let outputs = execution.outputs;

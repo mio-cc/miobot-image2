@@ -3,6 +3,7 @@ import type { ImageArtifact, ImageResult, ModelClient } from '../../../packages/
 import { ComfyUiError, runComfyUiWorkflow, validateComfyUiProfile } from '../../../packages/comfyui/src/index.js';
 import { stitchImages } from '../../../packages/image-compose/src/index.js';
 import { runInComfyUiQueue } from './comfyui-queue.js';
+import { reportExternalTaskFromHandler } from '../../../packages/orchestration/src/external-task-context.js';
 
 export interface ComfyUiGenerateOptions {
   getConfig: () => AppConfig;
@@ -402,6 +403,8 @@ export async function generateComfyUiImages(options: ComfyUiGenerateOptions, req
         node: comfyConfig,
         outputNodeId: profile.outputNodeId,
         maxImageBytes: 20 * 1024 * 1024,
+        // T2.8：prompt_id 一到手立即上报（经 ALS 绑定到当前编排步骤），崩溃恢复可对账。
+        onSubmitted: (promptId) => reportExternalTaskFromHandler(promptId),
       });
       const images = result.images;
       if (!images.length) throw new ComfyUiError('ComfyUI 没有生成图片', { code: 'no_images' });

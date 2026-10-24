@@ -257,6 +257,8 @@ export class SunoReplaceSectionCapabilityHandler implements CapabilityHandler {
         callBackUrl: cfg.callbackUrl,
         model: cfg.model,
       });
+      // T2.8：提交成功即上报 taskId，供崩溃恢复对账。
+      invocation.reportExternalTask?.(created.id);
       const task = await client.wait(created.id, { timeoutMs: cfg.timeoutMs });
       if (task.status !== 'success') {
         return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'failed', outputs: [], error: `suno_replace_${task.status}`, diagnostics: { taskId: created.id }, retryable: task.status !== 'failed' };

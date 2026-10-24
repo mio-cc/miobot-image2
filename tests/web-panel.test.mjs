@@ -222,7 +222,8 @@ test('web api: external Suno capability stays disabled until explicitly enabled'
   assert.match(response.body.manifest.version, /^cm_[0-9a-f]{8}$/);
   const manifestImage = response.body.manifest.capabilities.find((item) => item.id === 'image.generate');
   assert.equal(manifestImage.effect, 'generate');
-  assert.deepEqual(manifestImage.sideEffects, ['creates_artifact']);
+  // T2.8 修正：image.generate 是外部提交型 async_job（ComfyUI prompt_id），补上 external_call。
+  assert.deepEqual(manifestImage.sideEffects, ['creates_artifact', 'external_call']);
   assert.equal(Object.prototype.hasOwnProperty.call(manifestImage, 'notFor'), false);
 });
 test('web api: config versions are audited and can be rolled back', async () => {

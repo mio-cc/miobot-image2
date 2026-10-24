@@ -12,6 +12,7 @@ export * from './capability-manifest.js';
 export * from './builtin-capabilities.js';
 export * from './dispatcher.js';
 export * from './executor.js';
+export * from './external-task-context.js';
 export * from './approval-message.js';
 export * from './approval-broker.js';
 export * from './suno.js';

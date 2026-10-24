@@ -18,6 +18,12 @@ export interface CapabilityInvocation {
   validationWarnings?: ArgsNormalizationWarning[];
   /** 步骤级取消信号；支持长任务的 handler 应在副作用结束后检查或监听 abort。 */
   signal?: AbortSignal;
+  /**
+   * T2.8：外部异步任务 taskId 上报旁路。handler 在远端任务提交成功后立即调用
+   * （如 Suno create 返回 taskId 时），executor 经 onExternalTask 落盘进 Job 记录，
+   * 供崩溃恢复时对账（查远端成功则补投递，防双计费不重放）。
+   */
+  reportExternalTask?: (taskId: string) => void;
 }
 
 /**
@@ -236,7 +242,7 @@ export class CapabilityDispatcher {
     plan: IntentPlan,
     step: IntentStep,
     dependencyResults: Record<string, ExecutionResult> = {},
-    options: { approvalGranted?: boolean; signal?: AbortSignal } = {},
+    options: { approvalGranted?: boolean; signal?: AbortSignal; reportExternalTask?: (taskId: string) => void } = {},
   ): Promise<DispatchResult> {
     const authorization = this.authorize(request, plan, step, options);
     if (authorization.result) {
@@ -313,7 +319,7 @@ export class CapabilityDispatcher {
       }
     }
     try {
-      const result = await handler.execute({ request, plan, step: stepForExecution, dependencyResults, validationWarnings: authorization.validationWarnings, signal: options.signal });
+      const result = await handler.execute({ request, plan, step: stepForExecution, dependencyResults, validationWarnings: authorization.validationWarnings, signal: options.signal, reportExternalTask: options.reportExternalTask });
       return {
         permission: authorization.permission,
         capability: authorization.capability,

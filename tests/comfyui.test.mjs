@@ -238,3 +238,77 @@ test('comfyui lora: transform selection can disable or enable the LoRA node', ()
   const off = sanitizeComfyUiParams(loraProfile, { prompt: 'clean anime portrait' }, 'clean anime portrait', 1, 1);
   assert.equal(off.loraId, 'none');
 });
+
+test('comfyui T2.8: probeComfyUiPrompt 对账探针——running / success / failed 三态', async () => {
+  const { probeComfyUiPrompt, setComfyUiFetchImpl } = await import('../dist/packages/comfyui/src/index.js');
+  const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const pngBuffer = Buffer.from(pngBase64, 'base64');
+  const makeFetch = (history) => async (url) => {
+    if (String(url).includes('/history/')) {
+      return new Response(JSON.stringify(history), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (String(url).includes('/view')) {
+      return new Response(pngBuffer, { status: 200, headers: { 'content-type': 'image/png' } });
+    }
+    throw new Error('unexpected fetch: ' + String(url));
+  };
+  // 1. history 无条目 → running（仍在队列/执行）
+  setComfyUiFetchImpl(makeFetch({}));
+  const running = await probeComfyUiPrompt({ baseUrl: 'http://comfy:8188', promptId: 'p-none', timeoutMs: 5000 });
+  assert.equal(running.status, 'running');
+  // 2. outputs 有内容 → success 且取回图片
+  const historyOk = { 'p-ok': { outputs: { '16': { images: [{ filename: 'a.png', subfolder: '', type: 'output' }] } }, status: { status_str: 'success' } } };
+  setComfyUiFetchImpl(makeFetch(historyOk));
+  const success = await probeComfyUiPrompt({ baseUrl: 'http://comfy:8188', promptId: 'p-ok', timeoutMs: 5000 });
+  assert.equal(success.status, 'success');
+  assert.equal(success.images.length, 1);
+  assert.equal(success.images[0].mime, 'image/png');
+  // 3. status error → failed
+  const historyErr = { 'p-err': { outputs: {}, status: { status_str: 'error' } } };
+  setComfyUiFetchImpl(makeFetch(historyErr));
+  try {
+    const failed = await probeComfyUiPrompt({ baseUrl: 'http://comfy:8188', promptId: 'p-err', timeoutMs: 5000 });
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.error, 'comfyui_execution_error');
+  } finally {
+    setComfyUiFetchImpl();
+  }
+});
+
+test('comfyui T2.8: runComfyUiWorkflow 提交后立即回调 onSubmitted(promptId)', async () => {
+  const { runComfyUiWorkflow, setComfyUiFetchImpl } = await import('../dist/packages/comfyui/src/index.js');
+  const pngBuffer = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  const submittedAt = { done: false };
+  const submittedPromptId = { value: '' };
+  const fakeFetch = async (url) => {
+    if (String(url).endsWith('/prompt')) {
+      // 提交成功即回调应在轮询开始前发生；这里先标记“提交完成”
+      submittedAt.done = true;
+      return new Response(JSON.stringify({ prompt_id: 'prompt-sub-1' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (String(url).includes('/history/')) {
+      assert.ok(submittedPromptId.value, 'onSubmitted 必须在 history 轮询前已回调');
+      return new Response(JSON.stringify({ 'prompt-sub-1': { outputs: { '16': { images: [{ filename: 'a.png', subfolder: '', type: 'output' }] } }, status: { status_str: 'success' } } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (String(url).includes('/view')) {
+      return new Response(pngBuffer, { status: 200, headers: { 'content-type': 'image/png' } });
+    }
+    throw new Error('unexpected fetch: ' + String(url));
+  };
+  setComfyUiFetchImpl(fakeFetch);
+  let result;
+  try {
+    result = await runComfyUiWorkflow({
+      baseUrl: 'http://comfy:8188',
+      profile: { ...profile, outputNodeId: '16' },
+      params: { prompt: 'a cat' },
+      node: { pollTimeoutMs: 5000, pollIntervalMs: 10, maxBatchSize: 1 },
+      onSubmitted: (promptId) => { submittedPromptId.value = promptId; },
+    });
+  } finally {
+    setComfyUiFetchImpl();
+  }
+  assert.equal(result.promptId, 'prompt-sub-1');
+  assert.equal(submittedPromptId.value, 'prompt-sub-1', 'onSubmitted 应携带 prompt_id');
+  assert.equal(result.images.length, 1);
+});
