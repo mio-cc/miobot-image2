@@ -142,3 +142,13 @@ test('scheduler T4.3: task.schedule 能力 handler——时间/文本解析与 n
   await handler.execute(groupInvocation);
   assert.deepEqual(scheduled[2].target, { chatType: 'group', groupId: '123', userId: '9' });
 });
+
+test('scheduler 事故修复: 安静窗口判断——03:00-06:30 内为真，白天/凌晨为假', async () => {
+  const { withinQuietWindow } = await import('../dist/apps/bot/src/scheduler.js');
+  assert.equal(withinQuietWindow(new Date('2026-10-25T03:00:00')), true);
+  assert.equal(withinQuietWindow(new Date('2026-10-25T04:30:00')), true);
+  assert.equal(withinQuietWindow(new Date('2026-10-25T06:29:00')), true);
+  assert.equal(withinQuietWindow(new Date('2026-10-25T06:30:00')), false, '06:30 整点出窗');
+  assert.equal(withinQuietWindow(new Date('2026-10-25T11:13:00')), false, '事故时间点（白天补跑）必须为假');
+  assert.equal(withinQuietWindow(new Date('2026-10-25T02:59:00')), false);
+});

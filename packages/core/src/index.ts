@@ -26,6 +26,17 @@ export function normalizeError(error: unknown, options: ErrorNormalizeOptions = 
   };
   if (code) normalized.code = code;
   if (status !== undefined) normalized.status = status;
+  // 实测事故 2026-10-24：错误若自带 normalized（LlmProviderError 等约定），
+  // 尊重抛错方已判定的分类——上游 429/busy 是否可重试只有抛错方知道，
+  // 通用分类器会把它们洗成不可重试，导致 runWithRetry 永不重试。
+  const prenormalized = record && isRecord(record.normalized) ? record.normalized as Partial<SerializableError> : undefined;
+  if (prenormalized) {
+    if (prenormalized.category) normalized.category = prenormalized.category;
+    if (typeof prenormalized.retryable === 'boolean') normalized.retryable = prenormalized.retryable;
+    if (prenormalized.code !== undefined) normalized.code = prenormalized.code;
+    if (prenormalized.status !== undefined) normalized.status = prenormalized.status;
+    if (prenormalized.details !== undefined) normalized.details = prenormalized.details;
+  }
   if (options.includeStack && error instanceof Error && error.stack) normalized.stack = error.stack;
   if (options.details !== undefined) normalized.details = options.details;
   const cause = error instanceof Error ? error.cause : record?.cause;

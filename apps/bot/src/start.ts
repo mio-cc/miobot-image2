@@ -12,7 +12,7 @@ import type { OwnerCommand } from './owner.js';
 import type { NapcatHistoryMessage } from './group-context.js';
 import { normalizeForwardPayload } from './message-enrichment.js';
 import { FeatureGate } from './feature-gate.js';
-import { createOutboundImageCompressor, materializeImagesForNapcat } from './image-output.js';
+import { createOutboundImageCompressor, materializeImagesForNapcat, materializeAudioForNapcat } from './image-output.js';
 import { runShadowOrchestration } from './orchestration-shadow.js';
 import { ApprovalRuntime } from './approval-runtime.js';
 import { buildCommandIntentPlan } from '../../../packages/orchestration/src/index.js';
@@ -30,7 +30,7 @@ import { OwnerRecallCapabilityHandler } from './capability-owner.js';
 import { createSentMessageTracker } from './sent-messages.js';
 import { OrchestrationEnforcer } from './orchestration-enforce.js';
 import { OrchestrationTraceWriter } from './orchestration-trace.js';
-import { SchedulerService, buildDailyReport } from './scheduler.js';
+import { SchedulerService, buildDailyReport, withinQuietWindow } from './scheduler.js';
 import { ScheduleCapabilityHandler } from './capability-schedule.js';
 import { loadCapabilityPlugins, pluginManifestPath } from './capability-plugins.js';
 import { McpClient, McpToolCapabilityHandler, mcpToolToDescriptor } from './mcp-client.js';
@@ -569,6 +569,11 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       }
       // T3.4：记忆夜间巩固（03:30）——评分 + 归并 + 淘汰 + retention prune，memory 关闭时自身零计数返回。
       if (job.type === 'memory-consolidate') {
+        // 安静窗口（03:00–06:30）外不跑：模型密集后台任务白天触发（含部署补跑）会打满免费档拖垮交互。
+        if (!withinQuietWindow(new Date())) {
+          logger?.info('记忆巩固在安静窗口外触发，跳过（顺延至次日 03:30 窗口）', { hour: new Date().getHours() });
+          return null;
+        }
         const stats = await memoryService.consolidate();
         if (stats.namespaces || stats.merged || stats.evicted || stats.pruned) {
           logger?.info('记忆夜间巩固完成', stats as unknown as Record<string, unknown>);
@@ -1033,6 +1038,15 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         logger,
       });
     },
+    materializeAudio: async (audios) => {
+      const napcat = getConfig().napcat;
+      if (!napcat.mountOutputDir || !napcat.mountOutputContainerDir) return audios;
+      return materializeAudioForNapcat(audios, {
+        hostDir: napcat.mountOutputDir,
+        containerDir: napcat.mountOutputContainerDir,
+        logger,
+      });
+    },
     deleteMessage: (messageId) => adapter.deleteMessage(messageId),
     downloadFile: downloadIncomingFile,
     fileParseLimits: DEFAULT_FILE_PARSE_LIMITS,
@@ -1060,6 +1074,19 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         const audio = await synthesizeSpeech(tts, speakText, { logger });
         const delayMs = Math.max(0, Math.min(30000, Math.trunc(Number(pre?.delayMs || 0))));
         if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+        // 次要优化（2026-10-24 实测）：auto-TTS 的 record 也走共享目录 file:// 路径，
+        // 省 99KB base64 的 WS 上行（实测 4.6s）；失败回退 base64 原样发送。
+        try {
+          const napcat = getConfig().napcat;
+          if (audio.file && napcat.mountOutputDir && napcat.mountOutputContainerDir) {
+            const [materialized] = await materializeAudioForNapcat([audio.file], {
+              hostDir: napcat.mountOutputDir,
+              containerDir: napcat.mountOutputContainerDir,
+              logger,
+            });
+            return materialized || audio.file;
+          }
+        } catch { /* 物化失败回退 base64 */ }
         return audio.file;
       } catch (error) {
         logger.warn('tts synthesize failed', { error: String((error as { message?: string })?.message || error) });

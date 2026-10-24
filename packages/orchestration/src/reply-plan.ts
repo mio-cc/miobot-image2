@@ -55,7 +55,9 @@ export function buildDeterministicPlanSummary(
   const text = parts.length
     ? '任务已结束：' + parts.join('、') + '。'
     : '任务已结束，但没有产生可发送的内容。';
-  return { id: 'plan-summary', kind: 'text', text, priority: 0, mergeable: true, meta: { synthetic: true, reason: 'empty_output_fallback', skipTts: false } };
+  // 实测事故 2026-10-24：失败摘要被自动 TTS 念出来（用户等 40s 听"任务已结束 ✗"）。
+  // 失败摘要只走文字可见，不进语音。
+  return { id: 'plan-summary', kind: 'text', text, priority: 0, mergeable: true, meta: { synthetic: true, reason: 'empty_output_fallback', skipTts: true, disableVoice: true } };
 }
 
 function defaultMergeable(output: ExecutionOutput): boolean {

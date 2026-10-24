@@ -403,15 +403,16 @@ export class ChatMemoryService {
    * → 低分淘汰（≤2 且超 24h）→ retention prune。落盘沿用既有防抖队列。
    * 通过 manifest 加载全部 namespace——夜间任务通常在冷启动进程里跑，dbs 是空的。
    */
-  async consolidate(input: { now?: () => number } = {}): Promise<{ namespaces: number; scored: number; merged: number; evicted: number; pruned: number }> {
+  async consolidate(input: { now?: () => number } = {}): Promise<{ namespaces: number; scored: number; merged: number; evicted: number; pruned: number; aborted?: boolean }> {
     this.syncRoot();
     const memory = this.options.getConfig().orchestration.memory;
     if (!memory.enabled) return { namespaces: 0, scored: 0, merged: 0, evicted: 0, pruned: 0 };
     const now = (input.now || Date.now)();
-    const stats = { namespaces: 0, scored: 0, merged: 0, evicted: 0, pruned: 0 };
+    const stats = { namespaces: 0, scored: 0, merged: 0, evicted: 0, pruned: 0, aborted: false };
     const manifest = await this.loadManifest();
-    const keys = new Set<string>([...Object.keys(manifest), ...this.dbs.keys()]);
-    for (const key of keys) {
+    const keys = [...new Set<string>([...Object.keys(manifest), ...this.dbs.keys()])];
+    for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
+      const key = keys[keyIndex];
       const db = await this.loadDbByKey(key);
       if (!db) continue;
       let result: any;
@@ -427,7 +428,15 @@ export class ChatMemoryService {
           docs.forEach((doc, index) => scores.set(doc.id, Math.max(0, Math.min(10, Number(values?.[index]) || 0))));
           stats.scored += docs.length;
         } catch (error) {
-          this.options.logger?.warn('memory importance scoring failed', { namespace: key, error: String((error as Error)?.message || error) });
+          const message = String((error as Error)?.message || error);
+          // 实测事故 2026-10-24：巩固评分打满免费档，交互链路 25s 撞 busy 后失败。
+          // 巩固是后台任务，遇限流立即让路：中止本轮（已完成部分保留），下次再跑。
+          if (/busy|rate.?limit|429|too many requests/i.test(message)) {
+            this.options.logger?.warn('记忆巩固触发上游限流，本轮中止让路（下次继续）', { namespace: key, error: message });
+            stats.aborted = true;
+            return stats;
+          }
+          this.options.logger?.warn('memory importance scoring failed', { namespace: key, error: message });
         }
       }
       // 2) 相似归并：同 namespace 内 embedding 近邻视为重复，保留分数高/更新的一条。
@@ -469,6 +478,10 @@ export class ChatMemoryService {
         stats.evicted += 1;
       }
       if (mergedIds.size || evictedIds.size) await this.persistKey(key);
+      // 命名空间间隔 2s（仅配置了评分器时）：后台批任务主动降速，不与交互链路抢免费档并发。
+      if (this.options.scoreImportance && keyIndex < keys.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
     }
     // 4) retention 清理
     const pruned = await this.prune(now);

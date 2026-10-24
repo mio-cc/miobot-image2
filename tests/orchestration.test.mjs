@@ -3432,3 +3432,13 @@ test('orchestration T3.3 iterate: 重规划次数上限 maxReplan=2，超限后�
   assert.equal(handlerCalls, 3, '1 次原始执行 + 2 次重跑');
   assert.ok(result.problem, '超限后应维持失败并上报');
 });
+
+test('orchestration 事故修复: 失败摘要禁止自动 TTS（不念"任务已结束 ✗"）', () => {
+  const summary = buildDeterministicPlanSummary(
+    { steps: [{ id: 's1', capability: 'chat.reply' }] },
+    { s1: { status: 'failed' } },
+    (id) => '自然语言对话',
+  );
+  assert.equal(summary.meta.skipTts, true);
+  assert.equal(summary.meta.disableVoice, true);
+});

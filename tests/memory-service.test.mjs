@@ -200,3 +200,30 @@ test('memory T3.4 consolidate: 未配置 scorer 时只归并不淘汰', async ()
   const after = await memory.retrieve({ botId: 'bot', chatType: 'private', userId: 'u1', query: 'secret' });
   assert.ok(after.context.includes('trash small talk'), '无 scorer 时保留原文');
 });
+
+test('memory 事故修复: 巩固评分撞限流立即中止让路，不继续烧模型', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'miobot-memory-busy-'));
+  const config = () => ({ orchestration: { memory: { enabled: true, autoIngest: true, retentionDays: 30 } } });
+  const embedding = { model: 'test-embedding', dimensions: 3, embed: async (texts) => texts.map(() => [1, 0, 0]) };
+  const memory = new ChatMemoryService({ rootDir: root, getConfig: config, embedding });
+  // 造两个 namespace 各 2 条。
+  await memory.ingest({ botId: 'bot', chatType: 'group', groupId: 'g1', userId: 'u1', authorName: 'u1', role: 'user', text: 'alpha one', messageId: 'a1' });
+  await memory.ingest({ botId: 'bot', chatType: 'group', groupId: 'g1', userId: 'u1', authorName: 'u1', role: 'user', text: 'alpha two', messageId: 'a2' });
+  await memory.ingest({ botId: 'bot', chatType: 'group', groupId: 'g2', userId: 'u1', authorName: 'u1', role: 'user', text: 'beta one', messageId: 'b1' });
+  await memory.flush();
+  let scoreCalls = 0;
+  const stats = await memory.consolidate({
+    now: () => Date.now(),
+  }).catch(() => null);
+  assert.ok(stats); // 无 scorer 时纯归并路径不受影响
+  // 带 scorer：第一个 namespace 就 busy → 立即中止，第二个 namespace 不被评分。
+  const memory2 = new ChatMemoryService({
+    rootDir: root,
+    getConfig: config,
+    embedding,
+    scoreImportance: async () => { scoreCalls += 1; throw new Error('Model resources are currently busy. Please try again later.'); },
+  });
+  const stats2 = await memory2.consolidate({ now: () => Date.now() });
+  assert.equal(stats2.aborted, true, '限流时标记 aborted');
+  assert.equal(scoreCalls, 1, '第一个 namespace 撞限流后不得继续下一个');
+});

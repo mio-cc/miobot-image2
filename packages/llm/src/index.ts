@@ -169,7 +169,21 @@ export class OpenAICompatibleAdapter {
     this.queue = options.queue || new TaskQueue({ defaultConcurrency: 1 });
     this.logger = options.logger;
     this.defaultTimeoutMs = Math.max(1, Math.trunc(options.timeoutMs ?? 60000));
-    this.retryPolicy = options.retryPolicy || { retries: 0, delayMs: 0 };
+    // 默认重试策略：只对限流类（429/busy）做 2 次指数退避重试——后台任务挤占免费档时
+    // 交互请求等一下再试，而不是直接失败（实测事故 2026-10-24）。
+    // retryPolicy 是 Partial：显式字段覆盖默认，未给字段保留 busy 感知默认。
+    this.retryPolicy = {
+      retries: 2,
+      delayMs: 1200,
+      factor: 2,
+      shouldRetry: (error: unknown) => {
+        const anyError = error as { retryable?: boolean; normalized?: { retryable?: boolean }; message?: string } | undefined;
+        const retryable = anyError?.retryable ?? anyError?.normalized?.retryable;
+        if (retryable !== undefined) return retryable;
+        return isBusyLimitMessage(anyError?.message);
+      },
+      ...(options.retryPolicy || {}),
+    };
     this.requestIdFactory = options.requestIdFactory || ((operation) => `${operation}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`);
   }
 
@@ -293,11 +307,17 @@ export class OpenAICompatibleAdapter {
 
     this.logger?.info('llm request start', { requestId, operation, provider, model, url, timeoutMs: resolvedTimeoutMs });
     try {
+      // 实测事故 2026-10-24：>=400 的抛错必须在 runWithRetry 闭包内——HTTP 429 响应
+      // 不抛异常，若在外面判状态码，重试包装器会把 429 当成功返回，重试永远不会发生。
       const response = await this.queue.enqueue({ provider, model }, () => runWithRetry(
-        () => runWithTimeout(
-          () => this.transport({ method: 'POST', url, headers, body, timeoutMs: resolvedTimeoutMs, requestId, operation, model }),
-          { operationName: operation, timeoutMs: resolvedTimeoutMs },
-        ),
+        async () => {
+          const inner = await runWithTimeout(
+            () => this.transport({ method: 'POST', url, headers, body, timeoutMs: resolvedTimeoutMs, requestId, operation, model }),
+            { operationName: operation, timeoutMs: resolvedTimeoutMs },
+          );
+          if (inner.status >= 400) throw errorFromUpstreamResponse(inner.data, inner.status);
+          return inner;
+        },
         {
           retries: Math.max(0, Math.trunc(this.retryPolicy.retries ?? 0)),
           delayMs: Math.max(0, Math.trunc(this.retryPolicy.delayMs ?? 0)),
@@ -307,7 +327,6 @@ export class OpenAICompatibleAdapter {
           sleep: this.retryPolicy.sleep,
         },
       ));
-      if (response.status >= 400) throw errorFromUpstreamResponse(response.data, response.status);
       this.logger?.info('llm request complete', { requestId, operation, provider, model, status: response.status });
       return response;
     } catch (error) {
@@ -474,9 +493,14 @@ function assertNoTopLevelError(data: unknown): void {
   if (root.error !== undefined) throw errorFromUpstreamPayload(root.error, data);
 }
 
+/** 实测事故 2026-10-24：免费档 "Model resources are currently busy"（429 类）被归为不可重试，交互链路直接失败。 */
+function isBusyLimitMessage(message: unknown): boolean {
+  return /resources are currently busy|rate.?limit|too many requests/i.test(String(message || ''));
+}
+
 function errorFromUpstreamResponse(data: unknown, status: number): LlmProviderError {
   const err = errorFromUpstreamPayload(asRecord(data).error ?? data, data);
-  return new LlmProviderError(err.message, { ...err.normalized, status, retryable: status >= 500 }, data);
+  return new LlmProviderError(err.message, { ...err.normalized, status, retryable: status >= 500 || status === 429 || isBusyLimitMessage(err.message) }, data);
 }
 
 function errorFromUpstreamPayload(payload: unknown, responseData: unknown): LlmProviderError {
@@ -491,7 +515,7 @@ function errorFromUpstreamPayload(payload: unknown, responseData: unknown): LlmP
   const code = typeof record.code === 'string' ? record.code : typeof record.type === 'string' ? record.type : undefined;
   const status = typeof record.status === 'number' ? record.status : undefined;
   const category = normalizeError({ message, code, status }).category === 'unknown' ? 'upstream' : normalizeError({ message, code, status }).category;
-  return new LlmProviderError(message, { category, retryable: status ? status >= 500 : category !== 'validation', code, status, details: record }, responseData);
+  return new LlmProviderError(message, { category, retryable: status ? status >= 500 || status === 429 || isBusyLimitMessage(message) : category !== 'validation' || isBusyLimitMessage(message), code, status, details: record }, responseData);
 }
 
 function errorFromDataItemError(payload: unknown, index: number, responseData: unknown): LlmProviderError {

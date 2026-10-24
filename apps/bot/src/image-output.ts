@@ -159,3 +159,52 @@ export async function materializeImagesForNapcat(
   }
   return out;
 }
+
+/**
+ * 把出站语音（TTS/Suno 的 base64 或 URL）写到 Napcat 共享目录，返回容器内 file:// 路径。
+ * 实测 99KB record 走 base64 WS 上行耗时 4.6s；走共享目录文件路径由 Napcat 本地读取。
+ */
+export async function materializeAudioForNapcat(
+  audios: string[],
+  options: NapcatMountOutputOptions,
+): Promise<string[]> {
+  const hostDir = String(options.hostDir || '').trim();
+  const containerDir = String(options.containerDir || '').trim().replace(/\/+$/, '');
+  if (!hostDir || !containerDir) return audios;
+  try {
+    await fs.mkdir(hostDir, { recursive: true });
+  } catch {
+    // 目录不可写（权限/路径非法）：整体回退原引用，绝不阻断语音发送。
+    options.logger?.warn('语音共享目录不可写，回退 base64 发送', { hostDir });
+    return audios;
+  }
+  const out: string[] = [];
+  for (let i = 0; i < audios.length; i += 1) {
+    const original = audios[i];
+    // 远端 URL（如 Suno CDN）由 Napcat 自行下载更稳，只物化本地 base64。
+    if (!/^base64:\/\//i.test(original)) { out.push(original); continue; }
+    try {
+      const input = await loadBuffer(original);
+      if (!input) { out.push(original); continue; }
+      const mime = /^data:audio\/([a-z0-9.+-]+)/i.exec(original)?.[1]?.toLowerCase();
+      const ext = mime === 'mpeg' ? 'mp3' : mime || 'mp3';
+      const filename = `miobot-voice-${Date.now()}-${i}-${randomUUID()}.${ext}`;
+      const localPath = path.join(hostDir, filename);
+      await fs.writeFile(localPath, input, { mode: 0o644 });
+      out.push(`file://${containerDir}/${filename}`);
+      options.logger?.info('语音已写入 Napcat 共享目录', {
+        index: i,
+        bytes: input.length,
+        hostPath: localPath,
+        napcatPath: `file://${containerDir}/${filename}`,
+      });
+    } catch (error) {
+      options.logger?.warn('语音写入 Napcat 共享目录失败，回退原引用', {
+        index: i,
+        error: String((error as Error)?.message || error),
+      });
+      out.push(original);
+    }
+  }
+  return out;
+}

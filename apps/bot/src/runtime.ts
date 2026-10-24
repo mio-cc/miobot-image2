@@ -103,6 +103,8 @@ export interface BotRuntimeOptions {
   compressImages?: (images: string[]) => Promise<string[]>;
   /** 把图片落到 Napcat 共享目录，返回 file:// 容器路径。 */
   materializeImages?: (images: string[]) => Promise<string[]>;
+  /** 把能力语音（base64）落到 Napcat 共享目录，返回 file:// 容器路径。 */
+  materializeAudio?: (audios: string[]) => Promise<string[]>;
   /** 撤回机器人发出的图片（群聊自动撤回用）。 */
   deleteMessage?: (messageId: number | string) => Promise<boolean>;
   voice?: (text: string, context: { chatType: 'group' | 'private'; groupId?: number | string; userId?: number | string }) => Promise<string | null | undefined>;
@@ -1526,7 +1528,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       const effectiveMaxMessages = cfg.orchestration.reply.countProgressInBudget
         ? Math.max(1, cfg.orchestration.reply.maxMessages - progressMessagesSent)
         : cfg.orchestration.reply.maxMessages;
-      sent = await sendResult(engine, replyCtx, result, options.voice, options.voiceEligible, trackedReply, reportProblem, effectiveMaxMessages);
+      sent = await sendResult(engine, replyCtx, result, options.voice, options.voiceEligible, trackedReply, reportProblem, effectiveMaxMessages, options.materializeAudio);
     } catch (error) {
       await reportProblem('reply-send-error', error, { kind: result.kind, textChars: result.text?.length || 0 });
       return { handled: false, reason: 'reply-send-error' };
@@ -1938,6 +1940,7 @@ export async function sendResult(
   reply?: ReplyClient,
   reportProblem?: (kind: string, error: unknown, extra?: Record<string, unknown>) => Promise<void>,
   maxMessages?: number,
+  materializeAudio?: (audios: string[]) => Promise<string[]>,
 ): Promise<import('../../../packages/reply/src/index.js').ReplyDispatchResult | null> {
   if (result.replyPlan) {
     try {
@@ -1985,7 +1988,14 @@ export async function sendResult(
     }
   }
   const files = (result.files || []).filter(Boolean) as Array<string | { file: string; name?: string }>;
-  const audios = (result.audio || []).filter(Boolean);
+  let audios = (result.audio || []).filter(Boolean);
+  // 次要优化（2026-10-24 实测）：99KB record 走 base64 WS 上行 4.6s；配置了共享目录时
+  // 落盘走 file:// 路径由 Napcat 本地读取。auto-TTS 的语音在 start.ts 的 voice() 内同款物化。
+  if (audios.length) {
+    try {
+      audios = await materializeAudio?.(audios) || audios;
+    } catch { /* 物化失败回退原引用 */ }
+  }
   const textBeforeAudio = result.text?.trim() || '';
   const chatAudioCoversText = Boolean(audios.length && textBeforeAudio && result.kind === 'chat');
   if (audios.length) {

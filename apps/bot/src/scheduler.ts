@@ -2,6 +2,16 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 
+/**
+ * 实测事故 2026-10-24：调度器补跑语义 + 白天部署 → 记忆巩固在 11:13 跑了 2 分钟，
+ * 打满免费档拖垮交互链路。规则：模型密集型后台任务只在安静窗口（03:00–06:30）执行；
+ * 窗口外触发（含补跑）直接跳过——当日 lastRunDay 已标记不会重试，顺延至次日窗口。
+ */
+export function withinQuietWindow(date: Date = new Date()): boolean {
+  const hour = date.getHours() + date.getMinutes() / 60;
+  return hour >= 3 && hour < 6.5;
+}
+
 export interface ScheduledJob {
   id: string;
   /** daily=每日 HH:MM；once=到 runAt 触发一次（定时提醒，T4.3）。 */

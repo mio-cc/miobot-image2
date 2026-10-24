@@ -40,3 +40,24 @@ test('image output: materializes images into shared Napcat directory', async () 
     await fs.rm(hostDir, { recursive: true, force: true });
   }
 });
+
+test('audio 物化事故优化: base64 语音落共享目录返回 file:// 路径，URL 透传，失败回退', async () => {
+  const { materializeAudioForNapcat } = await import('../dist/apps/bot/src/image-output.js');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const fs = await import('node:fs');
+  const hostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'miobot-audio-out-'));
+  const wav = Buffer.from('fake-mp3-bytes').toString('base64');
+  const base64Ref = 'base64://' + wav;
+  const [materialized] = await materializeAudioForNapcat([base64Ref], { hostDir, containerDir: '/app/napcat/output', logger: { info() {}, warn() {} } });
+  assert.match(materialized, /^file:\/\/\/app\/napcat\/output\/miobot-voice-/);
+  assert.match(materialized, /\.mp3$/);
+  const written = fs.readdirSync(hostDir).find((name) => name.startsWith('miobot-voice-'));
+  assert.ok(written, '宿主目录应有语音文件');
+  // 远端 URL 透传不落盘。
+  const [url] = await materializeAudioForNapcat(['https://cdn.suno.example/a.mp3'], { hostDir, containerDir: '/x' });
+  assert.equal(url, 'https://cdn.suno.example/a.mp3');
+  // 目录不可写时回退原引用。
+  const [fallback] = await materializeAudioForNapcat([base64Ref], { hostDir: path.join(hostDir, 'no', 'such', 'dir', 'x'.repeat(300)), containerDir: '/x' });
+  assert.equal(fallback, base64Ref);
+});

@@ -239,3 +239,39 @@ test('llm adapter: task queue limits same provider/model requests', async () => 
   release.shift()();
   assert.deepEqual((await Promise.all([first, second])).map((item) => item.text), ['queued', 'queued']);
 });
+
+test('llm 事故修复: busy/429 归类为可重试，默认策略带指数退避重试', async () => {
+  const node = { name: 'free', baseUrl: 'http://localhost:8317', key: 'test-key', enabled: true, models: ['m1'], modelsFetchedAt: '', concurrency: 1, kind: 'llm' };
+  let calls = 0;
+  const sleeps = [];
+  const adapter = new OpenAICompatibleAdapter({
+    node,
+    requestIdFactory: () => 'req_busy',
+    transport: async () => {
+      calls += 1;
+      if (calls < 3) {
+        return { status: 429, data: { error: { message: 'Model resources are currently busy. Please try again later.' } } };
+      }
+      return { status: 200, data: { choices: [{ message: { content: 'ok' } }] } };
+    },
+    retryPolicy: { sleep: async (ms) => { sleeps.push(ms); } },
+  });
+  const result = await adapter.createText({ model: 'm1', messages: [{ role: 'user', content: 'hi' }] });
+  assert.equal(result.text, 'ok');
+  assert.equal(calls, 3, '前两次 429 重试，第三次成功');
+  assert.ok(sleeps.length >= 2, '两次退避');
+  assert.ok(sleeps[1] > sleeps[0], '指数退避递增');
+  // 非 busy 的 4xx 保持不可重试（一次即失败）。
+  let validationCalls = 0;
+  const strict = new OpenAICompatibleAdapter({
+    node,
+    requestIdFactory: () => 'req_strict',
+    transport: async () => {
+      validationCalls += 1;
+      return { status: 400, data: { error: { message: 'invalid request' } } };
+    },
+    retryPolicy: { sleep: async () => { sleeps.push(0); } },
+  });
+  await assert.rejects(() => strict.createText({ model: 'm1', messages: [{ role: 'user', content: 'hi' }] }));
+  assert.equal(validationCalls, 1, '400 不可重试');
+});
