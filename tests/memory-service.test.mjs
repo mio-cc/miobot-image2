@@ -146,3 +146,57 @@ test('memory: optional user-global profile crosses groups only for the same user
   assert.equal(sameUserOtherGroup.namespaces.length, 3);
   assert.equal(otherUser.context.includes('global cat preference'), false);
 });
+
+test('memory T3.4 consolidate: 相似归并 + 低分淘汰 + retention prune 一次完成', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'miobot-memory-consolidate-'));
+  const embedding = new FakeEmbedding();
+  const now = Date.now();
+  const memory = new ChatMemoryService({
+    rootDir: root, getConfig: () => config(root), embedding,
+    scoreImportance: async ({ documents }) => documents.map((doc) => /trash/.test(doc.text) ? 1 : 8),
+  });
+  await memory.ingest({ botId: 'bot', chatType: 'private', userId: 'u1', role: 'user', text: 'cat dup older', messageId: 'd1', createdAt: new Date(now - 48 * 3600 * 1000).toISOString() });
+  await memory.ingest({ botId: 'bot', chatType: 'private', userId: 'u1', role: 'user', text: 'cat dup newer', messageId: 'd2', createdAt: new Date(now - 47 * 3600 * 1000).toISOString() });
+  await memory.ingest({ botId: 'bot', chatType: 'private', userId: 'u1', role: 'user', text: 'keep dog fact', messageId: 'k1', createdAt: new Date(now - 46 * 3600 * 1000).toISOString() });
+  await memory.ingest({ botId: 'bot', chatType: 'private', userId: 'u1', role: 'user', text: 'trash small talk', messageId: 't1', createdAt: new Date(now - 45 * 3600 * 1000).toISOString() });
+  const stats = await memory.consolidate({ now: () => now });
+  assert.equal(stats.merged, 1, '两条 cat 向量重复应归并一条（保新）');
+  assert.equal(stats.evicted, 1, '低分(1)且超 24h 应淘汰');
+  const after = await memory.retrieve({ botId: 'bot', chatType: 'private', userId: 'u1', query: 'cat' });
+  assert.ok(after.context.includes('cat dup newer'), '保留更新的一条');
+  assert.equal(after.context.includes('cat dup older'), false);
+  assert.equal(after.context.includes('trash small talk'), false, '低分应被淘汰');
+  const dog = await memory.retrieve({ botId: 'bot', chatType: 'private', userId: 'u1', query: 'dog' });
+  assert.ok(dog.context.includes('keep dog fact'), '高分记忆保留');
+});
+
+test('memory T3.4 consolidate: 冷启动跨进程仍能从 manifest 加载全部 namespace 巩固', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'miobot-memory-consolidate-restart-'));
+  const embedding = new FakeEmbedding();
+  const now = Date.now();
+  const first = new ChatMemoryService({ rootDir: root, getConfig: () => config(root), embedding });
+  await first.ingest({ botId: 'bot', chatType: 'group', groupId: 'g1', userId: 'u1', role: 'user', text: 'cat A', messageId: 'a1', createdAt: new Date(now - 40 * 3600 * 1000).toISOString() });
+  await first.ingest({ botId: 'bot', chatType: 'group', groupId: 'g1', userId: 'u1', role: 'user', text: 'cat B', messageId: 'a2', createdAt: new Date(now - 39 * 3600 * 1000).toISOString() });
+  await first.flush();
+  // 新进程：dbs 为空，只能靠 manifest 找到 namespace
+  const second = new ChatMemoryService({ rootDir: root, getConfig: () => config(root), embedding });
+  const stats = await second.consolidate({ now: () => now });
+  assert.ok(stats.namespaces >= 2, '应从 manifest 加载 group 与 personal namespace：' + stats.namespaces);
+  assert.equal(stats.merged, 2, '两个 namespace 各归并一条重复');
+  const after = await second.retrieve({ botId: 'bot', chatType: 'group', groupId: 'g1', userId: 'u1', query: 'cat' });
+  assert.ok(after.context.includes('cat B'));
+  assert.equal(after.context.includes('cat A'), false);
+});
+
+test('memory T3.4 consolidate: 未配置 scorer 时只归并不淘汰', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'miobot-memory-consolidate-noscore-'));
+  const embedding = new FakeEmbedding();
+  const now = Date.now();
+  const memory = new ChatMemoryService({ rootDir: root, getConfig: () => config(root), embedding });
+  await memory.ingest({ botId: 'bot', chatType: 'private', userId: 'u1', role: 'user', text: 'trash small talk', messageId: 't1', createdAt: new Date(now - 48 * 3600 * 1000).toISOString() });
+  const stats = await memory.consolidate({ now: () => now });
+  assert.equal(stats.scored, 0);
+  assert.equal(stats.evicted, 0, '无 scorer 不得做低分淘汰');
+  const after = await memory.retrieve({ botId: 'bot', chatType: 'private', userId: 'u1', query: 'secret' });
+  assert.ok(after.context.includes('trash small talk'), '无 scorer 时保留原文');
+});

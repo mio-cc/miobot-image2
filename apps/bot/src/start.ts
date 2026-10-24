@@ -288,6 +288,28 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       });
       return String(result.text || '').trim();
     },
+    // T3.4：夜间巩固重要性评分（LLM 批量打分 0-10，每批 50 条）。
+    scoreImportance: async ({ documents }) => {
+      const cfg = getConfig();
+      const scores: number[] = [];
+      for (let offset = 0; offset < documents.length; offset += 50) {
+        const batch = documents.slice(offset, offset + 50);
+        const lines = batch.map((doc, index) => offset + index + ': ' + (doc.role === 'assistant' ? '助手' : '用户') + ': ' + doc.text.slice(0, 120));
+        const prompt = '你是记忆重要性评分器。给每条聊天记忆打 0-10 分（10=长期重要：人物偏好/事实承诺/未完成事项/关键决定；0=寒暄闲聊/无信息量）。只输出一个 JSON 数字数组，长度与输入条数一致，不要任何其他文字。\n' + lines.join('\n');
+        const result = await client.chat(Number(cfg.llm.chatNodeIndex || 0), {
+          model: String(cfg.llm.chatModel || ''),
+          messages: [{ role: 'user', content: prompt.slice(0, 16000) }],
+          temperature: 0,
+          maxTokens: 2000,
+        });
+        const match = String(result.text || '').match(/\[[\s\S]*\]/);
+        if (!match) throw new Error('memory_score_parse_failed');
+        const values = JSON.parse(match[0]);
+        if (!Array.isArray(values)) throw new Error('memory_score_not_array');
+        for (const value of values) scores.push(Number(value) || 0);
+      }
+      return scores;
+    },
   });
   // 注意别传 registry：createBotApp 一旦收到实例就退化成 `() => 该实例`，
   // 把它自己那条可热重载的分支整个绕过去。BotEngine 判断「这个模型支不支持生图/视频」
@@ -516,6 +538,14 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     filePath: path.join(dataDir, 'scheduled-jobs.json'),
     logger,
     run: async (job) => {
+      // T3.4：记忆夜间巩固（03:30）——评分 + 归并 + 淘汰 + retention prune，memory 关闭时自身零计数返回。
+      if (job.type === 'memory-consolidate') {
+        const stats = await memoryService.consolidate();
+        if (stats.namespaces || stats.merged || stats.evicted || stats.pruned) {
+          logger?.info('记忆夜间巩固完成', stats as unknown as Record<string, unknown>);
+        }
+        return null;
+      }
       if (job.type !== 'daily-report') return null;
       const text = await buildDailyReport({ traceFile, dataDir });
       const targets = getConfig().bot.ownerQQs || [];
@@ -531,6 +561,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   if (getConfig().bot.dailyReport?.enabled) {
     scheduler.register({ id: 'daily-report', kind: 'daily', type: 'daily-report', hour: getConfig().bot.dailyReport.hour, minute: getConfig().bot.dailyReport.minute, enabled: true });
   }
+  // T3.4：记忆夜间巩固——固定 03:30 低峰执行；memory 未启用时 consolidate 自身返回零计数。
+  scheduler.register({ id: 'memory-consolidate', kind: 'daily', type: 'memory-consolidate', hour: 3, minute: 30, enabled: true });
   void scheduler.start();
 
   const pendingJobFile = process.env.MIOBOT_PENDING_JOB_FILE || path.join(dataDir, 'orchestration-pending-jobs.json');

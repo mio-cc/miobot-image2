@@ -124,6 +124,19 @@ export interface MemoryContextResult {
   namespaces: string[];
 }
 
+function cosineSimilarity(a: number[] | undefined, b: number[] | undefined): number {
+  if (!a?.length || !b?.length || a.length !== b.length) return 0;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  return na > 0 && nb > 0 ? dot / Math.sqrt(na * nb) : 0;
+}
+
 function hash(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 16);
 }
@@ -157,6 +170,8 @@ export class ChatMemoryService {
     getConfig: () => AppConfig;
     embedding?: EmbeddingProvider;
     summarize?: MemorySummarizer;
+    /** T3.4：夜间巩固用 LLM 批量重要性评分（0-10，与 documents 等长返回）。 */
+    scoreImportance?: (input: { documents: MemoryDocument[] }) => Promise<number[]>;
     logger?: StructuredLogger;
   }) {
     this.embedding = options.embedding || new OpenAIEmbeddingProvider(options.getConfig, options.logger);
@@ -383,6 +398,99 @@ export class ChatMemoryService {
       this.summarizing.delete(key);
     }
   }
+  /**
+   * T3.4 记忆夜间巩固：重要性评分（LLM 批量打分）→ 相似归并（embedding 近邻 ≥0.92 保新保高分）
+   * → 低分淘汰（≤2 且超 24h）→ retention prune。落盘沿用既有防抖队列。
+   * 通过 manifest 加载全部 namespace——夜间任务通常在冷启动进程里跑，dbs 是空的。
+   */
+  async consolidate(input: { now?: () => number } = {}): Promise<{ namespaces: number; scored: number; merged: number; evicted: number; pruned: number }> {
+    this.syncRoot();
+    const memory = this.options.getConfig().orchestration.memory;
+    if (!memory.enabled) return { namespaces: 0, scored: 0, merged: 0, evicted: 0, pruned: 0 };
+    const now = (input.now || Date.now)();
+    const stats = { namespaces: 0, scored: 0, merged: 0, evicted: 0, pruned: 0 };
+    const manifest = await this.loadManifest();
+    const keys = new Set<string>([...Object.keys(manifest), ...this.dbs.keys()]);
+    for (const key of keys) {
+      const db = await this.loadDbByKey(key);
+      if (!db) continue;
+      let result: any;
+      try { result = await search(db, { term: '', limit: 10000 } as any); } catch { continue; }
+      const docs = (result.hits as any[]).map((hit) => hit.document as MemoryDocument);
+      stats.namespaces += 1;
+      if (!docs.length) continue;
+      // 1) 重要性评分（未配置 scorer 则跳过评分与低分淘汰，仅归并）
+      const scores = new Map<string, number>();
+      if (this.options.scoreImportance) {
+        try {
+          const values = await this.options.scoreImportance({ documents: docs });
+          docs.forEach((doc, index) => scores.set(doc.id, Math.max(0, Math.min(10, Number(values?.[index]) || 0))));
+          stats.scored += docs.length;
+        } catch (error) {
+          this.options.logger?.warn('memory importance scoring failed', { namespace: key, error: String((error as Error)?.message || error) });
+        }
+      }
+      // 2) 相似归并：同 namespace 内 embedding 近邻视为重复，保留分数高/更新的一条。
+      // Orama 的 search() 会把 doc store 里的 vector 字段置空（运行中 db 的存储向量不可信），
+      // 归并用的向量改为对文本批量重嵌（夜间低峰批任务，成本可接受）。
+      let vectors: number[][] = [];
+      try {
+        vectors = await this.embedding.embed(docs.map((doc) => doc.text));
+      } catch (error) {
+        this.options.logger?.warn('memory consolidate embedding failed; skip merge for namespace', { namespace: key, error: String((error as Error)?.message || error) });
+      }
+      const mergedIds = new Set<string>();
+      const evictedIds = new Set<string>();
+      for (let i = 0; i < docs.length && vectors.length; i += 1) {
+        if (mergedIds.has(docs[i].id) || evictedIds.has(docs[i].id)) continue;
+        for (let j = i + 1; j < docs.length; j += 1) {
+          if (mergedIds.has(docs[j].id) || evictedIds.has(docs[j].id)) continue;
+          if (cosineSimilarity(vectors[i], vectors[j]) >= 0.92) {
+            const si = scores.get(docs[i].id) ?? 5;
+            const sj = scores.get(docs[j].id) ?? 5;
+            const drop = sj > si ? docs[i] : sj < si ? docs[j]
+              : Date.parse(docs[j].createdAt) >= Date.parse(docs[i].createdAt) ? docs[i] : docs[j];
+            mergedIds.add(drop.id);
+          }
+        }
+      }
+      // 3) 低分淘汰：≤2 分且距写入超 24h（近期上下文不 lifo 动）
+      for (const doc of docs) {
+        const score = scores.get(doc.id);
+        if (score !== undefined && score <= 2 && now - Date.parse(doc.createdAt) > 24 * 60 * 60 * 1000) evictedIds.add(doc.id);
+      }
+      for (const id of mergedIds) {
+        try { await remove(db, id); } catch { /* 已不在索引 */ }
+        stats.merged += 1;
+      }
+      for (const id of evictedIds) {
+        if (mergedIds.has(id)) continue;
+        try { await remove(db, id); } catch { /* 已不在索引 */ }
+        stats.evicted += 1;
+      }
+      if (mergedIds.size || evictedIds.size) await this.persistKey(key);
+    }
+    // 4) retention 清理
+    const pruned = await this.prune(now);
+    stats.pruned = pruned.removed;
+    this.options.logger?.info('memory consolidate finished', { ...stats });
+    return stats;
+  }
+
+  /** 按 manifest 里的原始 key 直接加载索引文件（不换算当前模型，防冷启动漏 namespace）。 */
+  private async loadDbByKey(key: string): Promise<AnyOrama | undefined> {
+    const existing = this.dbs.get(key);
+    if (existing) return existing;
+    const file = path.join(this.rootPath(), hash(key) + '.json');
+    try {
+      const db = await restoreFromFile('json', file) as AnyOrama;
+      this.dbs.set(key, Promise.resolve(db));
+      return db;
+    } catch {
+      return undefined;
+    }
+  }
+
   async prune(now = Date.now()): Promise<{ removed: number }> {
     this.syncRoot();
     const memory = this.options.getConfig().orchestration.memory;
