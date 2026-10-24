@@ -124,7 +124,15 @@ export interface VideoGenerationRequest {
   waitForCompletion?: boolean;
 }
 
-export interface TextResult { text: string; raw: unknown; status?: number }
+/** T3.6：一次文本调用的 token 用量与（中转回传时的）成本。 */
+export interface TextUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  cost?: number;
+}
+
+export interface TextResult { text: string; raw: unknown; status?: number; usage?: TextUsage }
 
 export type ImageArtifactKind = 'base64' | 'url';
 export interface ImageArtifact { kind: ImageArtifactKind; data: string; mimeType?: string; revisedPrompt?: string; index: number }

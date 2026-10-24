@@ -120,15 +120,27 @@ export async function buildDailyReport(input: {
   const today = dayKey(now());
   const yesterday = dayKey(new Date(now().getTime() - 24 * 60 * 60 * 1000));
   const stats = { requests: 0, plans: 0, fallbackLegacy: 0, preflightBlocked: 0, approval: 0, rateLimited: 0, summaryFallback: 0 };
+  // T3.6：模型用量——每条 trace 都带截至此刻的快照，按 requestId 取最后一次快照再求和。
+  const usageByRequest = new Map<string, { promptTokens: number; completionTokens: number; totalTokens: number; cost: number; modelCalls: number }>();
   try {
     const raw = await fs.readFile(input.traceFile, 'utf8').catch(() => '');
     for (const line of raw.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        const item = JSON.parse(trimmed) as { timestamp?: string; stage?: string; summary?: string };
+        const item = JSON.parse(trimmed) as { timestamp?: string; stage?: string; summary?: string; requestId?: string; data?: { usage?: Record<string, unknown> } };
         const day = String(item.timestamp || '').slice(0, 10);
         if (day !== today && day !== yesterday) continue;
+        const usage = item.data?.usage;
+        if (usage && item.requestId && Number(usage.modelCalls) > 0) {
+          usageByRequest.set(String(item.requestId), {
+            promptTokens: Number(usage.promptTokens) || 0,
+            completionTokens: Number(usage.completionTokens) || 0,
+            totalTokens: Number(usage.totalTokens) || 0,
+            cost: Number(usage.cost) || 0,
+            modelCalls: Number(usage.modelCalls) || 0,
+          });
+        }
         if (item.stage === 'request') stats.requests += 1;
         if (item.stage === 'plan') {
           stats.plans += 1;
@@ -159,10 +171,21 @@ export async function buildDailyReport(input: {
     counts.push(`活跃会话 ${Object.keys(sessions).length}`);
   } catch { /* 无会话文件 */ }
 
+  const usageTotals = Array.from(usageByRequest.values()).reduce((acc, item) => ({
+    promptTokens: acc.promptTokens + item.promptTokens,
+    completionTokens: acc.completionTokens + item.completionTokens,
+    totalTokens: acc.totalTokens + item.totalTokens,
+    cost: acc.cost + item.cost,
+    modelCalls: acc.modelCalls + item.modelCalls,
+  }), { promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0, modelCalls: 0 });
   const lines = [
     `【Miobot 日报】${today}`,
     `近 24h 编排：请求 ${stats.requests}，规划 ${stats.plans}，回退旧链路 ${stats.fallbackLegacy}，前置拦截 ${stats.preflightBlocked}，审批 ${stats.approval}，零输出摘要兜底 ${stats.summaryFallback}`,
   ];
+  if (usageTotals.modelCalls > 0) {
+    const costText = usageTotals.cost > 0 ? `，中转计费 $${usageTotals.cost.toFixed(4)}` : '';
+    lines.push(`模型用量：输入 ${usageTotals.promptTokens} · 输出 ${usageTotals.completionTokens} · 合计 ${usageTotals.totalTokens} tokens（${usageTotals.modelCalls} 次调用${costText}）`);
+  }
   if (counts.length) lines.push(`状态：${counts.join('，')}`);
   if (stats.requests === 0) lines.push('（近 24h 无编排请求记录）');
   return lines.join('\n');

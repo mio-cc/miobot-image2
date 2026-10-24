@@ -3209,3 +3209,35 @@ test('orchestration T2.8: handler 提交外部任务后 taskId 立即落盘进 J
   assert.equal(result.handled, true);
   assert.equal(pendingJobs.get('private:9'), undefined, '完成后记录清理');
 });
+
+test('orchestration T3.6: 每条 trace 附带模型用量快照，planner 调用计入', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  cfg.orchestration.planner.nodeIndex = 1;
+  cfg.orchestration.planner.model = 'planner-test';
+  const fakeApp = {
+    handle: async () => ({ kind: 'chat', handled: true, text: 'chat', decision: { kind: 'chat', source: 'fallback', confidence: 1, reason: '', params: { prompt: '', tokens: [] }, usedPlanner: false } }),
+    engine: { handleExplicit: async () => ({ kind: 'image.generate', handled: true, images: ['data:image/png;base64,AA'], decision: { kind: 'image.generate', source: 'signal', confidence: 1, reason: '', params: { prompt: 'cat', tokens: [] }, usedPlanner: false } }) },
+    sessions: { clear() {} }, registry: () => ({}), client: {},
+  };
+  const fakeClient = {
+    async chat() {
+      return { text: JSON.stringify({ planId: 'p1', requestId: 'r1', goal: 'generate', steps: [{ id: 's1', capability: 'image.generate', args: { prompt: 'cat' } }], confidence: 0.9 }), usage: { promptTokens: 120, completionTokens: 60, totalTokens: 180, cost: 0.015 } };
+    },
+  };
+  const traces = [];
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg, app: fakeApp, client: fakeClient,
+    trace: (t) => traces.push(t),
+  });
+  const result = await enforcer.handle({ text: '画一只猫', chatType: 'private', userId: '1' });
+  assert.equal(result.handled, true);
+  const replyTrace = traces.filter((t) => t.stage === 'reply').pop();
+  assert.ok(replyTrace?.data?.usage, '最终 reply trace 应带 usage 快照');
+  assert.equal(replyTrace.data.usage.modelCalls, 1, 'planner 调用应计入 modelCalls');
+  assert.equal(replyTrace.data.usage.totalTokens, 180);
+  assert.equal(replyTrace.data.usage.cost, 0.015);
+});

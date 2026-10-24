@@ -160,3 +160,18 @@ test('client: 生图解析 b64_json', async () => {
   assert.equal(r.images[0].kind, 'base64');
   assert.equal(r.images[0].data, 'AAAA');
 });
+
+test('model T3.6: extractTextUsage 解析 OpenAI/Anthropic/Gemini/中转 usage', async () => {
+  const { extractTextUsage } = await import('../dist/packages/model/src/usage.js');
+  // OpenAI 兼容
+  assert.deepEqual(extractTextUsage({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 } }), { promptTokens: 10, completionTokens: 20, totalTokens: 30 });
+  // Anthropic（input/output_tokens，无 total）
+  assert.deepEqual(extractTextUsage({ content: [], usage: { input_tokens: 5, output_tokens: 7 } }), { promptTokens: 5, completionTokens: 7, totalTokens: 12 });
+  // Gemini usageMetadata
+  assert.deepEqual(extractTextUsage({ usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 4, totalTokenCount: 7 } }), { promptTokens: 3, completionTokens: 4, totalTokens: 7 });
+  // 中转回传金额
+  assert.deepEqual(extractTextUsage({ usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3, cost: 0.0123 } }), { promptTokens: 1, completionTokens: 2, totalTokens: 3, cost: 0.0123 });
+  // 无 usage
+  assert.equal(extractTextUsage({ choices: [] }), undefined);
+  assert.equal(extractTextUsage(null), undefined);
+});

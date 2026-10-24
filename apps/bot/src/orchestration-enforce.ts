@@ -105,6 +105,15 @@ export interface EnforceOrchestrationResult {
 
 const LEGACY_KINDS: LegacyCapabilityKind[] = ['chat.reply', 'image.generate', 'image.edit', 'image.interrogate', 'video.generate'];
 
+/** T3.6：一次编排请求的模型用量累计（planner/角色/composer 全部计入）。 */
+export interface ModelUsageTotals {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cost: number;
+  modelCalls: number;
+}
+
 export class OrchestrationEnforcer {
   private readonly registry = new CapabilityRegistry();
   private readonly dispatcher: CapabilityDispatcher;
@@ -342,15 +351,26 @@ export class OrchestrationEnforcer {
     };
   }
 
-  private roleModelClient() {
+  private roleModelClient(collector?: ModelUsageTotals) {
     return {
-      chat: (nodeIndex: number, req: any) => this.options.client.chat(nodeIndex, {
-        model: req.model,
-        messages: req.messages,
-        maxTokens: req.maxTokens,
-        temperature: req.temperature,
-        timeoutMs: req.timeoutMs,
-      }),
+      chat: async (nodeIndex: number, req: any) => {
+        const result = await this.options.client.chat(nodeIndex, {
+          model: req.model,
+          messages: req.messages,
+          maxTokens: req.maxTokens,
+          temperature: req.temperature,
+          timeoutMs: req.timeoutMs,
+        });
+        // T3.6：所有角色模型调用（planner/修复/追问/composer/检索）的唯一漏斗，usage 累计进 trace。
+        if (collector && result?.usage) {
+          collector.promptTokens += Number(result.usage.promptTokens) || 0;
+          collector.completionTokens += Number(result.usage.completionTokens) || 0;
+          collector.totalTokens += Number(result.usage.totalTokens) || 0;
+          collector.cost += Number(result.usage.cost) || 0;
+          collector.modelCalls += 1;
+        }
+        return result;
+      },
     };
   }
   private async repairPlanUsingModel(
@@ -591,16 +611,20 @@ export class OrchestrationEnforcer {
     } else if (pending?.status === 'clarifying' && pending.plan === undefined) {
       // Planner 阶段还没有 DAG；仍保留原 requestId/jobId，后面交给 ClarificationResolver。
     }
+    // T3.6：本请求的模型用量累计（声明必须在 appendTrace 之前——首次 'request' trace 就要带快照）。
+    const usageTotals: ModelUsageTotals = { promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0, modelCalls: 0 };
     const appendTrace = (stage: OrchestrationTrace['stage'], summary: string, data?: Record<string, unknown>) => {
       this.options.trace?.({
         id: `trace_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        timestamp: new Date().toISOString(), requestId: request.requestId, stage, summary, data,
+        timestamp: new Date().toISOString(), requestId: request.requestId, stage, summary,
+        // T3.6：每条 trace 附带截至此刻的模型用量快照（不覆盖调用方显式传入的 usage）。
+        data: { ...(data || {}), ...(data?.usage ? {} : { usage: { ...usageTotals } }) },
       });
     };
     appendTrace('request', '收到编排请求', { text: request.text.slice(0, 200), role, jobId, resumedFromJob, historyChars: String(request.history?.[0]?.content || '').length });
     if (!input.plan && !pending && !cfg.orchestration.planner.enabled) return { handled: false, reason: 'planner_disabled' };
 
-    const modelAdapter = this.roleModelClient();
+    const modelAdapter = this.roleModelClient(usageTotals);
     let roleRoundsUsed = 0;
     let catalog = this.registry.list();
     let plan: IntentPlan;
@@ -1261,6 +1285,8 @@ export class OrchestrationEnforcer {
       const visibleOutputs = replyPlan.groups.flatMap((group) => group.outputs);
       const result = this.toEngineResult(visibleOutputs) || this.emptyEngineResult();
       result.replyPlan = replyPlan;
+      // T3.6/span：终态 trace——成功路径此前没有任何 reply 级记录，用量快照与 span 收尾都靠它。
+      appendTrace('reply', '任务完成', { outputs: visibleOutputs.length, steps: execution.usage.stepsExecuted, status: execution.status });
       return { handled: true, result, ...(replyPlan.warnings.length ? { reason: replyPlan.warnings.join(';') } : {}) };
     }
   }

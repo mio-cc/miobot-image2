@@ -1,3 +1,4 @@
+import { extractTextUsage } from './usage.js';
 import { CapabilityRegistry, createCapabilityRegistry } from './capability/registry.js';
 import { applyFix, applyLearned, diagnose, healingKey, rememberFix } from './capability/healing.js';
 import { imageEditTransportsFor } from './capability/params.js';
@@ -135,20 +136,27 @@ export class ModelClient {
   }
 
   async chat(nodeIndex: number, req: ChatRequest): Promise<TextResult> {
-    return this.run('chat', nodeIndex, req.model, req.timeoutMs, (d, n) => d.buildChat(n, req), (d, data) => d.parseChat(data));
+    return this.run('chat', nodeIndex, req.model, req.timeoutMs, (d, n) => d.buildChat(n, req), ModelClient.withUsage((d, data) => d.parseChat(data)));
+  }
+  /** T3.6：文本类调用统一在解析后补挂 usage（方言未提取时从原始响应兜底抓取）。 */
+  private static withUsage(parse: (dialect: Dialect, data: unknown) => TextResult): (dialect: Dialect, data: unknown) => TextResult {
+    return (dialect, data) => {
+      const result = parse(dialect, data);
+      return result.usage ? result : { ...result, usage: extractTextUsage(data) };
+    };
   }
   async vision(nodeIndex: number, req: VisionRequest): Promise<TextResult> {
     const resolved = await this.resolveImageUrls(nodeIndex, req.imageUrls);
     const r = resolved !== req.imageUrls ? { ...req, imageUrls: resolved } : req;
     return this.run('vision', nodeIndex, r.model, r.timeoutMs,
-      (d, n) => requireBuilder(d, 'buildVision', n, r), (d, data) => d.parseChat(data));
+      (d, n) => requireBuilder(d, 'buildVision', n, r), ModelClient.withUsage((d, data) => d.parseChat(data)));
   }
   async interrogate(nodeIndex: number, req: InterrogateRequest): Promise<TextResult> {
     const resolved = await this.resolveImageUrls(nodeIndex, req.imageUrls);
     const r = resolved !== req.imageUrls ? { ...req, imageUrls: resolved } : req;
     return this.run('interrogate', nodeIndex, r.model, r.timeoutMs,
       (d, n) => requireBuilder(d, 'buildVision', n, { model: r.model, prompt: r.prompt || DEFAULT_INTERROGATE_PROMPT, imageUrls: r.imageUrls, maxTokens: r.maxTokens, timeoutMs: r.timeoutMs }),
-      (d, data) => d.parseChat(data));
+      ModelClient.withUsage((d, data) => d.parseChat(data)));
   }
   async generateImages(nodeIndex: number, req: ImageGenerationRequest): Promise<ImageResult> {
     const shaped = this.shapeImageGeneration(req);

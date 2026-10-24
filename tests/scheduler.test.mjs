@@ -53,3 +53,18 @@ test('scheduler T3.1: buildDailyReport 从 trace 与状态文件聚合', async (
   assert.match(text, /歌曲历史 2/);
   assert.match(text, /活跃会话 1/);
 });
+
+test('scheduler T3.6: buildDailyReport 汇总模型用量（按 requestId 取最后快照）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'miobot-report-usage-'));
+  const today = new Date();
+  const iso = today.toISOString();
+  fs.writeFileSync(path.join(dir, 'orchestration-traces.jsonl'), [
+    JSON.stringify({ timestamp: iso, requestId: 'req-a', stage: 'request', summary: '收到编排请求', data: { usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0, modelCalls: 0 } } }),
+    JSON.stringify({ timestamp: iso, requestId: 'req-a', stage: 'plan', summary: '生成执行计划', data: { usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150, cost: 0.01, modelCalls: 1 } } }),
+    JSON.stringify({ timestamp: iso, requestId: 'req-a', stage: 'reply', summary: 'composer 完成', data: { usage: { promptTokens: 130, completionTokens: 80, totalTokens: 210, cost: 0.02, modelCalls: 2 } } }),
+    JSON.stringify({ timestamp: iso, requestId: 'req-b', stage: 'request', summary: '收到编排请求', data: { usage: { promptTokens: 40, completionTokens: 10, totalTokens: 50, cost: 0, modelCalls: 1 } } }),
+  ].join('\n'));
+  const text = await buildDailyReport({ traceFile: path.join(dir, 'orchestration-traces.jsonl'), dataDir: dir, now: () => today });
+  // req-a 取最后快照（130/80/210/2 次调用），req-b（40/10/50/1 次）→ 合计 170/90/260/3 次、$0.02
+  assert.match(text, /模型用量：输入 170 · 输出 90 · 合计 260 tokens（3 次调用，中转计费 \$0\.0200）/);
+});
