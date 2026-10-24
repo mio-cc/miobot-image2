@@ -41,6 +41,8 @@ export interface IntentStep {
   maxRetries?: number;
   estimatedCost?: number;
   modelRounds?: number;
+  /** T3.3：受限 Agent 循环——该步失败/空结果时回炉 planner 局部重规划（只许改该步及下游，≤maxReplan）。 */
+  iterate?: boolean;
 }
 
 export interface PlanUnderstanding {

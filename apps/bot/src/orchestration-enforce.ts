@@ -373,6 +373,36 @@ export class OrchestrationEnforcer {
       },
     };
   }
+  /**
+   * T3.3 iterate 确定性围栏：局部重规划只允许改"失败步 + 其传递下游"。
+   * 上游步骤必须与原计划完全一致（含不删除）；越界即拒绝修复，维持原失败（静态 DAG 的可校验/可审批性不破）。
+   */
+  private restrictReplannedSteps(original: IntentPlan, repaired: IntentPlan, failedStepId: string): { ok: boolean; affected: string[]; violations: string[] } {
+    const affected = new Set<string>([failedStepId]);
+    let expanded = true;
+    while (expanded) {
+      expanded = false;
+      for (const step of repaired.steps) {
+        if (affected.has(step.id)) continue;
+        if ((step.dependsOn || []).some((dep) => affected.has(dep))) {
+          affected.add(step.id);
+          expanded = true;
+        }
+      }
+    }
+    const violations: string[] = [];
+    const originalById = new Map(original.steps.map((step) => [step.id, step]));
+    for (const step of repaired.steps) {
+      if (affected.has(step.id)) continue;
+      const before = originalById.get(step.id);
+      if (!before || JSON.stringify({ ...before }) !== JSON.stringify({ ...step })) violations.push(`${step.id}:changed`);
+    }
+    for (const step of original.steps) {
+      if (!affected.has(step.id) && !repaired.steps.some((item) => item.id === step.id)) violations.push(`${step.id}:removed`);
+    }
+    return { ok: violations.length === 0, affected: [...affected].filter((id) => repaired.steps.some((step) => step.id === id)), violations };
+  }
+
   private async repairPlanUsingModel(
     cfg: AppConfig,
     request: UserRequest,
@@ -1013,6 +1043,9 @@ export class OrchestrationEnforcer {
     if (resumePendingStepId) delete initialResults[resumePendingStepId];
     let approvalRounds = 0;
     const maxApprovalRounds = Math.max(1, Number(cfg.orchestration.approval.maxPendingGlobal || 50));
+    // T3.3 iterate：计划级局部重规划次数上限（消耗模型轮数预算，且只许改失败步及下游）。
+    let replanUsed = 0;
+    const maxIterateReplan = 2;
     const jobCreatedAt = pending?.createdAt || new Date().toISOString();
     const runningExpiresAt = new Date(Date.now() + Math.max(3600000, Number(cfg.orchestration.execution.maxDurationMs || 0) + 300000)).toISOString();
     const baseJob: PendingJobRecord = {
@@ -1239,6 +1272,39 @@ export class OrchestrationEnforcer {
         appendTrace('plan', '执行阶段发起追问（独立额度）', { jobId, stepId: pendingResult?.stepId, question, executionClarificationCount: executionClarificationCount + 1 });
         return { handled: true, result: this.clarificationResult(question, Array.isArray(pendingResult?.outputs) ? pendingResult.outputs : []) };
       }
+      // T3.3 iterate：失败/空结果的 iterate 步骤回炉 planner 局部重规划——受限 Agent 循环。
+      if (replanUsed < maxIterateReplan && execution.usage.modelRounds < Math.max(1, Number(cfg.orchestration.execution.maxModelRounds || 1))) {
+        const iterateStep = plan.steps.find((step) => {
+          if (!step.iterate) return false;
+          const stepResult = execution.results[step.id];
+          if (!stepResult) return false;
+          return stepResult.status === 'failed'
+            || (stepResult.status === 'success' && !(stepResult.outputs || []).some((output) => output.text || output.url));
+        });
+        if (iterateStep) {
+          const stepResult = execution.results[iterateStep.id];
+          replanUsed += 1;
+          appendTrace('plan', 'iterate 步骤失败/空结果，回炉局部重规划', { stepId: iterateStep.id, capability: iterateStep.capability, attempt: replanUsed, error: stepResult.error || 'empty_output' });
+          const repaired = await this.repairPlanUsingModel(cfg, request, plan, catalog, modelAdapter, [{
+            code: 'iterate_step_failed',
+            stepId: iterateStep.id,
+            capability: iterateStep.capability,
+            message: `${stepResult.error || 'empty_output'}|diagnostics=${JSON.stringify(stepResult.diagnostics || {}).slice(0, 400)}`,
+          }]);
+          roleRoundsUsed += repaired.rounds;
+          const guard = this.restrictReplannedSteps(plan, repaired.plan || plan, iterateStep.id);
+          if (repaired.plan && guard.ok) {
+            plan = repaired.plan;
+            for (const id of guard.affected) delete initialResults[id];
+            initialResults = { ...initialResults };
+            this.options.pendingJobs?.update(storeKey, { plan, results: initialResults });
+            appendTrace('plan', '局部重规划通过确定性围栏，重跑受影响步骤', { affected: guard.affected, attempt: replanUsed });
+            continue;
+          }
+          appendTrace('plan', repaired.plan ? '局部重规划越界（改动了上游步骤），拒绝' : '局部重规划失败', { violations: guard.violations, attempt: replanUsed });
+        }
+      }
+
       if (execution.status === 'denied') {
         this.options.pendingJobs?.delete(storeKey);
         return this.partialResult(outputs, 'permission_denied', execution.error || '该操作没有执行权限。', plan, execution.results);

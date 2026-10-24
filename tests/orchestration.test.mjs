@@ -3288,3 +3288,147 @@ test('orchestration T3.6 span: request→plan→execute→reply 全链同 reques
   const withPlanId = traces.filter((t) => t.planId === 'p-span-1');
   assert.ok(withPlanId.length >= 1, 'execute/reply 级 trace 应带 planId');
 });
+
+test('orchestration T3.3 iterate: 失败步骤回炉局部重规划后重跑成功', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  cfg.orchestration.planner.nodeIndex = 1;
+  cfg.orchestration.planner.model = 'planner-test';
+  cfg.orchestration.execution.maxModelRounds = 10;
+  const fakeApp = {
+    handle: async () => ({ kind: 'chat', handled: true, text: 'chat', decision: { kind: 'chat', source: 'fallback', confidence: 1, reason: '', params: { prompt: '', tokens: [] }, usedPlanner: false } }),
+    engine: { handleExplicit: async () => null },
+    sessions: { clear() {} }, registry: () => ({}), client: {},
+  };
+  let chatCalls = 0;
+  const fakeClient = {
+    async chat() {
+      chatCalls += 1;
+      if (chatCalls === 1) {
+        return { text: JSON.stringify({ planId: 'p1', requestId: 'r1', goal: 'answer', steps: [{ id: 's1', capability: 'chat.reply', args: { prompt: '查询一' }, iterate: true }], confidence: 0.9 }) };
+      }
+      // 修复计划：只改失败步 args
+      return { text: JSON.stringify({ planId: 'p2', requestId: 'r1', goal: 'answer', steps: [{ id: 's1', capability: 'chat.reply', args: { prompt: '改写后的查询' }, iterate: true }], confidence: 0.9 }) };
+    },
+  };
+  const calls = [];
+  const handler = {
+    async execute(invocation) {
+      calls.push(String(invocation.step.args.prompt || ''));
+      if (String(invocation.step.args.prompt || '').includes('改写后')) {
+        return { jobId: 'j', stepId: invocation.step.id, status: 'success', outputs: [{ kind: 'text', text: '命中结果' }] };
+      }
+      return { jobId: 'j', stepId: invocation.step.id, status: 'failed', outputs: [], error: 'search_empty', diagnostics: { provider: 'test' } };
+    },
+  };
+  const traces = [];
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg, app: fakeApp, client: fakeClient,
+    handlers: new Map([['chat.reply', handler]]),
+    trace: (t) => traces.push(t),
+  });
+  const result = await enforcer.handle({ text: '查一下', chatType: 'private', userId: '1' });
+  assert.equal(result.handled, true);
+  assert.deepEqual(calls, ['查询一', '改写后的查询'], '失败步应恰好重跑一次（用修复后的 args）');
+  assert.ok(traces.some((t) => t.summary.includes('回炉局部重规划')), '应有回炉 trace');
+  assert.ok(traces.some((t) => t.summary.includes('确定性围栏')), '应有围栏通过 trace');
+  const text = (result.result?.text || '') + JSON.stringify(result.result?.replyPlan?.groups || []);
+  assert.ok(text.includes('命中结果'), '最终应投递重跑成功的结果');
+});
+
+test('orchestration T3.3 iterate: 重规划改动上游步骤即越界拒绝，维持失败', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  cfg.orchestration.planner.nodeIndex = 1;
+  cfg.orchestration.planner.model = 'planner-test';
+  cfg.orchestration.execution.maxModelRounds = 10;
+  const fakeApp = {
+    handle: async () => ({ kind: 'chat', handled: true, text: 'chat', decision: { kind: 'chat', source: 'fallback', confidence: 1, reason: '', params: { prompt: '', tokens: [] }, usedPlanner: false } }),
+    engine: { handleExplicit: async () => null },
+    sessions: { clear() {} }, registry: () => ({}), client: {},
+  };
+  let chatCalls = 0;
+  const fakeClient = {
+    async chat() {
+      chatCalls += 1;
+      if (chatCalls === 1) {
+        return { text: JSON.stringify({ planId: 'p1', requestId: 'r1', goal: 'answer', steps: [
+          { id: 's1', capability: 'chat.reply', args: { prompt: '上游固定' } },
+          { id: 's2', capability: 'chat.reply', args: { prompt: '下游失败' }, dependsOn: ['s1'], iterate: true },
+        ], confidence: 0.9 }) };
+      }
+      // 越界修复：改了上游 s1 的 args
+      return { text: JSON.stringify({ planId: 'p2', requestId: 'r1', goal: 'answer', steps: [
+        { id: 's1', capability: 'chat.reply', args: { prompt: '上游被改' } },
+        { id: 's2', capability: 'chat.reply', args: { prompt: '下游重写' }, dependsOn: ['s1'], iterate: true },
+      ], confidence: 0.9 }) };
+    },
+  };
+  let s1Calls = 0;
+  const handler = {
+    async execute(invocation) {
+      if (invocation.step.id === 's1') {
+        s1Calls += 1;
+        return { jobId: 'j', stepId: 's1', status: 'success', outputs: [{ kind: 'text', text: '上游产出' }] };
+      }
+      return { jobId: 'j', stepId: 's2', status: 'failed', outputs: [], error: 'search_empty' };
+    },
+  };
+  const traces = [];
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg, app: fakeApp, client: fakeClient,
+    handlers: new Map([['chat.reply', handler]]),
+    trace: (t) => traces.push(t),
+  });
+  const result = await enforcer.handle({ text: '查一下', chatType: 'private', userId: '1' });
+  assert.equal(s1Calls, 1, '上游步骤不得因越界重规划被重跑');
+  assert.ok(traces.some((t) => t.summary.includes('越界')), '应有越界拒绝 trace');
+  assert.ok(result.problem, '越界拒绝后应维持失败并上报 problem');
+});
+
+test('orchestration T3.3 iterate: 重规划次数上限 maxReplan=2，超限后放弃', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  cfg.orchestration.planner.nodeIndex = 1;
+  cfg.orchestration.planner.model = 'planner-test';
+  cfg.orchestration.execution.maxModelRounds = 20;
+  const fakeApp = {
+    handle: async () => ({ kind: 'chat', handled: true, text: 'chat', decision: { kind: 'chat', source: 'fallback', confidence: 1, reason: '', params: { prompt: '', tokens: [] }, usedPlanner: false } }),
+    engine: { handleExplicit: async () => null },
+    sessions: { clear() {} }, registry: () => ({}), client: {},
+  };
+  let chatCalls = 0;
+  const fakeClient = {
+    async chat() {
+      chatCalls += 1;
+      return { text: JSON.stringify({ planId: 'p' + chatCalls, requestId: 'r1', goal: 'answer', steps: [{ id: 's1', capability: 'chat.reply', args: { prompt: '查询-' + chatCalls }, iterate: true }], confidence: 0.9 }) };
+    },
+  };
+  let handlerCalls = 0;
+  const handler = {
+    async execute() {
+      handlerCalls += 1;
+      return { jobId: 'j', stepId: 's1', status: 'failed', outputs: [], error: 'always_empty' };
+    },
+  };
+  const traces = [];
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg, app: fakeApp, client: fakeClient,
+    handlers: new Map([['chat.reply', handler]]),
+    trace: (t) => traces.push(t),
+  });
+  const result = await enforcer.handle({ text: '查一下', chatType: 'private', userId: '1' });
+  const replanTraces = traces.filter((t) => t.summary.includes('回炉局部重规划'));
+  assert.equal(replanTraces.length, 2, '最多重规划 2 次');
+  assert.equal(handlerCalls, 3, '1 次原始执行 + 2 次重跑');
+  assert.ok(result.problem, '超限后应维持失败并上报');
+});
