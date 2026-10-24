@@ -18,8 +18,8 @@ export function builtinCapabilityDescriptors(): CapabilityDescriptor[] {
     { ...base, id: 'file.read', name: '文件读取', provider: 'file-ingest', mode: 'sync', riskLevel: 'medium', mergeable: false, outputKinds: ['text', 'image', 'file'] },
     { ...base, id: 'file.generate', name: '文件生成', provider: 'file-generator', mode: 'async_job', riskLevel: 'medium', mergeable: false, outputKinds: ['file'] },
     { ...base, id: 'file.list', name: '文件列表', provider: 'file-ingest', mode: 'sync', riskLevel: 'low', mergeable: true, outputKinds: ['text'] },
-    { ...base, id: 'code.render', name: '代码渲染', provider: 'browser-render', mode: 'async_job', riskLevel: 'low', mergeable: true, outputKinds: ['image'] },
-    { ...base, id: 'browser.render', name: '网页截图', provider: 'browser-render', mode: 'async_job', riskLevel: 'medium', mergeable: true, outputKinds: ['image'] },
+    { ...base, id: 'code.render', name: '代码渲染', description: '用代码（HTML/SVG/Canvas/Three.js）绘制一张图片产物。用户说"用代码画XX""代码画图""SVG/Canvas/Three.js 画"时使用。args 传 userContent（用户想画的内容原话）。', provider: 'browser-render', mode: 'async_job', riskLevel: 'low', mergeable: true, outputKinds: ['image'], inputSchema: { type: 'object', properties: { userContent: { type: 'string', description: '用户想画的内容描述原话（不要自己写代码，系统会调模型生成代码）' } }, additionalProperties: true } },
+    { ...base, id: 'browser.render', name: '网页截图', description: '打开指定网页并截取页面截图。用户给出网址或网站名均可。如果用户没给完整 URL，先用 web.search 搜索获取网站 URL，再用本能力截图（两步链式执行）。', provider: 'browser-render', mode: 'async_job', riskLevel: 'medium', mergeable: true, outputKinds: ['image'], inputSchema: { type: 'object', properties: { url: { type: 'string', description: '要截图的网页完整 URL（https://开头）。如果用户只说了网站名，先通过 web.search 搜索获取 URL，再传入本能力。也可以用 {{steps.<搜索步骤id>.outputs[0].text}} 引用搜索结果。' } }, additionalProperties: true } },
     { ...base, id: 'tts.speak', name: '语音合成', provider: 'tts', mode: 'async_job', queue: 'audio', riskLevel: 'low', mergeable: false, outputKinds: ['audio'] },
     { ...base, id: 'voice.current', name: '当前音色', provider: 'fish-audio', mode: 'interactive', riskLevel: 'low', mergeable: true, outputKinds: ['text'] },
     { ...base, id: 'voice.search', name: '搜索音色', provider: 'fish-audio', mode: 'interactive', riskLevel: 'medium', mergeable: true, outputKinds: ['text'], inputSchema: { type: 'object', properties: { title: { type: 'string' }, tags: { type: 'array' }, language: { type: 'array' }, licensedOnly: { type: 'boolean' } }, additionalProperties: true } },
@@ -128,7 +128,8 @@ export function builtinCapabilityDescriptors(): CapabilityDescriptor[] {
     'image.interrogate': ['image'],
     'image.stitch': ['image'],
     'file.read': ['file'],
-    'browser.render': ['url'],
+    // browser.render 的 url 改为 inputSchema 参数（planner 从用户描述中提取/补全 URL），
+    // 不再要求执行前已有 URL 附件——用户说"截屏起点中文网"没有附链接也应能触发。
   };
   const sideEffects: Record<string, CapabilityDescriptor['sideEffects']> = {
     // T2.8 修复：生图/改图/视频是 async_job + 外部提交（ComfyUI prompt_id / 视频任务 id），

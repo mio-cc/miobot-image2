@@ -64,10 +64,11 @@ export const DEFAULT_PLANNER_USER_PROMPT_TEMPLATE = [
   '1. 只能使用 capabilityManifest 中真实存在且启用的能力 ID。',
   '2. 比较用户目标与能力的 description、effect、inputSchema、requiredContext、outputKinds、sideEffects 和 mode。',
   '3. 只规划达成用户目标所需的最小步骤；每一步都必须对最终结果必要。',
-  '4. 需要多步时，用 dependsOn 明确依赖关系。',
-  '5. 如果目标、前置条件或副作用必要性不明确，needsClarification=true，并给出一个具体问题。',
+  '4. 需要多步时，用 dependsOn 明确依赖关系。鼓励主动链式调用：如果用户想要的结果需要先获取信息再执行操作（如"截屏某网站"需要先搜索获取 URL 再截图，"画一个当前热门的角色"需要先搜索确认是谁再生成），就规划多步。',
+  '5. 如果目标、前置条件或副作用必要性不明确，needsClarification=true，并给出一个具体问题。不要因为缺少 URL、名称等信息就放弃——先想想能不能用 web.search 获取。',
   '6. 后续步骤需要使用依赖步骤的产出时，在该步骤 args 的字符串值里写 {{steps.<依赖步骤id>.outputs[0].text}} 或 {{steps.<依赖步骤id>.outputs[0].url}} 引用，不要凭空复述或编造内容；能力自身的目标不明确时省略选择参数，让能力返回候选并追问。',
   '7. 如果用户请求只是简单对话或问答、不需要任何工具/检索/生成产物（计划就是唯一一个 chat.reply 步骤），在输出 JSON 中附加 directReply 字段，直接给出完整的回复文本——系统将跳过第二次模型调用直接发送，显著降低回复延迟。',
+  '8. steps 数组不能为空。如果无法确定用哪个能力，选择 chat.reply 并设 needsClarification=true 附带追问。',
   '',
   '【上下文】',
   '用户请求：{{userText}}',
@@ -325,8 +326,12 @@ export async function planWithModel(
       return { ...plan, modelRoundsUsed };
     } catch (error) {
       lastError = error;
+      // 把模型实际输出发回调用方（截断防刷日志）——用户需要在面板看到模型到底说了什么。
+      const preview = String(result.text || '').replace(/\s+/g, ' ').slice(0, 500);
+      const detail = `planner_attempt_${attempt + 1}_chars=${String(result.text || '').length}:preview=${preview}`;
       messages.push({ role: 'assistant', content: result.text });
       messages.push({ role: 'user', content: `上一次输出不合法：${String((error as Error)?.message || error)}。请只输出符合 schema 的完整 JSON。` });
+      (lastError as Error).message = String((error as Error)?.message || error) + '|' + detail;
     }
   }
   throw new Error(`planner_failed:${String((lastError as Error)?.message || lastError)}`);

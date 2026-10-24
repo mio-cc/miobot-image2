@@ -899,6 +899,9 @@ export class OrchestrationEnforcer {
           confidence: plan.confidence,
           capabilityCount: catalog.length,
           capabilityManifestVersion: buildCapabilityManifest(catalog).version,
+          // 模型输出监控（面板 → 可观测性 → 按 requestId 查看）：
+          // 完整计划 JSON（截断 2000 字），用户能看到模型到底规划了什么。
+          planJson: JSON.stringify({ steps: plan.steps.map((s) => ({ id: s.id, capability: s.capability, args: s.args })), directReply: plan.directReply, needsClarification: plan.needsClarification }).slice(0, 2000),
         });
         if (!plan.needsClarification) {
           const contextCheck = validatePlanContext(plan, this.registry.list(), request);
@@ -931,7 +934,11 @@ export class OrchestrationEnforcer {
     } catch (error) {
       // T0.3/C4：这是唯一保留 legacy 回退的出口（规划期失败，尚无副作用）。
       // trace 打 fallback_legacy 标记（不打 problem：免费模型限流期可能高频发生，避免刷管理员私报）。
-      appendTrace('plan', 'planner 失败，回退旧链路 fallback_legacy', { error: String((error as Error)?.message || error) });
+      appendTrace('plan', 'planner 失败，回退旧链路 fallback_legacy', {
+        error: String((error as Error)?.message || error).slice(0, 500),
+        // 模型输出监控：错误信息里已带 preview= 段（planner.ts 追加的截断预览），
+        // 面板可观测性页可看到模型到底输出了什么导致解析失败。
+      });
       this.options.logger?.warn('智能编排规划失败，回退旧链路', { error: String((error as Error)?.message || error) });
       return { handled: false, reason: 'planner_failed' };
     }
