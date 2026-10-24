@@ -30,6 +30,7 @@ import { OwnerRecallCapabilityHandler } from './capability-owner.js';
 import { createSentMessageTracker } from './sent-messages.js';
 import { OrchestrationEnforcer } from './orchestration-enforce.js';
 import { OrchestrationTraceWriter } from './orchestration-trace.js';
+import { SchedulerService, buildDailyReport } from './scheduler.js';
 import { RuntimeAdapterCapabilityHandler, executionFromBotResult } from './capability-runtime-adapters.js';
 import { ImageStitchCapabilityHandler } from './capability-image.js';
 import { CanvasGalleryCapabilityHandler } from './capability-canvas.js';
@@ -484,6 +485,28 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     maxEntries: 100000,
     maxBytes: 2 * 1024 * 1024,
   });
+
+  // T3.1：调度器 + 每日聚合日报（§11.5 静默观测闭环；默认关，面板/配置开启）。
+  const scheduler = new SchedulerService({
+    filePath: path.join(dataDir, 'scheduled-jobs.json'),
+    logger,
+    run: async (job) => {
+      if (job.type !== 'daily-report') return null;
+      const text = await buildDailyReport({ traceFile, dataDir });
+      const targets = getConfig().bot.ownerQQs || [];
+      for (const ownerQq of targets) {
+        try {
+          const sent = await adapter.sendPrivateText(Number(ownerQq) || ownerQq, text);
+          if (!sent.success) logger?.warn('日报发送失败', { ownerQq, error: sent.error });
+        } catch { /* 单个目标失败不影响其他 */ }
+      }
+      return targets.length ? text : null;
+    },
+  });
+  if (getConfig().bot.dailyReport?.enabled) {
+    scheduler.register({ id: 'daily-report', kind: 'daily', type: 'daily-report', hour: getConfig().bot.dailyReport.hour, minute: getConfig().bot.dailyReport.minute, enabled: true });
+  }
+  void scheduler.start();
 
   const pendingJobFile = process.env.MIOBOT_PENDING_JOB_FILE || path.join(dataDir, 'orchestration-pending-jobs.json');
   let initialPendingJobs: any[] = [];
@@ -964,6 +987,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     clearInterval(retentionTimer);
     clearInterval(fileCleanupTimer);
     clearInterval(sessionPersistTimer);
+    scheduler.stop();
     auditService.stop();
     approvalActionConsumer.stop();
     capabilityTestConsumer.stop();
