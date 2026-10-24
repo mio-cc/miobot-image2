@@ -51,6 +51,8 @@ export interface NapcatAdapterOptions {
   reconnectMaxDelayMs?: number;
   /** T2.1：心跳死链阈值（默认 150s，0=关闭）。 */
   heartbeatStaleMs?: number;
+  /** 把出站 file:// 容器路径映射回 bot 进程可读的宿主路径；ENOENT 回退重发时使用。 */
+  resolveLocalFile?: (uri: string) => string | null | undefined;
   autoReconnect?: boolean;
   socketFactory?: NapcatSocketFactory;
   logger?: StructuredLogger;
@@ -154,7 +156,7 @@ export class NapcatActionError extends Error {
 }
 
 export class NapcatAdapter {
-  private readonly options: Required<Omit<NapcatAdapterOptions, 'socketFactory' | 'logger' | 'requestIdFactory' | 'token' | 'forwardUserId'>> & Pick<NapcatAdapterOptions, 'token' | 'forwardUserId'>;
+  private readonly options: Required<Omit<NapcatAdapterOptions, 'socketFactory' | 'logger' | 'requestIdFactory' | 'token' | 'forwardUserId' | 'resolveLocalFile'>> & Pick<NapcatAdapterOptions, 'token' | 'forwardUserId' | 'resolveLocalFile'>;
   private readonly socketFactory: NapcatSocketFactory;
   private readonly logger?: StructuredLogger;
   private readonly requestIdFactory: (action: string) => string;
@@ -191,6 +193,7 @@ export class NapcatAdapter {
       reconnectDelayMs: Math.max(0, positiveInt(options.reconnectDelayMs, 5000)),
       reconnectMaxDelayMs: Math.max(0, positiveInt(options.reconnectMaxDelayMs, 30000)),
       heartbeatStaleMs: Math.max(0, positiveInt(options.heartbeatStaleMs, 150000)),
+      resolveLocalFile: options.resolveLocalFile,
       autoReconnect: options.autoReconnect !== false,
       forwardUserId: options.forwardUserId,
     };
@@ -697,7 +700,36 @@ export class NapcatAdapter {
     return [...(this.forwardBridgeTargets.get(id) || [])];
   }
 
-  private async sendAndReportResult(action: string, params: Record<string, unknown>, timeoutMs: number): Promise<NapcatSendResult> {
+  /**
+   * ENOENT 回退：把 params.message 段里的 file:// 引用读回宿主文件转 base64://。
+   * 任何一个文件解析/读取失败即返回 null（不部分回退，避免半条消息）。
+   * 只在确定性"文件打开失败"后调用一次，且 inlinedFallback 防递归。
+   */
+  private async inlineFileRefsForRetry(params: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+    const message = params.message;
+    if (!Array.isArray(message)) return null;
+    let patched = false;
+    const nextMessage: unknown[] = [];
+    for (const segment of message) {
+      if (!segment || typeof segment !== 'object') { nextMessage.push(segment); continue; }
+      const data = (segment as { data?: Record<string, unknown> }).data;
+      const file = data && typeof data.file === 'string' ? data.file : '';
+      if (!file.startsWith('file://')) { nextMessage.push(segment); continue; }
+      const hostPath = this.options.resolveLocalFile?.(file);
+      if (!hostPath) return null;
+      try {
+        const buffer = await fs.promises.readFile(hostPath);
+        if (buffer.length > 30 * 1024 * 1024) return null; // 超大文件不内联，走失败上报
+        nextMessage.push({ ...(segment as object), data: { ...data, file: 'base64://' + buffer.toString('base64') } });
+        patched = true;
+      } catch {
+        return null;
+      }
+    }
+    return patched ? { ...params, message: nextMessage } : null;
+  }
+
+  private async sendAndReportResult(action: string, params: Record<string, unknown>, timeoutMs: number, inlinedFallback = false): Promise<NapcatSendResult> {
     try {
       const response = await this.callAction(action, params, timeoutMs);
       const messageId = response.data && typeof response.data === 'object' ? (response.data as any).message_id ?? (response.data as any).messageId : undefined;
@@ -713,12 +745,27 @@ export class NapcatAdapter {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const retcode = error instanceof NapcatActionError ? Number(error.response?.retcode) : undefined;
-      const uncertain = retcode === 1200 || /NodeIKernelMsgService\/sendMsg|onMsgInfoListUpdate|EventRet/i.test(message);
+      // 实测事故 2026-10-24T12:41/12:43：record 与 image 走 file:// 共享目录时 NapCat 报
+      // retcode=1200 "Failed to open input / ENOENT: no such file or directory"（数十 ms 即失败）——
+      // 确定性的"文件没送到 NapCat 手里"，消息绝无可能已发出；但旧规则把 1200 一律判
+      // uncertain（防双发不重试），语音/图片被整条吞掉。
+      // 修正①：打开输入失败 = 确定性未送达，不算 uncertain。
+      const deterministicInputFailure = /Failed to open input|No such file or directory|ENOENT/i.test(message);
+      const uncertain = !deterministicInputFailure && (retcode === 1200 || /NodeIKernelMsgService\/sendMsg|onMsgInfoListUpdate|EventRet/i.test(message));
       const timedOut = /超时|timeout|timed out/i.test(message);
+      // 修正②：确定性文件打开失败时，把 file:// 引用读回（宿主侧）转 base64 重发一次——
+      // 共享目录映射不符（NapCat 容器路径变化/裸机部署）时自动回退到内联发送，消息不丢。
+      if (!uncertain && deterministicInputFailure && !inlinedFallback && typeof this.options.resolveLocalFile === 'function') {
+        const patched = await this.inlineFileRefsForRetry(params);
+        if (patched) {
+          this.logger?.warn('napcat 本地文件打开失败，转 base64 内联重发', { action, retcode });
+          return this.sendAndReportResult(action, patched, timeoutMs, true);
+        }
+      }
       if (uncertain) {
         this.logger?.warn('napcat send uncertain; message may already be delivered, not retrying', { action, error: normalizeError(error), retcode });
       } else {
-        this.logger?.error('napcat send failed', { action, error: normalizeError(error) });
+        this.logger?.error('napcat send failed', { action, error: normalizeError(error), retcode });
       }
       return { success: false, error: message, timedOut, uncertain };
     }
@@ -748,8 +795,7 @@ export class NapcatAdapter {
     void this.emit('open', this.getConnectionSnapshot());
   }
 
-  /**
-   * T2.1：心跳死链检测。NapCat 会周期上报 meta_event（heartbeat/lifecycle）；
+  /** T2.1：心跳死链检测。NapCat 会周期上报 meta_event（heartbeat/lifecycle）；
    * 一旦观察到过心跳，超过 heartbeatStaleMs（默认 150s，0=关闭）没有任何事件，
    * 视为半开连接，主动断开触发重连——不用等 TCP 超时。
    */

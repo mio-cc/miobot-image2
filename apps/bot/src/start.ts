@@ -425,6 +425,15 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     fileSendTimeoutMs: nap.fileSendTimeoutMs,
     fileSendRetryCount: nap.fileSendRetryCount,
     fileSendRetryDelayMs: nap.fileSendRetryDelayMs,
+    // ENOENT 回退：file:// 容器路径 → 宿主路径映射（NapCat 打不开共享目录文件时
+    // 由 bot 进程读回并转 base64 重发一次，消息不丢）。
+    resolveLocalFile: (uri) => {
+      const current = getConfig().napcat;
+      const container = String(current.mountOutputContainerDir || '').replace(/\/+$/, '');
+      const hostDir = String(current.mountOutputDir || '').replace(/\/+$/, '');
+      if (!container || !hostDir || !uri.startsWith('file://' + container + '/')) return null;
+      return path.join(hostDir, uri.slice(('file://' + container + '/').length));
+    },
     logger,
   });
 

@@ -429,3 +429,50 @@ test('napcat adapter T2.1: 心跳事件刷新时间戳，断开清理看门狗�
   adapter.disconnect();
   assert.equal(sockets[0].closed, true);
 });
+
+test('napcat 事故修复: ENOENT 分类与回退——真实 file:// 消息段路径', async () => {
+  const os = await import('node:os');
+  const fsSync = await import('node:fs');
+  const pathMod = await import('node:path');
+  const hostDir = fsSync.mkdtempSync(pathMod.join(os.tmpdir(), 'miobot-enoent2-'));
+  fsSync.writeFileSync(pathMod.join(hostDir, 'v.mp3'), Buffer.from('abc'));
+  const { adapter, sockets } = createHarness({
+    resolveLocalFile: (uri) => (uri.startsWith('file:///app/napcat/output/')
+      ? pathMod.join(hostDir, uri.slice('file:///app/napcat/output/'.length))
+      : null),
+  });
+  adapter.connect();
+  sockets[0].open();
+  const pending = adapter.sendGroupRecord(1, 'file:///app/napcat/output/v.mp3').then(
+    (r) => ({ ok: true, r }),
+    (e) => ({ ok: false, message: String(e.message || e) }),
+  );
+  sockets[0].message({ echo: 'echo_send_group_msg_0', status: 'failed', retcode: 1200, wording: 'Failed to open input: No such file or directory' });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const retryFrame = sockets[0].sent[1];
+  assert.ok(retryFrame, '应发出 base64 回退重发帧');
+  const retryFile = retryFrame.params.message[0].data.file;
+  assert.match(retryFile, /^base64:\/\//);
+  assert.equal(Buffer.from(retryFile.slice('base64://'.length), 'base64').toString(), 'abc', '内容与宿主文件一致');
+  sockets[0].message({ echo: 'echo_send_group_msg_1', status: 'ok', retcode: 0, data: { message_id: 42 } });
+  const outcome = await pending;
+  assert.equal(outcome.ok, true, '回退重发后成功');
+  assert.equal(outcome.r.messageId, 42);
+});
+
+test('napcat 事故修复: 无 resolver 或文件不可读时不回退，且不再判 uncertain', async () => {
+  const { adapter, sockets } = createHarness({});
+  adapter.connect();
+  sockets[0].open();
+  const pending = adapter.sendGroupText(100, 'x').then(
+    (r) => ({ ok: true, r }),
+    (e) => ({ ok: false, e }),
+  );
+  sockets[0].message({ echo: 'echo_send_group_msg_0', status: 'failed', retcode: 1200, wording: 'Failed to open input: No such file or directory' });
+  const outcome = await pending;
+  assert.equal(outcome.ok, true, 'send 返回结果对象而非抛错');
+  assert.equal(outcome.r.success, false);
+  assert.notEqual(outcome.r.uncertain, true, 'ENOENT 不再判 uncertain');
+  assert.equal(sockets[0].sent.length, 1, '无 resolver 不重发');
+  assert.match(String(outcome.r.error), /No such file/);
+});
