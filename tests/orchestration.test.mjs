@@ -3241,3 +3241,50 @@ test('orchestration T3.6: 每条 trace 附带模型用量快照，planner 调用
   assert.equal(replyTrace.data.usage.totalTokens, 180);
   assert.equal(replyTrace.data.usage.cost, 0.015);
 });
+
+test('orchestration T3.6 span: request→plan→execute→reply 全链同 requestId，execute 级 trace 存在', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  cfg.orchestration.planner.nodeIndex = 1;
+  cfg.orchestration.planner.model = 'planner-test';
+  const fakeApp = {
+    handle: async () => ({ kind: 'chat', handled: true, text: 'chat', decision: { kind: 'chat', source: 'fallback', confidence: 1, reason: '', params: { prompt: '', tokens: [] }, usedPlanner: false } }),
+    engine: { handleExplicit: async () => null },
+    sessions: { clear() {} }, registry: () => ({}), client: {},
+  };
+  const fakeClient = {
+    async chat() {
+      return { text: JSON.stringify({ planId: 'p-span-1', requestId: 'r-span', goal: 'answer', steps: [
+        { id: 's1', capability: 'chat.reply', args: { prompt: '搜索猫的资料' } },
+        { id: 's2', capability: 'chat.reply', args: { prompt: '总结' }, dependsOn: ['s1'] },
+      ], confidence: 0.9 }) };
+    },
+  };
+  const handler = {
+    async execute(invocation) {
+      return { jobId: 'j', stepId: invocation.step.id, status: 'success', outputs: [{ kind: 'text', text: 'out-' + invocation.step.id }] };
+    },
+  };
+  const traces = [];
+  const enforcer = new OrchestrationEnforcer({
+    getConfig: () => cfg, app: fakeApp, client: fakeClient,
+    handlers: new Map([['chat.reply', handler]]),
+    trace: (t) => traces.push(t),
+  });
+  const result = await enforcer.handle({ text: '搜索猫的资料并总结', chatType: 'private', userId: '1' });
+  assert.equal(result.handled, true);
+  const requestIds = new Set(traces.map((t) => t.requestId));
+  assert.equal(requestIds.size, 1, '全部 trace 必须同 requestId 串联');
+  const stages = new Set(traces.map((t) => t.stage));
+  assert.ok(stages.has('request') && stages.has('plan') && stages.has('execute') && stages.has('reply'), '阶段覆盖: ' + [...stages].join(','));
+  const executeTraces = traces.filter((t) => t.stage === 'execute');
+  assert.ok(executeTraces.length >= 2, '两步计划应有步骤级 checkpoint trace');
+  const last = executeTraces[executeTraces.length - 1].data;
+  assert.equal(last?.total, 2);
+  assert.ok(Number(last?.completed) >= 1);
+  const withPlanId = traces.filter((t) => t.planId === 'p-span-1');
+  assert.ok(withPlanId.length >= 1, 'execute/reply 级 trace 应带 planId');
+});

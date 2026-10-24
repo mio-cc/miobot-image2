@@ -147,6 +147,14 @@ const traces = ref<any[]>([]);
 const pendingJobs = ref<any[]>([]);
 const configVersions = ref<any[]>([]);
 const traceReplay = ref<any>(null);
+/** T3.6 span 链：按 requestId 过滤，串看 request→plan→execute→reply 全链。 */
+const traceRequestIdFilter = ref('');
+
+const filteredTraces = computed(() => {
+  const keyword = traceRequestIdFilter.value.trim();
+  const list = [...traces.value].reverse();
+  return keyword ? list.filter((trace) => String(trace.requestId || '') === keyword) : list;
+});
 
 async function loadTraceReplay(trace: any) {
     if (!trace?.requestId) return;
@@ -282,21 +290,26 @@ onBeforeUnmount(stopTimer);
       </SectionCard>
     </div>
 
-    <SectionCard title="最近编排追踪" hint="来自 bot 进程写入的 JSONL trace；用于定位规划、权限、执行和回复问题" class="mb-4">
+    <SectionCard title="最近编排追踪" hint="来自 bot 进程写入的 JSONL trace；按 requestId 过滤可串看 request→plan→execute→reply 全链 span" class="mb-4">
+      <div class="flex flex-wrap items-center gap-2 mb-3">
+        <input v-model="traceRequestIdFilter" class="input-field !w-auto min-w-[240px]" placeholder="按 requestId 过滤（从任一行的请求列复制）" />
+        <button v-if="traceRequestIdFilter" class="btn-outline text-xs" type="button" @click="traceRequestIdFilter = ''">清除</button>
+        <span class="text-xs text-[color:var(--ink-3)]">{{ traceRequestIdFilter ? `命中 ${filteredTraces.length} 条` : `共 ${traces.length} 条` }}</span>
+      </div>
       <div class="overflow-x-auto max-h-[360px]">
         <table class="w-full text-xs">
           <thead class="text-[color:var(--ink-3)] border-b border-[color:var(--hairline-2)]">
             <tr><th class="text-left py-2 pr-3">时间</th><th class="text-left py-2 pr-3">请求</th><th class="text-left py-2 pr-3">阶段</th><th class="text-left py-2 pr-3">摘要</th><th class="text-left py-2">操作</th></tr>
           </thead>
           <tbody>
-            <tr v-for="trace in [...traces].reverse()" :key="trace.id" class="border-b border-[color:var(--hairline-2)]/60">
+            <tr v-for="trace in filteredTraces" :key="trace.id" class="border-b border-[color:var(--hairline-2)]/60">
               <td class="py-2 pr-3 mono whitespace-nowrap">{{ String(trace.timestamp || '').slice(11, 19) }}</td>
-              <td class="py-2 pr-3 mono">{{ trace.requestId }}</td>
+              <td class="py-2 pr-3 mono"><button class="hover:underline" type="button" @click="traceRequestIdFilter = String(trace.requestId || '')">{{ trace.requestId }}</button></td>
               <td class="py-2 pr-3">{{ trace.stage }}</td>
               <td class="py-2 pr-3">{{ trace.summary }}</td>
               <td class="py-2"><button class="btn-outline !px-2 !py-1" type="button" @click="loadTraceReplay(trace)">回放</button></td>
             </tr>
-            <tr v-if="!traces.length"><td colspan="5" class="py-3 text-[color:var(--ink-3)]">暂无编排追踪</td></tr>
+            <tr v-if="!filteredTraces.length"><td colspan="5" class="py-3 text-[color:var(--ink-3)]">{{ traceRequestIdFilter ? '该 requestId 没有追踪记录' : '暂无编排追踪' }}</td></tr>
           </tbody>
         </table>
       </div>

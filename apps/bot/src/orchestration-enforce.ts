@@ -613,10 +613,14 @@ export class OrchestrationEnforcer {
     }
     // T3.6：本请求的模型用量累计（声明必须在 appendTrace 之前——首次 'request' trace 就要带快照）。
     const usageTotals: ModelUsageTotals = { promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0, modelCalls: 0 };
+    // T3.6 span 链：planId 在计划产出后才有，用 holder 避开 TDZ（'request' trace 早于 plan 声明）。
+    let tracedPlanId: string | undefined;
     const appendTrace = (stage: OrchestrationTrace['stage'], summary: string, data?: Record<string, unknown>) => {
       this.options.trace?.({
         id: `trace_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        timestamp: new Date().toISOString(), requestId: request.requestId, stage, summary,
+        timestamp: new Date().toISOString(), requestId: request.requestId,
+        ...(tracedPlanId ? { planId: tracedPlanId } : {}),
+        stage, summary,
         // T3.6：每条 trace 附带截至此刻的模型用量快照（不覆盖调用方显式传入的 usage）。
         data: { ...(data || {}), ...(data?.usage ? {} : { usage: { ...usageTotals } }) },
       });
@@ -1034,6 +1038,7 @@ export class OrchestrationEnforcer {
       startedAt: jobStartedAt,
     };
     this.options.pendingJobs?.set(baseJob);
+    tracedPlanId = plan.planId;
     // C2：循环内落库键——审批等待期挪到 job:<jobId> 后，后续 checkpoint/清理都用它。
     let storeKey = pendingKey;
     while (true) {
@@ -1063,6 +1068,14 @@ export class OrchestrationEnforcer {
             clarificationCount,
             startedAt: jobStartedAt,
             lastError: checkpoint.reason,
+          });
+          // T3.6 span 链：步骤级 checkpoint —— 与 request/plan/reply 同 requestId 串联，面板可按 requestId 过滤回放。
+          const completed = checkpoint.order.filter((id) => checkpoint.results[id]?.status === 'success' || checkpoint.results[id]?.status === 'partial').length;
+          appendTrace('execute', `步骤进度 ${completed}/${checkpoint.order.length}`, {
+            completed,
+            total: checkpoint.order.length,
+            ...(checkpoint.pendingStepId ? { pendingStepId: checkpoint.pendingStepId } : {}),
+            ...(checkpoint.reason ? { reason: checkpoint.reason } : {}),
           });
         },
         // T2.8：handler 提交远端任务后立即落盘 taskId，崩溃恢复时据此对账。
