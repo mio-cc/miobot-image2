@@ -21,6 +21,14 @@ const imageTestPrompt = ref('一只柴犬');
 const imageTestLoading = ref(false);
 const imageTestResult = ref<any>(null);
 
+/** 生图命令修饰符（自 BotPage 迁入）：附加在生图描述里的前缀/后缀，不是独立功能命令。 */
+const modifierFields = [
+    { key: 'toggleEnhance', label: '润色开关', placeholder: '润色, enhance', hint: '写在描述前，例如：画 润色 一只猫' },
+    { key: 'forceEnhance', label: '强制润色', placeholder: '润色, enhance', hint: '' },
+    { key: 'disableEnhance', label: '禁用润色', placeholder: '原文, raw, 不润色', hint: '' },
+    { key: 'imageCount', label: '张数后缀', placeholder: 's', hint: '例如 2s! 生成 2 张；张数仍受模型能力与功能上限约束' },
+];
+
 async function testImage() {
     imageTestLoading.value = true;
     imageTestResult.value = null;
@@ -356,6 +364,11 @@ onMounted(loadComfyWorkflows);
       </div>
     </template>
     <template #advanced>
+      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-4 pb-4 border-b border-[color:var(--hairline-2)]">
+        <FormField v-for="field in modifierFields" :key="field.key" :label="field.label" :hint="field.hint">
+          <input v-model="config.bot.commands[field.key]" class="input-field" :placeholder="field.placeholder" />
+        </FormField>
+      </div>
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
         <FormField label="ComfyUI 节点">
           <select v-model.number="comfyNodeIndex" class="input-field" @change="loadComfyWorkflowProfile()">

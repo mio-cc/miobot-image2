@@ -1,0 +1,249 @@
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue';
+import client, { errorMessage } from '../api/client';
+import { useConfigStore } from '../stores/config';
+import SectionCard from '../components/SectionCard.vue';
+import FormField from '../components/FormField.vue';
+import ToggleField from '../components/ToggleField.vue';
+
+/**
+ * 接入与准入页（用户层）。
+ * NapCat 连接（自系统设置迁入）+ 身份与人员（owner/审批管理员合一双写）+
+ * 触发方式（含戳一戳/入群欢迎/好友请求事件源）+ 群聊上下文 + 名单 +
+ * 消息与限流总策略（C6 全局项；逐能力配额在各能力页「启用与配额」卡）。
+ */
+
+const configStore = useConfigStore();
+const config = computed(() => configStore.config);
+
+const napcatTesting = ref(false);
+const napcatResult = ref<any>(null);
+
+async function testNapcat() {
+    napcatTesting.value = true;
+    napcatResult.value = null;
+    try {
+        // token 只在用户刚改过（不含圆点）时才发；发打码值等于拿一串圆点去连 NapCat。
+        // 不发的话后端会回落到磁盘上的旧 token——刚粘上的新 token 根本测不到。
+        const typedToken = String(config.value.napcat.token || '');
+        const res = await client.post('/test-napcat', {
+            wsUrl: config.value.napcat.wsUrl,
+            ...(typedToken.includes('••••') ? {} : { token: typedToken }),
+        });
+        napcatResult.value = res.data;
+    } catch (error: any) {
+        napcatResult.value = error?.response?.data || { success: false, error: errorMessage(error) };
+    } finally {
+        napcatTesting.value = false;
+    }
+}
+
+/**
+ * 名单类输入用独立文本 ref，失焦时才写回数组。
+ * 直接「:value 格式化 + @input 立即 split/filter」的写法里，每敲一个逗号都会被
+ * filter(Boolean) 吃掉，结果是根本没法输入第二个条目。
+ */
+const ownersText = ref('');
+const whitelistGroupsText = ref('');
+const whitelistPrivateText = ref('');
+const blacklistText = ref('');
+
+function syncFromConfig() {
+    const bot = config.value?.bot;
+    if (!bot) return;
+    // 管理员名单合一（§2.6.4 动作1）：bot.ownerQQs 与 orch.approval.adminQqIds
+    // 双写为同一批人；展示取两者并集。
+    const admins = new Set([...(bot.ownerQQs || []), ...(config.value?.orchestration?.approval?.adminQqIds || [])]);
+    ownersText.value = [...admins].join(', ');
+    whitelistGroupsText.value = (bot.whitelistGroups || []).join(', ');
+    whitelistPrivateText.value = (bot.whitelistPrivate || []).join(', ');
+    blacklistText.value = (bot.blacklistGroupUsers || []).join('\n');
+}
+watch(() => [config.value?.bot, config.value?.orchestration?.approval], syncFromConfig, { immediate: true });
+
+function splitList(value: string, separator: RegExp) {
+    return value.split(separator).map(item => item.trim()).filter(Boolean);
+}
+
+function commitOwners() {
+    const owners = splitList(ownersText.value, /[,，\s]+/);
+    config.value.bot.ownerQQs = owners;
+    // 审批管理员与 owner 是同一批人：双写，保证审批通知一定能找到人。
+    if (config.value.orchestration) {
+        config.value.orchestration.approval ||= {};
+        config.value.orchestration.approval.adminQqIds = [...owners];
+    }
+    ownersText.value = owners.join(', ');
+}
+function commitWhitelistGroups() {
+    config.value.bot.whitelistGroups = splitList(whitelistGroupsText.value, /[,，\s]+/);
+    whitelistGroupsText.value = config.value.bot.whitelistGroups.join(', ');
+}
+function commitWhitelistPrivate() {
+    config.value.bot.whitelistPrivate = splitList(whitelistPrivateText.value, /[,，\s]+/);
+    whitelistPrivateText.value = config.value.bot.whitelistPrivate.join(', ');
+}
+function commitBlacklist() {
+    config.value.bot.blacklistGroupUsers = splitList(blacklistText.value, /[\n,，]+/);
+    blacklistText.value = config.value.bot.blacklistGroupUsers.join('\n');
+}
+</script>
+
+<template>
+  <div v-if="config">
+    <header class="mb-4">
+      <h1 class="page-title mb-0.5">接入与准入</h1>
+      <p class="text-[color:var(--ink-3)] text-xs">
+        用户层：NapCat 连接、人员与角色、触发方式（含事件源）、名单与全局限流。
+      </p>
+    </header>
+
+    <SectionCard title="NapCat 连接" class="mb-4">
+      <template #actions>
+        <button class="btn-outline text-xs" :disabled="napcatTesting" @click="testNapcat">
+          {{ napcatTesting ? '测试中...' : '测试连接' }}
+        </button>
+      </template>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <FormField label="WebSocket 地址" hint="NapCat 的正向 WebSocket 服务端口">
+          <input v-model="config.napcat.wsUrl" class="input-field font-mono" placeholder="ws://127.0.0.1:3001" />
+        </FormField>
+        <FormField label="Token" hint="留着打码值表示不修改">
+          <input v-model="config.napcat.token" type="password" class="input-field font-mono" />
+        </FormField>
+      </div>
+
+      <div v-if="napcatResult" class="mt-3 rounded-lg border border-[color:var(--hairline-2)] px-3 py-2 text-xs"
+        :class="napcatResult.success ? 'status-good' : 'status-crit'">
+        <div class="font-semibold">{{ napcatResult.success ? '连接正常' : '连接异常' }}</div>
+        <div class="mt-1 text-[color:var(--ink-2)]">{{ napcatResult.message || napcatResult.error }}</div>
+        <div v-if="napcatResult.success" class="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[color:var(--ink-3)]">
+          <span v-if="napcatResult.selfQqId">QQ: {{ napcatResult.selfQqId }}</span>
+          <span v-if="napcatResult.nickname">昵称: {{ napcatResult.nickname }}</span>
+          <span v-if="napcatResult.latencyMs !== undefined">耗时: {{ napcatResult.latencyMs }}ms</span>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
+        <FormField label="通用 action"><input v-model.number="config.napcat.actionTimeoutMs" type="number" min="3000" step="1000" class="input-field" /></FormField>
+        <FormField label="文本发送"><input v-model.number="config.napcat.textSendTimeoutMs" type="number" min="3000" step="1000" class="input-field" /></FormField>
+        <FormField label="图片上传"><input v-model.number="config.napcat.imageSendTimeoutMs" type="number" min="10000" step="5000" class="input-field" /></FormField>
+        <FormField label="文件发送"><input v-model.number="config.napcat.fileSendTimeoutMs" type="number" min="10000" step="10000" class="input-field" /></FormField>
+        <FormField label="合并转发"><input v-model.number="config.napcat.forwardSendTimeoutMs" type="number" min="10000" step="5000" class="input-field" /></FormField>
+        <FormField label="引用取消息"><input v-model.number="config.napcat.getMessageTimeoutMs" type="number" min="3000" step="1000" class="input-field" /></FormField>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+        <FormField label="文件发送重试次数"><input v-model.number="config.napcat.fileSendRetryCount" type="number" min="0" max="10" class="input-field" /></FormField>
+        <FormField label="文件重试间隔 (ms)"><input v-model.number="config.napcat.fileSendRetryDelayMs" type="number" min="0" step="200" class="input-field" /></FormField>
+      </div>
+
+      <p class="text-[color:var(--ink-3)] text-[11px] mt-3 leading-relaxed">
+        填好路径映射能显著改善大文件发送：base64 会把体积撑大约 1.34 倍，
+        而 WebSocket 帧上限是 50MB，所以超过 ~37MB 的视频走 base64 会直接把连接顶断。
+        走路径就完全没有这个问题。
+      </p>
+    </SectionCard>
+
+    <SectionCard title="身份与人员" class="mb-4">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <FormField label="机器人 QQ 号" hint="用于识别 @ 自己；留空则由 NapCat 上报的登录号自动填">
+          <input v-model="config.bot.botQqId" class="input-field font-mono" placeholder="例如 123456789" />
+        </FormField>
+        <FormField label="Owner / 审批管理员 QQ" hint="多个用逗号分隔；同时写入 bot.ownerQQs 与审批管理员名单（双写合一）。管理员不受黑名单与白名单限制">
+          <input v-model="ownersText" @blur="commitOwners" class="input-field font-mono" placeholder="123456, 654321" />
+        </FormField>
+      </div>
+    </SectionCard>
+
+    <SectionCard title="触发方式" hint="决定机器人在群里什么时候会响应" class="mb-4">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <ToggleField v-model="config.bot.triggerModes.mention" label="@bot + 内容"
+          hint="未命中指令时进入自由模式或日常对话" />
+        <ToggleField v-model="config.bot.triggerModes.replyToBot" label="引用 bot 消息 + 指令"
+          hint="例如引用机器人发的图后发送「反推」" />
+      </div>
+      <p class="text-[color:var(--ink-3)] text-xs mt-3 leading-relaxed">
+        另外，所有指令在群里都可以不 @ 直接使用（例如直接发「画 一只猫」）。
+        视频生成没有独立触发词——说「生成一个视频」或带 <code class="mono">video!</code>、<code class="mono">6s!</code>
+        这类后缀时会自动判定为视频意图。
+      </p>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
+        <div class="md:col-span-3 text-xs font-medium">事件源（notice / request）</div>
+        <div class="flex items-end"><ToggleField v-model="config.bot.poke.enabled" label="戳一戳响应" hint="被戳时从回复池随机回一句" /></div>
+        <FormField label="戳一戳冷却 (秒)" hint="每用户冷却，防连戳刷屏">
+          <input v-model.number="config.bot.poke.cooldownSec" type="number" min="0" max="3600" class="input-field" :disabled="!config.bot.poke.enabled" />
+        </FormField>
+        <FormField label="戳一戳回复池" hint="逗号分隔，随机挑一句">
+          <input v-model="config.bot.poke.replies" class="input-field" placeholder="戳我干嘛呀, 别戳啦" :disabled="!config.bot.poke.enabled" />
+        </FormField>
+        <div class="flex items-end"><ToggleField v-model="config.bot.welcome.enabled" label="入群欢迎" hint="新成员入群时发一条（默认关，防打扰）" /></div>
+        <FormField label="欢迎语" hint="占位符 {user}">
+          <input v-model="config.bot.welcome.text" class="input-field" placeholder="欢迎 {user} 加入～" :disabled="!config.bot.welcome.enabled" />
+        </FormField>
+        <FormField label="欢迎冷却 (秒)" hint="同群连续入群的间隔抑制">
+          <input v-model.number="config.bot.welcome.cooldownSec" type="number" min="0" max="3600" class="input-field" :disabled="!config.bot.welcome.enabled" />
+        </FormField>
+        <FormField label="好友请求处理">
+          <select v-model="config.bot.friendRequest.mode" class="input-field">
+            <option value="ignore">ignore 忽略</option>
+            <option value="accept">accept 自动通过</option>
+            <option value="notify">notify 私聊通知 owner</option>
+          </select>
+        </FormField>
+        <FormField label="好友请求通知文案" hint="占位符 {user}、{qq}">
+          <input v-model="config.bot.friendRequest.notifyText" class="input-field" />
+        </FormField>
+      </div>
+    </SectionCard>
+
+    <SectionCard title="群聊上下文" hint="@bot 时自动带上最近的群聊记录，让回答接得住话题" class="mb-4">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <ToggleField v-model="config.bot.groupContext.enabled" label="启用群聊上下文" />
+        <FormField label="拉取条数" hint="太多会明显推高 token 消耗">
+          <input v-model.number="config.bot.groupContext.messageCount" type="number" min="1" max="200"
+            :disabled="!config.bot.groupContext.enabled" class="input-field" />
+        </FormField>
+        <FormField label="最大字符数">
+          <input v-model.number="config.bot.groupContext.maxChars" type="number" min="500" step="500"
+            :disabled="!config.bot.groupContext.enabled" class="input-field" />
+        </FormField>
+        <div class="grid grid-cols-1 gap-2">
+          <ToggleField v-model="config.bot.groupContext.skipForward" label="跳过合并转发消息"
+            :disabled="!config.bot.groupContext.enabled" />
+          <ToggleField v-model="config.bot.groupContext.includeImages" label="带上图片"
+            hint="对话模型不支持视觉时会自动忽略" :disabled="!config.bot.groupContext.enabled" />
+        </div>
+      </div>
+    </SectionCard>
+
+    <SectionCard title="名单" hint="白名单留空表示全部放行">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <FormField label="允许的群号" hint="多个用逗号分隔">
+          <input v-model="whitelistGroupsText" @blur="commitWhitelistGroups" class="input-field font-mono" placeholder="留空 = 全部放行" />
+        </FormField>
+        <FormField label="允许的私聊 QQ" hint="多个用逗号分隔">
+          <input v-model="whitelistPrivateText" @blur="commitWhitelistPrivate" class="input-field font-mono" placeholder="留空 = 全部放行" />
+        </FormField>
+        <div class="md:col-span-2">
+          <FormField label="群内用户黑名单" hint="每行一条，格式 群号:QQ，也支持 *:QQ">
+            <textarea v-model="blacklistText" @blur="commitBlacklist" rows="4" class="input-field font-mono resize-y"
+              placeholder="123456789:987654321&#10;*:987654321"></textarea>
+          </FormField>
+        </div>
+      </div>
+    </SectionCard>
+
+    <SectionCard title="消息与限流总策略" hint="全局闸门；逐能力配额（冷却/日限/并发）在各能力页「启用与配额」卡配置" class="mb-4 mt-4">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <FormField label="每用户每分钟消息上限" hint="T2.2 防刷屏闸；0 = 关闭，超出静默丢弃">
+          <input v-model.number="config.bot.messageRateLimitPerMinute" type="number" min="0" max="1000" class="input-field" />
+        </FormField>
+        <FormField label="消息过期阈值 (秒)" hint="积压/重连后迟到的消息直接丢弃不回复；0 = 不限">
+          <input v-model.number="config.bot.staleMessageMaxAgeSeconds" type="number" min="0" max="3600" class="input-field" />
+        </FormField>
+      </div>
+    </SectionCard>
+  </div>
+</template>

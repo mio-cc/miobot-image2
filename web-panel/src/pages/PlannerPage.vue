@@ -210,28 +210,6 @@ async function evaluatePromptVersion() {
       </div>
     </SectionCard>
 
-    <SectionCard title="结果与消息预算" hint="优先嵌套合并转发；文件和语音按不可合并处理；默认最多 3 条" class="mb-4">
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        <FormField label="最大结果数"><input v-model.number="orch.reply.maxResultItems" type="number" min="1" class="input-field" /></FormField>
-        <FormField label="最大消息数"><input v-model.number="orch.reply.maxMessages" type="number" min="1" max="20" class="input-field" /></FormField>
-        <FormField label="嵌套最大节点数"><input v-model.number="orch.reply.nestedMaxNodes" type="number" min="1" class="input-field" /></FormField>
-        <FormField label="嵌套最大深度"><input v-model.number="orch.reply.nestedMaxDepth" type="number" min="1" max="5" class="input-field" /></FormField>
-        <FormField label="超出预算">
-          <select v-model="orch.reply.overflowPolicy" class="input-field">
-            <option value="forward">打包为第二个合并转发</option><option value="truncate">截断</option><option value="link">链接</option><option value="zip">ZIP</option><option value="reject">拒绝</option>
-          </select>
-        </FormField>
-        <FormField label="保底首段直发" hint="always=多内容转发前首块文本先直发；转发失败也不丢核心内容">
-          <select v-model="orch.reply.textFallback" class="input-field">
-            <option value="always">always（始终直发首段）</option><option value="on_forward_fail">on_forward_fail（转发失败才补发）</option><option value="off">off（关闭）</option>
-          </select>
-        </FormField>
-        <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.reply.preferNestedForward" label="优先嵌套合并转发" /></div>
-        <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.reply.countProgressInBudget" label="进度消息计入预算" /></div>
-        <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.reply.includeTruncationNotice" label="显示截断说明" /></div>
-      </div>
-    </SectionCard>
-
     <SectionCard title="提示词优化" hint="系统提示词修改必须评估、灰度和审批" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         <div class="xl:col-span-1"><ToggleField v-model="orch.promptOptimization.enabled" label="启用自动优化" /></div>

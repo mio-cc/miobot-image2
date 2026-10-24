@@ -228,7 +228,7 @@ onMounted(async () => {
 
       <SectionCard title="最近事件" :hint="logTotal ? `共 ${logTotal} 条` : ''" no-padding>
         <template #actions>
-          <RouterLink to="/logs" class="btn-outline text-xs">全部日志</RouterLink>
+          <RouterLink to="/observability" class="btn-outline text-xs">全部日志</RouterLink>
         </template>
         <div class="max-h-[420px] overflow-y-auto">
           <div v-for="(entry, index) in recentLogs.slice(0, 25)" :key="`${entry.timestamp}-${index}`"

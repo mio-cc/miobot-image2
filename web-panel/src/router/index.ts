@@ -27,6 +27,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '总览', group: '', icon: 'grid' },
     },
     {
+        path: '/access',
+        name: 'access',
+        component: () => import('../pages/AccessPage.vue'),
+        meta: { title: '接入与准入', group: '接入', icon: 'chat' },
+    },
+    {
         path: '/planner',
         name: 'planner',
         component: () => import('../pages/PlannerPage.vue'),
@@ -57,6 +63,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '语音', group: '能力中心', icon: 'voice' },
     },
     {
+        path: '/cap-file',
+        name: 'cap-file',
+        component: () => import('../pages/CapFilePage.vue'),
+        meta: { title: '文件', group: '能力中心', icon: 'template' },
+    },
+    {
         path: '/cap-memory',
         name: 'cap-memory',
         component: () => import('../pages/CapMemoryPage.vue'),
@@ -81,22 +93,22 @@ const routes: RouteRecordRaw[] = [
         meta: { title: 'API 节点', group: '模型', icon: 'server' },
     },
     {
-        path: '/bot',
-        name: 'bot',
-        component: () => import('../pages/BotPage.vue'),
-        meta: { title: '对话与触发', group: '对话', icon: 'chat' },
+        path: '/reply',
+        name: 'reply',
+        component: () => import('../pages/ReplyPage.vue'),
+        meta: { title: '回复与发送', group: '对话体验', icon: 'chat' },
     },
     {
         path: '/features',
         name: 'features',
         component: () => import('../pages/FeaturesPage.vue'),
-        meta: { title: '命令与意图', group: '对话', icon: 'template' },
+        meta: { title: '命令与意图', group: '对话体验', icon: 'template' },
     },
     {
         path: '/templates',
         name: 'templates',
         component: () => import('../pages/TemplatesPage.vue'),
-        meta: { title: '提示词模板', group: '对话', icon: 'template' },
+        meta: { title: '提示词模板', group: '对话体验', icon: 'template' },
     },
     {
         path: '/search',
@@ -127,19 +139,16 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '观测中心', group: '观测', icon: 'logs' },
     },
     {
-        path: '/logs',
-        name: 'logs',
-        component: () => import('../pages/LogsPage.vue'),
-        meta: { title: '运行日志', group: '观测', icon: 'logs' },
-    },
-    {
         path: '/settings',
         name: 'settings',
         component: () => import('../pages/SettingsPage.vue'),
         meta: { title: '系统设置', group: '系统', icon: 'settings' },
     },
-    // 旧链接重定向：TR.1 拆页后 /orchestration 的内容分到了 /planner 等页。
+    // 旧链接重定向：TR.1 拆页后 /orchestration 的内容分到了 /planner 等页；
+    // TR.4 组页后 /bot 并入 /access、/logs 并入 /observability。
     { path: '/orchestration', redirect: '/planner' },
+    { path: '/bot', redirect: '/access' },
+    { path: '/logs', redirect: '/observability' },
     { path: '/:pathMatch(.*)*', redirect: '/overview' },
 ];
 

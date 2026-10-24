@@ -82,24 +82,13 @@ onMounted(loadCards);
       </p>
     </SectionCard>
 
-    <SectionCard title="品牌与存储" class="mb-4">
+    <SectionCard title="品牌" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
         <FormField label="前台标题"><input v-model="config.canvas.brand.pageTitle" class="input-field" /></FormField>
         <FormField label="前台 Logo 文字"><input v-model="config.canvas.brand.logoText" class="input-field" /></FormField>
         <FormField label="Favicon 地址"><input v-model="config.canvas.brand.faviconUrl" class="input-field font-mono" /></FormField>
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
-        <ToggleField v-model="config.canvas.logs.enabled" label="记录画布日志" />
-        <FormField label="最低级别">
-          <select v-model="config.canvas.logs.level" class="input-field">
-            <option value="debug">debug</option><option value="info">info</option>
-            <option value="warn">warn</option><option value="error">error</option>
-          </select>
-        </FormField>
-        <FormField label="内存上限">
-          <input v-model.number="config.canvas.logs.maxMemoryEntries" type="number" min="100" max="5000" step="100" class="input-field" />
-        </FormField>
-      </div>
+      <p class="text-[color:var(--ink-3)] text-xs mt-3">画布日志开关与级别在「观测中心」页配置。</p>
     </SectionCard>
 
     <SectionCard title="画布记录" :hint="`共 ${cards.length} 条生成与反推记录`" no-padding>
