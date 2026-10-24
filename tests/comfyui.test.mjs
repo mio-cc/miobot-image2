@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
 
-import { normalizeConfig } from '../dist/packages/config/src/index.js';
+import { normalizeConfig, BUILTIN_COMFYUI_PROFILES } from '../dist/packages/config/src/index.js';
 import { sanitizeComfyUiParams } from '../dist/apps/bot/src/main.js';
 import { buildComfyUiWorkflow } from '../dist/packages/comfyui/src/index.js';
 import { renderTextToImage, stitchImages } from '../dist/packages/image-compose/src/index.js';
@@ -12,7 +12,7 @@ const profile = {
   name: '动漫',
   workflow: {
     '3': { class_type: 'KSampler', inputs: { seed: 0, steps: 20, cfg: 7, sampler_name: 'euler', scheduler: 'normal' } },
-    '5': { class_type: 'EmptyLatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
+    '5': { class_type: 'EmptySD3LatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
     '6': { class_type: 'CLIPTextEncode', inputs: { text: '' } },
     '7': { class_type: 'CLIPTextEncode', inputs: { text: '' } },
   },
@@ -311,4 +311,88 @@ test('comfyui T2.8: runComfyUiWorkflow 提交后立即回调 onSubmitted(promptI
   assert.equal(result.promptId, 'prompt-sub-1');
   assert.equal(submittedPromptId.value, 'prompt-sub-1', 'onSubmitted 应携带 prompt_id');
   assert.equal(result.images.length, 1);
+});
+
+test('comfyui 长宽放开: planner 显式 width/height 注入 fixed 并优先于 prompt 正则推断', async () => {
+  const { generateComfyUiImages } = await import('../dist/apps/bot/src/comfyui.js');
+  const { createDefaultConfig, normalizeConfig } = await import('../dist/packages/config/src/index.js');
+  const builtinProfile = BUILTIN_COMFYUI_PROFILES.find((item) => item.id === 'z-image-turbo');
+  assert.ok(builtinProfile, 'builtin z-image-turbo 应存在');
+  const cfg = createDefaultConfig();
+  cfg.llm.apiKeys = [{
+    name: 'Comfy', baseUrl: 'http://comfy:8188', key: '', enabled: true, models: ['z-image-turbo'], modelsFetchedAt: '', concurrency: 1, kind: 'comfyui',
+    comfyui: { profiles: [builtinProfile], pollTimeoutMs: 5000, pollIntervalMs: 20, maxBatchSize: 1, maxConcurrent: 1, maxQueue: 2, queueTimeoutMs: 5000 },
+  }];
+  cfg.comfyuiTransform = { enabled: false, nodeIndex: 0, model: '', timeoutMs: 1000, maxTokens: 100, promptTemplate: '' };
+  let submittedParams = null;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const value = String(url);
+    if (value.endsWith('/prompt')) {
+      submittedParams = JSON.parse(init.body);
+      return new Response(JSON.stringify({ prompt_id: 'wd-test' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (value.includes('/history/')) {
+      return new Response(JSON.stringify({ 'wd-test': { outputs: { '16': { images: [{ filename: 'out.png', subfolder: '', type: 'output' }] } } } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (value.includes('/view')) {
+      return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200, headers: { 'content-type': 'image/png' } });
+    }
+    throw new Error('unexpected fetch ' + value);
+  };
+  try {
+    const result = await generateComfyUiImages(
+      { getConfig: () => cfg, client: { async chat() { return { text: 'unused' }; } }, logger: { info() {}, warn() {}, error() {} } },
+      { nodeIndex: 0, profileId: 'z-image-turbo', prompt: '竖屏少女 9:16 全身像', width: 768, height: 1344, count: 1 },
+    );
+    assert.ok(result.images.length >= 1);
+    assert.ok(submittedParams, '应已提交 workflow');
+    // 验证 workflow 中空岔采样节点被设置为 planner 给的宽高
+    const workflow = submittedParams.prompt || submittedParams;
+    const samplerNode = Object.values(workflow).find(n => n?.class_type === 'EmptySD3LatentImage');
+    assert.ok(samplerNode, '应包含 EmptySD3LatentImage 节点');
+    assert.equal(samplerNode.inputs.width, 768, 'planner width 注入');
+    assert.equal(samplerNode.inputs.height, 1344, 'planner height 注入');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('comfyui 长宽放开: 未传 width/height 时仍走 prompt 正则推断', async () => {
+  const { generateComfyUiImages } = await import('../dist/apps/bot/src/comfyui.js');
+  const { createDefaultConfig, normalizeConfig } = await import('../dist/packages/config/src/index.js');
+  const builtinProfile = BUILTIN_COMFYUI_PROFILES.find((item) => item.id === 'z-image-turbo');
+  assert.ok(builtinProfile, 'builtin z-image-turbo 应存在');
+  const cfg = createDefaultConfig();
+  cfg.llm.apiKeys = [{
+    name: 'Comfy', baseUrl: 'http://comfy:8188', key: '', enabled: true, models: ['z-image-turbo'], modelsFetchedAt: '', concurrency: 1, kind: 'comfyui',
+    comfyui: { profiles: [builtinProfile], pollTimeoutMs: 5000, pollIntervalMs: 20, maxBatchSize: 1, maxConcurrent: 1, maxQueue: 2, queueTimeoutMs: 5000 },
+  }];
+  cfg.comfyuiTransform = { enabled: false, nodeIndex: 0, model: '', timeoutMs: 1000, maxTokens: 100, promptTemplate: '' };
+  let submittedParams = null;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const value = String(url);
+    if (value.endsWith('/prompt')) {
+      submittedParams = JSON.parse(init.body);
+      return new Response(JSON.stringify({ prompt_id: 'no-wh' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (value.includes('/history/')) {
+      return new Response(JSON.stringify({ 'no-wh': { outputs: { '16': { images: [{ filename: 'o.png', subfolder: '', type: 'output' }] } } } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (value.includes('/view')) return new Response(new Uint8Array([1]), { status: 200, headers: { 'content-type': 'image/png' } });
+    throw new Error('unexpected ' + value);
+  };
+  try {
+    await generateComfyUiImages(
+      { getConfig: () => cfg, client: { async chat() { return { text: 'unused' }; } }, logger: { info() {}, warn() {}, error() {} } },
+      { nodeIndex: 0, profileId: 'z-image-turbo', prompt: '1280x720 宽屏少女', count: 1 },
+    );
+    const workflow = submittedParams.prompt || submittedParams;
+    const sampler = Object.values(workflow).find(n => n?.class_type === 'EmptySD3LatentImage');
+    assert.equal(sampler.inputs.width, 1280, 'prompt 正则仍生效');
+    assert.equal(sampler.inputs.height, 720);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

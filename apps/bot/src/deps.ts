@@ -160,6 +160,8 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
           profileId: req.model,
           prompt: req.prompt,
           count: req.count,
+          width: req.width,
+          height: req.height,
           timeoutMs: cfg?.llm.imageTimeoutMs,
         });
         return { images: artifactsToStrings(result) };

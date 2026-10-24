@@ -42,6 +42,8 @@ export class LegacyEngineCapabilityHandler implements CapabilityHandler {
       result = await this.app.engine.handleExplicit(this.kind as any, input, {
         prompt: String(args.prompt || input.text || ''),
         size: typeof args.size === 'string' ? args.size : undefined,
+        width: Number.isFinite(Number(args.width)) ? Number(args.width) : undefined,
+        height: Number.isFinite(Number(args.height)) ? Number(args.height) : undefined,
         count: Number.isFinite(Number(args.count)) ? Number(args.count) : undefined,
         quality: typeof args.quality === 'string' ? args.quality : undefined,
         templateId: typeof args.templateId === 'string' ? args.templateId : undefined,

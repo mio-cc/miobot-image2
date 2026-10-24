@@ -51,6 +51,10 @@ export interface IntentInput {
 export interface IntentParams {
   prompt: string;
   size?: string;
+  /** planner/编排层显式宽度像素（优先于 size 字符串解析）。 */
+  width?: number;
+  /** planner/编排层显式高度像素。 */
+  height?: number;
   count?: number;
   quality?: string;
   templateId?: string;

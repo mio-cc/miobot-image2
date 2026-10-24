@@ -6,8 +6,8 @@ import { resolveImageCapabilities, type EngineRoutingConfig } from './capabiliti
 /** 下游能力（由 apps/bot 用 model/image/reply 实现；测试可注入 fake）。 */
 export interface BotEngineDeps {
   chat(req: { model: string; text: string; images?: string[]; videos?: string[]; sessionId?: string; nodeIndex?: number; context?: string; timeoutMs?: number; maxTokens?: number; reasoningEffort?: ReasoningEffort; forceSearch?: boolean }): Promise<{ text: string }>;
-  generateImages(req: { model: string; prompt: string; size?: string; count?: number; quality?: string; templateId?: string }): Promise<{ images: string[] }>;
-  editImage(req: { model: string; prompt: string; images: string[]; size?: string; quality?: string }): Promise<{ images: string[] }>;
+  generateImages(req: { model: string; prompt: string; size?: string; width?: number; height?: number; count?: number; quality?: string; templateId?: string }): Promise<{ images: string[] }>;
+  editImage(req: { model: string; prompt: string; images: string[]; size?: string; width?: number; height?: number; quality?: string }): Promise<{ images: string[] }>;
   interrogate(req: { model: string; images: string[]; prompt?: string }): Promise<{ text: string }>;
   /** 视频生成；返回可发送的 url / data URL 列表。 */
   generateVideo(req: { model: string; prompt: string; imageUrl?: string; duration?: number; aspectRatio?: string; resolution?: string }): Promise<{ videos: string[] }>;
@@ -116,7 +116,7 @@ export class BotEngine {
   async handleExplicit(
     kind: Exclude<IntentKind, 'ignore'>,
     input: BotEngineInput,
-    params: { prompt?: string; size?: string; count?: number; quality?: string; templateId?: string; tokens?: string[] } = {},
+    params: { prompt?: string; size?: string; width?: number; height?: number; count?: number; quality?: string; templateId?: string; tokens?: string[] } = {},
   ): Promise<BotEngineResult> {
     const cfg = this.getConfig();
     const decision: IntentDecision = {
@@ -178,7 +178,7 @@ export class BotEngine {
         return { kind: 'chat', decision, text, handled: true };
       }
       case 'image.generate': {
-        const { images: out } = await this.deps.generateImages({ model: cfg.imageModel, prompt: p.prompt, size: p.size, count: p.count, quality: p.quality, templateId: p.templateId });
+        const { images: out } = await this.deps.generateImages({ model: cfg.imageModel, prompt: p.prompt, size: p.size, width: p.width, height: p.height, count: p.count, quality: p.quality, templateId: p.templateId });
         return { kind: 'image.generate', decision, images: out, handled: true };
       }
       case 'image.edit': {

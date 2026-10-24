@@ -719,7 +719,9 @@ export class NapcatAdapter {
       if (!hostPath) return null;
       try {
         const buffer = await fs.promises.readFile(hostPath);
-        if (buffer.length > 30 * 1024 * 1024) return null; // 超大文件不内联，走失败上报
+      // NapCat Issue #1526：大 base64 会把底层 socket 打崩或 OOM。
+      // 语音 ~100-300KB、常规图片 1-3MB 完全安全；>8MB 有风险，直接失败上报而不是炸 NapCat。
+      if (buffer.length > 8 * 1024 * 1024) return null;
         nextMessage.push({ ...(segment as object), data: { ...data, file: 'base64://' + buffer.toString('base64') } });
         patched = true;
       } catch {

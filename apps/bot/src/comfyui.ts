@@ -16,6 +16,9 @@ export interface ComfyUiGenerateRequest {
   profileId: string;
   prompt: string;
   count?: number;
+  /** planner 显式像素（可选，优先于从 prompt 文本推断）。 */
+  width?: number;
+  height?: number;
   timeoutMs?: number;
 }
 
@@ -190,10 +193,16 @@ function sanitizeParams(profile: ComfyUiProfile, raw: Record<string, unknown>, p
   for (const key of ['promptG', 'promptL', 'clipLPrompt', 't5Prompt']) {
     if (out[key] !== undefined) out[key] = sanitizePromptText(out[key], policy);
   }
-  const requestedSize = options.trustModelSize ? undefined : requestedSizeFromPrompt(prompt, defaults, constraints, policy);
-  if (requestedSize && (profile.parameterMap?.width || profile.parameterMap?.height || defaults.width !== undefined || defaults.height !== undefined)) {
-    out.width = requestedSize.width;
-    out.height = requestedSize.height;
+  // planner 显式传 width/height 时优先于从 prompt 文本推断的尺寸
+  // （planner 理解了用户"竖图""宽屏"意图后给出精确像素，比正则猜更可靠）。
+  const hasExplicitDimensions = Number.isFinite(Number(raw.width)) && Number(raw.width) > 0
+    || Number.isFinite(Number(raw.height)) && Number(raw.height) > 0;
+  if (!hasExplicitDimensions) {
+    const requestedSize = options.trustModelSize ? undefined : requestedSizeFromPrompt(prompt, defaults, constraints, policy);
+    if (requestedSize && (profile.parameterMap?.width || profile.parameterMap?.height || defaults.width !== undefined || defaults.height !== undefined)) {
+      out.width = requestedSize.width;
+      out.height = requestedSize.height;
+    }
   }
   const requestedCount = Math.trunc(Number(count || raw.batchSize || defaults.batchSize || 1));
   out.batchSize = profile.parameterMap?.batchSize ? Math.min(maxBatchSize, Math.max(1, requestedCount || 1)) : 1;
@@ -358,6 +367,10 @@ export async function generateComfyUiImages(options: ComfyUiGenerateOptions, req
       throw new ComfyUiError('ComfyUI workflow 校验失败: ' + validation.errors.join(','), { code: 'invalid_profile' });
     }
     const fixed = fixedParams(profile, enhanced.prompt);
+    // planner 显式 width/height 注入（优先于从 prompt 文本正则推断——模型理解了用户意图，
+    // 给出的精确像素比关键词匹配更可靠）。
+    if (req.width !== undefined && Number.isFinite(req.width) && req.width > 0) fixed.width = req.width;
+    if (req.height !== undefined && Number.isFinite(req.height) && req.height > 0) fixed.height = req.height;
     const policy = promptPolicyFor(profile);
     options.logger?.info('ComfyUI 提示词准备完成', {
       profile: profile.id,
