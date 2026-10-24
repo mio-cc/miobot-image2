@@ -12,6 +12,7 @@ import {
   CapabilityRegistry,
   createPermissionPolicyFromDefaults,
   buildReplyPlan,
+  buildDeterministicPlanSummary,
   executeIntentPlan,
   hashApprovalPayload,
   planWithModel,
@@ -916,14 +917,14 @@ export class OrchestrationEnforcer {
       if (execution.status === 'waiting_approval') {
         const waitingId = execution.order.find((id) => execution.results[id]?.status === 'waiting_approval');
         const step = waitingId ? byId.get(waitingId) : undefined;
-        if (!step) return this.partialResult(outputs, 'approval_invalid', '审批步骤不存在');
+        if (!step) return this.partialResult(outputs, 'approval_invalid', '审批步骤不存在', plan, execution.results);
         if (!this.options.approvalRuntime || !cfg.orchestration.approval.enabled) {
           this.options.pendingJobs?.delete(pendingKey);
           return this.approvalFailureResult('该操作需要管理员审批，但当前没有可用审批配置，已拒绝执行。', 'approval_unavailable', 'approval_unavailable');
         }
         approvalRounds += 1;
         if (approvalRounds > maxApprovalRounds) {
-          return this.partialResult(outputs, 'approval_loop', '审批轮次超过上限，已停止执行。');
+          return this.partialResult(outputs, 'approval_loop', '审批轮次超过上限，已停止执行。', plan, execution.results);
         }
         const capability = this.registry.get(step.capability);
         const approvalPayloadHash = hashApprovalPayload(step.args);
@@ -981,7 +982,7 @@ export class OrchestrationEnforcer {
         }
         if (outcome.approval && approvalPayloadHash !== outcome.approval.payloadHash) {
           this.options.pendingJobs?.delete(pendingKey);
-          return this.partialResult(outputs, 'approval_payload_changed', '审批参数已变化，原审批失效，已拒绝执行。');
+          return this.partialResult(outputs, 'approval_payload_changed', '审批参数已变化，原审批失效，已拒绝执行。', plan, execution.results);
         }
         delete initialResults[step.id];
         approvedStepIds.add(step.id);
@@ -1053,18 +1054,18 @@ export class OrchestrationEnforcer {
       }
       if (execution.status === 'denied') {
         this.options.pendingJobs?.delete(pendingKey);
-        return this.partialResult(outputs, 'permission_denied', execution.error || '该操作没有执行权限。');
+        return this.partialResult(outputs, 'permission_denied', execution.error || '该操作没有执行权限。', plan, execution.results);
       }
       if (execution.status === 'failed') {
         this.options.pendingJobs?.delete(pendingKey);
         if (execution.usage.stepsExecuted > 0) {
-          return this.partialResult(outputs, 'execution_failed', execution.error || 'capability_failed');
+          return this.partialResult(outputs, 'execution_failed', execution.error || 'capability_failed', plan, execution.results);
         }
         return { handled: false, reason: execution.error || 'capability_failed', problem: { kind: 'execution_failed', error: execution.error || 'capability_failed' } };
       }
       if (execution.status === 'partial') {
         this.options.pendingJobs?.delete(pendingKey);
-        return this.partialResult(outputs, 'capability_failed', execution.error || '部分步骤执行失败');
+        return this.partialResult(outputs, 'capability_failed', execution.error || '部分步骤执行失败', plan, execution.results);
       }
 
       this.options.pendingJobs?.delete(pendingKey);
@@ -1097,15 +1098,12 @@ export class OrchestrationEnforcer {
         outputs = this.musicOnlyOutputs(outputs, true);
         appendTrace('reply', '音乐结果按配置处理歌词与音频', { droppedOutputs: before - outputs.filter((output) => output.kind === 'audio').length });
       }
-      const replyPlan = buildReplyPlan(outputs, {
-        maxMessages: cfg.orchestration.reply.maxMessages,
-        maxResultItems: cfg.orchestration.reply.maxResultItems,
-        preferNestedForward: cfg.orchestration.reply.preferNestedForward,
-        includeTruncationNotice: cfg.orchestration.reply.includeTruncationNotice,
-      nestedMaxNodes: cfg.orchestration.reply.nestedMaxNodes,
-      nestedMaxDepth: cfg.orchestration.reply.nestedMaxDepth,
-      overflowPolicy: cfg.orchestration.reply.overflowPolicy,
-      });
+      // 成功执行但没有任何可投递输出时，用确定性摘要兜底（不依赖模型），保证用户至少知道任务结束。
+      if (!outputs.some((output) => (output.text && String(output.text).trim()) || output.url)) {
+        outputs = [...outputs, buildDeterministicPlanSummary(plan, execution.results, (id) => this.registry.get(id)?.name || '')];
+        appendTrace('reply', '无可投递输出，已附加确定性任务摘要', {});
+      }
+      const replyPlan = this.makeReplyPlan(outputs);
       const visibleOutputs = replyPlan.groups.flatMap((group) => group.outputs);
       const result = this.toEngineResult(visibleOutputs) || this.emptyEngineResult();
       result.replyPlan = replyPlan;
@@ -1123,6 +1121,8 @@ export class OrchestrationEnforcer {
       nestedMaxNodes: cfg.orchestration.reply.nestedMaxNodes,
       nestedMaxDepth: cfg.orchestration.reply.nestedMaxDepth,
       overflowPolicy: cfg.orchestration.reply.overflowPolicy,
+      textMaxChars: cfg.bot.textReply.maxChars,
+      textFallback: cfg.orchestration.reply.textFallback,
     });
   }
   private messageEngineResult(text: string): BotEngineResult {
@@ -1196,8 +1196,13 @@ export class OrchestrationEnforcer {
       ...audioOnly,
     ];
   }
-  private partialResult(outputs: any[], kind: string, error: string): EnforceOrchestrationResult {
-    const replyPlan = this.makeReplyPlan(this.musicOnlyOutputs(outputs) as ExecutionOutput[]);
+  private partialResult(outputs: any[], kind: string, error: string, plan?: IntentPlan, results?: Record<string, any>): EnforceOrchestrationResult {
+    let effective = this.musicOnlyOutputs(outputs) as ExecutionOutput[];
+    // 部分失败但一个可投递输出都没有时，同样给确定性摘要（含失败步骤），避免用户侧静默。
+    if (!effective.some((output) => (output.text && String(output.text).trim()) || output.url) && plan) {
+      effective = [...effective, buildDeterministicPlanSummary(plan, results || {}, (id) => this.registry.get(id)?.name || '')];
+    }
+    const replyPlan = this.makeReplyPlan(effective);
     const visibleOutputs = replyPlan.groups.flatMap((group) => group.outputs);
     const result = this.toEngineResult(visibleOutputs) || this.emptyEngineResult();
     result.replyPlan = replyPlan;

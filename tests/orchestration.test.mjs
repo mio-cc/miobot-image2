@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildReplyPlan,
+  buildDeterministicPlanSummary,
   buildCapabilityManifest,
   DEFAULT_PLANNER_SYSTEM_PROMPT,
   DEFAULT_PLANNER_USER_PROMPT_TEMPLATE,
@@ -185,7 +186,9 @@ test('orchestration: default config has safe operational budgets', () => {
   assert.equal(cfg.execution.maxSteps, 20);
   assert.equal(cfg.execution.maxDepth, 10);
   assert.equal(cfg.reply.maxMessages, 3);
-  assert.equal(cfg.reply.overflowPolicy, 'truncate');
+  // T0.7：超预算内容默认进多个合并转发组而不是丢弃。
+  assert.equal(cfg.reply.overflowPolicy, 'forward');
+  assert.equal(cfg.reply.textFallback, 'always');
   assert.equal(cfg.suno.provider, 'suno-official');
 });
 
@@ -2749,4 +2752,65 @@ test('legacy chat.reply bypasses auto intent routing on internal prompt text', a
   assert.match(explicitPrompt, /生成图片/);
   assert.equal(result.status, 'success');
   assert.equal(result.outputs[0].text, '我是 Miobot。');
+});
+
+test('reply plan T0.7: 超长文本拆块 + 保底首段直发，转发失败不丢核心内容', () => {
+  const longText = ('第一段内容。'.repeat(120)) + '\n' + ('第二段内容。'.repeat(120)) + '\n' + ('第三段内容。'.repeat(120));
+  const outputs = [
+    { kind: 'text', text: longText, priority: 10, mergeable: true },
+    { kind: 'image', url: 'https://x/1.png', priority: 5, mergeable: true },
+  ];
+  const plan = buildReplyPlan(outputs, { maxMessages: 3, textMaxChars: 1800, textFallback: 'always' });
+  const first = plan.groups[0];
+  assert.equal(first.mode, 'direct');
+  assert.equal(first.outputs[0].kind, 'text');
+  assert.ok(first.outputs[0].text.length <= 1800);
+  assert.equal(first.outputs[0].meta.leadText, true);
+  const forward = plan.groups.find((group) => group.mode !== 'direct');
+  assert.ok(forward);
+  for (const output of [first.outputs[0], ...forward.outputs.filter((item) => item.kind === 'text')]) {
+    assert.ok(output.text.length <= 1800, '所有文本块都必须 ≤ textMaxChars');
+  }
+  assert.ok(forward.outputs.some((item) => item.kind === 'image'));
+});
+
+test('reply plan T0.7: 单条短文本保持原行为，不额外剥离直发', () => {
+  const plan = buildReplyPlan([{ kind: 'text', text: '短回复', priority: 10, mergeable: true }], { maxMessages: 3, textMaxChars: 1800, textFallback: 'always' });
+  assert.equal(plan.groups.length, 1);
+  assert.notEqual(plan.groups[0].mode, 'direct');
+});
+
+test('reply plan T0.7: textFallback=off 时不做首段直发剥离', () => {
+  const outputs = [
+    { kind: 'text', text: '摘要内容', priority: 10, mergeable: true },
+    { kind: 'image', url: 'https://x/1.png', priority: 5, mergeable: true },
+  ];
+  const plan = buildReplyPlan(outputs, { maxMessages: 3, textFallback: 'off' });
+  assert.ok(plan.groups.every((group) => group.mode !== 'direct'));
+});
+
+test('reply plan T0.7: overflowPolicy=forward 超预算内容进多个转发组，不结构性丢弃', () => {
+  const images = Array.from({ length: 45 }, (_, i) => ({ kind: 'image', url: 'https://x/' + i + '.png', priority: 1, mergeable: true }));
+  const plan = buildReplyPlan(images, { maxMessages: 3, maxResultItems: 20, nestedMaxNodes: 20, overflowPolicy: 'forward' });
+  assert.equal(plan.truncated.length, 0);
+  const forwardGroups = plan.groups.filter((group) => group.mode !== 'direct');
+  assert.equal(forwardGroups.length, 3);
+  const total = forwardGroups.reduce((sum, group) => sum + group.outputs.length, 0);
+  assert.equal(total, 45);
+});
+
+test('reply plan T0.7: 确定性任务摘要覆盖成功/失败/跳过步骤', () => {
+  const summary = buildDeterministicPlanSummary(
+    { steps: [
+      { id: 's1', capability: 'web.search' },
+      { id: 's2', capability: 'image.generate' },
+      { id: 's3', capability: 'tts.speak' },
+    ] },
+    { s1: { status: 'success' }, s2: { status: 'failed' }, s3: { status: 'skipped' } },
+    (id) => ({ 'web.search': '网页搜索', 'image.generate': '图片生成', 'tts.speak': '语音合成' })[id] || id,
+  );
+  assert.match(summary.text, /网页搜索 ✓/);
+  assert.match(summary.text, /图片生成 ✗/);
+  assert.match(summary.text, /语音合成 ∅/);
+  assert.equal(summary.kind, 'text');
 });

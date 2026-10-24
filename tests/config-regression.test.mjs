@@ -325,3 +325,15 @@ test('config migration: known legacy intent and freeMode prompts upgrade to effe
   assert.equal(normalizedCustom.intentRecognition.promptTemplate, 'MY CUSTOM INTENT');
   assert.equal(normalizedCustom.freeMode.plannerPromptTemplate, 'MY CUSTOM FREE');
 });
+
+test('config regression T0.7: reply 文本兜底与 overflow 默认值', () => {
+  const defaults = createDefaultConfig();
+  assert.equal(defaults.orchestration.reply.textFallback, 'always');
+  assert.equal(defaults.orchestration.reply.overflowPolicy, 'forward');
+  const cfg = createDefaultConfig();
+  cfg.orchestration.reply.textFallback = 'nonsense';
+  cfg.orchestration.reply.overflowPolicy = 'nonsense';
+  const normalized = normalizeConfig(cfg);
+  assert.equal(normalized.orchestration.reply.textFallback, 'always');
+  assert.equal(normalized.orchestration.reply.overflowPolicy, 'forward');
+});

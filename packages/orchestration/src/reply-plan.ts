@@ -7,7 +7,55 @@ export interface ReplyPlanOptions {
   includeTruncationNotice?: boolean;
   nestedMaxNodes?: number;
   nestedMaxDepth?: number;
-  overflowPolicy?: 'truncate' | 'link' | 'zip' | 'reject';
+  overflowPolicy?: 'truncate' | 'link' | 'zip' | 'reject' | 'forward';
+  /** 单条文本上限；超长文本拆成多个块（直发与转发节点同界）。0 = 不拆分。 */
+  textMaxChars?: number;
+  /** 保底首段直发：多内容转发前，最高优先级文本的首块先直发，转发失败也不丢核心内容。 */
+  textFallback?: 'always' | 'on_forward_fail' | 'off';
+}
+
+/**
+ * 按段落/句子边界把长文本拆成 ≤maxChars 的块（与 reply 层 splitLongText 同语义的本地实现，
+ * 避免 orchestration 反向依赖 reply 包）。
+ */
+export function splitTextIntoChunks(text: string, maxChars: number): string[] {
+  const source = String(text || '');
+  if (maxChars <= 0 || source.length <= maxChars) return source ? [source] : [];
+  const chunks: string[] = [];
+  let rest = source;
+  while (rest.length > maxChars) {
+    let cut = rest.lastIndexOf('\n', maxChars);
+    if (cut < Math.floor(maxChars * 0.45)) {
+      cut = Math.max(...['。', '！', '？', '；', '.', '!', '?', ';', '\n'].map((char) => rest.lastIndexOf(char, maxChars)));
+    }
+    if (cut < Math.floor(maxChars * 0.45)) cut = maxChars;
+    chunks.push(rest.slice(0, cut + 1).trim());
+    rest = rest.slice(cut + 1);
+  }
+  if (rest.trim()) chunks.push(rest.trim());
+  return chunks.filter(Boolean);
+}
+
+/**
+ * 执行成功但没有任何可投递输出时的确定性兜底摘要。
+ * 不依赖模型：按步骤状态生成"任务完成：搜索 ✓ / 生图 ✗"式文本，保证用户至少知道任务结束了。
+ */
+export function buildDeterministicPlanSummary(
+  plan: { steps: Array<{ id: string; capability: string }> },
+  results: Record<string, { status?: string }>,
+  capabilityName: (id: string) => string,
+): ExecutionOutput {
+  const parts = (plan.steps || []).map((step) => {
+    const status = results?.[step.id]?.status || 'unknown';
+    const label = capabilityName(step.capability) || step.capability;
+    const ok = status === 'success' || status === 'partial';
+    const suffix = status === 'partial' ? '（部分完成）' : status === 'skipped' ? '（跳过）' : ok ? '' : '（未完成）';
+    return label + (ok ? ' ✓' : status === 'skipped' ? ' ∅' : ' ✗') + suffix;
+  });
+  const text = parts.length
+    ? '任务已结束：' + parts.join('、') + '。'
+    : '任务已结束，但没有产生可发送的内容。';
+  return { id: 'plan-summary', kind: 'text', text, priority: 0, mergeable: true, meta: { synthetic: true, reason: 'empty_output_fallback', skipTts: false } };
 }
 
 function defaultMergeable(output: ExecutionOutput): boolean {
@@ -35,7 +83,7 @@ function truncationNotice(outputs: ExecutionOutput[]): string {
   return '已按消息上限截断 ' + outputs.length + ' 个低优先级结果' + (detail ? '（' + detail + '）' : '') + '；主结果已保留。';
 }
 
-function overflowNotice(outputs: ExecutionOutput[], policy: 'truncate' | 'link' | 'zip' | 'reject'): string {
+function overflowNotice(outputs: ExecutionOutput[], policy: 'truncate' | 'link' | 'zip' | 'reject' | 'forward'): string {
   const base = truncationNotice(outputs);
   if (policy !== 'link' && policy !== 'zip') return base;
   const links = outputs
@@ -234,9 +282,11 @@ export function buildReplyPlan(outputs: ExecutionOutput[], options: ReplyPlanOpt
   const includeTruncationNotice = options.includeTruncationNotice === true;
   const nestedMaxNodes = Math.max(1, Math.trunc(Number(options.nestedMaxNodes) || 20));
   const nestedMaxDepth = Math.max(1, Math.trunc(Number(options.nestedMaxDepth) || 2));
-  const overflowPolicy = options.overflowPolicy === 'link' || options.overflowPolicy === 'zip' || options.overflowPolicy === 'reject'
+  const overflowPolicy = options.overflowPolicy === 'link' || options.overflowPolicy === 'zip' || options.overflowPolicy === 'reject' || options.overflowPolicy === 'forward'
     ? options.overflowPolicy
     : 'truncate';
+  const textMaxChars = Math.max(0, Math.trunc(Number(options.textMaxChars) || 0));
+  const textFallback = options.textFallback === 'off' || options.textFallback === 'on_forward_fail' ? options.textFallback : 'always';
   const deduped = dedupeExecutionOutputs(outputs);
   const indexed = deduped.outputs
     .map((output, index) => ({ output, index }))
@@ -245,26 +295,67 @@ export function buildReplyPlan(outputs: ExecutionOutput[], options: ReplyPlanOpt
       return priority !== 0 ? priority : a.index - b.index;
     });
 
-  const keptWithIndex = indexed.slice(0, maxResultItems);
-  const truncated: ExecutionOutput[] = indexed.slice(maxResultItems).map((item) => item.output);
-  const kept = keptWithIndex.map((item) => item.output);
+  // overflowPolicy=forward：可合并输出不再按 maxResultItems/nestedMaxNodes 截断，
+  // 改为拆成多个转发组按消息预算投递，成功结果不结构性丢弃。
+  const keepAll = overflowPolicy === 'forward';
+  const keptWithIndex = keepAll ? indexed : indexed.slice(0, maxResultItems);
+  const truncated: ExecutionOutput[] = keepAll ? [] : indexed.slice(maxResultItems).map((item) => item.output);
 
-  let mergeable = keptWithIndex.filter((item) => defaultMergeable(item.output));
-  if (mergeable.length > nestedMaxNodes) {
+  // 超长文本拆成 ≤textMaxChars 的块：直发、转发节点、后续 TTS 输入共用同一上限。
+  const expanded: Array<{ output: ExecutionOutput; index: number }> = [];
+  for (const item of keptWithIndex) {
+    const output = item.output;
+    if (output.kind === 'text' && textMaxChars > 0 && typeof output.text === 'string' && output.text.length > textMaxChars) {
+      const chunks = splitTextIntoChunks(output.text, textMaxChars);
+      chunks.forEach((chunk, i) => expanded.push({
+        output: { ...output, text: chunk, meta: { ...outputMeta(output), textChunk: i + 1, textChunks: chunks.length } },
+        index: item.index,
+      }));
+    } else {
+      expanded.push(item);
+    }
+  }
+
+  // 保底首段直发：转发组内容较多或文本被拆块时，把最高优先级文本的首块剥成 direct 组放在最前，
+  // 后续合并转发失败（含 uncertain 停机）也不丢核心内容。单条短文本保持原有行为不变。
+  let leadDirect: GroupCandidate | null = null;
+  if (textFallback === 'always' && maxMessages >= 2) {
+    const firstTextPos = expanded.findIndex((item) => defaultMergeable(item.output) && item.output.kind === 'text');
+    if (firstTextPos >= 0) {
+      const mergeableCount = expanded.filter((item) => defaultMergeable(item.output)).length;
+      const target = expanded[firstTextPos];
+      const isSplitChunk = Number(outputMeta(target.output).textChunks) > 1;
+      if (mergeableCount > 1 || isSplitChunk) {
+        expanded.splice(firstTextPos, 1);
+        leadDirect = {
+          position: target.index,
+          group: { mode: 'direct', outputs: [{ ...target.output, meta: { ...outputMeta(target.output), leadText: true } }], messageCount: 1 },
+        };
+      }
+    }
+  }
+
+  let mergeable = expanded.filter((item) => defaultMergeable(item.output));
+  if (!keepAll && mergeable.length > nestedMaxNodes) {
     truncated.push(...mergeable.slice(nestedMaxNodes).map((item) => item.output));
     mergeable = mergeable.slice(0, nestedMaxNodes);
   }
-  const direct = keptWithIndex.filter((item) => !defaultMergeable(item.output));
+  const direct = expanded.filter((item) => !defaultMergeable(item.output));
   const candidates: GroupCandidate[] = [];
+  if (leadDirect) candidates.push(leadDirect);
   if (mergeable.length) {
-    candidates.push({
-      position: Math.min(...mergeable.map((item) => item.index)),
-      group: {
-        mode: preferNestedForward && nestedMaxDepth >= 2 ? 'nested_forward' : 'flat_forward',
-        outputs: mergeable.map((item) => item.output),
-        messageCount: 1,
-      },
-    });
+    const groupSize = keepAll ? nestedMaxNodes : mergeable.length;
+    for (let start = 0; start < mergeable.length; start += groupSize) {
+      const slice = mergeable.slice(start, start + groupSize);
+      candidates.push({
+        position: Math.min(...slice.map((item) => item.index)),
+        group: {
+          mode: preferNestedForward && nestedMaxDepth >= 2 ? 'nested_forward' : 'flat_forward',
+          outputs: slice.map((item) => item.output),
+          messageCount: 1,
+        },
+      });
+    }
   }
   for (const item of direct) {
     candidates.push({

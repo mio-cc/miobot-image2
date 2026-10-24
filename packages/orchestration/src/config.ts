@@ -134,7 +134,9 @@ export interface OrchestrationConfig {
     preferNestedForward: boolean;
     nestedMaxNodes: number;
     nestedMaxDepth: number;
-    overflowPolicy: 'truncate' | 'link' | 'zip' | 'reject';
+    overflowPolicy: 'truncate' | 'link' | 'zip' | 'reject' | 'forward';
+    /** 保底首段直发：always=多内容转发前首块文本先直发，转发失败不丢核心内容。 */
+    textFallback: 'always' | 'on_forward_fail' | 'off';
     countProgressInBudget: boolean;
     includeTruncationNotice: boolean;
   };
@@ -287,7 +289,8 @@ export function defaultOrchestrationConfig(): OrchestrationConfig {
       preferNestedForward: true,
       nestedMaxNodes: 20,
       nestedMaxDepth: 2,
-      overflowPolicy: 'truncate',
+      overflowPolicy: 'forward',
+      textFallback: 'always',
       countProgressInBudget: false,
       includeTruncationNotice: true,
     },
@@ -591,7 +594,8 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       preferNestedForward: bool(reply.preferNestedForward, d.reply.preferNestedForward),
       nestedMaxNodes: numberIn(reply.nestedMaxNodes, d.reply.nestedMaxNodes, 1, 200),
       nestedMaxDepth: numberIn(reply.nestedMaxDepth, d.reply.nestedMaxDepth, 1, 5),
-      overflowPolicy: reply.overflowPolicy === 'link' || reply.overflowPolicy === 'zip' || reply.overflowPolicy === 'reject' ? reply.overflowPolicy : 'truncate',
+      overflowPolicy: reply.overflowPolicy === 'link' || reply.overflowPolicy === 'zip' || reply.overflowPolicy === 'reject' || reply.overflowPolicy === 'forward' ? reply.overflowPolicy : 'forward',
+      textFallback: reply.textFallback === 'off' || reply.textFallback === 'on_forward_fail' ? reply.textFallback : 'always',
       countProgressInBudget: bool(reply.countProgressInBudget, d.reply.countProgressInBudget),
       includeTruncationNotice: bool(reply.includeTruncationNotice, d.reply.includeTruncationNotice),
     },
