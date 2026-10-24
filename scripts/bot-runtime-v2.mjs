@@ -32,8 +32,8 @@ console.log(`[bot-v2] starting with config: ${configFilePath}`);
 console.log(`[bot-v2] system log: ${systemLogPath}`);
 const bot = startBot({ configFilePath, logger, metricsFilePath, dataDir: runtimeDir });
 
-function shutdown() {
-  try { bot.stop(); } catch { /* ignore */ }
+async function shutdown() {
+  try { await bot.stop(); } catch { /* ignore */ }
   process.exit(0);
 }
 process.on('SIGINT', shutdown);

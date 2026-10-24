@@ -34,8 +34,9 @@ export interface PendingFileInput {
 
 export interface PendingFileIndexOptions {
   filePath?: string;
-  ttlMs?: number;
-  maxPerChat?: number;
+  /** 静态数值或现读函数（支持配置热重载）。 */
+  ttlMs?: number | (() => number);
+  maxPerChat?: number | (() => number);
   maxTotal?: number;
 }
 
@@ -49,10 +50,17 @@ function shortCode(messageId: string): string {
 
 export class PendingFileIndex {
   readonly filePath?: string;
-  readonly ttlMs: number;
-  readonly maxPerChat: number;
+  /** 热重载支持：数值或现读函数，访问时解析。 */
+  readonly ttlMs: number | (() => number);
+  readonly maxPerChat: number | (() => number);
   readonly maxTotal: number;
   private records: PendingFileRecord[] = [];
+  resolvedTtlMs(): number {
+    return typeof this.ttlMs === 'function' ? Math.max(0, this.ttlMs() || 0) : this.ttlMs;
+  }
+  resolvedMaxPerChat(): number {
+    return typeof this.maxPerChat === 'function' ? Math.max(1, this.maxPerChat() || 1) : this.maxPerChat;
+  }
   private saveChain: Promise<void> = Promise.resolve();
 
   constructor(options: PendingFileIndexOptions = {}) {
@@ -113,7 +121,7 @@ export class PendingFileIndex {
       size: Number(input.size || 0),
       mime: String(input.mime || ''),
       createdAt: now,
-      expiresAt: now + this.ttlMs,
+      expiresAt: now + this.resolvedTtlMs(),
     };
     this.records.push(record);
     this.prune();
@@ -147,7 +155,7 @@ export class PendingFileIndex {
     for (const item of this.records) byChat.set(item.chatKey, [...(byChat.get(item.chatKey) || []), item]);
     const keep = new Set<string>();
     for (const items of byChat.values()) {
-      items.sort((a, b) => b.createdAt - a.createdAt).slice(0, this.maxPerChat).forEach((item) => keep.add(item.chatKey + ':' + item.code + ':' + item.messageId));
+      items.sort((a, b) => b.createdAt - a.createdAt).slice(0, this.resolvedMaxPerChat()).forEach((item) => keep.add(item.chatKey + ':' + item.code + ':' + item.messageId));
     }
     this.records = this.records.filter((item) => keep.has(item.chatKey + ':' + item.code + ':' + item.messageId));
     if (this.records.length > this.maxTotal) this.records = this.records.slice(-this.maxTotal);

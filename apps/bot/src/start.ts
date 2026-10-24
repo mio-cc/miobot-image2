@@ -68,7 +68,7 @@ export interface StartBotOptions {
 export interface RunningBot {
   adapter: NapcatAdapter;
   getConfig: () => AppConfig;
-  stop: () => void;
+  stop: () => void | Promise<void>;
 }
 
 /**
@@ -109,7 +109,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     logger,
   });
   const tempFileDir = path.join(dataDir, 'tmp-files');
-  const fileIndex = new PendingFileIndex({ filePath: path.join(dataDir, 'pending-files.json'), ttlMs: Math.max(1, config.bot.files.indexTtlMinutes || 1440) * 60_000, maxPerChat: Math.max(10, config.bot.files.maxIndexPerChat || 200) });
+  const fileIndex = new PendingFileIndex({ filePath: path.join(dataDir, 'pending-files.json'), ttlMs: () => Math.max(1, getConfig().bot.files.indexTtlMinutes || 1440) * 60_000, maxPerChat: () => Math.max(10, getConfig().bot.files.maxIndexPerChat || 200) });
   fileIndex.loadSync();
   void fs.mkdir(tempFileDir, { recursive: true }).catch(() => undefined);
 
@@ -198,6 +198,12 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   }
   void cleanupOldFiles(tempFileDir, 60 * 60 * 1000);
   void cleanupOldFiles(generatedFileDir, 3 * 24 * 60 * 60 * 1000);
+  // T2.5：临时/生成文件清理从"仅启动一次"改为每日巡检，防长运行进程磁盘无界增长。
+  const fileCleanupTimer = setInterval(() => {
+    void cleanupOldFiles(tempFileDir, 60 * 60 * 1000);
+    void cleanupOldFiles(generatedFileDir, 3 * 24 * 60 * 60 * 1000);
+  }, 24 * 60 * 60 * 1000);
+  fileCleanupTimer.unref?.();
 
   async function uploadGeneratedFile(localPath: string, name: string, mime: string): Promise<string> {
     const buffer = await fs.readFile(localPath);
@@ -927,7 +933,23 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   });
   adapter.connect();
 
-  return { adapter, getConfig, stop: () => { if (cleanupTimer) clearInterval(cleanupTimer); clearInterval(retentionTimer); auditService.stop(); approvalActionConsumer.stop(); capabilityTestConsumer.stop(); memoryActionConsumer.stop(); adapter.disconnect(); } };
+  // T2.5：stop 改为异步——退出前 flush 审批/待办持久化队列（最多等 3s），
+  // 避免进程退出杀死排队中的原子写（重启后丢最后一条审批/任务状态）。
+  const stop = async (): Promise<void> => {
+    if (cleanupTimer) clearInterval(cleanupTimer);
+    clearInterval(retentionTimer);
+    clearInterval(fileCleanupTimer);
+    auditService.stop();
+    approvalActionConsumer.stop();
+    capabilityTestConsumer.stop();
+    memoryActionConsumer.stop();
+    adapter.disconnect();
+    await Promise.race([
+      Promise.all([approvalPersistQueue, pendingJobPersistQueue]),
+      new Promise((resolve) => setTimeout(resolve, 3000).unref?.()),
+    ]);
+  };
+  return { adapter, getConfig, stop };
 }
 
 /**
