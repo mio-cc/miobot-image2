@@ -261,7 +261,8 @@ export class ConfigRepository {
 
   isAuthorized(authorizationHeader?: string): boolean {
     const provided = String(authorizationHeader || '').replace(/^Bearer\s+/i, '').trim();
-    return Boolean(provided) && provided === derivePanelToken(this.config.panel.passwordSeed);
+    // S2：token 比较改用常量时间，与登录密码侧一致，杜绝时序侧信道。
+    return Boolean(provided) && safeEqual(provided, derivePanelToken(this.config.panel.passwordSeed));
   }
 
   exportConfig(): ExportedConfigFile {
@@ -1033,6 +1034,8 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function deepMerge(base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
   const output: Record<string, unknown> = { ...base };
   for (const [key, value] of Object.entries(patch)) {
+    // 配置来自 HTTP 请求体，合并前必须挡掉原型链注入（与 config 包同规则）。
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
     output[key] = isObject(value) && isObject(output[key]) ? deepMerge(output[key] as Record<string, unknown>, value) : value;
   }
   return output;
