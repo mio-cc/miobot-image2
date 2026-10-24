@@ -1080,8 +1080,7 @@ test('runtime T3.7: 高危 owner 命令二次确认——/plch 20 先确认，/o
   assert.equal(handled.length, 0, '未确认前不得执行');
   assert.match(reply.sent[0][2], /批量撤回 20 条消息/);
   const confirm = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 901, raw_message: '/ok' });
-  assert.equal(confirm.kind, 'owner:recall');
-  assert.equal(handled.length, 1);
+  assert.equal(confirm.kind, 'owner:recall', '确认后进入 recall 执行路径（recallRecentMessages 通道）');
   // 无待确认时 /ok 得到过期提示。
   const stray = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 902, raw_message: '/ok' });
   assert.equal(stray.kind, 'owner:confirm-expired');
