@@ -315,7 +315,29 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       return { enabled: true, aliases: [], scopes: ['private', 'group'] as const, groupActivation: 'mention-or-reply' as const, naturalLanguage: true, limits: { cooldownSec: limits.cooldownSec, userDailyLimit: limits.userDailyLimit, groupDailyLimit: limits.groupDailyLimit } };
     },
   });
-  const searchService = createWebSearchService({ getConfig, logger });
+  const searchService = createWebSearchService({
+    getConfig,
+    logger,
+    // T3.5 agentic：主 provider 空结果时用聊天模型改写查询重试一次（小 maxTokens，改写失败不影响原搜索）。
+    rewriteQuery: async ({ query, oriQuestion }) => {
+      try {
+        const cfg = getConfig();
+        const result = await client.chat(cfg.llm.chatNodeIndex, {
+          model: cfg.llm.chatModel,
+          messages: [
+            { role: 'system', content: '你是搜索查询改写器。给搜索引擎的查询没有返回结果。请输出一个更容易命中的改写查询：换成更常见的表述、补全关键词、必要时改写为英文。只输出改写后的查询本身，不要任何解释或引号。' },
+            { role: 'user', content: '用户问题：' + String(oriQuestion || '').slice(0, 200) + '\n没有结果的查询：' + query + '\n改写查询：' },
+          ],
+          maxTokens: 120,
+          temperature: 0,
+          timeoutMs: 15000,
+        });
+        return String(result.text || '').trim().replace(/^["'\s]+|["'\s]+$/g, '');
+      } catch {
+        return undefined;
+      }
+    },
+  });
   const browserRenderer = createBrowserRenderer({ getConfig, logger });
   const app = createBotApp({
     getConfig,

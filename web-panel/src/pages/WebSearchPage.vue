@@ -89,6 +89,12 @@ function formatDate(value?: string) {
             <option v-for="item in autoModes" :key="item.value" :value="item.value">{{ item.label }}</option>
           </select>
         </FormField>
+        <FormField label="兜底服务商" hint="T3.5：主服务商空结果时（改写查询重试后）用它兜底；凭据不齐会自动跳过">
+          <select v-model="config.search.fallbackProvider" class="input-field">
+            <option value="">不兜底</option>
+            <option v-for="item in providers.filter((p) => p.value !== config.search.provider)" :key="item.value" :value="item.value">{{ item.label }}</option>
+          </select>
+        </FormField>
         <FormField label="API 地址" hint="DeepSeek 填 https://api.deepseek.com；其他服务可填自定义代理地址">
           <input v-model="config.search.apiUrl" class="input-field font-mono" placeholder="https://api.deepseek.com" />
         </FormField>

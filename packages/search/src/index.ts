@@ -47,6 +47,8 @@ export interface WebSearchServiceOptions {
   fetchImpl?: typeof fetch;
   logger?: { info(message: string, data?: Record<string, unknown>): void; warn(message: string, data?: Record<string, unknown>): void };
   now?: () => number;
+  /** T3.5 agentic：主 provider 空结果时用模型改写查询重试一次（返回空串/undefined 表示放弃改写）。 */
+  rewriteQuery?: (input: { query: string; oriQuestion?: string }) => Promise<string | undefined>;
 }
 
 type Log = WebSearchServiceOptions['logger'];
@@ -307,9 +309,10 @@ export function createWebSearchService(options: WebSearchServiceOptions): WebSea
     const needContent = request.needContent ?? config.needContent;
     const url = endpoint(config);
     if (config.provider === 'deepseek') {
+      // T3.5：fallback 场景下 apiKey 可能是主 provider 的 key，deepseek 必须用 deepseekKey。
       const data = await requestJson(url, {
         method: 'POST',
-        headers: authHeaders(config, apiKey, { 'Content-Type': 'application/json' }),
+        headers: authHeaders(config, deepseekKey || apiKey, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({ query, count, need_content: needContent, ori_question: request.oriQuestion?.slice(0, 128), localization: request.localization || config.localization || undefined }),
       }, config, 'DeepSeek Search');
       return parseDeepseekResults(data, config);
@@ -448,9 +451,44 @@ export function createWebSearchService(options: WebSearchServiceOptions): WebSea
         return { ...cached.response, cached: true };
       }
       const startedAt = now();
-      const results = await searchProvider(runtime, { ...request, query });
+      let results = await searchProvider(runtime, { ...request, query });
+      let usedProvider: WebSearchProvider = config.provider;
+      let finalQuery = query;
+      // T3.5 agentic：空结果 → 模型改写查询，主 provider 重试一次。
+      if (!results.length && options.rewriteQuery) {
+        try {
+          const rewritten = String(await options.rewriteQuery({ query, oriQuestion: request.oriQuestion }) || '').trim().slice(0, 128);
+          if (rewritten && rewritten !== query) {
+            finalQuery = rewritten;
+            results = await searchProvider(runtime, { ...request, query: rewritten });
+            logger?.info('联网搜索空结果，改写查询重试', { query: query.slice(0, 80), rewritten: rewritten.slice(0, 80), resultCount: results.length });
+          }
+        } catch (error) {
+          logger?.warn('搜索查询改写失败', { error: String((error as Error)?.message || error) });
+        }
+      }
+      // T3.5：仍为空 → fallbackProvider 兜底（凭据齐才发请求）。
+      const fallbackProvider = config.fallbackProvider && config.fallbackProvider !== config.provider ? config.fallbackProvider : '';
+      if (!results.length && fallbackProvider) {
+        const fallbackConfig: WebSearchConfig = { ...config, provider: fallbackProvider, apiUrl: '' };
+        const fallbackReady = fallbackProvider === 'searxng'
+          || (fallbackProvider === 'deepseek' && Boolean(runtime.deepseekKey))
+          || (fallbackProvider === 'google' ? Boolean(runtime.apiKey && runtime.config.googleCx) : Boolean(runtime.apiKey));
+        if (fallbackReady) {
+          try {
+            const fallbackResults = await searchProvider({ config: fallbackConfig, apiKey: runtime.apiKey, deepseekKey: runtime.deepseekKey }, { ...request, query: finalQuery });
+            if (fallbackResults.length) {
+              results = fallbackResults;
+              usedProvider = fallbackProvider;
+              logger?.info('联网搜索主 provider 空结果，fallback 兜底', { fallback: fallbackProvider, resultCount: results.length });
+            }
+          } catch (error) {
+            logger?.warn('搜索 fallback provider 失败', { fallback: fallbackProvider, error: String((error as Error)?.message || error) });
+          }
+        }
+      }
       await enrichContent(runtime, results);
-      const response: WebSearchResponse = { provider: config.provider, query, results, cached: false, durationMs: now() - startedAt };
+      const response: WebSearchResponse = { provider: usedProvider, query: finalQuery, results, cached: false, durationMs: now() - startedAt };
       if (config.cacheTtlSeconds > 0) {
         cache.set(cacheKey, { expiresAt: now() + config.cacheTtlSeconds * 1000, response });
         if (cache.size > 200) {

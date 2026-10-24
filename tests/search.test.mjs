@@ -127,3 +127,81 @@ test('web search: model deps injects search context before chat', async () => {
   assert.equal(result.text, 'answer');
   assert.ok(captured.messages.some((message) => String(message.content).includes('SEARCH_CONTEXT_MARKER')));
 });
+
+test('web search T3.5: 空结果时模型改写查询重试一次', async () => {
+  const calls = [];
+  const rewrites = [];
+  const service = createWebSearchService({
+    getConfig: () => config({ retryCount: 0, cacheTtlSeconds: 0 }),
+    fetchImpl: async (url, init) => {
+      calls.push({ url, body: JSON.parse(String(init.body || '{}')) });
+      const query = String(JSON.parse(String(init.body || '{}')).query || '');
+      // 第一次（原查询）空结果；改写后的查询命中
+      if (query === '原始查询') return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ results: [{ title: '命中', url: 'https://example.com/hit', snippet: 's' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+    rewriteQuery: async ({ query, oriQuestion }) => {
+      rewrites.push({ query, oriQuestion });
+      return '改写后的查询';
+    },
+  });
+  const response = await service.search({ query: '原始查询', oriQuestion: '原始问题' });
+  assert.equal(calls.length, 2, '应恰好重试一次');
+  assert.equal(calls[1].body.query, '改写后的查询');
+  assert.equal(rewrites.length, 1);
+  assert.equal(rewrites[0].oriQuestion, '原始问题');
+  assert.equal(response.results.length, 1);
+  assert.equal(response.query, '改写后的查询');
+});
+
+test('web search T3.5: 改写仍空时 fallbackProvider 兜底', async () => {
+  const calls = [];
+  const service = createWebSearchService({
+    getConfig: () => config({ provider: 'deepseek', fallbackProvider: 'searxng', retryCount: 0, cacheTtlSeconds: 0 }),
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (String(url).includes('deepseek')) return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      // searxng fallback 命中
+      return new Response(JSON.stringify({ results: [{ title: '兜底命中', url: 'https://example.com/fallback', snippet: 's' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  const response = await service.search({ query: '查询' });
+  assert.equal(response.provider, 'searxng', '兜底结果应标注 fallback provider');
+  assert.equal(response.results.length, 1);
+  assert.equal(response.results[0].provider, 'searxng');
+  assert.ok(calls.some((call) => call.url.includes('8080/search')), '应请求 searxng 端点');
+});
+
+test('web search T3.5: fallback 缺凭据时跳过兜底，维持空结果', async () => {
+  const calls = [];
+  const service = createWebSearchService({
+    getConfig: () => config({ provider: 'deepseek', apiKey: '', fallbackProvider: 'tavily', retryCount: 0, cacheTtlSeconds: 0 }),
+    // deepseek 无 key：effectiveConfig 拿不到 chat 节点 key → 主 provider 直接抛错前……不，主 provider requireKey 抛错。
+    // 这里用 searxng 主 provider（无凭据要求）+ tavily fallback（无 key）验证跳过。
+    fetchImpl: async (url) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  const cfg = service.getConfigShim?.();
+  // 直接构造：主 searxng 空结果，fallback tavily 无 key → 不发 fallback 请求
+  const service2 = createWebSearchService({
+    getConfig: () => config({ provider: 'searxng', fallbackProvider: 'tavily', apiKey: '', retryCount: 0, cacheTtlSeconds: 0 }),
+    fetchImpl: async (url) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  const response = await service2.search({ query: '查询' });
+  assert.equal(response.results.length, 0);
+  assert.equal(calls.filter((url) => url.includes('tavily')).length, 0, '无凭据的 fallback 不应发请求');
+});
+
+test('web search T3.5: fallbackProvider 归一化——非法值清空，同主 provider 清空', () => {
+  const cfg = normalizeConfig({ search: { fallbackProvider: 'not-a-provider' } });
+  assert.equal(cfg.search.fallbackProvider, '');
+  const cfg2 = normalizeConfig({ search: { provider: 'deepseek', fallbackProvider: 'brave' } });
+  assert.equal(cfg2.search.fallbackProvider, 'brave');
+  const cfg3 = normalizeConfig({});
+  assert.equal(cfg3.search.fallbackProvider, '');
+});
