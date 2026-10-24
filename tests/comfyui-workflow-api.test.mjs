@@ -235,6 +235,34 @@ test('comfyui workflow API: restoreBuiltin replaces customized primary with base
   assert.equal(changed.status, 200);
   assert.equal(changed.body.profile.customized, true);
 });
+
+test('comfyui workflow API: PUT 保存不再清空 profile 已有 LoRA 配置', async () => {
+  const cfg = createDefaultConfig();
+  const builtin = BUILTIN_COMFYUI_PROFILES.find((item) => item.id === 'z-image-turbo');
+  assert.ok(builtin);
+  const lora = { nodeId: '2', catalog: [{ id: 'ink', file: 'ink_style.safetensors', defaultStrength: 0.6 }] };
+  cfg.llm.apiKeys = [{
+    name: 'Comfy', baseUrl: 'http://comfy:8188', key: '', enabled: true, models: ['z-image-turbo'], modelsFetchedAt: '', concurrency: 1, kind: 'comfyui',
+    comfyui: {
+      profiles: [{ ...JSON.parse(JSON.stringify(builtin)), lora }],
+      pollTimeoutMs: 120000, pollIntervalMs: 1000, maxBatchSize: 1, maxConcurrent: 1, maxQueue: 2, queueTimeoutMs: 30000,
+    },
+  }];
+  const repository = new ConfigRepository({ initialConfig: cfg });
+  const api = new WebApi({ repository });
+  const auth = { authorization: `Bearer ${derivePanelToken(cfg.panel.passwordSeed)}` };
+  const saved = await api.handle({
+    method: 'PUT', path: '/api/orchestration/comfyui/workflows/0/z-image-turbo', headers: auth,
+    body: { defaults: { ...(builtin.defaults || {}), steps: 20 } },
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.profile.lora?.nodeId, '2');
+  assert.equal(saved.body.profile.lora?.catalog?.length, 1);
+  assert.equal(saved.body.profile.lora?.catalog?.[0]?.file, 'ink_style.safetensors');
+  const persisted = repository.getConfig().llm.apiKeys[0].comfyui.profiles.find((item) => item.id === 'z-image-turbo');
+  assert.equal(persisted.lora?.nodeId, '2');
+  assert.equal(persisted.lora?.catalog?.[0]?.file, 'ink_style.safetensors');
+});
 test('comfyui fallback: when baseline also fails it throws fallback_exhausted without returning images', async () => {
   const cfg = createDefaultConfig();
   const builtin = BUILTIN_COMFYUI_PROFILES.find((item) => item.id === 'z-image-turbo');

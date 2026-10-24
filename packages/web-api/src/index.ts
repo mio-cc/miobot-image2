@@ -522,7 +522,8 @@ export class WebApi {
           promptPolicy: body.promptPolicy && typeof body.promptPolicy === 'object' && !Array.isArray(body.promptPolicy) ? body.promptPolicy : current?.promptPolicy,
           stitch: current?.stitch,
           transform: current?.transform,
-          lora: undefined,
+          // 面板保存不携带 lora 字段；保留 profile 现有 LoRA 目录，避免一次保存即清空。
+          lora: current?.lora,
           skipFaceDetailer: body.skipFaceDetailer === undefined ? current?.skipFaceDetailer : Boolean(body.skipFaceDetailer),
           fallbackProfileId: body.fallbackProfileId === undefined ? (current?.fallbackProfileId || builtinComfyUiProfile(profileId)?.id || profileId) : String(body.fallbackProfileId || '').trim() || undefined,
           fallbackEnabled: body.fallbackEnabled === undefined ? (current?.fallbackEnabled ?? true) : Boolean(body.fallbackEnabled),

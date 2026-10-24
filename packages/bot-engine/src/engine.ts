@@ -170,8 +170,10 @@ export class BotEngine {
         const baseText = p.prompt || input.text;
         const chatText = composeChatText(baseText, input.referenceText, input.forwardText);
         const { text } = await this.deps.chat({
+          // chat 回复不借用 plannerTimeoutMs（freeMode 规划超时可能被调得很短，长回复会被腰斩）；
+          // 不传 timeoutMs 时由 LLM 层使用默认超时（60s）。
           model: chatModel, text: chatText, images, videos, sessionId: input.sessionId,
-          nodeIndex: chatNode, context: input.context, timeoutMs: cfg.plannerTimeoutMs, reasoningEffort: cfg.reasoningEffort, forceSearch: input.forceSearch,
+          nodeIndex: chatNode, context: input.context, timeoutMs: undefined, reasoningEffort: cfg.reasoningEffort, forceSearch: input.forceSearch,
         });
         return { kind: 'chat', decision, text, handled: true };
       }

@@ -63,6 +63,16 @@ test('engine: 歧义文本走规划器 -> chat(chatModel)', async () => {
   assert.equal(deps.calls[0][1].model, 'gpt-4o-mini');
 });
 
+test('engine: chat 调用不再借用 plannerTimeoutMs，长回复不被规划超时腰斩', async () => {
+  const deps = makeDeps();
+  const tightPlannerCfg = { ...baseCfg, plannerTimeoutMs: 3000 };
+  const engine = createBotEngine({ deps, getConfig: () => tightPlannerCfg, planner: new FakePlanner('{"action":"text","text":"在的"}') });
+  await engine.handleAuto({ text: '在吗' });
+  const chatCall = deps.calls.find((call) => call[0] === 'chat');
+  assert.ok(chatCall);
+  assert.equal(chatCall[1].timeoutMs, undefined);
+});
+
 test('engine: 能力门控 —— 生图模型其实是纯文本模型则降级为 chat，不调用 generateImages', async () => {
   const deps = makeDeps();
   const cfg = { ...baseCfg, imageModel: 'deepseek-chat', editModel: 'deepseek-chat' };

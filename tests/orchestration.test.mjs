@@ -1909,6 +1909,10 @@ test('planner: prompt is generic effect-based and shows capability side-effect m
   assert.match(customManifest, /"schemaVersion":1/);
   const legacyPlaceholder = buildPlannerPrompt(req, builtinCapabilityDescriptors(), { template: 'LEGACY={{capabilityCatalog}}' });
   assert.match(legacyPlaceholder, /"schemaVersion":1/);
+  // 自定义模板缺 {{userText}} 时追加的是真实换行，而不是字面量 \n 字符。
+  const noUserText = buildPlannerPrompt(req, builtinCapabilityDescriptors(), { template: 'NO_USER_TEXT 只输出 JSON。' });
+  assert.ok(noUserText.includes('\n\n用户请求：'));
+  assert.ok(!noUserText.includes('\\n\\n用户请求'));
   const noPlaceholders = buildPlannerPrompt(req, builtinCapabilityDescriptors(), { template: '只输出 JSON，不使用任何占位符。' });
   assert.match(noPlaceholders, /这个对象现在是什么情况/);
   assert.match(noPlaceholders, /"schemaVersion":1/);

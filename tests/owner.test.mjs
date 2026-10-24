@@ -16,9 +16,12 @@ test('parseOwnerCommand: 私聊各命令', () => {
   assert.deepEqual(p('/模型'), { command: 'modelList' });
   assert.deepEqual(p('/models'), { command: 'modelList' });
   assert.deepEqual(p('/ch'), { command: 'recall', count: 1 });
-  assert.deepEqual(p('ch'), { command: 'recall', count: 1 });
+  // 斜杠必需：句中独立的 ch/plch 单词不得触发撤回。
+  assert.equal(p('ch'), undefined);
+  assert.equal(p('can you ch it please'), undefined);
   assert.deepEqual(p('/plch'), { command: 'recall', count: 5 });
-  assert.deepEqual(p('plch 8'), { command: 'recall', count: 8 });
+  assert.deepEqual(p('/plch 8'), { command: 'recall', count: 8 });
+  assert.equal(p('plch 8'), undefined);
   assert.deepEqual(p('/模型列表'), { command: 'modelList' });
   assert.deepEqual(p('/切换 gpt-4o'), { command: 'switchModel', code: 'gpt-4o' });
   assert.deepEqual(p('/q gpt_image_2'), { command: 'switchModel', code: 'gpt.image.2' });

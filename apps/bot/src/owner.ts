@@ -37,10 +37,10 @@ export function parseOwnerCommand(text: string, ctx: OwnerParseContext): OwnerCo
 
   if (!addressedToBot) return undefined;
 
-  // ch：撤回当前聊天最近一条机器人消息；plch [n]：撤回最近 n 条，默认 5 条。
-  const ch = t.match(/(?:^|\s)\/?(?:ch)(?:\s|$)/i);
+  // ch：撤回当前聊天最近一条机器人消息；plch [n]：撤回最近 n 条，默认 5 条。斜杠必需，避免句中独立的 ch/plch 单词误触发。
+  const ch = t.match(/(?:^|\s)\/ch(?:\s|$)/i);
   if (ch) return { command: 'recall', count: 1 };
-  const plch = t.match(/(?:^|\s)\/?(?:plch)(?:\s+(\d{1,3}))?(?:\s|$)/i);
+  const plch = t.match(/(?:^|\s)\/plch(?:\s+(\d{1,3}))?(?:\s|$)/i);
   if (plch) return { command: 'recall', count: Math.max(1, Math.min(50, Number.parseInt(plch[1] || '5', 10) || 5)) };
 
   const recall = t.match(/(?:^|\s)\/\s*(?:撤回|c)\s*(\d+)?(?:\s|$)/i);

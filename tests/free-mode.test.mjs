@@ -52,6 +52,16 @@ test('free mode: parses image planner with images array', () => {
   assert.deepEqual(result.images.map((item) => item.prompt), ['cat', 'dog']);
 });
 
+test('free mode: video action never falls through to image generation', () => {
+  // 旧默认模板会教模型输出 video action；解析器不支持，带 prompt 时会被误判成生图。
+  const result = parsePlannerResult('{"action":"video","prompt":"a cat running","duration":6}');
+  assert.equal(result.action, 'text');
+  assert.equal(result.prompt, undefined);
+  const withText = parsePlannerResult('{"action":"video","text":"这个我先用文字回复"}');
+  assert.equal(withText.action, 'text');
+  assert.equal(withText.text, '这个我先用文字回复');
+});
+
 test('free mode: extracts bang directives from user content', () => {
   const directives = extractFreeModeDirectives('mb_1! 16:9! 3! high! 画三只猫');
   assert.equal(directives.templateId, 'mb_1');

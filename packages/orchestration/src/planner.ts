@@ -125,7 +125,7 @@ export function buildPlannerPrompt(request: UserRequest, capabilities: Capabilit
     template = template.replaceAll('{{' + key + '}}', () => value);
   }
   if (customTemplate && !templateSource.includes('{{userText}}')) {
-    template += '\\n\\n用户请求：' + values.userText;
+    template += '\n\n用户请求：' + values.userText;
   }
   if (customTemplate && !templateSource.includes('{{capabilityManifest}}') && !templateSource.includes('{{capabilityCatalog}}')) {
     template += '\n\n能力清单：' + values.capabilityManifest;

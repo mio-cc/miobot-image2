@@ -69,7 +69,9 @@ export interface FreeModeDirectives {
   templateId?: string;
 }
 
-const DEFAULT_PLANNER_TEMPLATE = 'You are the Napcat Bot Free Mode planner. Return JSON only. Use {"action":"text","text":"..."} or {"action":"image","mode":"generate|edit","prompt":"...","size":"1024x1024","count":1} or {"action":"video","prompt":"...","duration":6}. Prefer video when user asks to generate/make a video. Preserve the user content language in image/video prompt; if the user content is Chinese, prompt must contain Chinese and must not be translated into English unless the user explicitly asks for English. User content: {{userContent}}';
+// 注意：free-mode 只负责 text/image。视频意图由 intent-router 的视频信号/参数 bang 捕获，
+// 不要在模板里教模型输出 video action——parsePlannerResult 不识别，会被误当成生图。
+const DEFAULT_PLANNER_TEMPLATE = 'You are the Napcat Bot Free Mode planner. Return JSON only. Use {"action":"text","text":"..."} or {"action":"image","mode":"generate|edit","prompt":"...","size":"1024x1024","count":1}. Preserve the user content language in image prompt; if the user content is Chinese, prompt must contain Chinese and must not be translated into English unless the user explicitly asks for English. User content: {{userContent}}';
 
 export class FreeModeEngine {
   private readonly options: Required<Omit<FreeModeOptions, 'reply' | 'plannerPromptTemplate'>> & Pick<FreeModeOptions, 'reply' | 'plannerPromptTemplate'>;
@@ -160,6 +162,11 @@ export function parsePlannerResult(raw: string): FreeModePlannerResult {
         }))
         .filter((item) => item.prompt)
       : undefined;
+    if (actionRaw === 'video') {
+      // 防误路由：模型仍输出 video action 时（旧模板/自定义模板），绝不带 prompt 进入 image 分支，
+      // 否则视频请求会被静默转成生图。降级为文本，让上层信号链路决定。
+      return { action: 'text', text: String(record.text || record.reply || record.content || '').trim() || cleanupModelText(raw) };
+    }
     if (actionRaw === 'image' || actionRaw === 'images' || images?.length || record.prompt || record.imagePrompt) {
       return {
         action: 'image',

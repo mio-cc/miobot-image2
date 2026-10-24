@@ -552,7 +552,7 @@ test('owner: ch -> 撤回当前私聊最近一条机器人消息', async () => {
   });
   const first = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 60, raw_message: '你好' });
   assert.equal(first.handled, true);
-  const recall = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 61, raw_message: 'ch' });
+  const recall = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 61, raw_message: '/ch' });
   assert.equal(recall.kind, 'owner:recall');
   assert.deepEqual(deleted, ['501']);
   assert.equal(handled.length, 0);
@@ -791,7 +791,7 @@ test('runtime command gateway: owner recall uses unified command plan', async ()
     },
     owner: { ownerQQs: () => ['5'], handle: async () => 'legacy-owner' },
   });
-  const result = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 93, raw_message: 'ch' });
+  const result = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 93, raw_message: '/ch' });
   assert.equal(result.kind, 'owner:recall');
   assert.equal(calls.length, 1);
   assert.equal(calls[0].command, 'ownerRecall');

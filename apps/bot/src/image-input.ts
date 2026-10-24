@@ -41,14 +41,14 @@ export function createImageInputPreparer(options: ImageInputPreparerOptions = {}
         try {
           const resolvedLocal = await options.resolveLocalImage(value);
           if (!resolvedLocal) {
-            options.logger?.warn('本地图片引用无法解析，保留原引用', {
+            options.logger?.warn('本地图片引用无法解析，已丢弃该图片引用（下游按缺少图片处理并追问）', {
               reference: describeImageReference(value),
             });
             return '';
           }
           value = resolvedLocal;
         } catch (error) {
-          options.logger?.warn('本地图片引用解析失败，保留原引用', {
+          options.logger?.warn('本地图片引用解析失败，已丢弃该图片引用（下游按缺少图片处理并追问）', {
             reference: describeImageReference(value),
             error: error instanceof Error ? error.message : String(error),
           });

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   CONFIG_MIGRATION_TABLE,
   LEGACY_FREE_MODE_PROMPT_V1,
+  LEGACY_FREE_MODE_PROMPT_V2,
   LEGACY_NATURAL_INTENT_PROMPT_V1,
   CONFIG_PACKAGE,
   CONFIG_SCHEMA_VERSION,
@@ -68,7 +69,10 @@ test('config regression: prompt rewrite defaults preserve the user language', ()
   assert.match(defaults.llm.enhancePromptTemplate, /保留用户原始语言/);
   assert.match(defaults.llm.enhancePromptTemplate, /不要翻译成英文/);
   assert.match(defaults.promptsChat.smartPromptTemplate, /must not be translated into English/);
-  assert.match(defaults.freeMode.plannerPromptTemplate, /"action":"video"/);
+  // free-mode 默认模板不再教模型输出 video action（解析器不支持，会被误当生图）；
+  // 改为要求模型用文本回复并带 video 字样，交给上游视频信号链路处理。
+  assert.doesNotMatch(defaults.freeMode.plannerPromptTemplate, /"action":"video"/);
+  assert.match(defaults.freeMode.plannerPromptTemplate, /do not choose an image action/);
   assert.equal(defaults.bot.progress.imageEnabled, false);
   assert.equal(defaults.bot.progress.audioEnabled, false);
   assert.equal(defaults.bot.progress.videoEnabled, true);
@@ -308,6 +312,12 @@ test('config migration: known legacy intent and freeMode prompts upgrade to effe
   assert.match(normalized.intentRecognition.promptTemplate, /effect/);
   assert.match(normalized.intentRecognition.promptTemplate, /话题词/);
   assert.match(normalized.freeMode.plannerPromptTemplate, /outcome effect/);
+  // 2026-10 前的默认模板教 video action，会被解析器误当生图；已知默认值必须自动升级。
+  const cfgV2 = createDefaultConfig();
+  cfgV2.freeMode.plannerPromptTemplate = LEGACY_FREE_MODE_PROMPT_V2;
+  const normalizedV2 = normalizeConfig(cfgV2);
+  assert.doesNotMatch(normalizedV2.freeMode.plannerPromptTemplate, /"action":"video"/);
+  assert.match(normalizedV2.freeMode.plannerPromptTemplate, /do not choose an image action/);
   const custom = createDefaultConfig();
   custom.intentRecognition.promptTemplate = 'MY CUSTOM INTENT';
   custom.freeMode.plannerPromptTemplate = 'MY CUSTOM FREE';
