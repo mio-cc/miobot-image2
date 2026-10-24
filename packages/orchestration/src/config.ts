@@ -627,7 +627,8 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       preferNestedForward: bool(reply.preferNestedForward, d.reply.preferNestedForward),
       nestedMaxNodes: numberIn(reply.nestedMaxNodes, d.reply.nestedMaxNodes, 1, 200),
       nestedMaxDepth: numberIn(reply.nestedMaxDepth, d.reply.nestedMaxDepth, 1, 5),
-      overflowPolicy: reply.overflowPolicy === 'link' || reply.overflowPolicy === 'zip' || reply.overflowPolicy === 'reject' || reply.overflowPolicy === 'forward' ? reply.overflowPolicy : 'forward',
+      // truncate 仍是合法显式选择（旧配置兼容）；默认（缺省/非法值）才是 forward。
+      overflowPolicy: reply.overflowPolicy === 'truncate' || reply.overflowPolicy === 'link' || reply.overflowPolicy === 'zip' || reply.overflowPolicy === 'reject' || reply.overflowPolicy === 'forward' ? reply.overflowPolicy : 'forward',
       textFallback: reply.textFallback === 'off' || reply.textFallback === 'on_forward_fail' ? reply.textFallback : 'always',
       countProgressInBudget: bool(reply.countProgressInBudget, d.reply.countProgressInBudget),
       includeTruncationNotice: bool(reply.includeTruncationNotice, d.reply.includeTruncationNotice),

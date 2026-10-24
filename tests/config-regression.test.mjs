@@ -388,3 +388,15 @@ test('config regression TR.5: 默认开启的能力不物化 override（保持�
   assert.equal(overrides['code.render'], undefined);
   assert.ok(!result.migrations.some((item) => item.id === 'switches-to-orch.capabilityOverrides'));
 });
+
+test('config regression 兼容性修复: 显式 overflowPolicy=truncate 不得被强转为 forward', () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.reply.overflowPolicy = 'truncate';
+  const normalized = normalizeConfig(cfg);
+  assert.equal(normalized.orchestration.reply.overflowPolicy, 'truncate', '用户显式选择保留');
+  const absent = normalizeConfig(createDefaultConfig());
+  assert.equal(absent.orchestration.reply.overflowPolicy, 'forward', '缺省仍为 forward');
+  const invalid = createDefaultConfig();
+  invalid.orchestration.reply.overflowPolicy = 'nonsense';
+  assert.equal(normalizeConfig(invalid).orchestration.reply.overflowPolicy, 'forward', '非法值回退 forward');
+});
