@@ -78,7 +78,7 @@ const rows: Row[] = [
       detailLink: { to: '/templates', text: '模板库页' } },
     { key: 'tts', label: '语音文本前处理', trigger: '自动朗读前改写', capability: 'chat',
       node: 'bot.tts.preprocess.nodeIndex', model: 'bot.tts.preprocess.model', toggle: 'bot.tts.enabled',
-      detailLink: { to: '/voice', text: '语音页' } },
+      detailLink: { to: '/cap-voice', text: '语音页' } },
     { key: 'canvasImage', label: '画布文生图', trigger: '画布前台', capability: 'image.generate',
       node: 'canvas.imageNodeIndex', model: 'canvas.imageModel', toggle: 'canvas.enabled',
       detailLink: { to: '/canvas', text: '画布页' } },

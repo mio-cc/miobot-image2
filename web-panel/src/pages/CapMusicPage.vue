@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useConfigStore } from '../stores/config';
-import SectionCard from '../components/SectionCard.vue';
+import CapabilityPageLayout from '../components/CapabilityPageLayout.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 
 /**
- * 音乐能力页（Suno 官方 API）。
- * 由原 OrchestrationPage 的「Suno 官方 API」卡迁入。
+ * 音乐能力页（audio.music.generate，Suno 官方 API）。
+ * 骨架：CapabilityPageLayout；高级参数 = Suno 接入与 composer 配置。
  */
 
 const configStore = useConfigStore();
@@ -17,16 +17,11 @@ const sunoKeyVisible = ref(false);
 </script>
 
 <template>
-  <div v-if="config && orch">
-    <header class="mb-4">
-      <h1 class="page-title mb-0.5">音乐（Suno）</h1>
-      <p class="text-[color:var(--ink-3)] text-xs">
-        Suno 官方 API 接入：composer 提示词、请求与轮询、配额与歌曲历史。不内置计费。
-      </p>
-    </header>
-
-    <SectionCard title="Suno 官方 API" hint="不内置计费；保留超时、队列、配额和停用开关" class="mb-4">
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+  <CapabilityPageLayout capability-id="audio.music.generate" feature-id="audio.music.generate"
+    title="音乐（Suno）" advanced-title="Suno 官方 API"
+    subtitle="Suno 官方 API 接入：composer 提示词、请求与轮询、配额与歌曲历史；不内置计费">
+    <template #advanced>
+      <div v-if="orch" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.suno.enabled" label="启用 Suno" /></div>
         <FormField label="Provider"><input v-model="orch.suno.provider" class="input-field font-mono" readonly /></FormField>
         <FormField label="API 版本"><select v-model="orch.suno.requestMode" class="input-field"><option value="v6">SunoAPI V6</option><option value="legacy">Legacy Poll API</option></select></FormField>
@@ -65,6 +60,6 @@ const sunoKeyVisible = ref(false);
         <FormField label="最大重试"><input v-model.number="orch.suno.maxRetries" type="number" min="0" max="10" class="input-field" /></FormField>
         <FormField label="每日配额"><input v-model.number="orch.suno.quotaPerUserPerDay" type="number" min="0" class="input-field" /></FormField>
       </div>
-    </SectionCard>
-  </div>
+    </template>
+  </CapabilityPageLayout>
 </template>

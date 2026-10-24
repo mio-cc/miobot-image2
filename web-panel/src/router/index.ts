@@ -63,6 +63,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '记忆', group: '能力中心', icon: 'grid' },
     },
     {
+        // 通用能力详情页：注册表里任何 id 都能自动成页（fake capability 验收项）。
+        path: '/capabilities/:id',
+        name: 'capability-detail',
+        component: () => import('../pages/CapabilityDetailPage.vue'),
+    },
+    {
         path: '/routing',
         name: 'routing',
         component: () => import('../pages/RoutingPage.vue'),
@@ -106,9 +112,7 @@ const routes: RouteRecordRaw[] = [
     },
     {
         path: '/voice',
-        name: 'voice',
-        component: () => import('../pages/VoicePage.vue'),
-        meta: { title: '语音 / TTS', group: '媒体', icon: 'voice' },
+        redirect: '/cap-voice',
     },
     {
         path: '/canvas',

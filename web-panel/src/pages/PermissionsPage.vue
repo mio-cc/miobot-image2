@@ -12,6 +12,27 @@ import ToggleField from '../components/ToggleField.vue';
  * 能力目录（逐能力启用与审批开关，写 orch.capabilityOverrides）。
  */
 
+/** 有专属配置页的能力 → 专属路由；其余能力走 /capabilities/:id 自动成页。 */
+const CAPABILITY_PAGES: Record<string, string> = {
+    'image.generate': '/cap-image',
+    'image.edit': '/cap-image',
+    'image.interrogate': '/cap-image',
+    'image.stitch': '/cap-image',
+    'audio.music.generate': '/cap-music',
+    'audio.music.history': '/cap-music',
+    'audio.music.replay': '/cap-music',
+    'audio.music.replace_section': '/cap-music',
+    'tts.speak': '/cap-voice',
+    'voice.current': '/cap-voice',
+    'voice.search': '/cap-voice',
+    'voice.preview': '/cap-voice',
+    'voice.select': '/cap-voice',
+};
+
+function capabilityLink(id: string): string {
+    return CAPABILITY_PAGES[id] || `/capabilities/${encodeURIComponent(id)}`;
+}
+
 const configStore = useConfigStore();
 const config = computed(() => configStore.config);
 const orch = computed(() => config.value?.orchestration);
@@ -361,7 +382,7 @@ watch(previewCapability, syncPreviewCapability);
           </thead>
           <tbody>
             <tr v-for="item in capabilities" :key="item.id" class="border-b border-[color:var(--hairline-2)]/60">
-              <td class="py-2 pr-3"><span class="mono">{{ item.id }}</span><div class="text-[color:var(--ink-3)]">{{ item.name }}</div></td>
+              <td class="py-2 pr-3"><RouterLink :to="capabilityLink(item.id)" class="mono hover:underline">{{ item.id }}</RouterLink><div class="text-[color:var(--ink-3)]">{{ item.name }}</div></td>
               <td class="py-2 pr-3 mono">{{ item.effect || 'unknown' }}</td>
               <td class="py-2 pr-3 mono">{{ (item.requiredContext || []).join('/') || '-' }}</td>
               <td class="py-2 pr-3 mono">{{ (item.sideEffects || []).join('/') || '-' }}</td>

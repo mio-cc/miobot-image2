@@ -2,14 +2,14 @@
 import { computed, onMounted, ref } from 'vue';
 import client from '../api/client';
 import { useConfigStore } from '../stores/config';
-import SectionCard from '../components/SectionCard.vue';
+import CapabilityPageLayout from '../components/CapabilityPageLayout.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 
 /**
- * 图片生成能力页。
- * 由原 OrchestrationPage 的「ComfyUI 工作流」卡迁入；TR.3 会在此页补齐
- * 「机器人生图 / 画布默认值」分区，成为生图配置单入口。
+ * 图片生成能力页（image.generate）。
+ * 骨架：CapabilityPageLayout（状态头/启用与配额/能力测试）+
+ * 高级参数 = ComfyUI 工作流。TR.3 会补「机器人生图 / 画布默认值」模型分区。
  */
 
 const configStore = useConfigStore();
@@ -169,15 +169,10 @@ onMounted(loadComfyWorkflows);
 </script>
 
 <template>
-  <div>
-    <header class="mb-4">
-      <h1 class="page-title mb-0.5">图片生成</h1>
-      <p class="text-[color:var(--ink-3)] text-xs">
-        ComfyUI 工作流与生图参数。模型只增强画面提示词；steps、CFG、采样器、尺寸、LoRA 等全部由这里保存的 workflow/defaults 决定。
-      </p>
-    </header>
-
-    <SectionCard title="ComfyUI 工作流" hint="节点与 Profile 编辑、校验与基线恢复" class="mb-4">
+  <CapabilityPageLayout capability-id="image.generate" feature-id="image.generate"
+    title="图片生成" advanced-title="ComfyUI 工作流与参数"
+    subtitle="模型只增强画面提示词；steps、CFG、采样器、尺寸、LoRA 等全部由这里保存的 workflow/defaults 决定">
+    <template #advanced>
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
         <FormField label="ComfyUI 节点">
           <select v-model.number="comfyNodeIndex" class="input-field" @change="loadComfyWorkflowProfile()">
@@ -255,6 +250,6 @@ onMounted(loadComfyWorkflows);
           </table>
         </div>
       </details>
-    </SectionCard>
-  </div>
+    </template>
+  </CapabilityPageLayout>
 </template>
