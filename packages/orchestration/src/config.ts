@@ -46,6 +46,18 @@ export interface OrchestrationConfig {
     enabled: boolean;
     allowlist: string[];
   };
+  /** T4.1：MCP server 配置——启动时连入并把 tools 转为能力 descriptor（默认 deny，逐工具 allowlist 开启）。 */
+  mcpServers: Array<{
+    id: string;
+    enabled: boolean;
+    transport: 'stdio' | 'http';
+    command?: string;
+    args?: string[];
+    url?: string;
+    token?: string;
+    /** 只注册列出的工具名（留空注册全部，全部默认 deny）。 */
+    allowlist?: string[];
+  }>;
   voice: {
     enabled: boolean;
     provider: 'fish-audio';
@@ -197,6 +209,7 @@ export function defaultOrchestrationConfig(): OrchestrationConfig {
       enabled: false,
       allowlist: ['suno-official'],
     },
+    mcpServers: [],
     voice: {
       enabled: false,
       provider: 'fish-audio',
@@ -481,6 +494,26 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       enabled: bool(record(raw.externalProviders).enabled, d.externalProviders.enabled),
       allowlist: Array.isArray(record(raw.externalProviders).allowlist) ? record(raw.externalProviders).allowlist.map(String).filter(Boolean) : d.externalProviders.allowlist,
     },
+    // T4.1：MCP server 配置规整——只保留形态完整的条目（transport 与对应必填项齐全），其余丢弃。
+    mcpServers: (Array.isArray(raw.mcpServers) ? raw.mcpServers : []).flatMap((entry: unknown) => {
+      const item = record(entry);
+      const id = String(item.id || '').trim();
+      const transport = item.transport === 'http' ? 'http' as const : 'stdio' as const;
+      const command = String(item.command || '').trim();
+      const url = String(item.url || '').trim();
+      if (!id) return [];
+      if (transport === 'stdio' && !command) return [];
+      if (transport === 'http' && !url) return [];
+      return [{
+        id,
+        enabled: bool(item.enabled, false),
+        transport,
+        ...(transport === 'stdio' ? { command } : { url }),
+        ...(Array.isArray(item.args) ? { args: item.args.map(String) } : {}),
+        ...(String(item.token || '').trim() ? { token: String(item.token).trim() } : {}),
+        ...(Array.isArray(item.allowlist) ? { allowlist: item.allowlist.map(String).filter(Boolean) } : {}),
+      }];
+    }),
     voice: (() => {
       const v = record(raw.voice);
       return {
