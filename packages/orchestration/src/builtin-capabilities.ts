@@ -34,6 +34,7 @@ export function builtinCapabilityDescriptors(): CapabilityDescriptor[] {
     { ...base, id: 'template.list', name: '模板列表', provider: 'builtin', mode: 'sync', riskLevel: 'low', mergeable: true, outputKinds: ['text'] },
     { ...base, id: 'template.use', name: '模板生图', provider: 'builtin', mode: 'async_job', riskLevel: 'low', mergeable: true, outputKinds: ['image'] },
     { ...base, id: 'canvas.gallery', name: '图库', provider: 'canvas', mode: 'sync', riskLevel: 'low', mergeable: true, outputKinds: ['image'] },
+    { ...base, id: 'task.schedule', name: '定时提醒', description: '注册一次性提醒：把“在某时刻提醒我做某事”解析为 remindText + at(ISO) 或 inMinutes(分钟数)，到点后原路径发回提醒。', provider: 'builtin', mode: 'sync', riskLevel: 'low', mergeable: true, outputKinds: ['text'], effect: 'notify', inputSchema: { type: 'object', properties: { remindText: { type: 'string' }, at: { type: 'string', description: 'ISO 8601 时间' }, inMinutes: { type: 'number', minimum: 1 } }, required: ['remindText'], additionalProperties: true } },
     { ...base, id: 'file.delete', name: '删除文件', provider: 'builtin', mode: 'sync', riskLevel: 'high', approvalRequired: true, mergeable: false },
     { ...base, id: 'config.update', name: '修改配置', provider: 'admin', mode: 'sync', riskLevel: 'critical', permissions: ['admin', 'owner'], approvalRequired: true, mergeable: false },
     { ...base, id: 'permission.update', name: '修改权限', provider: 'admin', mode: 'sync', riskLevel: 'critical', permissions: ['admin', 'owner'], approvalRequired: true, mergeable: false },

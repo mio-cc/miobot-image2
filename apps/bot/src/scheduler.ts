@@ -4,14 +4,20 @@ import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 
 export interface ScheduledJob {
   id: string;
-  /** 每日 HH:MM（本地时区）。v1 支持 daily；后续可扩展 cron。 */
-  kind: 'daily';
+  /** daily=每日 HH:MM；once=到 runAt 触发一次（定时提醒，T4.3）。 */
+  kind: 'daily' | 'once';
   hour: number;
   minute: number;
+  /** once：触发时刻（ISO）。 */
+  runAt?: string;
   type: string;
   enabled: boolean;
   /** 上次触发日期 YYYY-MM-DD（持久化，重启不重发）。 */
   lastRunDay?: string;
+  /** once 触发后标记，巡检时清理。 */
+  done?: boolean;
+  /** 任务自定义数据（如 reminder 的提醒文本与目标会话）。 */
+  payload?: Record<string, unknown>;
 }
 
 export interface SchedulerOptions {
@@ -70,8 +76,24 @@ export class SchedulerService {
     const now = this.now();
     const today = dayKey(now);
     const minuteOfDay = now.getHours() * 60 + now.getMinutes();
+    let cleanupOnce = false;
     for (const job of this.jobs) {
       if (!job.enabled) continue;
+      // T4.3：once 任务——到 runAt 触发一次，触发后标记 done（巡检时清理，防文件膨胀）。
+      if (job.kind === 'once') {
+        if (job.done) { cleanupOnce = true; continue; }
+        const runAt = Date.parse(String(job.runAt || ''));
+        if (!Number.isFinite(runAt) || runAt > now.getTime()) continue;
+        job.done = true;
+        cleanupOnce = true;
+        try {
+          const text = await this.options.run(job);
+          this.options.logger?.info('定时任务触发', { id: job.id, type: job.type, delivered: Boolean(text) });
+        } catch (error) {
+          this.options.logger?.warn('定时任务失败', { id: job.id, type: job.type, error: String((error as Error)?.message || error) });
+        }
+        continue;
+      }
       if (job.lastRunDay === today) continue;
       if (minuteOfDay < job.hour * 60 + job.minute) continue;
       job.lastRunDay = today;
@@ -81,8 +103,9 @@ export class SchedulerService {
       } catch (error) {
         this.options.logger?.warn('调度任务失败', { id: job.id, type: job.type, error: String((error as Error)?.message || error) });
       }
-      await this.save();
     }
+    if (cleanupOnce) this.jobs = this.jobs.filter((job) => !(job.kind === 'once' && job.done));
+    await this.save();
   }
 
   private async load(): Promise<void> {

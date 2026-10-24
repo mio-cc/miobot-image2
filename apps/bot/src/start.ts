@@ -31,6 +31,7 @@ import { createSentMessageTracker } from './sent-messages.js';
 import { OrchestrationEnforcer } from './orchestration-enforce.js';
 import { OrchestrationTraceWriter } from './orchestration-trace.js';
 import { SchedulerService, buildDailyReport } from './scheduler.js';
+import { ScheduleCapabilityHandler } from './capability-schedule.js';
 import { RuntimeAdapterCapabilityHandler, executionFromBotResult } from './capability-runtime-adapters.js';
 import { ImageStitchCapabilityHandler } from './capability-image.js';
 import { CanvasGalleryCapabilityHandler } from './capability-canvas.js';
@@ -533,11 +534,37 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     maxBytes: 2 * 1024 * 1024,
   });
 
+  // T4.3：定时提醒的 scheduler 引用（在下方 handlers 注册时尚未构造，声明在前闭包晚绑定）。
+  let schedulerForSchedule: SchedulerService | undefined;
   // T3.1：调度器 + 每日聚合日报（§11.5 静默观测闭环；默认关，面板/配置开启）。
   const scheduler = new SchedulerService({
     filePath: path.join(dataDir, 'scheduled-jobs.json'),
     logger,
     run: async (job) => {
+      // T4.3：定时提醒到点——合成消息走完整消息链（编排层可规划后续动作，如“提醒我查天气”），与 jobRecovery 同款注入方式。
+      if (job.type === 'reminder') {
+        const payload = (job.payload || {}) as { remindText?: string; chatType?: string; groupId?: string; userId?: string };
+        const text = `提醒：${String(payload.remindText || '')}`;
+        const chatType = payload.chatType === 'group' ? 'group' : 'private';
+        const botQq = String(getConfig().bot.botQqId || adapter.selfQqId || '');
+        const rawMessage = chatType === 'group' && botQq ? `[CQ:at,qq=${botQq}] ${text}` : text;
+        const message = chatType === 'group'
+          ? [...(botQq ? [{ type: 'at', data: { qq: botQq } }] : []), { type: 'text', data: { text: ' ' + text } }]
+          : [{ type: 'text', data: { text } }];
+        await runtime.handleMessageEvent({
+          post_type: 'message',
+          message_type: chatType,
+          group_id: payload.groupId === undefined ? undefined : Number(payload.groupId) || payload.groupId,
+          user_id: Number(payload.userId) || payload.userId,
+          self_id: Number(botQq) || botQq || undefined,
+          message_id: 'schedule_' + job.id + '_' + Date.now(),
+          time: Math.floor(Date.now() / 1000),
+          raw_message: rawMessage,
+          message,
+          sender: { user_id: payload.userId },
+        } as any);
+        return text;
+      }
       // T3.4：记忆夜间巩固（03:30）——评分 + 归并 + 淘汰 + retention prune，memory 关闭时自身零计数返回。
       if (job.type === 'memory-consolidate') {
         const stats = await memoryService.consolidate();
@@ -561,6 +588,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   if (getConfig().bot.dailyReport?.enabled) {
     scheduler.register({ id: 'daily-report', kind: 'daily', type: 'daily-report', hour: getConfig().bot.dailyReport.hour, minute: getConfig().bot.dailyReport.minute, enabled: true });
   }
+  schedulerForSchedule = scheduler;
   // T3.4：记忆夜间巩固——固定 03:30 低峰执行；memory 未启用时 consolidate 自身返回零计数。
   scheduler.register({ id: 'memory-consolidate', kind: 'daily', type: 'memory-consolidate', hour: 3, minute: 30, enabled: true });
   void scheduler.start();
@@ -618,6 +646,15 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     logger,
   } as BotRuntimeOptions;
   const orchestrationHandlers = new Map<string, CapabilityHandler>();
+  // T4.3：定时提醒——schedule 回调运行时才用 scheduler（其构造在上方），闭包晚绑定。
+  orchestrationHandlers.set('task.schedule', new ScheduleCapabilityHandler({
+    schedule: async ({ remindText, runAt, target }) => {
+      const id = `remind_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      schedulerForSchedule?.register({ id, kind: 'once', hour: 0, minute: 0, runAt, type: 'reminder', enabled: true, payload: { remindText, chatType: target.chatType, ...(target.groupId !== undefined ? { groupId: target.groupId } : {}), userId: target.userId } });
+      return { id };
+    },
+    logger,
+  }));
   const handlerFailure = (invocation: any, message: string) => ({
     jobId: invocation.plan.planId,
     stepId: invocation.step.id,
