@@ -1556,9 +1556,52 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         } catch { /* reporter must never create another reply */ }
       });
     });
+    // T2.2b/§11.1：事件源扩展第一片——notice 事件（戳一戳）。
+    // 之前 adapter 泛化转发了所有 post_type，但 runtime 只订阅 message，notice 全部无人消费。
+    adapter.on('notice', (data) => {
+      void handleNoticeEvent(data).catch(() => undefined);
+    });
   }
 
-  return { handleMessageEvent, attach };
+  /** 戳一戳响应：只回应"戳 bot 本人"的事件，按用户冷却防刷，回复文案随机取自配置。 */
+  const pokeCooldowns = new Map<string, number>();
+  async function handleNoticeEvent(data: any): Promise<void> {
+    const cfg = options.getConfig();
+    const poke = cfg.bot.poke;
+    if (!poke?.enabled) return;
+    if (String(data?.post_type || '') !== 'notice') return;
+    if (String(data?.notice_type || '') !== 'notify' || String(data?.sub_type || '') !== 'poke') return;
+    const selfId = String(options.selfId?.() ?? cfg.bot.botQqId ?? '').trim();
+    if (!selfId || String(data?.target_id ?? '') !== selfId) return; // 只回应被戳的是 bot 本人
+    const userId = String(data?.user_id ?? '').trim();
+    if (!userId) return;
+    const groupId = data?.group_id !== undefined && data?.group_id !== null ? String(data.group_id) : '';
+    // 群戳遵守群白名单（空名单=全放行，与消息准入语义一致）。
+    if (groupId) {
+      const whitelist = cfg.bot.whitelistGroups || [];
+      if (whitelist.length && !whitelist.includes(groupId)) return;
+    }
+    const cooldownMs = Math.max(0, Math.trunc(Number(poke.cooldownSec) || 0)) * 1000;
+    const key = userId + ':' + groupId;
+    const now = Date.now();
+    const last = pokeCooldowns.get(key) || 0;
+    if (cooldownMs > 0 && now - last < cooldownMs) return;
+    pokeCooldowns.set(key, now);
+    if (pokeCooldowns.size > 2000) pokeCooldowns.clear();
+    const replies = Array.isArray(poke.replies) ? poke.replies.map(String).filter(Boolean) : [];
+    if (!replies.length) return;
+    const text = replies[Math.floor(Math.random() * replies.length)];
+    try {
+      const sent = groupId
+        ? await options.reply.sendGroupText(Number(groupId) || groupId, text)
+        : await options.reply.sendPrivateText(Number(userId) || userId, text);
+      if (!sent.success) log?.warn('戳一戳回复发送失败', { groupId, userId, error: sent.error });
+    } catch (error) {
+      log?.warn('戳一戳回复发送异常', { groupId, userId, error: String((error as Error)?.message || error) });
+    }
+  }
+
+  return { handleMessageEvent, attach, handleNoticeEvent };
 }
 
 function imageProgressKindForIntent(intent: string): ImageProgressKind | undefined {

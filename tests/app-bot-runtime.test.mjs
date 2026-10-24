@@ -979,3 +979,36 @@ test('runtime T2.2: 每用户消息频率超限静默丢弃，不回复不报错
   assert.equal(results[4].reason, 'user-rate-limited');
   assert.equal(reply.sent.length, 3, '限流后的消息不再产生回复（防刷屏静默）');
 });
+
+test('runtime T2.2b: 戳一戳响应——只回被戳的 bot 本人、带冷却、遵守开关与群白名单', async () => {
+  const { reply, rt } = setup();
+  const handlers = {};
+  rt.attach({ on: (event, handler) => { handlers[event] = handler; } });
+  assert.ok(handlers.notice, 'attach 应订阅 notice 事件');
+  const pokeAtBot = { post_type: 'notice', notice_type: 'notify', sub_type: 'poke', group_id: 200, user_id: 5, target_id: 10000 };
+  const pokeAtOther = { post_type: 'notice', notice_type: 'notify', sub_type: 'poke', group_id: 200, user_id: 5, target_id: 6 };
+  await handlers.notice(pokeAtBot);
+  assert.equal(reply.sent.length, 1);
+  assert.equal(reply.sent[0][0], 'groupText');
+  // 冷却内第二次不回；戳别人不回。
+  await handlers.notice(pokeAtBot);
+  await handlers.notice(pokeAtOther);
+  assert.equal(reply.sent.length, 1);
+  // 私聊戳（无 group_id）走 privateText。
+  await handlers.notice({ post_type: 'notice', notice_type: 'notify', sub_type: 'poke', user_id: 7, target_id: 10000 });
+  assert.equal(reply.sent.length, 2);
+  assert.equal(reply.sent[1][0], 'privateText');
+  assert.equal(reply.sent[1][1], 7);
+  // 关闭开关后不再响应。
+  const { reply: reply2, rt: rt2 } = setup({ getConfig: () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; c.bot.poke.enabled = false; return c; } });
+  const handlers2 = {};
+  rt2.attach({ on: (event, handler) => { handlers2[event] = handler; } });
+  await handlers2.notice(pokeAtBot);
+  assert.equal(reply2.sent.length, 0);
+  // 群白名单不包含时群戳不响应（空名单=全放行已由第一段覆盖）。
+  const { reply: reply3, rt: rt3 } = setup({ getConfig: () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; c.bot.whitelistGroups = ['999']; return c; } });
+  const handlers3 = {};
+  rt3.attach({ on: (event, handler) => { handlers3[event] = handler; } });
+  await handlers3.notice(pokeAtBot);
+  assert.equal(reply3.sent.length, 0);
+});
