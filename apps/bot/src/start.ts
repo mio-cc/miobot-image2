@@ -32,6 +32,7 @@ import { OrchestrationEnforcer } from './orchestration-enforce.js';
 import { OrchestrationTraceWriter } from './orchestration-trace.js';
 import { SchedulerService, buildDailyReport } from './scheduler.js';
 import { ScheduleCapabilityHandler } from './capability-schedule.js';
+import { loadCapabilityPlugins, pluginManifestPath } from './capability-plugins.js';
 import { RuntimeAdapterCapabilityHandler, executionFromBotResult } from './capability-runtime-adapters.js';
 import { ImageStitchCapabilityHandler } from './capability-image.js';
 import { CanvasGalleryCapabilityHandler } from './capability-canvas.js';
@@ -825,6 +826,15 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   });
   // 编排器就绪后接入能力默认配额解析（featureGate 先于 enforcer 创建，用闭包晚绑定）。
   describeCapabilityForGate = (id) => orchestrationEnforcer.describeCapabilityForGate(id);
+  // T4.2：插件目录加载（dataDir/capabilities/*.mjs，工厂 (ctx) => {descriptor, handler}）；
+  // 清单 plugins.json 供 web 面板进程展示（面板可见）。单个失败只告警不拖垮启动。
+  void (async () => {
+    const capabilitiesDir = path.join(dataDir, 'capabilities');
+    const manifest = await loadCapabilityPlugins(capabilitiesDir, { getConfig, client, logger, dataDir }, (plugin) => {
+      orchestrationEnforcer.registerCapability(plugin.descriptor, plugin.handler);
+    }, { logger });
+    if (manifest.length) logger.info('能力插件加载完成', { count: manifest.length, manifestFile: pluginManifestPath(capabilitiesDir) });
+  })().catch((error) => logger.warn('能力插件目录加载异常', { error: String((error as Error)?.message || error) }));
 
   const memoryActionFile = process.env.MIOBOT_MEMORY_ACTION_FILE || path.join(dataDir, 'orchestration-memory-actions.jsonl');
   const memoryResultFile = process.env.MIOBOT_MEMORY_RESULT_FILE || path.join(dataDir, 'orchestration-memory-results.json');

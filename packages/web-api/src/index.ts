@@ -14,7 +14,7 @@ import {
 } from '../../config/src/index.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
 import { findUnresolvedSecrets, maskConfigSecrets, unmaskConfigSecrets } from './secrets.js';
-import { applyCapabilityOverrides, applyRuntimeCapabilityGates, builtinCapabilityDescriptors, buildCapabilityManifest, createPermissionPolicyFromDefaults, resolvePermission, evaluatePromptPromotion, diffPromptText } from '../../orchestration/src/index.js';
+import { applyCapabilityOverrides, applyRuntimeCapabilityGates, builtinCapabilityDescriptors, buildCapabilityManifest, createPermissionPolicyFromDefaults, resolvePermission, evaluatePromptPromotion, diffPromptText, type CapabilityDescriptor } from '../../orchestration/src/index.js';
 import { detectComfyUiPromptNodeIds, inspectComfyUiWorkflow, validateComfyUiProfile } from '../../comfyui/src/index.js';
 
 export const WEB_API_PACKAGE: PackageDescriptor = {
@@ -121,6 +121,30 @@ function miobotDataDir(): string {
   // MIOBOT_RUNTIME_DIR；不能悄悄退回固定 /var/lib 路径，否则自定义
   // 数据目录时面板审批/记忆/能力测试会写到另一个目录。
   return String(process.env.MIOBOT_DATA_DIR || process.env.MIOBOT_RUNTIME_DIR || '/var/lib/miobot-v2');
+}
+
+/**
+ * T4.2：插件能力描述符——bot 进程加载 capabilities/*.mjs 后把清单写到
+ * capabilities/plugins.json；面板进程不执行插件 JS，只读清单合并展示（60s 缓存）。
+ */
+let pluginDescriptorCache: { at: number; descriptors: CapabilityDescriptor[] } | null = null;
+function pluginCapabilityDescriptors(): CapabilityDescriptor[] {
+  const now = Date.now();
+  if (pluginDescriptorCache && now - pluginDescriptorCache.at < 60_000) return pluginDescriptorCache.descriptors;
+  let descriptors: CapabilityDescriptor[] = [];
+  try {
+    const raw = JSON.parse(readFileSync(nodePath.join(miobotDataDir(), 'capabilities', 'plugins.json'), 'utf8')) as { plugins?: Array<{ descriptor?: CapabilityDescriptor }> };
+    descriptors = (Array.isArray(raw.plugins) ? raw.plugins : [])
+      .map((entry) => entry?.descriptor)
+      .filter((item): item is CapabilityDescriptor => Boolean(item?.id));
+  } catch { /* 无清单 = 无插件 */ }
+  pluginDescriptorCache = { at: now, descriptors };
+  return descriptors;
+}
+
+/** 内置 + 插件描述符合集（面板进程的能力目录/测试/预览统一用它）。 */
+function allCapabilityDescriptors(): CapabilityDescriptor[] {
+  return [...builtinCapabilityDescriptors(), ...pluginCapabilityDescriptors()];
 }
 
 export interface WebApiOptions extends ConfigRepositoryOptions {
@@ -599,7 +623,7 @@ export class WebApi {
           return ok({ success: true, queued: true, testId, status: 'queued' });
         }
         const cfg = this.repository.getConfig();
-        const descriptors = applyCapabilityOverrides(builtinCapabilityDescriptors(), cfg.orchestration?.capabilityOverrides || {});
+        const descriptors = applyCapabilityOverrides(allCapabilityDescriptors(), cfg.orchestration?.capabilityOverrides || {});
         const gated = applyRuntimeCapabilityGates(descriptors, { sunoEnabled: Boolean(cfg.orchestration?.suno?.enabled), externalEnabled: Boolean(cfg.orchestration?.externalProviders?.enabled), allowlist: cfg.orchestration?.externalProviders?.allowlist || [] });
         const capability = gated.find((item) => item.id === id);
         if (!capability) return json(404, { success: false, error: 'capability_not_found' });
@@ -722,7 +746,7 @@ export class WebApi {
         if (!capabilityId) return json(400, { success: false, error: 'capability is required' });
         const cfg = this.repository.getConfig();
         const descriptor = applyCapabilityOverrides(
-          builtinCapabilityDescriptors(),
+          allCapabilityDescriptors(),
           cfg.orchestration?.capabilityOverrides || {},
         ).find((item) => item.id === capabilityId);
         const qq = String(body.userQq || body.qq || '').trim();
@@ -870,7 +894,7 @@ export class WebApi {
       }
       if (method === 'GET' && path === '/api/orchestration/capabilities') {
         const cfg = this.repository.getConfig();
-        const descriptors = applyCapabilityOverrides(builtinCapabilityDescriptors(), cfg.orchestration?.capabilityOverrides || {});
+        const descriptors = applyCapabilityOverrides(allCapabilityDescriptors(), cfg.orchestration?.capabilityOverrides || {});
         const gated = applyRuntimeCapabilityGates(descriptors, { sunoEnabled: Boolean(cfg.orchestration?.suno?.enabled), externalEnabled: Boolean(cfg.orchestration?.externalProviders?.enabled), allowlist: cfg.orchestration?.externalProviders?.allowlist || [] });
         return ok({ success: true, capabilities: gated.map((item) => ({ ...item, health: capabilityHealth(cfg, item) })), manifest: buildCapabilityManifest(gated) });
       }

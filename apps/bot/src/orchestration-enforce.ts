@@ -32,6 +32,7 @@ import {
   validatePlanEffectAlignment,
   type CapabilityHandler,
   type CapabilityRateGate,
+  type CapabilityDescriptor,
   type ExternalTaskProbeResult,
   type IntentPlan,
   type IntentStep,
@@ -122,6 +123,8 @@ export class OrchestrationEnforcer {
   private readonly sessionInFlight = new Map<string, Promise<unknown>>();
   /** T3.2：FC 探测缓存——不支持 function calling 的节点|模型记住后直接走 JSON 通道，避免每次规划多一次失败调用。 */
   private readonly fcUnsupportedNodes = new Set<string>();
+  /** T4.2：插件注册的能力描述符——refreshConfig 的 replaceAll 会冲掉它们，必须合并进去。 */
+  private readonly pluginCapabilities: CapabilityDescriptor[] = [];
 
   constructor(private readonly options: {
     getConfig: () => AppConfig;
@@ -322,7 +325,7 @@ export class OrchestrationEnforcer {
       externalProviders: cfg.orchestration.externalProviders,
     });
     if (fingerprint === this.configFingerprint) return;
-    const descriptors = applyCapabilityOverrides(builtinCapabilityDescriptors(), cfg.orchestration.capabilityOverrides);
+    const descriptors = applyCapabilityOverrides([...builtinCapabilityDescriptors(), ...this.pluginCapabilities], cfg.orchestration.capabilityOverrides);
     this.registry.replaceAll(applyRuntimeCapabilityGates(descriptors, { sunoEnabled: Boolean(cfg.orchestration.suno.enabled), externalEnabled: Boolean(cfg.orchestration.externalProviders?.enabled), allowlist: cfg.orchestration.externalProviders?.allowlist || [] }));
     const defaults = cfg.orchestration.permissions;
     this.dispatcher.setPermissionPolicy(createPermissionPolicyFromDefaults({
@@ -351,6 +354,25 @@ export class OrchestrationEnforcer {
       fallbackModel,
         promptTemplate: selected.promptTemplate,
     };
+  }
+
+  /**
+   * T4.2 插件注册 API：同时注册描述符与 handler。
+   * 插件描述符合入 refreshConfig 的 replaceAll 列表（否则下次配置热重载就会被冲掉）；
+   * 同 id 覆盖（插件热替换语义）。
+   */
+  registerCapability(descriptor: CapabilityDescriptor, handler: CapabilityHandler): void {
+    if (!descriptor?.id || typeof handler?.execute !== 'function') return;
+    const existing = this.pluginCapabilities.findIndex((item) => item.id === descriptor.id);
+    if (existing >= 0) this.pluginCapabilities[existing] = descriptor;
+    else this.pluginCapabilities.push(descriptor);
+    this.dispatcher.registerHandler(descriptor.id, handler);
+    this.configFingerprint = '';
+  }
+
+  /** 面板/诊断用：当前全部能力（含插件）。 */
+  listCapabilities(): CapabilityDescriptor[] {
+    return this.registry.list();
   }
 
   private roleModelClient(collector?: ModelUsageTotals) {
