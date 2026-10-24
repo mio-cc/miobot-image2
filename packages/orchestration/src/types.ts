@@ -59,6 +59,12 @@ export interface IntentPlan {
   goal: string;
   understanding?: PlanUnderstanding;
   language?: string;
+  /**
+   * A（提速·规划即回答）：简单对话场景 planner 直接给出的完整回复文本。
+   * 仅当计划为单个 chat.reply 步骤且无需任何工具/检索时由模型附带；
+   * 执行层据此跳过第二次模型轮，直接发送该文本。
+   */
+  directReply?: string;
   steps: IntentStep[];
   budget?: {
     maxSteps?: number;

@@ -67,6 +67,7 @@ export const DEFAULT_PLANNER_USER_PROMPT_TEMPLATE = [
   '4. 需要多步时，用 dependsOn 明确依赖关系。',
   '5. 如果目标、前置条件或副作用必要性不明确，needsClarification=true，并给出一个具体问题。',
   '6. 后续步骤需要使用依赖步骤的产出时，在该步骤 args 的字符串值里写 {{steps.<依赖步骤id>.outputs[0].text}} 或 {{steps.<依赖步骤id>.outputs[0].url}} 引用，不要凭空复述或编造内容；能力自身的目标不明确时省略选择参数，让能力返回候选并追问。',
+  '7. 如果用户请求只是简单对话或问答、不需要任何工具/检索/生成产物（计划就是唯一一个 chat.reply 步骤），在输出 JSON 中附加 directReply 字段，直接给出完整的回复文本——系统将跳过第二次模型调用直接发送，显著降低回复延迟。',
   '',
   '【上下文】',
   '用户请求：{{userText}}',
@@ -105,6 +106,7 @@ export function buildPlannerPrompt(request: UserRequest, capabilities: Capabilit
       confidence: 0.9,
     },
     steps: [{ id: 'step1', capability: '<从 capabilityManifest 选择>', args: {}, dependsOn: [], optional: false, condition: null, iterate: false }],
+    directReply: '仅当计划为单个 chat.reply 且无需工具时：直接给出的完整回复文本',
     budget: { maxSteps: 20 },
     needsClarification: false,
     clarificationQuestion: null,
@@ -199,6 +201,8 @@ export function normalizeIntentPlanObject(raw: any, request: UserRequest, option
     goal: String(raw.goal || understanding?.goal || ''),
     understanding,
     language: raw.language ? String(raw.language) : undefined,
+    // A（规划即回答）：捕获模型附带的直接回复文本（仅单步 chat.reply 场景由提示词约束）。
+    directReply: typeof raw.directReply === 'string' && raw.directReply.trim() ? raw.directReply.trim() : undefined,
     steps: Array.isArray(raw.steps) ? raw.steps.map((step: any, index: number) => ({
       id: String(step.id || `step${index + 1}`),
       capability: String(step.capability || ''),
@@ -229,6 +233,7 @@ const SUBMIT_PLAN_TOOL = {
       type: 'object',
       properties: {
         goal: { type: 'string', description: '任务目标' },
+        directReply: { type: 'string', description: '仅当计划为单个 chat.reply 且无需工具时：直接给出的完整回复文本（跳过第二次模型调用）' },
         understanding: {
           type: 'object',
           properties: {

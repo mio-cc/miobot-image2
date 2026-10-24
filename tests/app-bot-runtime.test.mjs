@@ -1085,3 +1085,32 @@ test('runtime T3.7: 高危 owner 命令二次确认——/plch 20 先确认，/o
   const stray = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 902, raw_message: '/ok' });
   assert.equal(stray.kind, 'owner:confirm-expired');
 });
+
+test('runtime B: 记忆命中不拉群历史，未命中回落群历史（enforce 富化提速）', async () => {
+  const inputs = [];
+  let historyCalls = 0;
+  const enforceCfg = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; c.orchestration.enabled = true; c.orchestration.mode = 'enforce'; c.bot.groupContext = { ...c.bot.groupContext, enabled: true }; return c; };
+  const base = {
+    fetchGroupHistory: async () => { historyCalls += 1; return [{ time: 1, sender: { user_id: 5, nickname: 'u' }, message: [{ type: 'text', data: { text: '群历史一条' } }] }]; },
+    enforceOrchestration: async (input) => {
+      inputs.push({ groupContext: input.groupContext, memoryContext: input.memoryContext });
+      return { handled: true, result: { kind: 'chat', handled: true, text: 'ok', decision: { kind: 'chat', source: 'model', confidence: 1, reason: 'test', params: { prompt: '', tokens: [] }, usedPlanner: false } } };
+    },
+  };
+  const event = (id) => ({ post_type: 'message', message_type: 'group', group_id: 3000, user_id: 5, message_id: id, sender: { nickname: 'u' }, raw_message: '[CQ:at,qq=10000] 在吗', message: [{ type: 'at', data: { qq: '10000' } }, { type: 'text', data: { text: ' 在吗' } }] });
+  // 记忆命中：不拉群历史，enforce 收到 memoryContext 无 groupContext。
+  const a = setup({ ...base, getConfig: enforceCfg, loadMemoryContext: async () => '【长期记忆】之前聊过猫' });
+  const ra = await a.rt.handleMessageEvent(event(9001));
+  assert.equal(ra.handled, true);
+  assert.equal(inputs.length, 1);
+  assert.match(inputs[0].memoryContext, /猫/);
+  assert.equal(inputs[0].groupContext, undefined, '记忆命中时不得携带群历史');
+  assert.equal(historyCalls, 0, '记忆命中时不得调用 get_group_msg_history');
+  // 记忆未命中：回落群历史。
+  const b = setup({ ...base, getConfig: enforceCfg, loadMemoryContext: async () => undefined });
+  const rb = await b.rt.handleMessageEvent(event(9002));
+  assert.equal(rb.handled, true);
+  assert.equal(historyCalls, 1, '记忆未命中时拉群历史一次');
+  assert.match(inputs[1].groupContext, /群历史一条/);
+  assert.equal(inputs[1].memoryContext, undefined);
+});

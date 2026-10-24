@@ -1073,6 +1073,41 @@ export class OrchestrationEnforcer {
         this.options.logger?.warn('enforce progress callback failed', { error: String((error as Error)?.message || error) });
       }
 
+    // A（提速·规划即回答完全体）：planner 已带 directReply 且计划为单个 chat.reply 时，
+    // 跳过第二次模型轮（chat 能力调用）直接发送。省一轮完整模型调用（实测 2-8s）。
+    // 会话历史同步补写，保持多轮上下文与原执行路径一致；权限校验照走（chat.reply 低风险常规放行）。
+    if (
+      !resumedFromJob &&
+      !input.plan &&
+      plan.directReply &&
+      plan.steps.length === 1 &&
+      plan.steps[0].capability === 'chat.reply'
+    ) {
+      const step = plan.steps[0];
+      const authorization = this.dispatcher.authorize(request, plan, step);
+      if (!authorization.result) {
+        const replyText = plan.directReply;
+        const sessionId = request.chat.type === 'group'
+          ? 'group:' + String(request.chat.groupId ?? '') + ':' + request.user.qq
+          : 'private:' + request.user.qq;
+        try {
+          this.options.app.sessions?.append?.(sessionId, { role: 'user', content: request.text }, { role: 'assistant', content: replyText });
+        } catch { /* 会话补写失败不影响发送 */ }
+        appendTrace('reply', '规划即回答：跳过 chat 模型轮', { chars: replyText.length });
+        const outputs: ExecutionOutput[] = [{
+          kind: 'text',
+          text: replyText,
+          priority: 10,
+          mergeable: true,
+          meta: { sourceStepId: step.id, sourceCapability: 'chat.reply', directPlanner: true },
+        }];
+        const replyPlan = this.makeReplyPlan(outputs);
+        const result = this.toEngineResult(replyPlan.groups.flatMap((group) => group.outputs)) || this.emptyEngineResult();
+        result.replyPlan = replyPlan;
+        return { handled: true, result };
+      }
+    }
+
     const byId = new Map(plan.steps.map((step) => [step.id, step]));
     const approvedStepIds = new Set<string>(resumeApprovedStepIds);
     let initialResults: Record<string, any> = { ...resumeResults };

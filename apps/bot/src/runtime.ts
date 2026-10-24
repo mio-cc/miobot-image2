@@ -994,7 +994,11 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     if (!result && decision.kind !== 'command' && cfg.orchestration?.enabled && cfg.orchestration.mode === 'enforce' && options.enforceOrchestration) {
       let enforceProgress: ImageProgressHandle | undefined;
       try {
+        // B（提速）：记忆检索命中时不再拉群历史——两者本互备上下文，
+        // 记忆 embedding ~0.3s，群历史 get_group_msg_history 实测 ~0.76s；
+        // 记忆未命中（无记忆/未开启/查询失败）时才回落群历史。
         const memoryContext = await loadChatMemoryContext();
+        const groupContext = memoryContext ? undefined : await loadGroupContext();
         const orchestrated = await options.enforceOrchestration({
           text: stripNonTextCqSegments(rawMessage),
           chatType,
@@ -1003,7 +1007,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           images: baseImages,
           files: baseFiles.map((file) => ({ ...file })),
           referencedText: referenced ? extractReferenceText(referenced) : undefined,
-          groupContext: await loadGroupContext(),
+          groupContext,
           memoryContext,
           sessionId,
           onProgress: async (event) => {

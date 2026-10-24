@@ -10,6 +10,7 @@ import {
   validatePlanContext,
   validatePlanEffectAlignment,
   buildPlannerPrompt,
+  parseIntentPlan,
   applyCapabilityOverrides,
   builtinCapabilityDescriptors,
   applyRuntimeCapabilityGates,
@@ -3441,4 +3442,75 @@ test('orchestration 事故修复: 失败摘要禁止自动 TTS（不念"任务�
   );
   assert.equal(summary.meta.skipTts, true);
   assert.equal(summary.meta.disableVoice, true);
+});
+
+test('orchestration A: 规划即回答——directReply 单步 chat.reply 跳过模型轮并补写会话', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  cfg.orchestration.planner.nodeIndex = 1;
+  cfg.orchestration.planner.model = 'planner-test';
+  const chatCalls = [];
+  const appended = [];
+  const fakeApp = {
+    handle: async () => { throw new Error('不应走 legacy handle'); },
+    engine: { handleExplicit: async (kind) => { chatCalls.push(kind); return { kind: 'chat', handled: true, text: '走了完整链路', decision: { kind: 'chat', source: 'fallback', confidence: 1, reason: '', params: { prompt: '', tokens: [] }, usedPlanner: false } }; } },
+    sessions: { clear() {}, append(sessionId, user, assistant) { appended.push({ sessionId, user, assistant }); } },
+    registry: () => ({}),
+    client: {},
+  };
+  const fakeClient = {
+    async chat() {
+      return { text: JSON.stringify({ planId: 'p1', requestId: 'r1', goal: '打招呼', understanding: { goal: '打招呼', desiredOutcome: 'answer', constraints: [], missingInformation: [], confidence: 0.9 }, directReply: '在的，有什么事～', steps: [{ id: 's1', capability: 'chat.reply', args: {} }], confidence: 0.9 }) };
+    },
+  };
+  const enforcer = new OrchestrationEnforcer({ getConfig: () => cfg, app: fakeApp, client: fakeClient });
+  const result = await enforcer.handle({ text: '在不在', chatType: 'private', userId: '9' });
+  assert.equal(result.handled, true);
+  assert.equal(result.result.text, '在的，有什么事～', 'directReply 文本直接成为回复');
+  assert.equal(chatCalls.length, 0, '不得调用 chat 能力（跳过第二次模型轮）');
+  assert.equal(appended.length, 1, '会话历史补写一次');
+  assert.equal(appended[0].sessionId, 'private:9');
+  assert.equal(appended[0].user.content, '在不在');
+  assert.equal(appended[0].assistant.content, '在的，有什么事～');
+});
+
+test('orchestration A: 多步计划携带 directReply 也不走快路径（按正常 DAG 执行）', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  cfg.orchestration.planner.nodeIndex = 1;
+  cfg.orchestration.planner.model = 'planner-test';
+  const fakeApp = {
+    handle: async () => ({ kind: 'chat', handled: true, text: 'x', decision: { kind: 'chat', source: 'fallback', confidence: 1, reason: '', params: { prompt: '', tokens: [] }, usedPlanner: false } }),
+    engine: { handleExplicit: async (kind) => ({ kind, handled: true, text: '搜索完成后的回答', decision: { kind: 'chat', source: 'fallback', confidence: 1, reason: '', params: { prompt: '', tokens: [] }, usedPlanner: false } }) },
+    sessions: { clear() {}, append() {} },
+    registry: () => ({}),
+    client: {},
+  };
+  const fakeClient = {
+    async chat() {
+      return { text: JSON.stringify({ planId: 'p2', requestId: 'r1', goal: '搜索并回答', directReply: '不应该被直接使用', steps: [{ id: 's1', capability: 'web.search', args: { query: 'x' } }, { id: 's2', capability: 'chat.reply', args: { prompt: '总结' }, dependsOn: ['s1'] }], confidence: 0.9 }) };
+    },
+  };
+  const searchCalls = [];
+  const enforcer = new OrchestrationEnforcer({ getConfig: () => cfg, app: fakeApp, client: fakeClient, handlers: new Map([['web.search', { async execute(inv) { searchCalls.push(inv.step.args.query); return { jobId: 'j', stepId: inv.step.id, status: 'success', outputs: [{ kind: 'text', text: '搜索结果', priority: 5, mergeable: true }] }; } }]]) });
+  const result = await enforcer.handle({ text: '搜一下x然后总结', chatType: 'private', userId: '9' });
+  assert.equal(searchCalls.length, 1, 'web.search 正常执行');
+  assert.match(result.result.text, /搜索完成后的回答/, 'chat 能力正常执行（快路径不生效于多步）');
+  assert.notEqual(result.result.text, '不应该被直接使用');
+});
+
+test('orchestration A: parseIntentPlan 捕获与忽略 directReply', () => {
+  const req = { requestId: 'r', chat: { type: 'private' }, user: { qq: 'u', role: 'user' }, text: 'hi' };
+  const plan = parseIntentPlan(JSON.stringify({ planId: 'p', goal: 'g', directReply: '  你好呀  ', steps: [{ id: 's1', capability: 'chat.reply', args: {} }], confidence: 0.9 }), req);
+  assert.equal(plan.directReply, '你好呀');
+  const noReply = parseIntentPlan(JSON.stringify({ planId: 'p', goal: 'g', steps: [{ id: 's1', capability: 'chat.reply', args: {} }], confidence: 0.9 }), req);
+  assert.equal(noReply.directReply, undefined);
+  const empty = parseIntentPlan(JSON.stringify({ planId: 'p', goal: 'g', directReply: '   ', steps: [{ id: 's1', capability: 'chat.reply', args: {} }], confidence: 0.9 }), req);
+  assert.equal(empty.directReply, undefined, '空白字符串视为缺失');
 });
