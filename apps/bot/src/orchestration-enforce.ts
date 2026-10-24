@@ -706,7 +706,13 @@ export class OrchestrationEnforcer {
           if (interrupted) {
             const descriptor = this.registry.get(interrupted.capability);
             const isExternalAsync = descriptor?.mode === 'async_job' && (descriptor?.sideEffects || []).includes('external_call');
-            if (isExternalAsync) {
+            // 实测事故 2026-10-24T15:41：用户发"唱个甩葱歌"→bot 部署重启→用户再发→恢复机制
+            // 把 Suno 步骤标记 interrupted → 整个请求失败。根因：没有 recorded taskId 时
+            // 也一律标记中断，但 bot 重启时提交大概率还没发生（21 秒内）。
+            // 修正：没有 taskId = 任务可能根本没提交成功，允许重新执行（不标记中断）。
+            // 有 taskId = 任务确定已提交，才走对账/中断路径。
+            const external = pending.externalTasks?.[interrupted.id];
+            if (isExternalAsync && external?.taskId) {
               const interruptedMark = (recovery: string, extra?: Record<string, unknown>) => {
                 recoverySkipStepIds.add(interrupted.id);
                 resumeResults[interrupted.id] = {
@@ -714,11 +720,10 @@ export class OrchestrationEnforcer {
                   error: 'interrupted_external_task', retryable: false,
                   diagnostics: { recovery, capability: interrupted.capability, ...extra },
                 };
-                appendTrace('plan', '崩溃时在途的外部任务标记为中断，跳过重放防双计费', { stepId: interrupted.id, capability: interrupted.capability, recovery });
+                appendTrace('plan', '崩溃时在途的外部任务标记为中断，跳过重放防双计费', { stepId: interrupted.id, capability: interrupted.capability, recovery, taskId: external.taskId });
               };
               // T2.8 完整对账：提交时已上报 taskId → 查远端；成功则补投递，未完成/失败维持中断。
-              const external = pending.externalTasks?.[interrupted.id];
-              if (external?.taskId && this.options.externalTaskProbe) {
+              if (this.options.externalTaskProbe) {
                 appendTrace('plan', '崩溃对账：查询远端外部任务', { stepId: interrupted.id, capability: interrupted.capability, taskId: external.taskId });
                 let probe: ExternalTaskProbeResult | undefined;
                 try {
@@ -737,8 +742,13 @@ export class OrchestrationEnforcer {
                   interruptedMark(probe?.status === 'failed' ? 'external_task_failed' : 'crash_interrupted', { taskId: external.taskId });
                 }
               } else {
-                interruptedMark('crash_interrupted');
+                // 有 taskId 但没有配置探针——保守标记中断（确定已提交，重放有双计费风险）。
+                interruptedMark('crash_interrupted_no_probe', { taskId: external.taskId });
               }
+            } else if (isExternalAsync) {
+              // 外部异步任务但没有 recorded taskId → 提交大概率未完成（bot 重启太快），
+              // 允许重新执行（不标记中断），宁可冒小概率双计费风险也不丢用户消息。
+              appendTrace('plan', '崩溃时在途的外部任务无 taskId（提交可能未完成），允许重新执行', { stepId: interrupted.id, capability: interrupted.capability });
             }
           }
         }
