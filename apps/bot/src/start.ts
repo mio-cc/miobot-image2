@@ -294,11 +294,13 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // bot 那边照旧回「当前模型不支持」，重启才认。
   // T0.2：能力默认配额（面板未显式配置时按 costClass 兜底；answer 类对话能力不限，
   // 防刷屏只针对副作用能力——生图/视频/音乐/语音/搜索等）。
-  const CAPABILITY_GATE_DEFAULTS: Record<string, { cooldownSec: number; userDailyLimit: number }> = {
-    free: { cooldownSec: 3, userDailyLimit: 0 },
-    low: { cooldownSec: 10, userDailyLimit: 100 },
-    medium: { cooldownSec: 30, userDailyLimit: 30 },
-    high: { cooldownSec: 60, userDailyLimit: 10 },
+  // T2.9a：成本断路器（轻量版）——群日限即单群场景的全局日限近似：
+  // 免费模型/上游故障被刷爆时当日自动熔断（静默降级+problem 上报），面板可覆盖。
+  const CAPABILITY_GATE_DEFAULTS: Record<string, { cooldownSec: number; userDailyLimit: number; groupDailyLimit: number }> = {
+    free: { cooldownSec: 3, userDailyLimit: 0, groupDailyLimit: 0 },
+    low: { cooldownSec: 10, userDailyLimit: 100, groupDailyLimit: 200 },
+    medium: { cooldownSec: 30, userDailyLimit: 30, groupDailyLimit: 60 },
+    high: { cooldownSec: 60, userDailyLimit: 10, groupDailyLimit: 20 },
   };
   let describeCapabilityForGate: ((id: string) => { enabled: boolean; costClass?: string; effect?: string } | undefined) | undefined;
   const featureGate = new FeatureGate({
@@ -309,7 +311,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       if (info.effect === 'answer' || info.effect === 'unknown' || !info.effect) return undefined;
       const limits = CAPABILITY_GATE_DEFAULTS[String(info.costClass || '')];
       if (!limits) return undefined;
-      return { enabled: true, aliases: [], scopes: ['private', 'group'] as const, groupActivation: 'mention-or-reply' as const, naturalLanguage: true, limits: { cooldownSec: limits.cooldownSec, userDailyLimit: limits.userDailyLimit } };
+      return { enabled: true, aliases: [], scopes: ['private', 'group'] as const, groupActivation: 'mention-or-reply' as const, naturalLanguage: true, limits: { cooldownSec: limits.cooldownSec, userDailyLimit: limits.userDailyLimit, groupDailyLimit: limits.groupDailyLimit } };
     },
   });
   const searchService = createWebSearchService({ getConfig, logger });

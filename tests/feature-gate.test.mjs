@@ -57,7 +57,7 @@ test('feature gate T0.2: 未配置能力回退默认配额，显式配置优先'
     getConfig: () => cfg,
     now: () => now,
     resolveDefaultSetting: (featureId) => featureId === 'image.generate'
-      ? { enabled: true, aliases: [], scopes: ['private', 'group'], groupActivation: 'mention-or-reply', naturalLanguage: true, limits: { cooldownSec: 30, userDailyLimit: 1 } }
+      ? { enabled: true, aliases: [], scopes: ['private', 'group'], groupActivation: 'mention-or-reply', naturalLanguage: true, limits: { cooldownSec: 30, userDailyLimit: 1, groupDailyLimit: 5 } }
       : undefined,
   });
   const release = await gate.acquire({ featureId: 'image.generate', chatType: 'private', userId: 'u9' });
