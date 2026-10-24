@@ -33,6 +33,7 @@ import { OrchestrationTraceWriter } from './orchestration-trace.js';
 import { SchedulerService, buildDailyReport } from './scheduler.js';
 import { ScheduleCapabilityHandler } from './capability-schedule.js';
 import { loadCapabilityPlugins, pluginManifestPath } from './capability-plugins.js';
+import { McpClient, McpToolCapabilityHandler, mcpToolToDescriptor } from './mcp-client.js';
 import { RuntimeAdapterCapabilityHandler, executionFromBotResult } from './capability-runtime-adapters.js';
 import { ImageStitchCapabilityHandler } from './capability-image.js';
 import { CanvasGalleryCapabilityHandler } from './capability-canvas.js';
@@ -835,6 +836,28 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     }, { logger });
     if (manifest.length) logger.info('能力插件加载完成', { count: manifest.length, manifestFile: pluginManifestPath(capabilitiesDir) });
   })().catch((error) => logger.warn('能力插件目录加载异常', { error: String((error as Error)?.message || error) }));
+  // T4.1：MCP servers（orchestration.mcpServers，配置得到本进程才会接入）——
+  // 启动连接、tools 转能力注册（默认全 deny，面板逐工具开启）；单个 server 失败只告警。
+  void (async () => {
+    const servers = (getConfig().orchestration.mcpServers || []).filter((server) => server.enabled);
+    for (const server of servers) {
+      try {
+        const client = new McpClient(server, { logger });
+        await client.initialize();
+        const tools = await client.listTools();
+        const allowlist = server.allowlist?.length ? new Set(server.allowlist.map(String)) : null;
+        let registered = 0;
+        for (const tool of tools) {
+          if (allowlist && !allowlist.has(tool.name)) continue;
+          orchestrationEnforcer.registerCapability(mcpToolToDescriptor(server.id, tool), new McpToolCapabilityHandler(client, tool.name));
+          registered += 1;
+        }
+        logger.info('MCP server 已接入', { server: server.id, tools: tools.length, registered });
+      } catch (error) {
+        logger.warn('MCP server 接入失败', { server: server.id, error: String((error as Error)?.message || error) });
+      }
+    }
+  })();
 
   const memoryActionFile = process.env.MIOBOT_MEMORY_ACTION_FILE || path.join(dataDir, 'orchestration-memory-actions.jsonl');
   const memoryResultFile = process.env.MIOBOT_MEMORY_RESULT_FILE || path.join(dataDir, 'orchestration-memory-results.json');
