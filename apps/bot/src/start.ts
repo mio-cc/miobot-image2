@@ -1022,43 +1022,64 @@ async function handleOwnerCommand(
   const { store } = deps;
   // 每条指令都从当前磁盘配置起步，改完再整份写回。
   const config = deps.getConfig();
-  const persist = () => { try { store?.save(config); } catch { /* best-effort */ } };
+  // T2.6：落盘前重读磁盘最新配置并重放同一变更——消除与 Web 面板并发保存的
+  // 互相覆盖竞态（此前 owner 保存会把面板刚保存的改动静默回滚，反之亦然）。
+  // 变更闭包均为可重放（set 字段 / 去重 push）。
+  const persistMutation = (mutate: (c: AppConfig) => string | null): string | null => {
+    const reply = mutate(config);
+    if (reply === null || !store) return reply;
+    try {
+      const fresh = store.loadIfChanged();
+      if (fresh !== config) {
+        mutate(fresh);
+        store.save(fresh);
+        return reply;
+      }
+    } catch { /* 重读失败时按已变更的本份配置保存 */ }
+    try { store.save(config); } catch { /* best-effort */ }
+    return reply;
+  };
   switch (command.command) {
     case 'modelList':
       return await buildModelListText(config);
-    case 'switchModel': {
-      const found = findModel(config, command.code);
-      if (!found) return `未找到模型: ${command.code}`;
-      config.llm.chatModel = found;
-      persist();
-      return `已切换 chat 模型为: ${found}`;
-    }
+    case 'switchModel':
+      return persistMutation((c) => {
+        const found = findModel(c, command.code);
+        if (!found) return `未找到模型: ${command.code}`;
+        c.llm.chatModel = found;
+        return `已切换 chat 模型为: ${found}`;
+      });
     case 'ttsOn':
-      config.bot.tts.enabled = true; persist();
-      return '已开启 TTS 语音回复。';
+      return persistMutation((c) => {
+        c.bot.tts.enabled = true;
+        return '已开启 TTS 语音回复。';
+      });
     case 'ttsOff':
-      config.bot.tts.enabled = false; persist();
-      return '已关闭 TTS 语音回复。';
-    case 'switchTtsVoice': {
-      const voice = (config.bot.tts.voiceIds || [])[command.index - 1];
-      if (!voice) return `未找到第 ${command.index} 个 TTS 音色。`;
-      config.bot.tts.voiceId = voice; persist();
-      return `已切换 TTS 音色为第 ${command.index} 个: ${voice}`;
-    }
-    case 'blacklist': {
-      if (!command.targetUserId) return '请 @ 要拉黑的用户。';
-      const entry = `${ctx.groupId ?? '*'}:${command.targetUserId}`;
-      if (!config.bot.blacklistGroupUsers.includes(entry)) config.bot.blacklistGroupUsers.push(entry);
-      persist();
-      return `已拉黑: ${entry}`;
-    }
-    case 'whitelist': {
-      if (!command.targetUserId) return '请 @ 要拉白的用户。';
-      const id = String(command.targetUserId);
-      if (!config.bot.whitelistPrivate.includes(id)) config.bot.whitelistPrivate.push(id);
-      persist();
-      return `已加入私聊白名单: ${id}`;
-    }
+      return persistMutation((c) => {
+        c.bot.tts.enabled = false;
+        return '已关闭 TTS 语音回复。';
+      });
+    case 'switchTtsVoice':
+      return persistMutation((c) => {
+        const voice = (c.bot.tts.voiceIds || [])[command.index - 1];
+        if (!voice) return `未找到第 ${command.index} 个 TTS 音色。`;
+        c.bot.tts.voiceId = voice;
+        return `已切换 TTS 音色为第 ${command.index} 个: ${voice}`;
+      });
+    case 'blacklist':
+      return persistMutation((c) => {
+        if (!command.targetUserId) return '请 @ 要拉黑的用户。';
+        const entry = `${ctx.groupId ?? '*'}:${command.targetUserId}`;
+        if (!c.bot.blacklistGroupUsers.includes(entry)) c.bot.blacklistGroupUsers.push(entry);
+        return `已拉黑: ${entry}`;
+      });
+    case 'whitelist':
+      return persistMutation((c) => {
+        if (!command.targetUserId) return '请 @ 要拉白的用户。';
+        const id = String(command.targetUserId);
+        if (!c.bot.whitelistPrivate.includes(id)) c.bot.whitelistPrivate.push(id);
+        return `已加入私聊白名单: ${id}`;
+      });
     case 'recall':
       // recall needs the runtime's sent-message tracker; runtime intercepts this command.
       return null;
