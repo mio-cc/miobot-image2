@@ -21,20 +21,29 @@ const blacklistText = ref('');
 function syncFromConfig() {
     const bot = config.value?.bot;
     if (!bot) return;
-    ownersText.value = (bot.ownerQQs || []).join(', ');
+    // 管理员名单合一（§2.6.4 动作1）：bot.ownerQQs 与 orch.approval.adminQqIds
+    // 双写为同一批人；展示取两者并集。
+    const admins = new Set([...(bot.ownerQQs || []), ...(config.value?.orchestration?.approval?.adminQqIds || [])]);
+    ownersText.value = [...admins].join(', ');
     whitelistGroupsText.value = (bot.whitelistGroups || []).join(', ');
     whitelistPrivateText.value = (bot.whitelistPrivate || []).join(', ');
     blacklistText.value = (bot.blacklistGroupUsers || []).join('\n');
 }
-watch(() => config.value?.bot, syncFromConfig, { immediate: true });
+watch(() => [config.value?.bot, config.value?.orchestration?.approval], syncFromConfig, { immediate: true });
 
 function splitList(value: string, separator: RegExp) {
     return value.split(separator).map(item => item.trim()).filter(Boolean);
 }
 
 function commitOwners() {
-    config.value.bot.ownerQQs = splitList(ownersText.value, /[,，\s]+/);
-    ownersText.value = config.value.bot.ownerQQs.join(', ');
+    const owners = splitList(ownersText.value, /[,，\s]+/);
+    config.value.bot.ownerQQs = owners;
+    // 审批管理员与 owner 是同一批人：双写，保证审批通知一定能找到人。
+    if (config.value.orchestration) {
+        config.value.orchestration.approval ||= {};
+        config.value.orchestration.approval.adminQqIds = [...owners];
+    }
+    ownersText.value = owners.join(', ');
 }
 function commitWhitelistGroups() {
     config.value.bot.whitelistGroups = splitList(whitelistGroupsText.value, /[,，\s]+/);
@@ -77,7 +86,7 @@ const modifierFields = [
         <FormField label="机器人 QQ 号" hint="用于识别 @ 自己；留空则由 NapCat 上报的登录号自动填">
           <input v-model="config.bot.botQqId" class="input-field font-mono" placeholder="例如 123456789" />
         </FormField>
-        <FormField label="管理员 QQ" hint="多个用逗号分隔。管理员不受黑名单与白名单限制">
+        <FormField label="Owner / 审批管理员 QQ" hint="多个用逗号分隔；同时写入 bot.ownerQQs 与审批管理员名单（双写合一）。管理员不受黑名单与白名单限制">
           <input v-model="ownersText" @blur="commitOwners" class="input-field font-mono" placeholder="123456, 654321" />
         </FormField>
       </div>

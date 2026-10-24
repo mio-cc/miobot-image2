@@ -37,7 +37,6 @@ const configStore = useConfigStore();
 const config = computed(() => configStore.config);
 const orch = computed(() => config.value?.orchestration);
 
-const adminText = ref('');
 const groupText = ref('');
 const hardDenyText = ref('');
 const capabilities = ref<any[]>([]);
@@ -55,12 +54,11 @@ const previewRisk = ref('medium');
 const permissionPreview = ref<any>(null);
 
 watch(orch, value => {
-    adminText.value = (value?.approval?.adminQqIds || []).join(', ');
     groupText.value = (value?.approval?.allowedGroupIds || []).join(', ');
     hardDenyText.value = (value?.permissions?.hardDenyCapabilities || []).join(', ');
 }, { immediate: true, deep: true });
 
-function commitList(field: 'adminQqIds' | 'allowedGroupIds', text: string) {
+function commitList(field: 'allowedGroupIds', text: string) {
     if (!orch.value?.approval) return;
     orch.value.approval[field] = text.split(/[,，\s]+/).map((x: string) => x.trim()).filter(Boolean);
 }
@@ -337,8 +335,10 @@ watch(previewCapability, syncPreviewCapability);
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.approval.allowGroupReply" label="允许群内审批回复" /></div>
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-        <FormField label="审批/异常通知管理员 QQ" hint="逗号分隔；审批和所有运行异常都私聊这些管理员，不再回复用户；留空时回退 owner">
-          <textarea v-model="adminText" @blur="commitList('adminQqIds', adminText)" class="input-field font-mono min-h-[70px]" placeholder="10001, 10002"></textarea>
+        <FormField label="审批/异常通知管理员 QQ" hint="已与 owner 名单合一，在「对话与触发 → 身份」编辑，保存时双写两处">
+          <p class="text-xs text-[color:var(--ink-3)] leading-relaxed pt-1">
+            当前：<span class="mono">{{ (orch.approval.adminQqIds || []).join(', ') || '（未设置，回退 owner）' }}</span>
+          </p>
         </FormField>
         <FormField label="允许审批的群 ID" hint="逗号分隔；为空表示不限制群，仅校验管理员和审批码">
           <textarea v-model="groupText" @blur="commitList('allowedGroupIds', groupText)" class="input-field font-mono min-h-[70px]" placeholder="1098867961"></textarea>

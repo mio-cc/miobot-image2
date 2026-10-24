@@ -54,20 +54,10 @@ const NODE_KINDS = [
     { value: 'comfyui', label: 'ComfyUI 独立节点' },
 ];
 
-function comfyuiText(node: any): string {
+/** ComfyUI 节点的连接与队列参数；Profiles 编辑统一走 /cap-image（单入口，§2.6.4 动作4）。 */
+function ensureComfyui(node: any) {
     if (!node.comfyui) node.comfyui = { pollTimeoutMs: 600000, pollIntervalMs: 2000, maxBatchSize: 4, maxConcurrent: 1, maxQueue: 10, queueTimeoutMs: 900000, profiles: [] };
-    return JSON.stringify(node.comfyui, null, 2);
-}
-
-function commitComfyui(node: any, event: Event) {
-    try {
-        const parsed = JSON.parse((event.target as HTMLTextAreaElement).value);
-        node.comfyui = parsed && typeof parsed === 'object' ? parsed : node.comfyui;
-        node.models = Array.isArray(parsed?.profiles) ? parsed.profiles.map((p: any) => p?.id).filter(Boolean) : [];
-        fetchError.value = '';
-    } catch (error: any) {
-        fetchError.value = `ComfyUI 配置 JSON 格式错误：${String(error?.message || error)}`;
-    }
+    return node.comfyui;
 }
 
 const nodes = computed(() => config.value?.llm?.apiKeys || []);
@@ -335,12 +325,18 @@ function formatTime(value: string) {
                   </FormField>
                   <p v-else class="text-xs text-[color:var(--ink-3)] self-end">ComfyUI 节点使用下方 Profiles，不使用模型列表。</p>
                 <div v-if="node.kind === 'comfyui'" class="mt-4">
-                  <FormField label="ComfyUI 连接、Workflow、Profiles、默认参数与参数映射 JSON"
-                    hint="这是后台高级配置，不展示给 QQ 用户。profile 格式：{id,name,workflow,parameterMap,defaults,constraints,outputNodeId,stitch,promptPolicy,transform}；节点可配 maxConcurrent（默认 1）、maxQueue（默认 10）、queueTimeoutMs（默认 900000）">
-                    <textarea :value="comfyuiText(node)" @change="commitComfyui(node, $event)" rows="20"
-                      class="input-field font-mono text-xs" spellcheck="false"></textarea>
-                  </FormField>
-                  <p class="text-[11px] text-[color:var(--ink-3)] mt-1">ComfyUI 节点不使用模型列表；llm.imageModel 填 profile id 或名称。Profile 未写 promptPolicy 时会按 id/name 自动识别 MOSS-Image、Krea 2 等模型并套用对应的提示词规则。第一版支持文生图，图生图/ControlNet 暂未开放。</p>
+                  <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
+                    <FormField label="最大并发" hint="默认 1"><input v-model.number="ensureComfyui(node).maxConcurrent" type="number" min="1" class="input-field" /></FormField>
+                    <FormField label="队列上限" hint="默认 10"><input v-model.number="ensureComfyui(node).maxQueue" type="number" min="1" class="input-field" /></FormField>
+                    <FormField label="排队超时 (ms)" hint="默认 900000"><input v-model.number="ensureComfyui(node).queueTimeoutMs" type="number" min="1000" step="1000" class="input-field" /></FormField>
+                    <FormField label="轮询超时 (ms)" hint="默认 600000"><input v-model.number="ensureComfyui(node).pollTimeoutMs" type="number" min="1000" step="1000" class="input-field" /></FormField>
+                    <FormField label="轮询间隔 (ms)" hint="默认 2000"><input v-model.number="ensureComfyui(node).pollIntervalMs" type="number" min="500" step="500" class="input-field" /></FormField>
+                    <FormField label="最大批量" hint="默认 4"><input v-model.number="ensureComfyui(node).maxBatchSize" type="number" min="1" class="input-field" /></FormField>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-3 mt-3">
+                    <RouterLink to="/cap-image" class="btn-outline text-xs">工作流与 Profiles 在「图片生成」页编辑</RouterLink>
+                    <span class="text-[11px] text-[color:var(--ink-3)]">llm.imageModel 填 profile id 或名称；profile 未写 promptPolicy 时按 id/name 自动识别 MOSS-Image、Krea 2 等模型。</span>
+                  </div>
                 </div>
 
                 </div>

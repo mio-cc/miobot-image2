@@ -5,6 +5,7 @@ import { useConfigStore } from '../stores/config';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import ModelPicker from '../components/ModelPicker.vue';
 
 /**
  * 规划器页（识别层配置）。
@@ -124,11 +125,11 @@ async function evaluatePromptVersion() {
         <FormField label="外部 Provider 白名单" hint="逗号分隔；为空表示允许全部已启用外部 provider">
           <textarea v-model="externalProvidersText" @blur="commitExternalProviders(externalProvidersText)" class="input-field font-mono min-h-[56px]" placeholder="suno-official"></textarea>
         </FormField>
-        <FormField label="Planner 节点索引">
-          <input v-model.number="orch.planner.nodeIndex" type="number" min="0" class="input-field" />
-        </FormField>
-        <FormField label="Planner 模型">
-          <input v-model="orch.planner.model" class="input-field font-mono" placeholder="留空使用节点默认模型" />
+        <FormField label="Planner 节点与模型" hint="留空使用节点默认模型">
+          <ModelPicker capability="chat"
+            :node-index="Number(orch.planner.nodeIndex) || 0" :model="orch.planner.model || ''"
+            @update:node-index="orch.planner.nodeIndex = $event"
+            @update:model="orch.planner.model = $event" />
         </FormField>
         <div class="flex items-end">
           <ToggleField v-model="orch.planner.enabled" label="启用 Planner" />
@@ -160,13 +161,21 @@ async function evaluatePromptVersion() {
             <span class="text-sm font-semibold">{{ role }}</span>
             <ToggleField v-model="orch.roles[role].enabled" label="启用" />
           </div>
-          <FormField label="节点索引"><input v-model.number="orch.roles[role].nodeIndex" type="number" min="0" class="input-field" /></FormField>
-            <FormField label="模型"><input v-model="orch.roles[role].model" class="input-field font-mono" placeholder="留空使用节点默认" /></FormField>
+          <FormField label="节点与模型" hint="留空使用节点默认">
+            <ModelPicker capability="chat"
+              :node-index="Number(orch.roles[role].nodeIndex) || 0" :model="orch.roles[role].model || ''"
+              @update:node-index="orch.roles[role].nodeIndex = $event"
+              @update:model="orch.roles[role].model = $event" />
+          </FormField>
             <FormField label="超时 (ms)" hint="留空使用模型默认"><input v-model.number="orch.roles[role].timeoutMs" type="number" min="1000" step="1000" class="input-field" /></FormField>
             <FormField label="温度" hint="留空使用模型默认；建议 0 到 1"><input v-model.number="orch.roles[role].temperature" type="number" min="0" max="2" step="0.05" class="input-field" /></FormField>
             <FormField label="maxTokens" hint="留空使用模型默认"><input v-model.number="orch.roles[role].maxTokens" type="number" min="1" max="200000" step="100" class="input-field" /></FormField>
-            <FormField label="Fallback 节点索引"><input v-model.number="orch.roles[role].fallbackNodeIndex" type="number" min="0" class="input-field" /></FormField>
-            <FormField label="Fallback 模型"><input v-model="orch.roles[role].fallbackModel" class="input-field font-mono" placeholder="留空使用同角色模型" /></FormField>
+            <FormField label="Fallback 节点与模型" hint="主模型失败时切换；留空模型用同角色模型">
+            <ModelPicker capability="chat"
+              :node-index="Number(orch.roles[role].fallbackNodeIndex) || 0" :model="orch.roles[role].fallbackModel || ''"
+              @update:node-index="orch.roles[role].fallbackNodeIndex = $event"
+              @update:model="orch.roles[role].fallbackModel = $event" />
+          </FormField>
             <FormField label="角色提示词覆盖" hint="留空用内置；支持 {{request}}、{{catalog}}、{{plan}}、{{outputs}}、{{question}}、{{answer}}">
             <textarea v-model="orch.roles[role].promptTemplate" rows="4" class="input-field font-mono text-xs"></textarea>
           </FormField>

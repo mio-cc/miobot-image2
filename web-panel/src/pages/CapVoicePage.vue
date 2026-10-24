@@ -5,6 +5,7 @@ import CapabilityPageLayout from '../components/CapabilityPageLayout.vue';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import ModelPicker from '../components/ModelPicker.vue';
 
 /**
  * 语音能力页（tts.speak + voice.*）。
@@ -26,6 +27,12 @@ function commitVoiceIds() {
 }
 
 const isFish = computed(() => tts.value?.provider === 'fish-audio');
+
+/** TTS 是供应商直连模型头（非节点模型），不套 ModelPicker，给固定候选即可。 */
+const TTS_MODEL_OPTIONS = [
+    's2.1-pro-free', 's2.1-pro', 's2-pro', 's1',
+    'gpt-4o-mini-tts', 'tts-1', 'tts-1-hd',
+];
 </script>
 
 <template>
@@ -67,7 +74,10 @@ const isFish = computed(() => tts.value?.provider === 'fish-audio');
           <input v-model="tts.voice" class="input-field font-mono" placeholder="alloy" />
         </FormField>
         <FormField label="模型" :hint="isFish ? 'Fish Audio 的 model 请求头。当前免费：s2.1-pro-free；付费：s2.1-pro / s2-pro / s1' : '如 gpt-4o-mini-tts / tts-1'">
-          <input v-model="tts.model" class="input-field font-mono" :placeholder="isFish ? 's2.1-pro-free' : 'tts-1'" />
+          <input v-model="tts.model" class="input-field font-mono" :placeholder="isFish ? 's2.1-pro-free' : 'tts-1'" list="tts-model-options" />
+          <datalist id="tts-model-options">
+            <option v-for="m in TTS_MODEL_OPTIONS" :key="m" :value="m" />
+          </datalist>
           <p v-if="isFish" class="text-xs text-[color:var(--ink-3)] mt-1">
             实际发送的请求头 model：<span class="mono">{{ tts.model || 's2.1-pro-free' }}</span>
           </p>
@@ -89,7 +99,11 @@ const isFish = computed(() => tts.value?.provider === 'fish-audio');
       <div v-if="tts">
         <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
           <FormField label="改写模型" hint="用一个便宜的小模型就够了">
-            <input v-model="tts.preprocess.model" class="input-field font-mono" :disabled="!tts.preprocess.enabled" />
+            <ModelPicker capability="chat"
+              :node-index="Number(tts.preprocess.nodeIndex) || 0" :model="tts.preprocess.model || ''"
+              :disabled="!tts.preprocess.enabled"
+              @update:node-index="tts.preprocess.nodeIndex = $event"
+              @update:model="tts.preprocess.model = $event" />
           </FormField>
           <div class="flex items-end">
             <ToggleField v-model="tts.preprocess.enabled" label="启用改写" hint="回复里的 Markdown、链接、代码块直接念出来很难听，开启后先让模型改写成口语文本" />

@@ -1,19 +1,47 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import client from '../api/client';
+import client, { errorMessage } from '../api/client';
 import { useConfigStore } from '../stores/config';
 import CapabilityPageLayout from '../components/CapabilityPageLayout.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import ModelPicker from '../components/ModelPicker.vue';
 
 /**
  * 图片生成能力页（image.generate）。
- * 骨架：CapabilityPageLayout（状态头/启用与配额/能力测试）+
- * 高级参数 = ComfyUI 工作流。TR.3 会补「机器人生图 / 画布默认值」模型分区。
+ * 生图模型单入口（§2.6.4 动作5）：「机器人生图」（llm.image*，自能力分工页迁入）
+ * 与「画布默认值」（canvas.image* 与画布反推，自画布页迁入）同页管理；
+ * 高级参数 = ComfyUI 工作流。
  */
 
 const configStore = useConfigStore();
 const config = computed(() => configStore.config);
+
+const imageTestPrompt = ref('一只柴犬');
+const imageTestLoading = ref(false);
+const imageTestResult = ref<any>(null);
+
+async function testImage() {
+    imageTestLoading.value = true;
+    imageTestResult.value = null;
+    try {
+        // keyRef 是打码那一刻写进节点对象的下标，随删除/重排一起走。
+        // 发实时下标会漂：删了节点还没保存时，后端会拿别的节点的凭据去测。
+        const nodeIndex = config.value.llm.imageNodeIndex;
+        const node = config.value.llm.apiKeys?.[nodeIndex] as any;
+        const res = await client.post('/test-image', {
+            prompt: imageTestPrompt.value,
+            nodeIndex,
+            keyRef: Number.isInteger(node?.keyRef) ? node.keyRef : nodeIndex,
+            model: config.value.llm.imageModel,
+        });
+        imageTestResult.value = res.data;
+    } catch (error: any) {
+        imageTestResult.value = error?.response?.data || { success: false, error: errorMessage(error) };
+    } finally {
+        imageTestLoading.value = false;
+    }
+}
 
 const comfyWorkflowNodes = ref<any[]>([]);
 const comfyNodeIndex = ref(0);
@@ -171,7 +199,162 @@ onMounted(loadComfyWorkflows);
 <template>
   <CapabilityPageLayout capability-id="image.generate" feature-id="image.generate"
     title="图片生成" advanced-title="ComfyUI 工作流与参数"
-    subtitle="模型只增强画面提示词；steps、CFG、采样器、尺寸、LoRA 等全部由这里保存的 workflow/defaults 决定">
+    subtitle="生图模型单入口：机器人生图与画布默认值同页管理；模型只增强画面提示词，参数由 workflow/defaults 决定">
+    <template #models>
+      <div v-if="config">
+        <div class="text-xs font-medium mb-2">机器人生图（Bot 命令与编排）</div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <FormField label="文生图" hint="画 / 生图 / draw 走这条链路">
+            <ModelPicker capability="image.generate"
+              :node-index="Number(config.llm.imageNodeIndex) || 0" :model="config.llm.imageModel || ''"
+              @update:node-index="config.llm.imageNodeIndex = $event"
+              @update:model="config.llm.imageModel = $event" />
+          </FormField>
+          <FormField label="改图 / 图生图" hint="改图 / i2i 走这条链路">
+            <ModelPicker capability="image.edit"
+              :node-index="Number(config.llm.editNodeIndex) || 0" :model="config.llm.editModel || ''"
+              @update:node-index="config.llm.editNodeIndex = $event"
+              @update:model="config.llm.editModel = $event" />
+          </FormField>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
+          <div class="flex items-end"><ToggleField v-model="config.llm.imageEnabled" label="启用机器人生图" /></div>
+          <FormField label="一次生成张数" hint="大于 1 时会合成编号预览图">
+            <input v-model.number="config.llm.imageCount" type="number" min="1" max="4" class="input-field" />
+          </FormField>
+          <FormField label="改图请求格式" hint="auto 会按模型自动排序：官方 gpt-image 只认 multipart，xAI 只认 JSON，多数中转认 json-images">
+            <select v-model="config.llm.imageEditRequestMode" class="input-field">
+              <option value="auto">auto（按模型自动选择）</option>
+              <option value="json-images">json-images</option>
+              <option value="json-image">json-image</option>
+              <option value="multipart">multipart</option>
+            </select>
+          </FormField>
+          <FormField label="超时 (ms)"><input v-model.number="config.llm.imageTimeoutMs" type="number" min="30000" step="30000" class="input-field" /></FormField>
+          <FormField label="失败重试"><input v-model.number="config.llm.imageRetryCount" type="number" min="0" max="5" class="input-field" /></FormField>
+          <FormField label="重试间隔 (ms)"><input v-model.number="config.llm.imageRetryDelayMs" type="number" min="0" step="500" class="input-field" /></FormField>
+          <div class="md:col-span-2 flex items-end"><ToggleField v-model="config.llm.safeRewriteOnFailure" label="失败后合规改写重试" hint="被内容策略拒了就让模型换个说法再试一次" /></div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
+          <FormField label="图片反推模型" hint="只影响 Bot 的反推命令；画布反推库在下方画布分区">
+            <ModelPicker capability="interrogate"
+              :node-index="Number(config.llm.interrogateNodeIndex) || 0" :model="config.llm.interrogateModel || ''"
+              @update:node-index="config.llm.interrogateNodeIndex = $event"
+              @update:model="config.llm.interrogateModel = $event" />
+          </FormField>
+          <FormField label="反推超时 (ms)">
+            <input v-model.number="config.llm.interrogateTimeoutMs" type="number" min="30000" step="30000" class="input-field" />
+          </FormField>
+          <FormField label="反推提示词" class="md:col-span-2">
+            <textarea v-model="config.llm.interrogatePromptTemplate" rows="4" class="input-field font-mono text-xs"></textarea>
+          </FormField>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] gap-2 mt-4 pt-4 border-t border-[color:var(--hairline-2)] items-end">
+          <FormField label="测试生图" hint="用当前文生图节点与模型真实生成一张（走 /test-image，不计入配额）">
+            <input v-model="imageTestPrompt" class="input-field" placeholder="测试提示词" />
+          </FormField>
+          <button class="btn-outline text-xs whitespace-nowrap" :disabled="imageTestLoading" @click="testImage">
+            {{ imageTestLoading ? '测试中...' : '发起测试' }}
+          </button>
+          <div v-if="imageTestResult" class="md:col-span-2 text-xs rounded-lg border border-[color:var(--hairline-2)] px-3 py-2"
+            :class="imageTestResult.success ? 'status-good' : 'status-crit'">
+            {{ imageTestResult.success ? `生图 API 正常 · 返回 ${imageTestResult.count} 张` : `生图 API 异常：${imageTestResult.error}` }}
+            <img v-if="imageTestResult.image" :src="imageTestResult.image" alt="测试生成结果"
+              class="mt-2 rounded-md max-h-40 border border-[color:var(--hairline-2)]" />
+          </div>
+        </div>
+
+        <div class="text-xs font-medium mb-2 mt-6 pt-4 border-t border-[color:var(--hairline-2)]">画布默认值（前台画布生图 / 反推库）</div>
+        <p class="text-xs text-[color:var(--ink-3)] mb-3">与 Bot 的生图配置相互独立；画布访问控制、品牌与记录在「画布 / 图库」页。</p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <FormField label="画布文生图">
+            <ModelPicker capability="image.generate"
+              :node-index="Number(config.canvas.imageNodeIndex) || 0" :model="config.canvas.imageModel || ''"
+              @update:node-index="config.canvas.imageNodeIndex = $event"
+              @update:model="config.canvas.imageModel = $event" />
+          </FormField>
+          <FormField label="画布图生图 / 改图">
+            <ModelPicker capability="image.edit"
+              :node-index="Number(config.canvas.editNodeIndex) || 0" :model="config.canvas.editModel || ''"
+              @update:node-index="config.canvas.editNodeIndex = $event"
+              @update:model="config.canvas.editModel = $event" />
+          </FormField>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
+          <FormField label="画布改图请求格式" hint="auto 会按模型自动排序">
+            <select v-model="config.canvas.imageEditRequestMode" class="input-field">
+              <option value="auto">auto</option><option value="json-images">json-images</option>
+              <option value="json-image">json-image</option><option value="multipart">multipart</option>
+            </select>
+          </FormField>
+          <FormField label="请求超时 (ms)">
+            <input v-model.number="config.canvas.imageTimeoutMs" type="number" min="30000" step="30000" class="input-field" />
+          </FormField>
+          <FormField label="重试次数">
+            <input v-model.number="config.canvas.imageRetryCount" type="number" min="0" max="5" class="input-field" />
+          </FormField>
+          <FormField label="重试间隔 (ms)">
+            <input v-model.number="config.canvas.imageRetryDelayMs" type="number" min="0" step="500" class="input-field" />
+          </FormField>
+          <FormField label="默认质量">
+            <select v-model="config.canvas.defaultQuality" class="input-field">
+              <option value="auto">auto</option><option value="low">low</option>
+              <option value="medium">medium</option><option value="high">high</option>
+            </select>
+          </FormField>
+          <FormField label="默认格式">
+            <select v-model="config.canvas.defaultOutputFormat" class="input-field">
+              <option value="png">png</option><option value="jpeg">jpeg</option><option value="webp">webp</option>
+            </select>
+          </FormField>
+          <FormField label="默认数量">
+            <select v-model.number="config.canvas.defaultCount" class="input-field">
+              <option :value="1">1 张</option><option :value="2">2 张</option><option :value="4">4 张</option>
+              <option :value="8">8 张</option><option :value="16">16 张</option>
+            </select>
+          </FormField>
+          <FormField label="历史上限">
+            <input v-model.number="config.canvas.maxHistory" type="number" min="1" max="500" class="input-field" />
+          </FormField>
+          <FormField label="默认尺寸预设">
+            <input v-model="config.canvas.defaultSizePresetId" class="input-field font-mono" placeholder="auto" />
+          </FormField>
+          <FormField label="默认风格预设">
+            <input v-model="config.canvas.defaultStylePresetId" class="input-field font-mono" placeholder="none" />
+          </FormField>
+        </div>
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-5 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-sm font-semibold">画布原图反推</span>
+              <button class="text-xs hover:underline"
+                @click="configStore.resetPrompt('canvas.interrogatePromptTemplate', 'interrogatePromptTemplate')">恢复默认</button>
+            </div>
+            <ModelPicker capability="interrogate"
+              :node-index="Number(config.canvas.interrogateNodeIndex) || 0" :model="config.canvas.interrogateModel || ''"
+              @update:node-index="config.canvas.interrogateNodeIndex = $event"
+              @update:model="config.canvas.interrogateModel = $event" />
+            <input v-model.number="config.canvas.interrogateTimeoutMs" type="number" min="30000" step="30000"
+              class="input-field mt-2" placeholder="超时 (ms)" />
+            <textarea v-model="config.canvas.interrogatePromptTemplate" rows="6" class="input-field font-mono text-xs mt-2"></textarea>
+          </div>
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-sm font-semibold">画布模板化反推</span>
+              <button class="text-xs hover:underline"
+                @click="configStore.resetPrompt('canvas.interrogateTemplatePromptTemplate', 'interrogateTemplatePromptTemplate')">恢复默认</button>
+            </div>
+            <ModelPicker capability="chat"
+              :node-index="Number(config.canvas.interrogateTemplateNodeIndex) || 0" :model="config.canvas.interrogateTemplateModel || ''"
+              @update:node-index="config.canvas.interrogateTemplateNodeIndex = $event"
+              @update:model="config.canvas.interrogateTemplateModel = $event" />
+            <input v-model.number="config.canvas.interrogateTemplateTimeoutMs" type="number" min="30000" step="30000"
+              class="input-field mt-2" placeholder="超时 (ms)" />
+            <textarea v-model="config.canvas.interrogateTemplatePromptTemplate" rows="6" class="input-field font-mono text-xs mt-2"></textarea>
+          </div>
+        </div>
+      </div>
+    </template>
     <template #advanced>
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
         <FormField label="ComfyUI 节点">

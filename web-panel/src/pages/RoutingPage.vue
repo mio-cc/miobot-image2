@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import client, { errorMessage } from '../api/client';
 import { useConfigStore } from '../stores/config';
 import { useCapabilityStore } from '../stores/capabilities';
 import SectionCard from '../components/SectionCard.vue';
@@ -29,9 +28,6 @@ const capabilities = useCapabilityStore();
 const config = computed(() => configStore.config);
 
 const expanded = ref<string | null>(null);
-const imageTestPrompt = ref('一只柴犬');
-const imageTestLoading = ref(false);
-const imageTestResult = ref<any>(null);
 
 interface Row {
     key: string;
@@ -45,17 +41,12 @@ interface Row {
     detailLink?: { to: string; text: string };
 }
 
+// 生图类（文生图/改图/反推/画布三件套）已迁到 /cap-image 单入口（§2.6.4 动作5）。
 const rows: Row[] = [
     { key: 'chat', label: '日常对话', trigger: '@bot / 私聊', capability: 'chat',
       node: 'llm.chatNodeIndex', model: 'llm.chatModel', toggle: 'llm.chatEnabled' },
-    { key: 'image', label: '文生图', trigger: '画 / 生图 / draw', capability: 'image.generate',
-      node: 'llm.imageNodeIndex', model: 'llm.imageModel', toggle: 'llm.imageEnabled' },
-    { key: 'edit', label: '改图 / 图生图', trigger: '改图 / i2i', capability: 'image.edit',
-      node: 'llm.editNodeIndex', model: 'llm.editModel' },
     { key: 'video', label: '视频生成', trigger: '视频 / video', capability: 'video.generate',
       node: 'llm.videoNodeIndex', model: 'llm.videoModel', toggle: 'llm.videoEnabled' },
-    { key: 'interrogate', label: '图片反推', trigger: '反推 / 看图', capability: 'interrogate',
-      node: 'llm.interrogateNodeIndex', model: 'llm.interrogateModel' },
     { key: 'enhance', label: '提示词润色', trigger: '画 润色 …', capability: 'chat',
       node: 'llm.enhanceNodeIndex', model: 'llm.enhanceModel', toggle: 'llm.enhanceEnabled' },
     { key: 'template', label: '本地模板填充', trigger: 'mb_1!', capability: 'chat',
@@ -72,22 +63,14 @@ const rows: Row[] = [
       node: 'codeRender.nodeIndex', model: 'codeRender.model', toggle: 'codeRender.enabled',
       detailLink: { to: '/render', text: '代码与网页渲染页' } },
     { key: 'comfyuiTransform', label: 'ComfyUI 参数转化', trigger: '自然语言 → prompt + 参数', capability: 'chat',
-      node: 'comfyuiTransform.nodeIndex', model: 'comfyuiTransform.model', toggle: 'comfyuiTransform.enabled' },
+      node: 'comfyuiTransform.nodeIndex', model: 'comfyuiTransform.model', toggle: 'comfyuiTransform.enabled',
+      detailLink: { to: '/cap-image', text: '图片生成页' } },
     { key: 'promptsChat', label: '远程库智能选模板', trigger: 'spp', capability: 'chat',
       node: 'promptsChat.smartNodeIndex', model: 'promptsChat.smartModel', toggle: 'promptsChat.enabled',
       detailLink: { to: '/templates', text: '模板库页' } },
     { key: 'tts', label: '语音文本前处理', trigger: '自动朗读前改写', capability: 'chat',
       node: 'bot.tts.preprocess.nodeIndex', model: 'bot.tts.preprocess.model', toggle: 'bot.tts.enabled',
       detailLink: { to: '/cap-voice', text: '语音页' } },
-    { key: 'canvasImage', label: '画布文生图', trigger: '画布前台', capability: 'image.generate',
-      node: 'canvas.imageNodeIndex', model: 'canvas.imageModel', toggle: 'canvas.enabled',
-      detailLink: { to: '/canvas', text: '画布页' } },
-    { key: 'canvasEdit', label: '画布改图', trigger: '画布前台', capability: 'image.edit',
-      node: 'canvas.editNodeIndex', model: 'canvas.editModel', toggle: 'canvas.enabled',
-      detailLink: { to: '/canvas', text: '画布页' } },
-    { key: 'canvasInterrogate', label: '画布反推', trigger: '画布前台', capability: 'interrogate',
-      node: 'canvas.interrogateNodeIndex', model: 'canvas.interrogateModel', toggle: 'canvas.enabled',
-      detailLink: { to: '/canvas', text: '画布页' } },
 ];
 
 const get = (path: string) => configStore.get(path);
@@ -184,28 +167,6 @@ function removeOverride(model: string) {
     configStore.saveStatus = '已清除该覆盖，保存后生效';
 }
 
-async function testImage() {
-    imageTestLoading.value = true;
-    imageTestResult.value = null;
-    try {
-        // keyRef 是打码那一刻写进节点对象的下标，随删除/重排一起走。
-        // 发实时下标会漂：删了节点还没保存时，后端会拿别的节点的凭据去测。
-        const nodeIndex = config.value.llm.imageNodeIndex;
-        const node = config.value.llm.apiKeys?.[nodeIndex] as any;
-        const res = await client.post('/test-image', {
-            prompt: imageTestPrompt.value,
-            nodeIndex,
-            keyRef: Number.isInteger(node?.keyRef) ? node.keyRef : nodeIndex,
-            model: config.value.llm.imageModel,
-        });
-        imageTestResult.value = res.data;
-    } catch (error: any) {
-        imageTestResult.value = error?.response?.data || { success: false, error: errorMessage(error) };
-    } finally {
-        imageTestLoading.value = false;
-    }
-}
-
 onMounted(() => {
     if (!capabilities.bindings.length) capabilities.refresh();
 });
@@ -218,6 +179,7 @@ onMounted(() => {
         <h1 class="page-title mb-0.5">能力分工</h1>
         <p class="text-[color:var(--ink-3)] text-xs">
           每项能力用哪个节点、哪个模型。能力徽标由模型 ID 自动识别，中转/反代识别不准时可以手动覆盖。
+          生图 / 改图 / 反推与画布模型在「图片生成」页统一配置。
         </p>
       </div>
       <div class="flex items-center gap-2">
@@ -318,45 +280,6 @@ onMounted(() => {
                   </FormField>
                 </div>
 
-                <div v-if="row.key === 'image'" class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
-                  <FormField label="一次生成张数" hint="大于 1 时会合成编号预览图">
-                    <input v-model.number="config.llm.imageCount" type="number" min="1" max="4" class="input-field" />
-                  </FormField>
-                  <FormField label="超时 (ms)"><input v-model.number="config.llm.imageTimeoutMs" type="number" min="30000" step="30000" class="input-field" /></FormField>
-                  <FormField label="失败重试"><input v-model.number="config.llm.imageRetryCount" type="number" min="0" max="5" class="input-field" /></FormField>
-                  <FormField label="重试间隔 (ms)"><input v-model.number="config.llm.imageRetryDelayMs" type="number" min="0" step="500" class="input-field" /></FormField>
-                  <div class="md:col-span-2">
-                    <ToggleField v-model="config.llm.safeRewriteOnFailure" label="失败后合规改写重试"
-                      hint="被内容策略拒了就让模型换个说法再试一次" />
-                  </div>
-                  <div class="md:col-span-2 flex gap-2 items-end">
-                    <FormField label="测试生图" class="flex-1">
-                      <input v-model="imageTestPrompt" class="input-field" placeholder="测试提示词" />
-                    </FormField>
-                    <button class="btn-outline text-xs whitespace-nowrap" :disabled="imageTestLoading" @click.stop="testImage">
-                      {{ imageTestLoading ? '测试中...' : '发起测试' }}
-                    </button>
-                  </div>
-                  <div v-if="imageTestResult" class="md:col-span-4 text-xs rounded-lg border border-[color:var(--hairline-2)] px-3 py-2"
-                    :class="imageTestResult.success ? 'status-good' : 'status-crit'">
-                    {{ imageTestResult.success ? `生图 API 正常 · 返回 ${imageTestResult.count} 张` : `生图 API 异常：${imageTestResult.error}` }}
-                    <img v-if="imageTestResult.image" :src="imageTestResult.image" alt="测试生成结果"
-                      class="mt-2 rounded-md max-h-40 border border-[color:var(--hairline-2)]" />
-                  </div>
-                </div>
-
-                <div v-if="row.key === 'edit'" class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-                  <FormField label="改图请求格式"
-                    hint="auto 会按模型自动排序：官方 gpt-image 只认 multipart，xAI 只认 JSON，多数中转认 json-images">
-                    <select v-model="config.llm.imageEditRequestMode" class="input-field">
-                      <option value="auto">auto（按模型自动选择）</option>
-                      <option value="json-images">json-images</option>
-                      <option value="json-image">json-image</option>
-                      <option value="multipart">multipart</option>
-                    </select>
-                  </FormField>
-                </div>
-
                 <div v-if="row.key === 'video'" class="mt-4">
                   <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <FormField label="单次请求超时 (ms)" hint="提交任务与每次轮询各自的 HTTP 超时">
@@ -374,15 +297,6 @@ onMounted(() => {
                     因此超过 ~37MB 的视频走 base64 会直接把连接顶断。系统会先检查大小，
                     超限时改用文件路径发送或提示改走文件；配置里填好「Docker 路径映射」可以完全避开 base64。
                   </p>
-                </div>
-
-                <div v-if="row.key === 'interrogate'" class="grid grid-cols-1 md:grid-cols-[200px_minmax(0,1fr)] gap-4 mt-4">
-                  <FormField label="超时 (ms)">
-                    <input v-model.number="config.llm.interrogateTimeoutMs" type="number" min="30000" step="30000" class="input-field" />
-                  </FormField>
-                  <FormField label="反推提示词" hint="只影响 Bot 的反推命令；画布反推库在画布页单独配置">
-                    <textarea v-model="config.llm.interrogatePromptTemplate" rows="4" class="input-field font-mono text-xs"></textarea>
-                  </FormField>
                 </div>
 
                 <div v-if="row.key === 'enhance'" class="mt-4">

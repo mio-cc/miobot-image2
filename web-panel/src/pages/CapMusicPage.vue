@@ -4,6 +4,7 @@ import { useConfigStore } from '../stores/config';
 import CapabilityPageLayout from '../components/CapabilityPageLayout.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import ModelPicker from '../components/ModelPicker.vue';
 
 /**
  * 音乐能力页（audio.music.generate，Suno 官方 API）。
@@ -27,8 +28,12 @@ const sunoKeyVisible = ref(false);
         <FormField label="API 版本"><select v-model="orch.suno.requestMode" class="input-field"><option value="v6">SunoAPI V6</option><option value="legacy">Legacy Poll API</option></select></FormField>
         <FormField label="Callback URL" hint="V6 创建任务必填；完整地址需包含 /api/orchestration/suno/callback/&lt;Callback Secret&gt;"><input v-model="orch.suno.callbackUrl" class="input-field font-mono" placeholder="https://bot.example/api/orchestration/suno/callback/&lt;secret&gt;" /></FormField>
         <FormField label="Callback Secret" hint="用于校验回调；留空则 V6 回调不可用"><input v-model="orch.suno.callbackSecret" type="password" class="input-field font-mono" /></FormField>
-        <FormField label="Composer 节点"><input v-model.number="orch.suno.composerNodeIndex" type="number" min="0" class="input-field" /></FormField>
-        <FormField label="Composer 模型"><input v-model="orch.suno.composerModel" class="input-field font-mono" placeholder="deepseek-flash" /></FormField>
+        <FormField label="Composer 节点与模型" hint="把用户请求改写成 Suno 生成参数的模型">
+          <ModelPicker capability="chat"
+            :node-index="Number(orch.suno.composerNodeIndex) || 0" :model="orch.suno.composerModel || ''"
+            @update:node-index="orch.suno.composerNodeIndex = $event"
+            @update:model="orch.suno.composerModel = $event" />
+        </FormField>
         <FormField label="Composer 温度" hint="建议 0.3 到 0.8"><input v-model.number="orch.suno.composerTemperature" type="number" min="0" max="2" step="0.05" class="input-field" /></FormField>
         <FormField label="Composer maxTokens" hint="生成歌词和 JSON 的上限；复杂完整歌词建议 6000 以上"><input v-model.number="orch.suno.composerMaxTokens" type="number" min="1" max="200000" step="100" class="input-field" /></FormField>
         <FormField label="Composer 覆盖提示词" hint="留空使用内置 Suno V2；可用 {{userText}}、{{supplied}}、{{schema}}、{{model}}、{{defaultVocalGender}}、{{defaultLanguage}}">

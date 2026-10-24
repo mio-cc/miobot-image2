@@ -5,6 +5,7 @@ import { useConfigStore } from '../stores/config';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import ModelPicker from '../components/ModelPicker.vue';
 
 /**
  * 记忆能力页。
@@ -65,8 +66,13 @@ async function runMemoryAction() {
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.memory.autoIngest" label="自动写入消息" /></div>
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.memory.hybridSearch" label="向量 + 全文混合检索" /></div>
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.memory.userGlobalProfileEnabled" label="允许跨群用户画像" hint="默认关闭，保持群隔离" /></div>
-        <FormField label="Embedding 节点索引"><input v-model.number="orch.memory.embeddingNodeIndex" type="number" min="0" class="input-field" /></FormField>
-        <FormField label="Embedding 模型"><input v-model="orch.memory.embeddingModel" class="input-field font-mono" placeholder="text-embedding-3-small" /></FormField>
+        <FormField label="Embedding 节点与模型" hint="生成向量的模型；不过滤能力（embedding 模型通常不在对话清单）">
+          <ModelPicker
+            :node-index="Number(orch.memory.embeddingNodeIndex) || 0" :model="orch.memory.embeddingModel || ''"
+            placeholder="text-embedding-3-small"
+            @update:node-index="orch.memory.embeddingNodeIndex = $event"
+            @update:model="orch.memory.embeddingModel = $event" />
+        </FormField>
         <FormField label="向量维度"><input v-model.number="orch.memory.embeddingDimensions" type="number" min="1" class="input-field" /></FormField>
         <FormField label="语义 TopK"><input v-model.number="orch.memory.topK" type="number" min="1" max="100" class="input-field" /></FormField>
         <FormField label="最低分数"><input v-model.number="orch.memory.minScore" type="number" min="0" max="1" step="0.01" class="input-field" /></FormField>
