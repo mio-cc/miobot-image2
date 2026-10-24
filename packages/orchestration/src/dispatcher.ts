@@ -20,6 +20,40 @@ export interface CapabilityInvocation {
   signal?: AbortSignal;
 }
 
+/**
+ * T1.1：步骤输出引用模板。Planner 可以在后续步骤的 args 字符串里引用依赖步骤的输出：
+ *   {{steps.<stepId>.outputs[0].text}} / {{steps.<stepId>.outputs[1].url}}
+ * dispatcher 在 handler 执行前递归渲染（字符串/数组/普通对象）；
+ * 引用了不存在或无输出的步骤 → 该步返回 needs_input（结构化事实），交由模型修复轮/追问处理。
+ */
+const STEP_REFERENCE_PATTERN = /\{\{steps\.([A-Za-z0-9_-]+)\.outputs\[(\d+)\]\.(text|url)\}\}/g;
+
+export function renderStepReferences(value: unknown, dependencyResults: Record<string, ExecutionResult>): { value: unknown; missing: string[] } {
+  const missing: string[] = [];
+  const renderString = (input: string): string =>
+    input.replace(STEP_REFERENCE_PATTERN, (whole: string, stepId: string, index: string, field: string) => {
+      const outputs = dependencyResults[stepId]?.outputs || [];
+      const target = outputs[Number(index)];
+      const resolved = field === 'text' ? target?.text : target?.url;
+      if (resolved === undefined || resolved === null || String(resolved) === '') {
+        missing.push(whole);
+        return '';
+      }
+      return String(resolved);
+    });
+  const walk = (current: unknown): unknown => {
+    if (typeof current === 'string') return renderString(current);
+    if (Array.isArray(current)) return current.map(walk);
+    if (current && typeof current === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [key, item] of Object.entries(current as Record<string, unknown>)) out[key] = walk(item);
+      return out;
+    }
+    return current;
+  };
+  return { value: walk(value), missing };
+}
+
 export interface CapabilityHandler {
   execute(invocation: CapabilityInvocation): Promise<ExecutionResult>;
 }
@@ -229,6 +263,28 @@ export class CapabilityDispatcher {
         },
       };
     }
+    // T1.1：执行前渲染依赖输出引用（{{steps.<id>.outputs[n].text|url}}）；
+    // 引用缺失（含引用了不存在/无输出的步骤）按 needs_input 返回结构化事实（模型修复轮/追问），
+    // 不执行 handler、不消耗限流额度。无引用的 args 原样通过，零开销。
+    let stepForExecution = effectiveStep;
+    {
+      const rendered = renderStepReferences(effectiveStep.args, dependencyResults || {});
+      if (rendered.missing.length) {
+        return {
+          permission: authorization.permission,
+          capability: authorization.capability,
+          result: {
+            jobId: plan.planId,
+            stepId: step.id,
+            status: 'needs_input',
+            outputs: [],
+            diagnostics: { validationIssues: [{ code: 'missing_step_reference', refs: rendered.missing }] },
+            retryable: false,
+          },
+        };
+      }
+      stepForExecution = { ...effectiveStep, args: rendered.value as Record<string, unknown> };
+    }
     // T0.2：执行前统一过限流闸（冷却/日限额/并发）；限流触发按确定性失败处理，
     // 不重试（静默降级原则：上层 partial + problem 上报，用户侧不刷提示）。
     let releaseGate: (() => void) | undefined;
@@ -257,7 +313,7 @@ export class CapabilityDispatcher {
       }
     }
     try {
-      const result = await handler.execute({ request, plan, step: effectiveStep, dependencyResults, validationWarnings: authorization.validationWarnings, signal: options.signal });
+      const result = await handler.execute({ request, plan, step: stepForExecution, dependencyResults, validationWarnings: authorization.validationWarnings, signal: options.signal });
       return {
         permission: authorization.permission,
         capability: authorization.capability,
