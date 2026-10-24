@@ -107,6 +107,8 @@ export class OrchestrationEnforcer {
   private readonly registry = new CapabilityRegistry();
   private readonly dispatcher: CapabilityDispatcher;
   private configFingerprint = '';
+  /** T0.1：会话键 → 在途编排 Promise，用于同会话串行化。 */
+  private readonly sessionInFlight = new Map<string, Promise<unknown>>();
 
   constructor(private readonly options: {
     getConfig: () => AppConfig;
@@ -394,7 +396,36 @@ export class OrchestrationEnforcer {
     }
     return { ...result, rounds };
   }
+  /**
+   * T0.1/C1：同会话串行化入口。生图/音乐等长任务执行期间（pending=running），
+   * 同会话的新消息若直接进入内层，会把 running 任务当"恢复"并发重入，同一 pending 步骤被
+   * dispatch 两次（双倍生图/计费、checkpoint 互踩）。这里按会话键挂接在途 Promise：
+   * 新请求等待在途编排完成后再进入，从根上消除并发重入窗口。
+   */
   async handle(input: EnforceOrchestrationInput): Promise<EnforceOrchestrationResult> {
+    const cfg = this.options.getConfig();
+    if (!(cfg.orchestration?.enabled && cfg.orchestration.mode === 'enforce') && !(input.forceLegacyExecution && input.plan)) {
+      return this.handleInner(input);
+    }
+    const userId = String(input.userId || '');
+    const pendingKey = input.chatType === 'group'
+      ? `group:${input.groupId ?? ''}:${userId}`
+      : `private:${userId}`;
+    const inFlight = this.sessionInFlight.get(pendingKey);
+    if (inFlight) {
+      try { await inFlight; } catch { /* 在途任务异常不阻塞新请求 */ }
+    }
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    this.sessionInFlight.set(pendingKey, gate);
+    try {
+      return await this.handleInner(input);
+    } finally {
+      release();
+      if (this.sessionInFlight.get(pendingKey) === gate) this.sessionInFlight.delete(pendingKey);
+    }
+  }
+  private async handleInner(input: EnforceOrchestrationInput): Promise<EnforceOrchestrationResult> {
     const cfg = this.options.getConfig();
     const forcedPlan = input.forceLegacyExecution && input.plan;
     if (!forcedPlan && (!cfg.orchestration?.enabled || cfg.orchestration.mode !== 'enforce')) {

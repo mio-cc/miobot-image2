@@ -2814,3 +2814,47 @@ test('reply plan T0.7: 确定性任务摘要覆盖成功/失败/跳过步骤', (
   assert.match(summary.text, /语音合成 ∅/);
   assert.equal(summary.kind, 'text');
 });
+
+test('orchestration T0.1: 同会话并发请求串行化，能力不被并发重入双执行', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.enabled = true;
+  cfg.orchestration.mode = 'enforce';
+  cfg.orchestration.planner.enabled = true;
+  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  cfg.orchestration.planner.nodeIndex = 1;
+  cfg.orchestration.planner.model = 'planner-test';
+  const fakeApp = {
+    handle: async () => ({ kind: 'chat', handled: true, text: 'chat', decision: { kind: 'chat', source: 'fallback', confidence: 1, reason: '', params: { prompt: '', tokens: [] }, usedPlanner: false } }),
+    engine: { handleExplicit: async () => null },
+    sessions: { clear() {} },
+    registry: () => ({}),
+    client: {},
+  };
+  const fakeClient = {
+    async chat() {
+      return { text: JSON.stringify({ planId: 'p1', requestId: 'r1', goal: 'generate', steps: [{ id: 's1', capability: 'image.generate', args: { prompt: 'cat' } }], confidence: 0.9 }) };
+    },
+  };
+  let active = 0;
+  let maxActive = 0;
+  let calls = 0;
+  const handler = {
+    async execute() {
+      calls += 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      active -= 1;
+      return { jobId: 'j1', stepId: 's1', status: 'success', outputs: [{ kind: 'image', url: 'data:image/png;base64,AA' }] };
+    },
+  };
+  const enforcer = new OrchestrationEnforcer({ getConfig: () => cfg, app: fakeApp, client: fakeClient, handlers: new Map([['image.generate', handler]]) });
+  const [r1, r2] = await Promise.all([
+    enforcer.handle({ text: '画一只猫', chatType: 'private', userId: '9' }),
+    enforcer.handle({ text: '再画一只狗', chatType: 'private', userId: '9' }),
+  ]);
+  assert.equal(maxActive, 1, '同会话两个请求必须串行执行，不得并发 dispatch 同一能力');
+  assert.equal(calls, 2, '两个独立请求各执行一次（顺序执行而非合并）');
+  assert.equal(r1.handled, true);
+  assert.equal(r2.handled, true);
+});
