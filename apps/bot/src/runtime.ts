@@ -67,6 +67,8 @@ export interface BotRuntimeOptions {
   fetchForwardMessage?: (forwardId: string) => Promise<NapcatHistoryMessage[] | null>;
   /** 可选:拉取群历史消息(@bot 时取最近群聊上下文)。由 start.ts 注入 napcat callAction。 */
   fetchGroupHistory?: (groupId: number | string, anchorMessageId: number | string, count: number) => Promise<NapcatHistoryMessage[]>;  /** 向量记忆检索；命中时优先于固定条数群历史。 */
+  /** 可选:通用 NapCat action 调用（好友请求处理 set_friend_add_request 等）。由 start.ts 注入。 */
+  callNapcatAction?: (action: string, params: Record<string, unknown>) => Promise<unknown>;
   loadMemoryContext?: (input: {
     chatType: 'group' | 'private';
     groupId?: number | string;
@@ -1556,22 +1558,53 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         } catch { /* reporter must never create another reply */ }
       });
     });
-    // T2.2b/§11.1：事件源扩展第一片——notice 事件（戳一戳）。
-    // 之前 adapter 泛化转发了所有 post_type，但 runtime 只订阅 message，notice 全部无人消费。
+    // T2.2b/§11.1：事件源扩展——notice（戳一戳/入群）与 request（好友请求）事件。
     adapter.on('notice', (data) => {
       void handleNoticeEvent(data).catch(() => undefined);
+    });
+    adapter.on('request', (data) => {
+      void handleRequestEvent(data).catch(() => undefined);
     });
   }
 
   /** 戳一戳响应：只回应"戳 bot 本人"的事件，按用户冷却防刷，回复文案随机取自配置。 */
   const pokeCooldowns = new Map<string, number>();
+  /** 入群欢迎：每群冷却（批量入群只迎第一条），bot 自身入群不欢迎。 */
+  const welcomeCooldowns = new Map<string, number>();
   async function handleNoticeEvent(data: any): Promise<void> {
     const cfg = options.getConfig();
+    if (String(data?.post_type || '') !== 'notice') return;
+    const selfId = String(options.selfId?.() ?? cfg.bot.botQqId ?? '').trim();
+
+    // 入群欢迎（group_increase）：新成员不是 bot 本人时发一条，带每群冷却。
+    if (String(data?.notice_type || '') === 'group_increase') {
+      const welcome = cfg.bot.welcome;
+      if (!welcome?.enabled || !welcome.text) return;
+      const groupId = data?.group_id !== undefined && data?.group_id !== null ? String(data.group_id) : '';
+      const userId = String(data?.user_id ?? '').trim();
+      if (!groupId || !userId) return;
+      if (selfId && userId === selfId) return; // bot 自己进群不自我欢迎
+      const whitelist = cfg.bot.whitelistGroups || [];
+      if (whitelist.length && !whitelist.includes(groupId)) return;
+      const cooldownMs = Math.max(0, Math.trunc(Number(welcome.cooldownSec) || 0)) * 1000;
+      const now = Date.now();
+      const last = welcomeCooldowns.get(groupId) || 0;
+      if (cooldownMs > 0 && now - last < cooldownMs) return;
+      welcomeCooldowns.set(groupId, now);
+      if (welcomeCooldowns.size > 2000) welcomeCooldowns.clear();
+      const text = String(welcome.text).replaceAll('{user}', `@${userId}`).slice(0, 500);
+      try {
+        const sent = await options.reply.sendGroupText(Number(groupId) || groupId, text);
+        if (!sent.success) log?.warn('入群欢迎发送失败', { groupId, userId, error: sent.error });
+      } catch (error) {
+        log?.warn('入群欢迎发送异常', { groupId, userId, error: String((error as Error)?.message || error) });
+      }
+      return;
+    }
+
     const poke = cfg.bot.poke;
     if (!poke?.enabled) return;
-    if (String(data?.post_type || '') !== 'notice') return;
     if (String(data?.notice_type || '') !== 'notify' || String(data?.sub_type || '') !== 'poke') return;
-    const selfId = String(options.selfId?.() ?? cfg.bot.botQqId ?? '').trim();
     if (!selfId || String(data?.target_id ?? '') !== selfId) return; // 只回应被戳的是 bot 本人
     const userId = String(data?.user_id ?? '').trim();
     if (!userId) return;
@@ -1601,7 +1634,47 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     }
   }
 
-  return { handleMessageEvent, attach, handleNoticeEvent };
+  /**
+   * 好友请求处理（post_type='request', request_type='friend'）：
+   * ignore 忽略（默认，人工在 QQ 客户端处理）/ accept 自动通过（set_friend_add_request）/
+   * notify 仅私聊通知 owner。群邀请请求暂不处理。
+   */
+  async function handleRequestEvent(data: any): Promise<void> {
+    const cfg = options.getConfig();
+    if (String(data?.post_type || '') !== 'request') return;
+    if (String(data?.request_type || '') !== 'friend') return;
+    const mode = cfg.bot.friendRequest?.mode || 'ignore';
+    const flag = String(data?.flag ?? '').trim();
+    const userId = String(data?.user_id ?? '').trim();
+    const comment = String(data?.comment ?? '').slice(0, 200);
+    if (mode === 'ignore') return;
+    if (mode === 'accept') {
+      if (!flag || !options.callNapcatAction) {
+        log?.warn('好友请求自动通过缺少 flag 或 action 通道', { userId, hasFlag: Boolean(flag) });
+        return;
+      }
+      try {
+        await options.callNapcatAction('set_friend_add_request', { flag, approve: true });
+        log?.info('好友请求已自动通过', { userId });
+      } catch (error) {
+        log?.warn('好友请求自动通过失败', { userId, error: String((error as Error)?.message || error) });
+      }
+      return;
+    }
+    if (mode === 'notify') {
+      const text = String(cfg.bot.friendRequest.notifyText || '收到好友请求：{user}（QQ {qq}）')
+        .replaceAll('{user}', '新用户')
+        .replaceAll('{qq}', userId)
+        + (comment ? `\n验证消息：${comment}` : '');
+      for (const ownerQq of cfg.bot.ownerQQs || []) {
+        try {
+          await options.reply.sendPrivateText(Number(ownerQq) || ownerQq, text);
+        } catch { /* 通知失败不重试 */ }
+      }
+    }
+  }
+
+  return { handleMessageEvent, attach, handleNoticeEvent, handleRequestEvent };
 }
 
 function imageProgressKindForIntent(intent: string): ImageProgressKind | undefined {

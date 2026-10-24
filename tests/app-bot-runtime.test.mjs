@@ -1012,3 +1012,57 @@ test('runtime T2.2b: 戳一戳响应——只回被戳的 bot 本人、带冷却
   await handlers3.notice(pokeAtBot);
   assert.equal(reply3.sent.length, 0);
 });
+
+test('runtime T2.2b: 入群欢迎——开关/群冷却/自身入群跳过/群白名单', async () => {
+  const { reply, rt } = setup({ getConfig: () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; c.bot.welcome.enabled = true; return c; } });
+  const handlers = {};
+  rt.attach({ on: (event, handler) => { handlers[event] = handler; } });
+  const join = { post_type: 'notice', notice_type: 'group_increase', sub_type: 'approve', group_id: 200, user_id: 5 };
+  await handlers.notice(join);
+  assert.equal(reply.sent.length, 1);
+  assert.equal(reply.sent[0][0], 'groupText');
+  assert.match(reply.sent[0][2], /@5/);
+  // 冷却内第二名入群不迎；bot 自身入群不迎。
+  await handlers.notice({ ...join, user_id: 6 });
+  await handlers.notice({ ...join, user_id: 10000 });
+  assert.equal(reply.sent.length, 1);
+  // 默认关闭时不迎。
+  const { reply: r2, rt: rt2 } = setup();
+  const h2 = {};
+  rt2.attach({ on: (e, h) => { h2[e] = h; } });
+  await h2.notice(join);
+  assert.equal(r2.sent.length, 0);
+});
+
+test('runtime T2.2b: 好友请求——accept 调 action、notify 私聊 owner、ignore 不动', async () => {
+  const actions = [];
+  const base = (mode) => () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; c.bot.ownerQQs = ['42']; c.bot.friendRequest.mode = mode; return c; };
+  const req = { post_type: 'request', request_type: 'friend', user_id: 77, flag: 'flag-1', comment: '你好' };
+  // accept：调用 set_friend_add_request(approve=true)
+  const a = setup({ getConfig: base('accept'), callNapcatAction: async (action, params) => { actions.push([action, params]); return {}; } });
+  const ha = {};
+  a.rt.attach({ on: (e, h) => { ha[e] = h; } });
+  await ha.request(req);
+  assert.equal(actions.length, 1);
+  assert.equal(actions[0][0], 'set_friend_add_request');
+  assert.equal(actions[0][1].approve, true);
+  assert.equal(actions[0][1].flag, 'flag-1');
+  assert.equal(a.reply.sent.length, 0, 'accept 模式不额外发消息');
+  // notify：私聊 owner 一条含验证消息的通知
+  const n = setup({ getConfig: base('notify') });
+  const hn = {};
+  n.rt.attach({ on: (e, h) => { hn[e] = h; } });
+  await hn.request(req);
+  assert.equal(n.reply.sent.length, 1);
+  assert.equal(n.reply.sent[0][0], 'privateText');
+  assert.equal(n.reply.sent[0][1], 42);
+  assert.match(n.reply.sent[0][2], /77/);
+  assert.match(n.reply.sent[0][2], /你好/);
+  // ignore：无副作用
+  const i = setup({ getConfig: base('ignore'), callNapcatAction: async (action, params) => { actions.push([action, params]); return {}; } });
+  const hi = {};
+  i.rt.attach({ on: (e, h) => { hi[e] = h; } });
+  await hi.request(req);
+  assert.equal(actions.length, 1);
+  assert.equal(i.reply.sent.length, 0);
+});

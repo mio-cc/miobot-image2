@@ -694,6 +694,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     reply: adapter,
     getConfig: () => { syncNapcat(); return getConfig(); },
     selfId: () => adapter.selfQqId || undefined,
+    // T2.2b：好友请求自动通过等需要的通用 action 通道。
+    callNapcatAction: (action, params) => adapter.callAction(action, params),
     sentMessages,
     botName: options.botName || 'Miobot',
     syncImagesToGallery: canvasGallerySync.syncImages,
