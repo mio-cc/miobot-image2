@@ -24,7 +24,7 @@ const isFish = computed(() => tts.value?.provider === 'fish-audio');
 <template>
   <div v-if="config && tts">
     <header class="mb-4">
-      <h1 class="page-title mb-0.5">语音</h1>
+      <h1 class="page-title mb-0.5">语音 / TTS</h1>
       <p class="text-[color:var(--ink-3)] text-xs">把机器人的文字回复读成语音发到群里。</p>
     </header>
 

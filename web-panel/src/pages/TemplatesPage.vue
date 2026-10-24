@@ -92,7 +92,7 @@ const statusIsError = computed(() => /失败|为空|请先/.test(convertStatus.v
 <template>
   <div v-if="config">
     <header class="mb-4">
-      <h1 class="page-title mb-0.5">模板库</h1>
+      <h1 class="page-title mb-0.5">提示词模板</h1>
       <p class="text-[color:var(--ink-3)] text-xs">本地模板、AI 转模板与 prompts.chat 远程库。模型分工在「能力分工」页配置。</p>
     </header>
 

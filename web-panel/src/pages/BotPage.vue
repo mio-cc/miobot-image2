@@ -68,7 +68,7 @@ const modifierFields = [
 <template>
   <div v-if="config">
     <header class="mb-4">
-      <h1 class="page-title mb-0.5">Bot 行为</h1>
+      <h1 class="page-title mb-0.5">对话与触发</h1>
       <p class="text-[color:var(--ink-3)] text-xs">触发方式、回复策略、触发词与名单。模型分工在「能力分工」页配置。</p>
     </header>
 
@@ -168,7 +168,12 @@ const modifierFields = [
     </SectionCard>
 
     <SectionCard title="慢任务进度提示" hint="默认关闭图片和音乐进度，避免等待时刷屏；需要时可分别开启。视频默认开启。" class="mb-4">
-      <ToggleField v-model="config.bot.progress.enabled" label="启用慢任务进度提示" />`n      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">`n        <ToggleField v-model="config.bot.progress.imageEnabled" label="图片生成/改图/反推进度" />`n        <ToggleField v-model="config.bot.progress.videoEnabled" label="视频生成进度" />`n        <ToggleField v-model="config.bot.progress.audioEnabled" label="音乐生成进度" />`n      </div>
+      <ToggleField v-model="config.bot.progress.enabled" label="启用慢任务进度提示" />
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+              <ToggleField v-model="config.bot.progress.imageEnabled" label="图片生成/改图/反推进度" />
+              <ToggleField v-model="config.bot.progress.videoEnabled" label="视频生成进度" />
+              <ToggleField v-model="config.bot.progress.audioEnabled" label="音乐生成进度" />
+            </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
         <FormField label="图片生成提示" hint="支持 {eta} 占位，例如：收到，正在生成图片{eta}，请稍候…">
           <input v-model="config.bot.progress.imageText" :disabled="!config.bot.progress.imageEnabled" class="input-field" />
