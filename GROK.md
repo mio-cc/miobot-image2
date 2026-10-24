@@ -2,6 +2,11 @@
 
 > 给 grok（或任何编码代理）的项目导航文件。读代码前先读这份，能少走很多弯路。
 > 父目录 `miobot/` 是工作台根（含重构文档 `REWRITE_*.md`、`docs/`、旧 zip），**真正的代码在本目录 `Napcat-OmniBot-v2/`**。
+>
+> **活文档原则（2026-10-24 起）**：本文中的测试数量、阶段状态、面板结构等数字性描述可能滞后——
+> 一律以 `git log`、`npm test` 实际输出和代码为准；REBUILD_STATUS.md 已过期勿引用。
+> 新增/修改能力先读 `docs/CAPABILITY-SPEC.md`（能力开发规范：descriptor 字段、handler 契约、
+> 交互约定、限流映射、防刷屏策略表、新增能力 checklist）。
 
 ---
 
@@ -54,7 +59,7 @@ Napcat-OmniBot-v2/
 │   ├── local-verify-server-v2.mjs# 新 web 启动器
 │   ├── bot-runtime.mjs / local-verify-server.mjs  # legacy 3000+ 行旧单体
 │   └── trace-canvas-generation.mjs
-├── tests/                # Node 测试（*.test.mjs），当前 ~126 个通过
+├── tests/                # Node 测试（*.test.mjs），数量以 npm test 实际输出为准（908+，见活文档原则）
 ├── web-panel/            # Vue 管理面板源码（独立 vite 工程）
 ├── web-canvas/           # React 画布前端（独立 pnpm 工程，自带 AGENTS.md）
 ├── docs/                 # DEPLOYMENT.md 等
