@@ -586,7 +586,9 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       capabilityTopK: numberIn(planner.capabilityTopK, d.planner.capabilityTopK, 1, 100),
       minConfidence: numberIn(planner.minConfidence, d.planner.minConfidence, 0, 1),
       maxRepairAttempts: numberIn(planner.maxRepairAttempts, d.planner.maxRepairAttempts, 0, 10),
-      maxClarifications: Math.min(1, numberIn(planner.maxClarifications, d.planner.maxClarifications, 0, 1)),
+      // 实测 bug：面板改了最大追问轮数但不生效——归一化被 Math.min(1,...) 硬钳到 1。
+      // numberIn 的范围已从 0-1 放宽到 0-5（合理上限），去掉外层 Math.min。
+      maxClarifications: numberIn(planner.maxClarifications, d.planner.maxClarifications, 0, 5),
       clarificationTimeoutMs: numberIn(planner.clarificationTimeoutMs, d.planner.clarificationTimeoutMs, 1000, 86400000),
     },
     help: { extraText: String(help.extraText || '') },

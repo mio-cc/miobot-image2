@@ -243,7 +243,7 @@ onMounted(loadComfyWorkflows);
             </select>
           </FormField>
           <FormField label="超时 (ms)"><input v-model.number="config.llm.imageTimeoutMs" type="number" min="30000" step="30000" class="input-field" /></FormField>
-          <FormField label="失败重试"><input v-model.number="config.llm.imageRetryCount" type="number" min="0" max="5" class="input-field" /></FormField>
+          <FormField label="失败重试"><input v-model.number="config.llm.imageRetryCount" type="number" min="0" max="10" class="input-field" /></FormField>
           <FormField label="重试间隔 (ms)"><input v-model.number="config.llm.imageRetryDelayMs" type="number" min="0" step="500" class="input-field" /></FormField>
           <div class="md:col-span-2 flex items-end"><ToggleField v-model="config.llm.safeRewriteOnFailure" label="失败后合规改写重试" hint="被内容策略拒了就让模型换个说法再试一次" /></div>
         </div>
@@ -303,7 +303,7 @@ onMounted(loadComfyWorkflows);
             <input v-model.number="config.canvas.imageTimeoutMs" type="number" min="30000" step="30000" class="input-field" />
           </FormField>
           <FormField label="重试次数">
-            <input v-model.number="config.canvas.imageRetryCount" type="number" min="0" max="5" class="input-field" />
+            <input v-model.number="config.canvas.imageRetryCount" type="number" min="0" max="10" class="input-field" />
           </FormField>
           <FormField label="重试间隔 (ms)">
             <input v-model.number="config.canvas.imageRetryDelayMs" type="number" min="0" step="500" class="input-field" />

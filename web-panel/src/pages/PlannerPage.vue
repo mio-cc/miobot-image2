@@ -202,11 +202,11 @@ async function evaluatePromptVersion() {
       </div>
     </SectionCard>
 
-    <SectionCard title="澄清策略" hint="规划澄清与执行澄清各一次；追问超时自动放弃并回退" class="mb-4">
+    <SectionCard title="澄清策略" hint="规划阶段与执行阶段各自独立计算追问次数" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <FormField label="最大追问轮数" hint="规划阶段与执行阶段各自独立计算；当前上限 1"><input v-model.number="orch.planner.maxClarifications" type="number" min="0" max="1" class="input-field" /></FormField>
+        <FormField label="最大追问轮数" hint="0-5；规划与执行各自独立计算"><input v-model.number="orch.planner.maxClarifications" type="number" min="0" max="5" class="input-field" /></FormField>
         <FormField label="追问等待超时 (ms)" hint="超时未回复按放弃处理"><input v-model.number="orch.planner.clarificationTimeoutMs" type="number" min="1000" step="1000" class="input-field" /></FormField>
-        <FormField label="计划修复轮数" hint="计划校验失败后交给模型修复的最大次数"><input v-model.number="orch.planner.maxRepairAttempts" type="number" min="0" max="5" class="input-field" /></FormField>
+        <FormField label="计划修复轮数" hint="计划校验失败后交给模型修复的最大次数"><input v-model.number="orch.planner.maxRepairAttempts" type="number" min="0" max="10" class="input-field" /></FormField>
       </div>
     </SectionCard>
 
