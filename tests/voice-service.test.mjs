@@ -86,3 +86,36 @@ test('voice: missing preferences triggers one structured clarification', async (
   assert.ok(result.diagnostics.missingInformation.includes('声音风格'));
   assert.equal(result.diagnostics.question, undefined);
 });
+test('voice T1.3: preview/select 未选候选返回 needs_input + clarificationContext 候选列表', async () => {
+  const { VoicePreviewCapabilityHandler, VoiceSelectCapabilityHandler } = await import('../dist/apps/bot/src/voice-service.js');
+  const cfg = makeConfig();
+  const service = new FishAudioVoiceService({ getConfig: () => cfg, preferenceFile: path.join(os.tmpdir(), 'vp-' + Date.now() + '.json') });
+  const invocation = {
+    request: { requestId: 'r', chat: { type: 'private' }, user: { qq: 'u1', role: 'user' }, text: '试听' },
+    plan: { planId: 'p', requestId: 'r', goal: 'g', steps: [{ id: 's1', capability: 'voice.preview', args: {} }] },
+    step: { id: 's1', capability: 'voice.preview', args: {} },
+    dependencyResults: {},
+  };
+  // 无候选（过期）→ needs_input，提示先搜索。
+  const preview = new VoicePreviewCapabilityHandler(service);
+  const expired = await preview.execute(invocation);
+  assert.equal(expired.status, 'needs_input');
+  assert.match(String(expired.diagnostics.missingInformation[0]), /先搜索音色/);
+  // 有候选未选 → needs_input + 带序号列表 + clarificationContext 标记。
+  service.listCandidates = () => [
+    { index: 1, candidateId: 'c1', title: '温柔女声', voiceId: 'v1' },
+    { index: 2, candidateId: 'c2', title: '磁男声', voiceId: 'v2' },
+  ];
+  const withCandidates = await preview.execute(invocation);
+  assert.equal(withCandidates.status, 'needs_input');
+  assert.equal(withCandidates.outputs[0].meta.clarificationContext, true);
+  assert.match(withCandidates.outputs[0].text, /#1 温柔女声/);
+  assert.match(String(withCandidates.diagnostics.missingInformation[0]), /回复序号/);
+  const select = new VoiceSelectCapabilityHandler(service);
+  const selectResult = await select.execute({ ...invocation, step: { ...invocation.step, capability: 'voice.select' } });
+  assert.equal(selectResult.status, 'needs_input');
+  // 非候选类错误仍为 failed。
+  service.listCandidates = () => { throw new Error('api_down'); };
+  const failed = await preview.execute(invocation);
+  assert.equal(failed.status, 'failed');
+});

@@ -769,16 +769,9 @@ export class OrchestrationEnforcer {
       this.options.logger?.warn('智能编排规划失败，回退旧链路', { error: String((error as Error)?.message || error) });
       return { handled: false, reason: 'planner_failed' };
     }
-    if (!input.plan && plan.steps.some((step) => step.capability === 'voice.search')) {
-      const removed = plan.steps.filter((step) => step.capability === 'voice.preview' || step.capability === 'voice.select');
-      if (removed.length) {
-        plan = {
-          ...plan,
-          steps: plan.steps.filter((step) => step.capability !== 'voice.preview' && step.capability !== 'voice.select'),
-        };
-        appendTrace('plan', '音色候选需用户确认后再试听/选择', { removedSteps: removed.map((step) => step.id) });
-      }
-    }
+    // T1.3：voice.preview/select 未选候选时由 handler 返回 needs_input + 候选列表
+    // （clarificationContext 模式，模型生成追问、用户答序号后合并回计划），
+    // 此处不再需要"搜索后删掉 preview/select 步骤"的特判。
     const minConfidence = Math.max(0, Number(cfg.orchestration.planner.minConfidence || 0));
     if (!resumedFromJob && plan.source === 'model' && !plan.needsClarification && minConfidence > 0 && Number(plan.confidence || 0) < minConfidence) {
       const repaired = await this.repairPlanUsingModel(cfg, request, plan, catalog, modelAdapter, [{

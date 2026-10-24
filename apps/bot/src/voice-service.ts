@@ -285,7 +285,9 @@ export class VoicePreviewCapabilityHandler implements CapabilityHandler {
         ],
       };
     } catch (error) {
-      return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'failed', outputs: [], error: String((error as Error)?.message || error) };
+      // T1.3：用户尚未选择候选（候选缺失/未指定）走 needs_input + 候选列表，
+      // 由模型生成追问并携带选项，替代 enforce 里的删步骤特判。
+      return voiceCandidateNeedsInput(this.service, invocation, error, '试听');
     }
   }
 }
@@ -301,9 +303,39 @@ export class VoiceSelectCapabilityHandler implements CapabilityHandler {
         diagnostics: { voiceIdMasked: maskVoiceId(selected.voiceId) },
       };
     } catch (error) {
-      return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'failed', outputs: [], error: String((error as Error)?.message || error) };
+      return voiceCandidateNeedsInput(this.service, invocation, error, '切换');
     }
   }
+}
+
+/** T1.3：候选未选择 → needs_input（候选列表带 clarificationContext，模型据此追问）。 */
+function voiceCandidateNeedsInput(service: FishAudioVoiceService, invocation: CapabilityInvocation, error: unknown, action: string): ExecutionResult {
+  const message = String((error as Error)?.message || error);
+  const isSelectionMissing = /voice_candidate|voice_candidates_expired/.test(message);
+  if (!isSelectionMissing) {
+    return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'failed', outputs: [], error: message };
+  }
+  const candidates = service.listCandidates(invocationScope(invocation));
+  const outputs = candidates.length
+    ? [{
+        kind: 'text' as const,
+        text: ['当前音色候选（回复序号即可）：', ...candidates.map((item) => '#' + item.index + ' ' + item.title)].join('\n'),
+        priority: 5,
+        mergeable: true,
+        meta: { role: 'voice_candidates', clarificationContext: true, skipTts: true, disableVoice: true },
+      }]
+    : [];
+  const missingQuestion = candidates.length
+    ? ('要' + action + '哪个音色？请回复序号。')
+    : '音色候选已过期，请先搜索音色。';
+  return {
+    jobId: invocation.plan.planId,
+    stepId: invocation.step.id,
+    status: 'needs_input',
+    outputs,
+    diagnostics: { missingInformation: [missingQuestion] },
+    retryable: false,
+  };
 }
 
 export class VoiceCurrentCapabilityHandler implements CapabilityHandler {
