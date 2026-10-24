@@ -16,6 +16,18 @@ import ToggleField from '../components/ToggleField.vue';
 const configStore = useConfigStore();
 const config = computed(() => configStore.config);
 
+// 关键词触发词：逗号分隔文本 ↔ 数组双向绑定。
+const keywordTriggerWordsText = computed({
+    get: () => (config.value?.bot?.keywordTrigger?.words || []).join(', '),
+    set: (value: string) => {
+        if (!config.value?.bot?.keywordTrigger) return;
+        config.value.bot.keywordTrigger.words = value
+            .split(/[,，]/)
+            .map((item: string) => item.trim())
+            .filter(Boolean);
+    },
+});
+
 const napcatTesting = ref(false);
 const napcatResult = ref<any>(null);
 
@@ -168,6 +180,39 @@ function commitBlacklist() {
         视频生成没有独立触发词——说「生成一个视频」或带 <code class="mono">video!</code>、<code class="mono">6s!</code>
         这类后缀时会自动判定为视频意图。
       </p>
+
+      <div class="grid grid-cols-1 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
+        <div class="text-xs font-medium">关键词触发（消息含触发词 → 拉上下文 → 模型判断沟通意图）</div>
+        <div class="flex items-end"><ToggleField v-model="config.bot.keywordTrigger.enabled" label="启用关键词触发" hint="消息包含触发词时由模型判断是否在跟 bot 说话" /></div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <FormField label="触发词（逗号分隔）" hint="子串匹配、大小写不敏感、不限位置">
+            <input v-model="keywordTriggerWordsText" class="input-field" placeholder="miobot, 小mi, bot帮" />
+          </FormField>
+          <FormField label="上下文条数" hint="命中后拉取前后几条群消息">
+            <input v-model="config.bot.keywordTrigger.contextMessages" type="number" min="3" max="10" class="input-field" />
+          </FormField>
+          <FormField label="判断冷却（毫秒）" hint="同一用户两次判断的最小间隔">
+            <input v-model="config.bot.keywordTrigger.windowMs" type="number" min="3000" max="60000" class="input-field" />
+          </FormField>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
+        <div class="text-xs font-medium">对话自动延续（bot 回复后窗口内该用户的下一条消息自动继续对话）</div>
+        <div class="flex items-end"><ToggleField v-model="config.bot.autoContinue.enabled" label="启对话延续" hint="无需再 @bot，模型判断是否在继续聊天" /></div>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <FormField label="延续窗口（毫秒）" hint="bot 回复后多少毫秒内有效">
+            <input v-model="config.bot.autoContinue.windowMs" type="number" min="10000" max="300000" class="input-field" />
+          </FormField>
+          <FormField label="最大延续轮数" hint="1-10，每轮=用户一条消息+bot一条回复">
+            <input v-model="config.bot.autoContinue.maxRounds" type="number" min="1" max="10" class="input-field" />
+          </FormField>
+          <FormField label="冷却间隔（毫秒）" hint="两次延续之间的最小间隔">
+            <input v-model="config.bot.autoContinue.cooldownMs" type="number" min="5000" max="120000" class="input-field" />
+          </FormField>
+          <div class="flex items-end"><ToggleField v-model="config.bot.autoContinue.requireModelCheck" label="模型判断延续意图" hint="关闭则纯时间窗口判断（可能误触发）" /></div>
+        </div>
+      </div>
 
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
         <div class="md:col-span-3 text-xs font-medium">事件源（notice / request）</div>

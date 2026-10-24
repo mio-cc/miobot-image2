@@ -31,6 +31,7 @@ import { createSentMessageTracker } from './sent-messages.js';
 import { OrchestrationEnforcer } from './orchestration-enforce.js';
 import { OrchestrationTraceWriter } from './orchestration-trace.js';
 import { SchedulerService, buildDailyReport, withinQuietWindow } from './scheduler.js';
+import { TriggerIntentChecker } from './trigger-intent.js';
 import { ScheduleCapabilityHandler } from './capability-schedule.js';
 import { loadCapabilityPlugins, pluginManifestPath } from './capability-plugins.js';
 import { McpClient, McpToolCapabilityHandler, mcpToolToDescriptor } from './mcp-client.js';
@@ -933,6 +934,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     // T2.2b：好友请求自动通过等需要的通用 action 通道。
     callNapcatAction: (action, params) => adapter.callAction(action, params),
     sentMessages,
+    triggerIntentChecker: new TriggerIntentChecker({ getConfig, client, logger }),
     botName: options.botName || 'Miobot',
     syncImagesToGallery: canvasGallerySync.syncImages,
     prepareInputImages,

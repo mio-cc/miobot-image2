@@ -174,6 +174,11 @@ export interface BotRuntimeOptions {
     extra?: Record<string, unknown>;
   }) => Promise<boolean | void>;
   sentMessages?: SentMessageTracker;
+  /** 触发意图判断器（关键词触发 + 对话延续共用）；start.ts 注入。 */
+  triggerIntentChecker?: {
+    checkKeywordIntent(input: { userText: string; userName: string; context: string; triggerWord: string }): Promise<boolean>;
+    checkContinueIntent(input: { userText: string; userName: string; botLastReply: string }): Promise<boolean>;
+  };
   /** 精确命令网关：命令直接生成 IntentPlan 并走功能层权限/审批。 */
   commandOrchestration?: (input: {
     command: string;
@@ -932,7 +937,73 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     };
 
     const router = createBotRouter(toRouterConfig(cfg, options.selfId?.()));
-    const decision = router.route(ctx);
+    let decision = router.route(ctx);
+    // ── 关键词触发（优先于延续）：消息含触发词→拉上下文→模型判断意图→有意图改为 chat ──
+    if (decision.kind === 'ignored' && chatType === 'group' && cfg.bot.keywordTrigger?.enabled) {
+      const plainText = stripNonTextCqSegments(rawMessage).toLowerCase();
+      const triggerWord = (cfg.bot.keywordTrigger.words || []).find((word) => plainText.includes(word.toLowerCase()));
+      if (triggerWord) {
+        const kwKey = 'kw:' + userId;
+        const now = Date.now();
+        const lastCheck = keywordTriggerCooldowns.get(kwKey) || 0;
+        const cooldownMs = Math.max(3000, Number(cfg.bot.keywordTrigger.windowMs) || 10000);
+        if (now - lastCheck >= cooldownMs) {
+          keywordTriggerCooldowns.set(kwKey, now);
+          if (keywordTriggerCooldowns.size > 2000) keywordTriggerCooldowns.clear();
+          let contextText = '';
+          try {
+            const history = await options.fetchGroupHistory?.(String(event.group_id || ''), String(event.message_id || ''), Math.max(3, Number(cfg.bot.keywordTrigger.contextMessages) || 5));
+            contextText = (history || []).slice(-Math.max(3, Number(cfg.bot.keywordTrigger.contextMessages) || 5))
+              .map((msg) => `[${msg.sender?.nickname || msg.sender?.user_id || '?'}] ${stripNonTextCqSegments(msg.raw_message || '').slice(0, 100)}`)
+              .join('\n');
+          } catch { /* 上下文拉取失败不阻断判断 */ }
+          const hasIntent = await options.triggerIntentChecker?.checkKeywordIntent({
+            userText: plainText,
+            userName: String(event.sender?.card || event.sender?.nickname || userId || ''),
+            context: contextText,
+            triggerWord,
+          });
+          log?.info('关键词触发判断', { triggerWord, hasIntent: Boolean(hasIntent), contextLines: contextText.split('\n').length });
+          if (hasIntent) {
+            decision = { kind: 'chat', source: 'keyword_trigger', confidence: 0.9, reason: 'keyword: ' + triggerWord, params: { prompt: plainText, tokens: [] } } as any;
+          }
+        }
+      }
+    }
+    // ── 对话延续触发（优先级最低）：bot 刚回复过该用户→窗口内下一条消息自动延续 ──
+    if (decision.kind === 'ignored' && chatType === 'group' && cfg.bot.autoContinue?.enabled) {
+      const acKey = 'group:' + String(event.group_id ?? '') + ':' + String(userId ?? '');
+      const acState = autoContinueStates.get(acKey);
+      const now = Date.now();
+      if (acState) {
+        const windowMs = Math.max(10000, Number(cfg.bot.autoContinue.windowMs) || 60000);
+        const maxRounds = Math.max(1, Math.min(10, Number(cfg.bot.autoContinue.maxRounds) || 1));
+        const cooldownMs = Math.max(5000, Number(cfg.bot.autoContinue.cooldownMs) || 30000);
+        const withinWindow = now - acState.lastBotReplyAt <= windowMs;
+        const withinRounds = acState.rounds < maxRounds;
+        const pastCooldown = now - acState.lastContinueAt >= cooldownMs;
+        if (withinWindow && withinRounds && pastCooldown) {
+          const plainText = stripNonTextCqSegments(rawMessage).trim();
+          if (plainText) {
+            const shouldContinue = await options.triggerIntentChecker?.checkContinueIntent({
+              userText: plainText,
+              userName: String(event.sender?.card || event.sender?.nickname || userId || ''),
+              botLastReply: acState.lastBotReplyText.slice(0, 300),
+            });
+            log?.info('对话延续判断', { rounds: acState.rounds, maxRounds, shouldContinue: Boolean(shouldContinue) });
+            if (shouldContinue) {
+              acState.rounds += 1;
+              acState.lastContinueAt = now;
+              decision = { kind: 'chat', source: 'auto_continue', confidence: 0.85, reason: 'continue_round_' + acState.rounds, params: { prompt: plainText, tokens: [] } } as any;
+            } else {
+              autoContinueStates.delete(acKey);
+            }
+          }
+        } else if (!withinWindow || !withinRounds) {
+          autoContinueStates.delete(acKey);
+        }
+      }
+    }
     if (decision.kind === 'ignored') {
       log?.info('消息被忽略', { reason: decision.reason, rawMessage: rawMessage.slice(0, 80) });
       return { handled: false, reason: decision.reason };
@@ -1563,7 +1634,27 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         text: memoryReplyParts.join('\n').slice(0, 10000),
         messageId: String(event.message_id || Date.now()) + ':assistant',
       })).catch(() => undefined);
-    }    log?.info('回复发送完成', { kind: result.kind });
+    }
+    // 对话延续状态更新：bot 回复后记录该用户/群，窗口内的下一条消息可自动延续。
+    if (chatType === 'group' && event.group_id && userId && result.handled) {
+      const acKey = 'group:' + String(event.group_id) + ':' + String(userId);
+      const existing = autoContinueStates.get(acKey);
+      const replyText = result.text || '';
+      if (existing) {
+        existing.lastBotReplyAt = Date.now();
+        existing.lastBotReplyText = replyText.slice(0, 500);
+        // 硬触发（@/关键词/命令）重置轮数——视为新一轮对话开始。
+        const source = String((decision as any)?.source || decision.kind || '');
+        if (source !== 'auto_continue') existing.rounds = 0;
+      } else {
+        autoContinueStates.set(acKey, { lastBotReplyAt: Date.now(), rounds: 0, lastContinueAt: 0, lastBotReplyText: replyText.slice(0, 500) });
+      }
+      if (autoContinueStates.size > 2000) {
+        const oldest = autoContinueStates.keys().next().value;
+        if (oldest !== undefined) autoContinueStates.delete(oldest);
+      }
+    }
+    log?.info('回复发送完成', { kind: result.kind });
     return { handled: result.handled, kind: result.kind };
   }
 
@@ -1595,6 +1686,10 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
 
   /** T3.7：高危 owner 命令的待确认状态（userId → 命令+过期时间）。 */
   const ownerConfirmPending = new Map<string, { oc: OwnerCommand; expiresAt: number }>();
+  /** 关键词触发每用户冷却（防同一人连环触发判断）。 */
+  const keywordTriggerCooldowns = new Map<string, number>();
+  /** 对话延续状态（groupId:userId → bot 回复时间/轮数/摘要）。 */
+  const autoContinueStates = new Map<string, { lastBotReplyAt: number; rounds: number; lastContinueAt: number; lastBotReplyText: string }>();
   /** 戳一戳响应：只回应"戳 bot 本人"的事件，按用户冷却防刷，回复文案随机取自配置。 */
   const pokeCooldowns = new Map<string, number>();
   /** 入群欢迎：每群冷却（批量入群只迎第一条），bot 自身入群不欢迎。 */
