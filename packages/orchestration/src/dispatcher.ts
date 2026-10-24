@@ -38,12 +38,28 @@ export interface DispatchResult {
   capability?: CapabilityDescriptor;
 }
 
+export interface CapabilityRateGateContext {
+  featureId: string;
+  chatType?: string;
+  groupId?: string | number;
+  userId?: string | number;
+}
+
+/**
+ * T0.2：能力级限流闸。dispatcher 在权限校验通过后、handler 执行前统一 acquire，
+ * 34 个内置能力（含编排路径）一次全覆盖；抛错即限流触发。
+ */
+export interface CapabilityRateGate {
+  acquire(context: CapabilityRateGateContext): Promise<() => void>;
+}
+
 export class CapabilityDispatcher {
   private readonly handlers = new Map<string, CapabilityHandler>();
 
   constructor(
     private readonly registry: CapabilityRegistry,
     private readonly permissionPolicy: PermissionPolicy,
+    private readonly rateGate?: CapabilityRateGate,
   ) {}
 
   setPermissionPolicy(policy: PermissionPolicy): void {
@@ -213,6 +229,33 @@ export class CapabilityDispatcher {
         },
       };
     }
+    // T0.2：执行前统一过限流闸（冷却/日限额/并发）；限流触发按确定性失败处理，
+    // 不重试（静默降级原则：上层 partial + problem 上报，用户侧不刷提示）。
+    let releaseGate: (() => void) | undefined;
+    if (this.rateGate) {
+      try {
+        releaseGate = await this.rateGate.acquire({
+          featureId: authorization.capability!.id,
+          chatType: request.chat.type,
+          groupId: request.chat.groupId,
+          userId: request.user.qq,
+        });
+      } catch (error) {
+        return {
+          permission: authorization.permission,
+          capability: authorization.capability,
+          result: {
+            jobId: plan.planId,
+            stepId: step.id,
+            status: 'failed',
+            outputs: [],
+            diagnostics: { rateLimited: true, reason: String((error as Error)?.message || error) },
+            error: 'feature_rate_limited:' + authorization.capability!.id,
+            retryable: false,
+          },
+        };
+      }
+    }
     try {
       const result = await handler.execute({ request, plan, step: effectiveStep, dependencyResults, validationWarnings: authorization.validationWarnings, signal: options.signal });
       return {
@@ -242,6 +285,8 @@ export class CapabilityDispatcher {
           retryable: true,
         },
       };
+    } finally {
+      releaseGate?.();
     }
   }
 }

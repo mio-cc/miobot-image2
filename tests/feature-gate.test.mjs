@@ -48,3 +48,26 @@ test('feature gate: FeatureLimitError carries feature id', async () => {
     (error) => error instanceof FeatureLimitError && error.featureId === 'help',
   );
 });
+
+test('feature gate T0.2: 未配置能力回退默认配额，显式配置优先', async () => {
+  let now = 1000;
+  const cfg = normalizeConfig(createDefaultConfig());
+  delete cfg.bot.features['image.generate'];
+  const gate = new FeatureGate({
+    getConfig: () => cfg,
+    now: () => now,
+    resolveDefaultSetting: (featureId) => featureId === 'image.generate'
+      ? { enabled: true, aliases: [], scopes: ['private', 'group'], groupActivation: 'mention-or-reply', naturalLanguage: true, limits: { cooldownSec: 30, userDailyLimit: 1 } }
+      : undefined,
+  });
+  const release = await gate.acquire({ featureId: 'image.generate', chatType: 'private', userId: 'u9' });
+  release();
+  await assert.rejects(() => gate.acquire({ featureId: 'image.generate', chatType: 'private', userId: 'u9' }), /操作太快/);
+  now += 31000; // 越过冷却后，日限（1 次）应拦截
+  await assert.rejects(() => gate.acquire({ featureId: 'image.generate', chatType: 'private', userId: 'u9' }), /用户上限/);
+  // answer 类能力（chat.reply）无默认配额，不受限。
+  const chatRelease = await gate.acquire({ featureId: 'chat.reply', chatType: 'private', userId: 'u9' });
+  chatRelease();
+  const again = await gate.acquire({ featureId: 'chat.reply', chatType: 'private', userId: 'u9' });
+  again();
+});

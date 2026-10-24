@@ -36,17 +36,22 @@ function sleep(ms: number): Promise<void> {
 export class FeatureGate {
   private readonly getConfig: () => AppConfig;
   private readonly now: () => number;
+  private readonly resolveDefaultSetting?: (featureId: string) => FeatureSetting | undefined;
   private readonly cooldowns = new Map<string, number>();
   private readonly daily = new Map<string, number>();
   private readonly active = new Map<string, number>();
 
-  constructor(options: { getConfig: () => AppConfig; now?: () => number }) {
+  constructor(options: { getConfig: () => AppConfig; now?: () => number; resolveDefaultSetting?: (featureId: string) => FeatureSetting | undefined }) {
     this.getConfig = options.getConfig;
     this.now = options.now || Date.now;
+    this.resolveDefaultSetting = options.resolveDefaultSetting;
   }
 
   private setting(featureId: string): FeatureSetting | undefined {
-    return (this.getConfig().bot.features as Record<string, FeatureSetting> | undefined)?.[featureId];
+    // T0.2：编排能力未在 bot.features 显式配置时，回退到能力默认配额
+    //（按 costClass 映射，仅副作用类能力），面板显式配置永远优先。
+    return (this.getConfig().bot.features as Record<string, FeatureSetting> | undefined)?.[featureId]
+      ?? this.resolveDefaultSetting?.(featureId);
   }
 
   private targetKey(featureId: string, context: FeatureGateContext): string {

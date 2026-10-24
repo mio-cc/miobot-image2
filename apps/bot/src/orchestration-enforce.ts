@@ -31,6 +31,7 @@ import {
   validatePlanContext,
   validatePlanEffectAlignment,
   type CapabilityHandler,
+  type CapabilityRateGate,
   type IntentPlan,
   type IntentStep,
   type ExecutionOutput,
@@ -119,12 +120,14 @@ export class OrchestrationEnforcer {
     voiceService?: FishAudioVoiceService;
     logger?: StructuredLogger;
     sunoHistory?: SunoSongHistoryStore;
+    /** T0.2：能力级限流闸（冷却/日限额/并发），dispatcher 对全部能力统一执行。 */
+    featureGate?: CapabilityRateGate;
     trace?: (trace: OrchestrationTrace) => void;
     handlers?: Map<string, CapabilityHandler>;
   }) {
     this.dispatcher = new CapabilityDispatcher(this.registry, createPermissionPolicyFromDefaults({
       low: 'allow', medium: 'allow', high: 'ask_admin', critical: 'ask_admin',
-    }));
+    }), this.options.featureGate);
     this.refreshConfig(this.options.getConfig());
     for (const kind of LEGACY_KINDS) {
       const handler = this.options.handlers?.get(kind) || new LegacyEngineCapabilityHandler(this.options.app, kind);
@@ -171,6 +174,13 @@ export class OrchestrationEnforcer {
     });
 
     for (const [id, handler] of this.options.handlers || []) this.dispatcher.registerHandler(id, handler);
+  }
+
+  /** T0.2：供 FeatureGate 在面板未显式配置某能力时，按 costClass 解析默认配额。 */
+  describeCapabilityForGate(capabilityId: string): { enabled: boolean; costClass?: string; effect?: string } | undefined {
+    const descriptor = this.registry.get(capabilityId);
+    if (!descriptor) return undefined;
+    return { enabled: descriptor.enabled, costClass: descriptor.costClass, effect: descriptor.effect };
   }
 
   async testCapability(input: CapabilityTestInput): Promise<CapabilityTestResult> {

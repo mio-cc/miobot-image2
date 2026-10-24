@@ -285,7 +285,26 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // 把它自己那条可热重载的分支整个绕过去。BotEngine 判断「这个模型支不支持生图/视频」
   // 用的就是这份注册表，于是用户在面板上加了能力覆盖、提示热重载成功，
   // bot 那边照旧回「当前模型不支持」，重启才认。
-  const featureGate = new FeatureGate({ getConfig });
+  // T0.2：能力默认配额（面板未显式配置时按 costClass 兜底；answer 类对话能力不限，
+  // 防刷屏只针对副作用能力——生图/视频/音乐/语音/搜索等）。
+  const CAPABILITY_GATE_DEFAULTS: Record<string, { cooldownSec: number; userDailyLimit: number }> = {
+    free: { cooldownSec: 3, userDailyLimit: 0 },
+    low: { cooldownSec: 10, userDailyLimit: 100 },
+    medium: { cooldownSec: 30, userDailyLimit: 30 },
+    high: { cooldownSec: 60, userDailyLimit: 10 },
+  };
+  let describeCapabilityForGate: ((id: string) => { enabled: boolean; costClass?: string; effect?: string } | undefined) | undefined;
+  const featureGate = new FeatureGate({
+    getConfig,
+    resolveDefaultSetting: (featureId) => {
+      const info = describeCapabilityForGate?.(featureId);
+      if (!info || !info.enabled) return undefined;
+      if (info.effect === 'answer' || info.effect === 'unknown' || !info.effect) return undefined;
+      const limits = CAPABILITY_GATE_DEFAULTS[String(info.costClass || '')];
+      if (!limits) return undefined;
+      return { enabled: true, aliases: [], scopes: ['private', 'group'] as const, groupActivation: 'mention-or-reply' as const, naturalLanguage: true, limits: { cooldownSec: limits.cooldownSec, userDailyLimit: limits.userDailyLimit } };
+    },
+  });
   const searchService = createWebSearchService({ getConfig, logger });
   const browserRenderer = createBrowserRenderer({ getConfig, logger });
   const app = createBotApp({
@@ -605,9 +624,12 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     voiceService,
       sunoHistory: sunoSongHistory,
     logger,
+    featureGate,
     handlers: orchestrationHandlers,
     trace: (trace) => traceWriter.append(trace),
   });
+  // 编排器就绪后接入能力默认配额解析（featureGate 先于 enforcer 创建，用闭包晚绑定）。
+  describeCapabilityForGate = (id) => orchestrationEnforcer.describeCapabilityForGate(id);
 
   const memoryActionFile = process.env.MIOBOT_MEMORY_ACTION_FILE || path.join(dataDir, 'orchestration-memory-actions.jsonl');
   const memoryResultFile = process.env.MIOBOT_MEMORY_RESULT_FILE || path.join(dataDir, 'orchestration-memory-results.json');

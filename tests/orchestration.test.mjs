@@ -2858,3 +2858,40 @@ test('orchestration T0.1: 同会话并发请求串行化，能力不被并发重
   assert.equal(r1.handled, true);
   assert.equal(r2.handled, true);
 });
+
+test('orchestration T0.2: dispatcher 执行前统一过限流闸，限流触发为不可重试失败且不执行 handler', async () => {
+  const registry = new CapabilityRegistry();
+  registry.replaceAll([{ id: 'image.generate', version: '1.0.0', name: '图片生成', provider: 'test', enabled: true, effect: 'generate', riskLevel: 'medium', inputSchema: { type: 'object', properties: { prompt: { type: 'string' } }, additionalProperties: true } }]);
+  const acquireCalls = [];
+  let releases = 0;
+  let handlerCalls = 0;
+  let gateShouldThrow = false;
+  const gate = {
+    async acquire(ctx) {
+      acquireCalls.push(ctx);
+      if (gateShouldThrow) throw new Error('操作太快');
+      return () => { releases += 1; };
+    },
+  };
+  const dispatcher = new CapabilityDispatcher(registry, createDefaultPermissionPolicy(), gate);
+  dispatcher.registerHandler('image.generate', {
+    async execute() {
+      handlerCalls += 1;
+      return { jobId: 'j', stepId: 's1', status: 'success', outputs: [{ kind: 'image', url: 'data:image/png;base64,AA' }] };
+    },
+  });
+  const request = { requestId: 'r1', chat: { type: 'group', groupId: '100', userId: 'u1' }, user: { qq: 'u1', role: 'user' }, text: '画猫' };
+  const plan = { planId: 'p1', requestId: 'r1', goal: 'g', steps: [{ id: 's1', capability: 'image.generate', args: { prompt: 'cat' } }] };
+  const ok = await dispatcher.dispatch(request, plan, plan.steps[0]);
+  assert.equal(ok.result.status, 'success');
+  assert.equal(handlerCalls, 1);
+  assert.equal(releases, 1);
+  assert.equal(acquireCalls[0].featureId, 'image.generate');
+  assert.equal(acquireCalls[0].userId, 'u1');
+  gateShouldThrow = true;
+  const limited = await dispatcher.dispatch(request, plan, plan.steps[0]);
+  assert.equal(limited.result.status, 'failed');
+  assert.equal(limited.result.error, 'feature_rate_limited:image.generate');
+  assert.equal(limited.result.retryable, false);
+  assert.equal(handlerCalls, 1, '限流触发后 handler 不得执行');
+});
