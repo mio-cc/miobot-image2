@@ -12,22 +12,33 @@ function argString(args: Record<string, unknown>, key: string): string | undefin
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function historyOutput(store: SunoSongHistoryStore, invocation: CapabilityInvocation, limit = 20): ExecutionOutput {
+// 歌曲历史全局共享（歌单是公开内容）：列表/查找跨全部会话与用户，输出不标注来源群与生成者。
+function globalHistoryOutput(store: SunoSongHistoryStore, limit = 20): ExecutionOutput {
   return {
     kind: 'text',
-    text: store.formatList(scopeOf(store, invocation), limit),
+    text: store.formatListGlobal(limit),
     priority: 5,
     mergeable: true,
     meta: { role: 'suno_history', sourceCapability: 'audio.music.history', skipTts: true, disableVoice: true },
   };
 }
 
-function missingSongResult(invocation: CapabilityInvocation, store: SunoSongHistoryStore): ExecutionResult {
+function missingSongResult(invocation: CapabilityInvocation, store: SunoSongHistoryStore, { scoped = false } = {}): ExecutionResult {
+  // 默认列全局历史；replace_section 仍限会话内（编辑消耗生成额度，跨会话编辑暂不放开），列本会话历史。
+  const list = scoped
+    ? {
+        kind: 'text' as const,
+        text: store.formatList(scopeOf(store, invocation), 20),
+        priority: 5,
+        mergeable: true,
+        meta: { role: 'suno_history', sourceCapability: 'audio.music.replace_section', skipTts: true, disableVoice: true },
+      }
+    : globalHistoryOutput(store, 20);
   return {
     jobId: invocation.plan.planId,
     stepId: invocation.step.id,
     status: 'needs_input',
-    outputs: [historyOutput(store, invocation, 20)],
+    outputs: [list],
     diagnostics: { missingInformation: ['要选择哪一首歌？请回复歌曲序号或歌名。'] },
   };
 }
@@ -41,7 +52,7 @@ export class SunoHistoryCapabilityHandler implements CapabilityHandler {
       jobId: invocation.plan.planId,
       stepId: invocation.step.id,
       status: 'success',
-      outputs: [historyOutput(this.store, invocation, limit)],
+      outputs: [globalHistoryOutput(this.store, limit)],
     };
   }
 }
@@ -51,9 +62,10 @@ export class SunoReplayCapabilityHandler implements CapabilityHandler {
 
   async execute(invocation: CapabilityInvocation): Promise<ExecutionResult> {
     const args = invocation.step.args || {};
-    const record = this.store.find(scopeOf(this.store, invocation), {
+    // 全局共享：任何用户可回放任何人生成的歌；sequence/selection 语义为全局序号。
+    const record = this.store.findGlobal({
       recordId: argString(args, 'recordId'),
-      sequence: Number(args.sequence) || Number(argString(args, 'selection')),
+      globalSeq: Number(args.globalSeq) || Number(args.sequence) || Number(argString(args, 'selection')),
       title: argString(args, 'title'),
     });
     if (!record) return missingSongResult(invocation, this.store);
@@ -77,6 +89,59 @@ export class SunoReplayCapabilityHandler implements CapabilityHandler {
         },
       }],
       diagnostics: { replay: true, seq: record.seq, taskId: record.taskId },
+    };
+  }
+}
+
+export class SunoVariantCapabilityHandler implements CapabilityHandler {
+  constructor(private readonly store: SunoSongHistoryStore) {}
+
+  async execute(invocation: CapabilityInvocation): Promise<ExecutionResult> {
+    const args = invocation.step.args || {};
+    const record = this.store.findGlobal({
+      recordId: argString(args, 'recordId'),
+      globalSeq: Number(args.globalSeq) || Number(args.sequence) || Number(argString(args, 'selection')),
+      title: argString(args, 'title'),
+    });
+    if (!record) return missingSongResult(invocation, this.store);
+    // 目标语义：定位到主版 → 发它的分支；定位到的本身就是分支（模型可能直接选中列表里的 B 版行）→ 发该分支。
+    const variant = (Number(record.variantIndex) || 1) >= 2 ? record : this.store.findVariantOf(record);
+    if (!variant?.audioUrl) {
+      return {
+        jobId: invocation.plan.planId,
+        stepId: invocation.step.id,
+        status: 'needs_input',
+        outputs: [{
+          kind: 'text',
+          text: `「${record.title || record.requestText || '这首歌'}」只保留了一个版本，没有另一版可发。`,
+          priority: 5,
+          mergeable: true,
+          meta: { skipTts: true, disableVoice: true, sourceCapability: 'audio.music.variant' },
+        }],
+        diagnostics: { missingInformation: ['这首歌只有一个版本。'] },
+      };
+    }
+    return {
+      jobId: invocation.plan.planId,
+      stepId: invocation.step.id,
+      status: 'success',
+      outputs: [{
+        kind: 'audio',
+        url: variant.audioUrl,
+        priority: 10,
+        mergeable: false,
+        meta: {
+          title: variant.title || record.title,
+          lyrics: variant.lyrics,
+          audioId: variant.audioId,
+          historyId: variant.id,
+          historySeq: variant.seq,
+          variantIndex: variant.variantIndex ?? 2,
+          sourceCapability: 'audio.music.variant',
+          provider: 'suno-official',
+        },
+      }],
+      diagnostics: { variantOf: record.id, variantId: variant.id, taskId: variant.taskId },
     };
   }
 }
@@ -174,7 +239,7 @@ export class SunoReplaceSectionCapabilityHandler implements CapabilityHandler {
       sequence: Number(args.sequence) || Number(argString(args, 'selection')),
       title: argString(args, 'title'),
     });
-    if (!record) return missingSongResult(invocation, this.options.store);
+    if (!record) return missingSongResult(invocation, this.options.store, { scoped: true });
     if (!record.taskId || !record.audioId) {
       return {
         jobId: invocation.plan.planId,

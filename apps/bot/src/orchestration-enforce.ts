@@ -46,7 +46,7 @@ import { VoiceCurrentCapabilityHandler, VoicePreviewCapabilityHandler, VoiceSear
 import { SunoPromptComposer } from './suno-composer.js';
 import { SunoCapabilityHandler } from './capability-suno.js';
 import type { SunoSongHistoryStore } from './suno-song-history.js';
-import { SunoHistoryCapabilityHandler, SunoReplayCapabilityHandler, SunoReplaceSectionCapabilityHandler } from './capability-suno-library.js';
+import { SunoHistoryCapabilityHandler, SunoReplayCapabilityHandler, SunoReplaceSectionCapabilityHandler, SunoVariantCapabilityHandler } from './capability-suno-library.js';
 import { HelpCapabilityHandler, ModelCatalogCapabilityHandler, PromptCapabilityHandler, SearchCapabilityHandler, TemplateListCapabilityHandler, TtsCapabilityHandler } from './capability-basic.js';
 import type { ApprovalRuntime } from './approval-runtime.js';
 import { pendingSessionKey, type PendingJobRecord, type PendingJobStore } from './pending-job-store.js';
@@ -163,9 +163,11 @@ export class OrchestrationEnforcer {
     if (this.options.sunoHistory) {
       const historyHandler = this.options.handlers?.get('audio.music.history') || new SunoHistoryCapabilityHandler(this.options.sunoHistory);
       const replayHandler = this.options.handlers?.get('audio.music.replay') || new SunoReplayCapabilityHandler(this.options.sunoHistory);
+      const variantHandler = this.options.handlers?.get('audio.music.variant') || new SunoVariantCapabilityHandler(this.options.sunoHistory);
       const replaceHandler = this.options.handlers?.get('audio.music.replace_section') || new SunoReplaceSectionCapabilityHandler({ getConfig: this.options.getConfig, store: this.options.sunoHistory, client: this.options.client });
       this.dispatcher.registerHandler('audio.music.history', historyHandler);
       this.dispatcher.registerHandler('audio.music.replay', replayHandler);
+      this.dispatcher.registerHandler('audio.music.variant', variantHandler);
       this.dispatcher.registerHandler('audio.music.replace_section', replaceHandler);
     }
     this.dispatcher.registerHandler('web.search', new SearchCapabilityHandler(this.options.app));
@@ -634,8 +636,8 @@ export class OrchestrationEnforcer {
       receivedAt: new Date().toISOString(),
     };
     if (this.options.sunoHistory) {
-      const scopeKey = this.options.sunoHistory.scopeKey(request.chat.type, request.chat.groupId, request.user.qq);
-      const songHistory = this.options.sunoHistory.promptContext(scopeKey, cfg.orchestration.suno.historyPromptLimit || 10);
+      // 歌曲历史全局共享：planner 在任何会话都能定位全部生成记录（重发/取另一版/编辑目标）。
+      const songHistory = this.options.sunoHistory.promptContextGlobal(cfg.orchestration.suno.historyPromptLimit || 10);
       if (songHistory) request.history = [{ role: 'system', content: songHistory }, ...(request.history || [])];
     }
     const clarificationCount = Math.max(0, Math.trunc(Number(pending?.clarificationCount ?? pending?.attempts ?? 0)));

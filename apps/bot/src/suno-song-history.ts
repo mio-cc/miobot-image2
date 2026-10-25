@@ -6,6 +6,8 @@ import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 export interface SunoSongHistoryRecord {
   id: string;
   seq: number;
+  /** 全局稳定序号（跨会话/跨用户递增），全局共享列表与"回复序号选歌"都用它。 */
+  globalSeq?: number;
   scopeKey: string;
   chatType: 'group' | 'private';
   chatId: string;
@@ -20,6 +22,10 @@ export interface SunoSongHistoryRecord {
   duration?: number;
   model?: string;
   style?: string;
+  /** 分支版本：指向同一次生成的主记录 id；主记录该字段为空。 */
+  variantOf?: string;
+  /** 1=主版（实际交付），2+=保留的分支版本。旧记录视为 1。 */
+  variantIndex?: number;
 }
 
 export interface SunoSongHistoryAddInput {
@@ -35,6 +41,8 @@ export interface SunoSongHistoryAddInput {
   duration?: number;
   model?: string;
   style?: string;
+  variantOf?: string;
+  variantIndex?: number;
 }
 
 export interface SunoSongHistoryOptions {
@@ -66,6 +74,13 @@ export class SunoSongHistoryStore {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as { records?: unknown };
       if (!Array.isArray(parsed?.records)) return;
       this.records = parsed.records.filter((item): item is SunoSongHistoryRecord => Boolean(item && typeof item === 'object' && typeof (item as any).id === 'string' && typeof (item as any).audioUrl === 'string'));
+      // 迁移：旧记录没有 globalSeq——按 createdAt 升序回填，保证序号稳定（下次 add 落盘固化）。
+      const missing = this.records.filter((item) => !Number.isFinite(Number(item.globalSeq)));
+      if (missing.length) {
+        [...this.records]
+          .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+          .forEach((item, index) => { item.globalSeq = index + 1; });
+      }
     } catch (error) {
       this.logger?.warn('Suno history read failed', { error: String((error as Error)?.message || error) });
     }
@@ -75,7 +90,7 @@ export class SunoSongHistoryStore {
     try {
       fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
       const tmp = `${this.filePath}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify({ version: 1, records: this.records }, null, 2), 'utf8');
+      fs.writeFileSync(tmp, JSON.stringify({ version: 2, records: this.records }, null, 2), 'utf8');
       fs.renameSync(tmp, this.filePath);
     } catch (error) {
       this.logger?.warn('Suno history write failed', { error: String((error as Error)?.message || error) });
@@ -90,9 +105,11 @@ export class SunoSongHistoryStore {
     const scopeKey = this.scopeKey(input.chatType, input.groupId, input.userQq);
     const sameScope = this.records.filter((item) => item.scopeKey === scopeKey);
     const seq = sameScope.reduce((max, item) => Math.max(max, Number(item.seq) || 0), 0) + 1;
+    const globalSeq = this.records.reduce((max, item) => Math.max(max, Number(item.globalSeq) || 0), 0) + 1;
     const record: SunoSongHistoryRecord = {
       id: `song_${Date.now()}_${randomUUID().slice(0, 8)}`,
       seq,
+      globalSeq,
       scopeKey,
       chatType: input.chatType,
       chatId: String(input.groupId || input.userQq),
@@ -107,6 +124,8 @@ export class SunoSongHistoryStore {
       duration: Number.isFinite(Number(input.duration)) ? Number(input.duration) : undefined,
       model: input.model ? String(input.model) : undefined,
       style: input.style ? String(input.style).slice(0, 1000) : undefined,
+      variantOf: input.variantOf ? String(input.variantOf) : undefined,
+      variantIndex: Number.isFinite(Number(input.variantIndex)) ? Math.trunc(Number(input.variantIndex)) : undefined,
     };
     this.records.push(record);
     const limit = Math.max(1, Math.trunc(Number(this.maxRecords()) || 100));
@@ -161,6 +180,68 @@ export class SunoSongHistoryStore {
     return [
       '当前用户最近生成的歌曲（用于重发/编辑目标定位；序号稳定；不要按关键词硬匹配）：',
       ...records.map((item) => JSON.stringify({ seq: item.seq, recordId: item.id, title: item.title || '', request: String(item.requestText || '').slice(0, 40), duration: item.duration || null })),
+    ].join('\n');
+  }
+
+  /** 全局共享：全库按 globalSeq 倒序（歌单是公开内容，任何会话可查所有生成记录）。 */
+  listGlobal(limit = 20): SunoSongHistoryRecord[] {
+    return this.records
+      .slice()
+      .sort((a, b) => (Number(b.globalSeq) || 0) - (Number(a.globalSeq) || 0))
+      .slice(0, Math.max(1, Math.min(100, Math.trunc(Number(limit) || 20))));
+  }
+
+  /** 全局查找：recordId 全局唯一；globalSeq/sequence 为全局序号；title 命中多条时优先主版。 */
+  findGlobal(query: { recordId?: string; globalSeq?: number; sequence?: number; title?: string }): SunoSongHistoryRecord | undefined {
+    const recordId = String(query.recordId || '').trim();
+    if (recordId) return this.records.find((item) => item.id === recordId);
+    const seq = Number(query.globalSeq ?? query.sequence);
+    if (Number.isFinite(seq) && seq > 0) return this.records.find((item) => Number(item.globalSeq) === Math.trunc(seq));
+    const title = normalizeTitle(query.title);
+    if (title) {
+      const matches = this.records.filter((item) => normalizeTitle(item.title) === title || normalizeTitle(item.requestText) === title);
+      return matches.find((item) => (Number(item.variantIndex) || 1) === 1) ?? matches[0];
+    }
+    return undefined;
+  }
+
+  /** 同一次生成的另一版本（同 taskId 分组优先，variantOf 兜底）。 */
+  findVariantOf(record: SunoSongHistoryRecord): SunoSongHistoryRecord | undefined {
+    const group = record.taskId
+      ? this.records.filter((item) => item.taskId === record.taskId)
+      : this.records.filter((item) => item.variantOf === record.id || item.id === record.variantOf);
+    if (group.length <= 1) return undefined;
+    const selfIndex = Number(record.variantIndex) || 1;
+    return group.find((item) => item.id !== record.id && (Number(item.variantIndex) || 1) !== selfIndex)
+      ?? group.find((item) => item.id !== record.id);
+  }
+
+  private hasVariant(record: SunoSongHistoryRecord): boolean {
+    return this.findVariantOf(record) !== undefined;
+  }
+
+  /** 全局共享列表（不标注来源群与生成者——歌单是公开内容，输出只含序号/标题/时间/分支标记）。 */
+  formatListGlobal(limit = 20): string {
+    const records = this.listGlobal(limit);
+    if (!records.length) return '还没有生成过歌曲。';
+    return [
+      'Suno 歌曲历史（序号越大越新；回复序号或歌名即可选择）：',
+      ...records.map((item) => {
+        const title = item.title || item.requestText || '未命名歌曲';
+        const date = item.createdAt.slice(0, 16).replace('T', ' ');
+        const variantTag = (Number(item.variantIndex) || 1) === 2 ? ' | B版' : (this.hasVariant(item) ? ' | 有B版' : '');
+        return `#${item.globalSeq} ${title} | ${date}${item.duration ? ` | ${Math.round(item.duration)}s` : ''}${variantTag}`;
+      }),
+    ].join('\n');
+  }
+
+  /** 全局歌曲上下文（供 planner 定位重发/取另一版/编辑目标；不携带会话与用户信息）。 */
+  promptContextGlobal(limit = 10): string {
+    const records = this.listGlobal(limit);
+    if (!records.length) return '';
+    return [
+      '最近生成的全部歌曲（全局共享，用于重发/取另一版/编辑目标定位；序号稳定；不要按关键词硬匹配）：',
+      ...records.map((item) => JSON.stringify({ seq: item.globalSeq, recordId: item.id, title: item.title || '', variantIndex: item.variantIndex ?? 1, duration: item.duration || null })),
     ].join('\n');
   }
 }

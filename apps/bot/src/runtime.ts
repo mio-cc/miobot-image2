@@ -967,7 +967,9 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           });
           log?.info('关键词触发判断', { triggerWord, hasIntent: Boolean(hasIntent), contextLines: contextText.split('\n').length });
           if (hasIntent) {
-            decision = { kind: 'chat', source: 'keyword_trigger', confidence: 0.9, reason: 'keyword: ' + triggerWord, params: { prompt: plainText, tokens: [] } } as any;
+            // commandText 必须带上：enforce 失败回退旧链路时，旧链路从 commandText 取用户原文；
+            // 缺了会被判成空@消息，回"我在。直接说需求就行"罐头话（线上实测）。
+            decision = { kind: 'chat', source: 'keyword_trigger', confidence: 0.9, reason: 'keyword: ' + triggerWord, commandText: plainText, params: { prompt: plainText, tokens: [] } } as any;
           }
         }
       }
@@ -996,7 +998,9 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
             if (shouldContinue) {
               acState.rounds += 1;
               acState.lastContinueAt = now;
-              decision = { kind: 'chat', source: 'auto_continue', confidence: 0.85, reason: 'continue_round_' + acState.rounds, params: { prompt: plainText, tokens: [] } } as any;
+              // commandText 必须带上：enforce 失败回退旧链路时，旧链路从 commandText 取用户原文；
+              // 缺了会被判成空@消息，回"我在。直接说需求就行"罐头话（线上实测）。
+              decision = { kind: 'chat', source: 'auto_continue', confidence: 0.85, reason: 'continue_round_' + acState.rounds, commandText: plainText, params: { prompt: plainText, tokens: [] } } as any;
             } else {
               autoContinueStates.delete(acKey);
             }
@@ -1303,8 +1307,11 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         const cleanText = stripNonTextCqSegments(decision.commandText);
         // 空 @（无文本/图/视频/引用）不值得跑完整 LLM 流水线，直接快捷回复。
         if (!cleanText && !enrichedImages.length && !enrichedVideos.length && !referenceText && !forwardText) {
-          await engine.replyText(replyCtx, '我在。直接说需求就行，比如提问、「生图 一只猫」，或发「帮助」看指令。', 'quote');
+          const cannedText = '我在。直接说需求就行，比如提问、「生图 一只猫」，或发「帮助」看指令。';
+          await engine.replyText(replyCtx, cannedText, 'quote');
           log?.info('回复发送完成', { kind: 'empty-mention' });
+          // 罐头回复同样登记延续状态：否则用户紧跟着的补充消息进不了延续判断（线上实测被忽略）。
+          armAutoContinue(chatType, event.group_id, userId, cannedText, true);
           return { handled: true, kind: 'empty-mention' };
         }
         const hasFiles = baseFiles.length > 0 || Boolean(referenced && extractFiles(referenced).length > 0);
@@ -1659,22 +1666,8 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     }
     // 对话延续状态更新：bot 回复后记录该用户/群，窗口内的下一条消息可自动延续。
     if (chatType === 'group' && event.group_id && userId && result.handled) {
-      const acKey = 'group:' + String(event.group_id) + ':' + String(userId);
-      const existing = autoContinueStates.get(acKey);
-      const replyText = result.text || '';
-      if (existing) {
-        existing.lastBotReplyAt = Date.now();
-        existing.lastBotReplyText = replyText.slice(0, 500);
-        // 硬触发（@/关键词/命令）重置轮数——视为新一轮对话开始。
-        const source = String((decision as any)?.source || decision.kind || '');
-        if (source !== 'auto_continue') existing.rounds = 0;
-      } else {
-        autoContinueStates.set(acKey, { lastBotReplyAt: Date.now(), rounds: 0, lastContinueAt: 0, lastBotReplyText: replyText.slice(0, 500) });
-      }
-      if (autoContinueStates.size > 2000) {
-        const oldest = autoContinueStates.keys().next().value;
-        if (oldest !== undefined) autoContinueStates.delete(oldest);
-      }
+      const source = String((decision as any)?.source || decision.kind || '');
+      armAutoContinue(chatType, event.group_id, userId, result.text || '', source !== 'auto_continue');
     }
     log?.info('回复发送完成', { kind: result.kind });
     return { handled: result.handled, kind: result.kind };
@@ -1712,6 +1705,24 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
   const keywordTriggerCooldowns = new Map<string, number>();
   /** 对话延续状态（groupId:userId → bot 回复时间/轮数/摘要）。 */
   const autoContinueStates = new Map<string, { lastBotReplyAt: number; rounds: number; lastContinueAt: number; lastBotReplyText: string }>();
+  /** 延续状态登记：bot 回复后记录该用户/群，窗口内下一条消息可自动延续。 */
+  function armAutoContinue(chatType: 'group' | 'private', groupId: unknown, uid: unknown, replyText: string, hardTrigger: boolean): void {
+    if (chatType !== 'group' || groupId === undefined || groupId === null || uid === undefined || uid === null) return;
+    const acKey = 'group:' + String(groupId) + ':' + String(uid);
+    const existing = autoContinueStates.get(acKey);
+    if (existing) {
+      existing.lastBotReplyAt = Date.now();
+      existing.lastBotReplyText = replyText.slice(0, 500);
+      // 硬触发（@/关键词/命令）重置轮数——视为新一轮对话开始。
+      if (hardTrigger) existing.rounds = 0;
+    } else {
+      autoContinueStates.set(acKey, { lastBotReplyAt: Date.now(), rounds: 0, lastContinueAt: 0, lastBotReplyText: replyText.slice(0, 500) });
+    }
+    if (autoContinueStates.size > 2000) {
+      const oldest = autoContinueStates.keys().next().value;
+      if (oldest !== undefined) autoContinueStates.delete(oldest);
+    }
+  }
   /** 戳一戳响应：只回应"戳 bot 本人"的事件，按用户冷却防刷，回复文案随机取自配置。 */
   const pokeCooldowns = new Map<string, number>();
   /** 入群欢迎：每群冷却（批量入群只迎第一条），bot 自身入群不欢迎。 */

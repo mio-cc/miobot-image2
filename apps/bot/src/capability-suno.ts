@@ -183,8 +183,9 @@ export class SunoCapabilityHandler implements CapabilityHandler {
           outputs: [], error: `suno_task_${task.status}`, diagnostics: { taskId: created.id, raw: task.raw }, retryable: task.status !== 'failed',
         };
       }
-      // Suno V6 对一次请求通常会返回两个 variant；这里只交付第一首，并且不返回歌曲封面。
-      const first = task.outputs.find((item) => Boolean(item.url));
+      // Suno V6 一次请求通常返回两个 variant：第一首交付，其余保留入库为分支（B版），不发送。
+      const audioOutputs = task.outputs.filter((item) => Boolean(item.url));
+      const first = audioOutputs[0];
       let historyRecord: ReturnType<SunoSongHistoryStore["add"]> | undefined;
       if (first?.url && this.options.history) {
         try {
@@ -201,9 +202,38 @@ export class SunoCapabilityHandler implements CapabilityHandler {
             duration: first.duration,
             model: composed?.model || cfg.model,
             style: composed?.style || stringArg(args, "style"),
+            variantIndex: 1,
           });
         } catch (error) {
           this.options.logger?.warn("Suno 歌曲历史写入失败", { error: String((error as Error)?.message || error) });
+        }
+      }
+      // 其余 variant 入库为分支（requestText 标注"（分支）"），供 audio.music.variant 能力取用；入库失败不影响交付。
+      let branchSaved = 0;
+      if (first?.url && this.options.history) {
+        for (const variant of audioOutputs.slice(1)) {
+          if (!variant.url) continue;
+          try {
+            this.options.history.add({
+              chatType: invocation.request.chat.type,
+              groupId: invocation.request.chat.groupId,
+              userQq: invocation.request.user.qq,
+              requestText: `${rawUserText}（分支）`,
+              taskId: created.id,
+              audioId: variant.audioId,
+              title: variant.title || first.title,
+              lyrics: variant.lyrics,
+              audioUrl: variant.url,
+              duration: variant.duration,
+              model: composed?.model || cfg.model,
+              style: composed?.style || stringArg(args, "style"),
+              variantOf: historyRecord?.id,
+              variantIndex: 2,
+            });
+            branchSaved += 1;
+          } catch (error) {
+            this.options.logger?.warn("Suno 分支版本入库失败", { error: String((error as Error)?.message || error) });
+          }
         }
       }
       const outputs = first?.url
@@ -219,15 +249,16 @@ export class SunoCapabilityHandler implements CapabilityHandler {
             provider: "suno-official",
           } }]
         : [];
-      this.options.logger?.info('Suno 任务完成，只交付首曲且不发送封面', {
+      this.options.logger?.info('Suno 任务完成，交付首曲，其余保留为分支', {
         taskId: created.id,
         generatedVariants: task.outputs.length,
-        returnedAudio: outputs.length,
+        deliveredAudio: outputs.length,
+        branchSaved,
         discardedCoverCount: task.outputs.filter((item) => Boolean(item.coverUrl)).length,
         hasLyrics: Boolean(outputs[0]?.meta?.lyrics),
         lyricsSource: first?.lyrics ? 'api' : composed?.lyrics ? 'composer' : stringArg(args, 'lyrics') ? 'args' : 'none',
       });
-      return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success', outputs, diagnostics: { taskId: created.id, generatedVariants: task.outputs.length, returnedAudio: outputs.length } };
+      return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success', outputs, diagnostics: { taskId: created.id, generatedVariants: task.outputs.length, deliveredAudio: outputs.length, branchSaved } };
     } catch (error) {
       this.options.logger?.warn('Suno 能力执行失败', { error: String((error as Error)?.message || error) });
       const message = String((error as Error)?.message || error);

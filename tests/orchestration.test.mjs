@@ -323,7 +323,9 @@ test('orchestration: Suno capability handler returns only the first audio and no
     assert.equal(result.outputs[0].url, 'https://cdn/song.mp3');
     assert.equal(result.outputs.some((item) => item.kind === 'image'), false);
     assert.equal(result.diagnostics.generatedVariants, 2);
-    assert.equal(result.diagnostics.returnedAudio, 1);
+    assert.equal(result.diagnostics.deliveredAudio, 1);
+    // 未注入 history store 时不落分支；交付契约保持只发第一首
+    assert.equal(result.diagnostics.branchSaved, 0);
 });
 
 test('orchestration: enforce path plans and executes image capability through legacy adapter', async () => {
