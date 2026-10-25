@@ -9,6 +9,10 @@ export interface TriggerIntentOptions {
   getConfig: () => AppConfig;
   client: TriggerIntentClient;
   logger?: StructuredLogger;
+  /** trace 回调（与 enforce 共用同一 trace 通道，面板可观测性页可见）。 */
+  trace?: (trace: { id: string; timestamp: string; requestId: string; stage: string; summary: string; data: Record<string, unknown> }) => void;
+  /** 当前 requestId（由 runtime 传入，用于 trace 关联）。 */
+  getRequestId?: () => string;
 }
 
 function extractBoolean(text: string, key: string): boolean | undefined {
@@ -71,19 +75,34 @@ export class TriggerIntentChecker {
       });
       const raw = String(result.text || '');
       const intent = extractBoolean(raw, 'intent');
-      // 诊断：记录模型实际回了什么（截断 200 字），方便定位判断不准的原因。
-      this.options.logger?.info('意图判断模型响应', {
-        node: nodeIndex,
-        model,
-        raw: raw.replace(/\s+/g, ' ').slice(0, 200),
-        parsed: intent === undefined ? 'unparseable' : String(intent),
+      // 模型调用 trace（面板 → 可观测性 → 按 requestId 查看）。
+      this.options.trace?.({
+        id: `trace_intent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        timestamp: new Date().toISOString(),
+        requestId: this.options.getRequestId?.() || '',
+        stage: 'model_call',
+        summary: `意图判断 ${model}@node${nodeIndex} → ${intent === undefined ? 'unparseable(默认触发)' : String(intent)}`,
+        data: {
+          type: 'keyword_intent',
+          node: nodeIndex,
+          model,
+          promptPreview: prompt.replace(/\s+/g, ' ').slice(0, 600),
+          responsePreview: raw.replace(/\s+/g, ' ').slice(0, 300),
+          parsed: intent === undefined ? 'unparseable' : String(intent),
+        },
       });
       // 触发词已命中 → 模型明确说 false 才不触发；
-      // 模型输出解析不出 true/false（格式错误/中文/空回复）→ 默认触发（别漏掉用户）。
+      // 模型输出解析不出 true/false → 默认触发。
       return intent !== false;
     } catch (error) {
-      this.options.logger?.warn('关键词意图判断模型调用失败，触发词已命中默认触发', { error: String((error as Error)?.message || error), node: nodeIndex, model });
-      // 模型调用失败 → 触发词已命中 → 默认触发（宁可多回不漏）。
+      this.options.trace?.({
+        id: `trace_intent_err_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        requestId: this.options.getRequestId?.() || '',
+        stage: 'model_call',
+        summary: `意图判断调用失败(默认触发)`,
+        data: { type: 'keyword_intent', error: String((error as Error)?.message || error), node: nodeIndex, model },
+      });
       return true;
     }
   }
@@ -117,9 +136,31 @@ export class TriggerIntentChecker {
         timeoutMs: 5000,
       });
       const cont = extractBoolean(String(result.text || ''), 'continue');
+      this.options.trace?.({
+        id: `trace_cont_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        timestamp: new Date().toISOString(),
+        requestId: this.options.getRequestId?.() || '',
+        stage: 'model_call',
+        summary: `延续判断 ${model}@node${nodeIndex} → ${cont === undefined ? 'unparseable' : String(cont)}`,
+        data: {
+          type: 'continue_intent',
+          node: nodeIndex,
+          model,
+          promptPreview: prompt.replace(/\s+/g, ' ').slice(0, 500),
+          responsePreview: String(result.text || '').replace(/\s+/g, ' ').slice(0, 300),
+          parsed: cont === undefined ? 'unparseable' : String(cont),
+        },
+      });
       return cont === true;
     } catch (error) {
-      this.options.logger?.warn('延续意图判断失败（视为无意图）', { error: String((error as Error)?.message || error) });
+      this.options.trace?.({
+        id: `trace_cont_err_${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        requestId: this.options.getRequestId?.() || '',
+        stage: 'model_call',
+        summary: `延续判断调用失败`,
+        data: { type: 'continue_intent', error: String((error as Error)?.message || error) },
+      });
       return false;
     }
   }

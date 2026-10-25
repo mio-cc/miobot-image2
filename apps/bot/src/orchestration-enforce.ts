@@ -119,6 +119,8 @@ export class OrchestrationEnforcer {
   private readonly registry = new CapabilityRegistry();
   private readonly dispatcher: CapabilityDispatcher;
   private configFingerprint = '';
+  /** 当前正在处理的 requestId，用于模型调用 trace 关联。 */
+  currentRequestId = '';
   /** T0.1：会话键 → 在途编排 Promise，用于同会话串行化。 */
   private readonly sessionInFlight = new Map<string, Promise<unknown>>();
   /** T3.2：FC 探测缓存——不支持 function calling 的节点|模型记住后直接走 JSON 通道，避免每次规划多一次失败调用。 */
@@ -378,6 +380,7 @@ export class OrchestrationEnforcer {
   private roleModelClient(collector?: ModelUsageTotals) {
     return {
       chat: async (nodeIndex: number, req: any) => {
+        const startedAt = Date.now();
         const result = await this.options.client.chat(nodeIndex, {
           model: req.model,
           messages: req.messages,
@@ -396,6 +399,27 @@ export class OrchestrationEnforcer {
           collector.cost += Number(result.usage.cost) || 0;
           collector.modelCalls += 1;
         }
+        // 模型调用可观测（面板 → 可观测性 → 按 requestId 查看）：
+        // 记录发给模型的提示词（截断）和模型实际回复（截断），让用户看到模型到底收到了什么、回了什么。
+        const messages = Array.isArray(req.messages) ? req.messages : [];
+        const lastUser = [...messages].reverse().find((m: any) => m?.role === 'user');
+        this.options.trace?.({
+          id: `trace_model_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          timestamp: new Date().toISOString(),
+          requestId: this.currentRequestId || '',
+          stage: 'model_call',
+          summary: `模型调用 ${req.model}@node${nodeIndex} (${Date.now() - startedAt}ms)`,
+          data: {
+            node: nodeIndex,
+            model: req.model,
+            durationMs: Date.now() - startedAt,
+            promptChars: String(lastUser?.content || '').length,
+            promptPreview: String(lastUser?.content || '').replace(/\s+/g, ' ').slice(0, 800),
+            responseChars: String(result?.text || '').length,
+            responsePreview: String(result?.text || '').replace(/\s+/g, ' ').slice(0, 800),
+            usage: result?.usage || undefined,
+          },
+        });
         return result;
       },
     };
@@ -554,6 +578,7 @@ export class OrchestrationEnforcer {
     const role = (cfg.bot.ownerQQs || []).map(String).includes(userId) ? 'owner'
       : (cfg.orchestration.approval.adminQqIds || []).map(String).includes(userId) ? 'admin' : 'user';
     const requestId = pending?.requestId || `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    this.currentRequestId = requestId;
     const jobId = pending?.jobId || `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const originalText = pending?.originalText || text;
     const effectiveText = pending

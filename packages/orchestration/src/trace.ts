@@ -1,4 +1,4 @@
-﻿export type TraceStage = 'request' | 'plan' | 'permission' | 'approval' | 'execute' | 'reply' | 'error';
+﻿export type TraceStage = 'request' | 'plan' | 'permission' | 'approval' | 'execute' | 'reply' | 'error' | 'model_call';
 
 export interface OrchestrationTrace {
   id: string;

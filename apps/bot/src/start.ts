@@ -934,7 +934,13 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     // T2.2b：好友请求自动通过等需要的通用 action 通道。
     callNapcatAction: (action, params) => adapter.callAction(action, params),
     sentMessages,
-    triggerIntentChecker: new TriggerIntentChecker({ getConfig, client, logger }),
+    triggerIntentChecker: new TriggerIntentChecker({
+      getConfig,
+      client,
+      logger,
+      trace: (entry) => traceWriter.append(entry as any),
+      getRequestId: () => orchestrationEnforcer?.currentRequestId || '',
+    }),
     botName: options.botName || 'Miobot',
     syncImagesToGallery: canvasGallerySync.syncImages,
     prepareInputImages,
