@@ -23,7 +23,9 @@ function extractBoolean(text: string, key: string): boolean | undefined {
 
 /**
  * 触发意图判断器：关键词触发 + 对话延续共用。
- * 一次轻量模型调用（~100 token，5s 超时），判断失败/超时一律视为"无意图"（静默）。
+ * 一次轻量模型调用（小 maxTokens + 短超时），判断失败/超时一律视为"无意图"（静默）。
+ * maxTokens 必须给足（≥400）：推理模型（deepseek-R 系列等）的思维链也计入输出预算，
+ * 给 50 会被思维链耗尽导致 JSON 没输出就截断——延续判断 fail-closed 直接静默失效。
  */
 export class TriggerIntentChecker {
   constructor(private readonly options: TriggerIntentOptions) {}
@@ -69,7 +71,7 @@ export class TriggerIntentChecker {
       const result = await this.options.client.chat(nodeIndex, {
         model,
         messages: [{ role: 'user', content: prompt }],
-        maxTokens: 50,
+        maxTokens: 400,
         temperature: 0,
         timeoutMs: 5000,
       });
@@ -132,9 +134,10 @@ export class TriggerIntentChecker {
       const result = await this.options.client.chat(nodeIndex, {
         model,
         messages: [{ role: 'user', content: prompt }],
-        maxTokens: 50,
+        maxTokens: 400,
         temperature: 0,
-        timeoutMs: 5000,
+        // 400 token 思维链 + JSON 输出，5s 边缘场景会超时误杀，放宽到 8s。
+        timeoutMs: 8000,
       });
       const cont = extractBoolean(String(result.text || ''), 'continue');
       this.options.trace?.({
