@@ -18,6 +18,7 @@ import { ApprovalRuntime } from './approval-runtime.js';
 import { buildCommandIntentPlan } from '../../../packages/orchestration/src/index.js';
 import { ApprovalActionConsumer } from './approval-actions.js';
 import { CapabilityTestActionConsumer } from './capability-test-actions.js';
+import { NodeLatencyActionConsumer, NodeLatencyRecorder, probeAllNodes, wrapClientWithLatency } from './node-latency.js';
 import { MemoryActionConsumer } from './memory-actions.js';
 import { ProblemReporter } from './problem-reporter.js';
 import { PendingJobStore, type PendingJobRecord } from './pending-job-store.js';
@@ -276,6 +277,9 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
 
   const getRegistry = createReloadableRegistry(() => toCapabilityOverrides(getConfig().llm.capabilityOverrides));
   const client = createModelClient({ nodes: () => toModelNodes(getConfig()), registry: getRegistry, getNodeConcurrency: (i) => getConfig().llm.apiKeys?.[i]?.concurrency });
+  // 节点延迟被动采集：包装 chat/vision，每次真实调用按节点记录耗时/成败 → node-latency.json（面板可读）。
+  const nodeLatencyRecorder = new NodeLatencyRecorder({ filePath: path.join(dataDir, 'node-latency.json'), logger });
+  wrapClientWithLatency(client, nodeLatencyRecorder, (nodeIndex) => getConfig().llm.apiKeys?.[nodeIndex]?.name);
   const memoryService = new ChatMemoryService({
     rootDir: getConfig().orchestration.memory.dataDir || path.join(dataDir, 'memory'),
     getConfig,
@@ -926,10 +930,26 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     onAction: (action) => orchestrationEnforcer.testCapability(action),
   });
   void capabilityTestConsumer.start().catch((error) => logger.warn('能力测试消费者启动失败', { error: String((error as Error)?.message || error) }));
+  // 节点延迟主动检测消费者：面板「测延迟」→ JSONL 动作 → 逐启用节点发最小 ping。
+  const nodeLatencyConsumer = new NodeLatencyActionConsumer({
+    actionFile: process.env.MIOBOT_NODE_LATENCY_ACTION_FILE || path.join(dataDir, 'node-latency-actions.jsonl'),
+    resultFile: process.env.MIOBOT_NODE_LATENCY_RESULT_FILE || path.join(dataDir, 'node-latency-results.json'),
+    processedFile: path.join(dataDir, 'node-latency-actions.done.json'),
+    logger,
+    onAction: async () => {
+      const startedAt = Date.now();
+      const nodes = toModelNodes(getConfig());
+      const results = await probeAllNodes(client, nodes, 10000);
+      return { results, durationMs: Date.now() - startedAt };
+    },
+  });
+  void nodeLatencyConsumer.start().catch((error) => logger.warn('节点延迟检测消费者启动失败', { error: String((error as Error)?.message || error) }));
   const runtime = createBotMessageRuntime({
     app,
     reply: adapter,
     getConfig: () => { syncNapcat(); return getConfig(); },
+    // 追问等待中的会话：用户后续无触发消息（含纯图答案）转入澄清合并，不再被忽略。
+    hasPendingClarification: ({ chatType, groupId, userId }) => orchestrationEnforcer.hasPendingClarification(chatType, groupId, userId),
     selfId: () => adapter.selfQqId || undefined,
     // T2.2b：好友请求自动通过等需要的通用 action 通道。
     callNapcatAction: (action, params) => adapter.callAction(action, params),

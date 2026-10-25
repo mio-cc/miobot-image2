@@ -235,13 +235,13 @@ export class SunoSongHistoryStore {
     ].join('\n');
   }
 
-  /** 全局歌曲上下文（供 planner 定位重发/取另一版/编辑目标；不携带会话与用户信息）。 */
+  /** 全局歌曲上下文（供 planner 定位重发/取另一版/同曲换词重做/编辑目标；不携带会话与用户信息）。 */
   promptContextGlobal(limit = 10): string {
     const records = this.listGlobal(limit);
     if (!records.length) return '';
     return [
-      '最近生成的全部歌曲（全局共享，用于重发/取另一版/编辑目标定位；序号稳定；不要按关键词硬匹配）：',
-      ...records.map((item) => JSON.stringify({ seq: item.globalSeq, recordId: item.id, title: item.title || '', variantIndex: item.variantIndex ?? 1, duration: item.duration || null })),
+      '最近生成的全部歌曲（全局共享，用于重发/取另一版/换词重做/编辑目标定位；序号稳定；不要按关键词硬匹配；"换词重做"时用对应记录的 style 作为生成 style）：',
+      ...records.map((item) => JSON.stringify({ seq: item.globalSeq, recordId: item.id, title: item.title || '', variantIndex: item.variantIndex ?? 1, duration: item.duration || null, style: item.style || null, hasLyrics: Boolean(item.lyrics) })),
     ].join('\n');
   }
 }

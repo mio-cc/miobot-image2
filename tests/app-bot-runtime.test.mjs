@@ -556,7 +556,7 @@ test('owner: ch -> 撤回当前私聊最近一条机器人消息', async () => {
   assert.equal(recall.kind, 'owner:recall');
   assert.deepEqual(deleted, ['501']);
   assert.equal(handled.length, 0);
-  assert.ok(sent.some(([kind, user, text]) => kind === 'text' && user === 5 && text.includes('已撤回最近 1 条')));
+  assert.ok(sent.some(([kind, user, text]) => kind === 'text' && user === 5 && text.includes('已撤回 1 条')));
 });
 
 test('private genImage default progress is silent -> image only', async () => {
@@ -925,7 +925,7 @@ test('runtime: duplicate QQ message events are idempotent and do not reply twice
   assert.equal(second.reason, 'duplicate-message');
   assert.equal(reply.sent.length, 1);
 });
-test('runtime: vector memory context replaces fixed group history and extracts user/assistant memories', async () => {
+test('runtime: memory context and group history are both fetched and merged (不再二选一)', async () => {
   const ingested = [];
   let historyCalls = 0;
   let memoryQueries = 0;
@@ -948,7 +948,8 @@ test('runtime: vector memory context replaces fixed group history and extracts u
   });
   assert.equal(result.handled, true);
   assert.equal(memoryQueries, 1);
-  assert.equal(historyCalls, 0);
+  // 修复：群历史不再被记忆命中短路——两类上下文互补（记忆=历史事实，群历史=刚才群里说了什么）
+  assert.equal(historyCalls, 1);
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.ok(ingested.some((item) => item.role === 'user' && item.text.includes('继续聊刚才的话题')));
   assert.ok(ingested.some((item) => item.role === 'assistant'));
@@ -1086,7 +1087,7 @@ test('runtime T3.7: 高危 owner 命令二次确认——/plch 20 先确认，/o
   assert.equal(stray.kind, 'owner:confirm-expired');
 });
 
-test('runtime B: 记忆命中不拉群历史，未命中回落群历史（enforce 富化提速）', async () => {
+test('runtime B: 群历史与记忆合并注入（上下文统一组装，enforce 单字段接收）', async () => {
   const inputs = [];
   let historyCalls = 0;
   const enforceCfg = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; c.orchestration.enabled = true; c.orchestration.mode = 'enforce'; c.bot.groupContext = { ...c.bot.groupContext, enabled: true }; return c; };
@@ -1098,19 +1099,20 @@ test('runtime B: 记忆命中不拉群历史，未命中回落群历史（enforc
     },
   };
   const event = (id) => ({ post_type: 'message', message_type: 'group', group_id: 3000, user_id: 5, message_id: id, sender: { nickname: 'u' }, raw_message: '[CQ:at,qq=10000] 在吗', message: [{ type: 'at', data: { qq: '10000' } }, { type: 'text', data: { text: ' 在吗' } }] });
-  // 记忆命中：不拉群历史，enforce 收到 memoryContext 无 groupContext。
+  // 记忆命中：群历史照常拉取，两类上下文合并进 groupContext 单字段。
   const a = setup({ ...base, getConfig: enforceCfg, loadMemoryContext: async () => '【长期记忆】之前聊过猫' });
   const ra = await a.rt.handleMessageEvent(event(9001));
   assert.equal(ra.handled, true);
   assert.equal(inputs.length, 1);
-  assert.match(inputs[0].memoryContext, /猫/);
-  assert.equal(inputs[0].groupContext, undefined, '记忆命中时不得携带群历史');
-  assert.equal(historyCalls, 0, '记忆命中时不得调用 get_group_msg_history');
-  // 记忆未命中：回落群历史。
+  assert.match(inputs[0].groupContext, /猫/, '合并上下文应包含记忆命中');
+  assert.match(inputs[0].groupContext, /群历史一条/, '合并上下文应包含群历史');
+  assert.equal(inputs[0].memoryContext, undefined, '合并后不再单独携带 memoryContext');
+  assert.equal(historyCalls, 1, '记忆命中时群历史照常拉取');
+  // 记忆未命中：只有群历史段。
   const b = setup({ ...base, getConfig: enforceCfg, loadMemoryContext: async () => undefined });
   const rb = await b.rt.handleMessageEvent(event(9002));
   assert.equal(rb.handled, true);
-  assert.equal(historyCalls, 1, '记忆未命中时拉群历史一次');
+  assert.equal(historyCalls, 2, '每次都拉群历史');
   assert.match(inputs[1].groupContext, /群历史一条/);
-  assert.equal(inputs[1].memoryContext, undefined);
+  assert.ok(!/相关记忆/.test(inputs[1].groupContext), '无记忆命中时不出现记忆段');
 });

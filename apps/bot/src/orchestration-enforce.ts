@@ -381,6 +381,13 @@ export class OrchestrationEnforcer {
     return this.registry.list();
   }
 
+  /** 该会话是否有等待回答的澄清追问（runtime 据此把无触发消息转入追问合并，含纯图答案）。 */
+  hasPendingClarification(chatType: 'group' | 'private', groupId: number | string | undefined, userId: number | string | undefined): boolean {
+    if (!this.options.pendingJobs) return false;
+    const key = pendingSessionKey({ type: chatType, groupId, userId });
+    return this.options.pendingJobs.get(key)?.status === 'clarifying';
+  }
+
   private roleModelClient(collector?: ModelUsageTotals) {
     return {
       chat: async (nodeIndex: number, req: any) => {
@@ -574,7 +581,8 @@ export class OrchestrationEnforcer {
     }
     this.refreshConfig(cfg);
     const text = String(input.text || '').trim();
-    if (!text && !input.plan) return { handled: false, reason: 'empty_text' };
+    // 纯图答案（追问澄清时用户回图、无文字）也放行——empty_text 会把它们挡在合并门外。
+    if (!text && !input.plan && !(Array.isArray(input.images) && input.images.length)) return { handled: false, reason: 'empty_text' };
     const userId = String(input.userId || '');
     const pendingKey = pendingSessionKey({ type: input.chatType, groupId: input.groupId, userId: input.userId });
     const pending = input.plan ? undefined : this.options.pendingJobs?.get(pendingKey);
@@ -802,7 +810,8 @@ export class OrchestrationEnforcer {
         if (!resolved.value) {
           this.options.pendingJobs?.delete(pendingKey);
           appendTrace('plan', '追问回答仍无法合并', { jobId, error: resolved.error });
-          return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'clarification_resolution_failed', error: resolved.error || '模型无法将用户补充信息合并到计划' } };
+          // 群内给用户一条引导（而非只 DM 管理员后群内静默）；问题上报照常发给管理员。
+          return { handled: true, result: this.messageEngineResult('我没法从当前消息里拿到需要的补充——图片请重新发送并@我，文字直接回复即可。'), problem: { kind: 'clarification_resolution_failed', error: resolved.error || '模型无法将用户补充信息合并到计划' } };
         }
         plan = { ...resolved.value, modelRoundsUsed: roleRoundsUsed };
         resumePlan = plan;

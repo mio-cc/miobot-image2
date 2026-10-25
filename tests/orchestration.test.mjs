@@ -1507,7 +1507,8 @@ test('orchestration: clarification is hard-capped at one question per job', asyn
   assert.ok(first.result.text.includes('请再说具体一点'));
   const second = await enforcer.handle({ text: '就是那个', chatType: 'private', userId: '7' });
   assert.equal(second.handled, true);
-  assert.equal(second.result.text, undefined);
+  // 合并失败时给用户一条群内引导（而非静默）；问题上报照常 DM 管理员。
+  assert.match(second.result.text, /没法从当前消息里拿到需要的补充/);
   assert.equal(second.problem.kind, 'clarification_resolution_failed');
   assert.equal(store.list().length, 0);
   assert.equal(calls, 2);
@@ -1795,18 +1796,18 @@ test('orchestration: Suno composer turns natural language into V6 mode-specific 
     requestId: 'suno-compose', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' },
     text: '来一首适合深夜开车的温柔日语女声歌曲', attachments: [], receivedAt: new Date().toISOString(),
   }, cfg);
-  assert.ok(prompt.includes('customMode=false'));
-  assert.ok(prompt.includes('普通点歌请求使用 customMode=false'));
+  assert.ok(prompt.includes('歌词恒由你（模型）创作'));
+  assert.ok(prompt.includes('禁止让 Suno 代写歌词'));
   assert.ok(prompt.includes('副歌必须有一个短、可重复、易记的核心 hook'));
   assert.ok(prompt.includes('用户提供的歌词必须逐字保留'));
   assert.ok(prompt.includes('style'));
   const composer = new SunoPromptComposer({
     async chat() {
       return { text: JSON.stringify({
-        customMode: false, instrumental: false, title: null,
+        customMode: true, instrumental: false, title: '雨夜备忘录',
         musicBrief: '温柔日语女声，深夜城市驾驶，温暖合成器与舒缓鼓点',
         style: 'japanese city pop, warm synth, mellow, female vocal, 92 BPM',
-        lyrics: null, negativeTags: null, vocalGender: null, duration: null,
+        lyrics: '[Verse 1]\n夜色漫过后视镜\n[Chorus]\n把心事留给雨夜', negativeTags: null, vocalGender: null, duration: null,
         styleWeight: null, weirdnessConstraint: null, audioWeight: null, variety: null, model: 'V6',
       }) };
     },
@@ -1815,11 +1816,37 @@ test('orchestration: Suno composer turns natural language into V6 mode-specific 
     requestId: 'suno-compose', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' },
     text: '来一首适合深夜开车的温柔日语女声歌曲', attachments: [], receivedAt: new Date().toISOString(),
   });
-  assert.equal(result.customMode, false);
+  // 歌词恒由我们的模型写：非纯音乐强制 customMode=true，模型写的歌词逐字进入 spec
+  assert.equal(result.customMode, true);
+  assert.match(result.lyrics, /夜色漫过后视镜/);
   assert.ok(result.musicBrief.includes('深夜'));
   assert.ok(result.style.includes('city pop'));
-  assert.equal(result.title, undefined);
+  assert.equal(result.title, '雨夜备忘录');
   assert.equal(result.duration, undefined);
+});
+
+test('orchestration: Suno composer 漏写歌词时回退 Suno 代写并保持可生成', async () => {
+  const cfg = createDefaultConfig();
+  cfg.orchestration.suno.model = 'V6';
+  const composer = new SunoPromptComposer({
+    async chat() {
+      return { text: JSON.stringify({
+        customMode: true, instrumental: false, title: '无词测试',
+        musicBrief: '温柔日语女声，深夜城市驾驶',
+        style: 'japanese city pop, warm synth, mellow, female vocal',
+        lyrics: null, negativeTags: null, vocalGender: null, duration: null,
+        styleWeight: null, weirdnessConstraint: null, audioWeight: null, variety: null, model: 'V6',
+      }) };
+    },
+  }, () => cfg);
+  const result = await composer.compose({ request: '来一首歌' }, {
+    requestId: 'suno-compose-2', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' },
+    text: '来一首歌', attachments: [], receivedAt: new Date().toISOString(),
+  });
+  // 模型漏写歌词 → 回退 customMode=false（Suno 代写兜底），style/musicBrief 保留
+  assert.equal(result.customMode, false);
+  assert.equal(result.lyrics, undefined);
+  assert.ok(result.style.includes('city pop'));
 });
 
 test('orchestration: Suno V6 client distinguishes custom and non-custom payloads', async () => {
@@ -2588,7 +2615,7 @@ test('suno composer: configured default gender and language are applied', async 
   let composerPayload;
   const composer = new SunoPromptComposer({
     async chat(_node, payload) { composerPayload = payload;
-      return { text: JSON.stringify({ customMode: false, instrumental: false, musicBrief: 'Cantopop love song', style: 'cantopop, romantic', model: 'V6' }) };
+      return { text: JSON.stringify({ customMode: true, instrumental: false, title: '粤语情歌', musicBrief: 'Cantopop love song', style: 'cantopop, romantic', lyrics: '[Verse]\n夜半歌声轻轻唱\n[Chorus]\n仍然想你到天光', model: 'V6' }) };
     },
   }, () => cfg);
   const spec = await composer.compose({ request: '来一首粤语情歌' }, {
@@ -2598,6 +2625,7 @@ test('suno composer: configured default gender and language are applied', async 
   assert.equal(spec.customMode, true);
   assert.equal(spec.vocalGender, 'm');
   assert.equal(spec.language, '粤语');
+  assert.match(spec.lyrics, /夜半歌声/, '歌词由模型写出');
   assert.equal(composerPayload.maxTokens, 7000);
   assert.equal(composerPayload.temperature, 0.4);
 });

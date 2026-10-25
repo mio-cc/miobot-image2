@@ -67,6 +67,7 @@ export class TriggerIntentChecker {
       '发送者：' + input.userName,
       '命中的触发词：' + input.triggerWord,
     ].join('\n');
+    const t0 = Date.now();
     try {
       const result = await this.options.client.chat(nodeIndex, {
         model,
@@ -88,6 +89,7 @@ export class TriggerIntentChecker {
           type: 'keyword_intent',
           node: nodeIndex,
           model,
+          durationMs: Date.now() - t0,
           promptPreview: prompt.replace(/\s+/g, ' ').slice(0, 600),
           responsePreview: raw.replace(/\s+/g, ' ').slice(0, 300),
           parsed: intent === undefined ? 'unparseable' : String(intent),
@@ -103,7 +105,7 @@ export class TriggerIntentChecker {
         requestId: this.options.getRequestId?.() || '',
         stage: 'model_call',
         summary: `意图判断调用失败(默认触发)`,
-        data: { type: 'keyword_intent', error: String((error as Error)?.message || error), node: nodeIndex, model },
+        data: { type: 'keyword_intent', error: String((error as Error)?.message || error), node: nodeIndex, model, durationMs: Date.now() - t0 },
       });
       return true;
     }
@@ -130,6 +132,7 @@ export class TriggerIntentChecker {
       '用户新消息：' + input.userText.slice(0, 500),
       '发送者：' + input.userName,
     ].join('\n');
+    const t0 = Date.now();
     try {
       const result = await this.options.client.chat(nodeIndex, {
         model,
@@ -150,6 +153,7 @@ export class TriggerIntentChecker {
           type: 'continue_intent',
           node: nodeIndex,
           model,
+          durationMs: Date.now() - t0,
           promptPreview: prompt.replace(/\s+/g, ' ').slice(0, 500),
           responsePreview: String(result.text || '').replace(/\s+/g, ' ').slice(0, 300),
           parsed: cont === undefined ? 'unparseable' : String(cont),
@@ -163,7 +167,7 @@ export class TriggerIntentChecker {
         requestId: this.options.getRequestId?.() || '',
         stage: 'model_call',
         summary: `延续判断调用失败`,
-        data: { type: 'continue_intent', error: String((error as Error)?.message || error) },
+        data: { type: 'continue_intent', error: String((error as Error)?.message || error), durationMs: Date.now() - t0 },
       });
       return false;
     }

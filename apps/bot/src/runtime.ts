@@ -2,7 +2,7 @@ import { createBotRouter, extractReplyId, isAllowedByWhitelist, isGroupUserBlack
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { FEATURE_DEFINITIONS, type FeatureSetting } from '../../../packages/shared/src/features.js';
-import { createSentMessageTracker, createTrackingReplyClient, sentChatKey, type SentMessageTracker } from './sent-messages.js';
+import { createSentMessageTracker, createTrackingReplyClient, partitionRecallEntries, sentChatKey, type SentMessageTracker } from './sent-messages.js';
 import { createReplyStrategyEngine, type ReplyClient, type ReplyContext, type ReplyStrategyConfig } from '../../../packages/reply/src/index.js';
 import { dedupeImageUrls, dedupeVideoUrls } from '../../../packages/napcat/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
@@ -180,6 +180,8 @@ export interface BotRuntimeOptions {
     checkKeywordIntent(input: { userText: string; userName: string; context: string; triggerWord: string; allTriggerWords?: string[] }): Promise<boolean>;
     checkContinueIntent(input: { userText: string; userName: string; botLastReply: string }): Promise<boolean>;
   };
+  /** 该会话是否有等待回答的澄清追问（status=clarifying）；有则用户后续无触发消息（含纯图）转入追问合并。 */
+  hasPendingClarification?: (input: { chatType: 'group' | 'private'; groupId?: number | string; userId?: number | string }) => boolean;
   /** 精确命令网关：命令直接生成 IntentPlan 并走功能层权限/审批。 */
   commandOrchestration?: (input: {
     command: string;
@@ -649,20 +651,25 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
   async function recallRecentMessages(chatType: 'group' | 'private', groupId: number | string | undefined, userId: number | string | undefined, count: number): Promise<string> {
     if (!options.deleteMessage) return '当前运行环境不支持撤回消息。';
     const key = sentChatKey(chatType, groupId, userId);
-    const ids = sentMessages.take(key, count);
-    if (!ids.length) return '当前聊天没有记录到可撤回的机器人消息。';
+    const entries = sentMessages.takeDetailed(key, count);
+    if (!entries.length) return '当前聊天没有记录到可撤回的机器人消息。';
+    const { targets, forward, expired } = partitionRecallEntries(entries);
     let ok = 0;
     const failed: Array<number | string> = [];
-    for (const id of ids) {
+    for (const entry of targets) {
       try {
-        if (await options.deleteMessage(id)) ok += 1;
-        else failed.push(id);
-      } catch { failed.push(id); }
+        if (await options.deleteMessage(entry.id)) ok += 1;
+        else failed.push(entry.id);
+      } catch { failed.push(entry.id); }
     }
-    if (failed.length) sentMessages.restore(key, failed);
-    if (!ok) return `撤回失败（${failed.length} 条）。`;
-    const suffix = failed.length ? `，${failed.length} 条失败` : '';
-    return ok === 1 ? `已撤回最近 1 条机器人消息${suffix}。` : `已撤回最近 ${ok} 条机器人消息${suffix}。`;
+    if (failed.length) sentMessages.restoreEntries(key, targets.filter((entry) => failed.some((f) => String(f) === String(entry.id))));
+    const parts: string[] = [];
+    if (ok) parts.push(`已撤回 ${ok} 条消息`);
+    if (forward.length) parts.push(`${forward.length} 条合并转发无法撤回（QQ 协议限制）`);
+    if (expired) parts.push(`${expired} 条已超撤回窗口`);
+    if (failed.length) parts.push(`${failed.length} 条撤回失败`);
+    if (!parts.length) return '当前聊天没有记录到可撤回的机器人消息。';
+    return parts.join('；') + '。';
   }
   // 会话内“只回最新”：记录每个会话最后一条已进入处理的消息序号，
   // chat 文本结果发送前若已有更新消息，则丢弃这份迟到回复（图/视频等昂贵产物不丢）。
@@ -691,6 +698,20 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const baseFiles = extractFiles(event);
     const userId = event.user_id ?? event.sender?.user_id;
     const sessionId = chatType === 'group' ? `group:${event.group_id}:${userId}` : `private:${userId}`;
+    // 全流程阶段计时：入口即起表（此前 startedAt 在编排之后才起算，chat 均值不含前置阶段）。
+    const messageEntryAt = Date.now();
+    const stageStarts: Record<string, number> = {};
+    const stageMarks: Record<string, number> = {};
+    const stageBegin = (name: string): void => { stageStarts[name] = Date.now(); };
+    const stageEnd = (name: string): void => {
+      if (stageStarts[name] === undefined) return;
+      const ms = Math.round(Date.now() - stageStarts[name]);
+      stageMarks[name] = ms;
+      options.metrics?.recordDuration(name, ms);
+    };
+    const logTiming = (outcome: string): void => {
+      log?.info('消息处理耗时', { outcome, totalMs: Date.now() - messageEntryAt, stages: stageMarks });
+    };
     let cachedGroupContext: string | undefined;
     let groupContextLoaded = false;
     const loadChatMemoryContext = async (): Promise<string | undefined> => {
@@ -723,10 +744,33 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         selfId: options.selfId?.() ?? cfg.bot.botQqId,
         options: ctxOptions,
       });
-      if (!rawContext) return undefined;
+      if (!rawContext) {
+        // 拉取为空不再静默：可能是 get_group_msg_history 失败、skipForward/图片占位过滤光、或群里本来就没人说话。
+        if (chatType === 'group' && gc?.enabled && event.message_id && event.group_id) {
+          log?.warn('群历史上下文为空', { groupId: event.group_id, messageCount: gc.messageCount, skipForward: gc.skipForward, maxChars: gc.maxChars });
+        }
+        return undefined;
+      }
       const currentName = event.sender?.card?.trim() || event.sender?.nickname?.trim() || '用户';
       cachedGroupContext = `【群聊上下文；格式：昵称 [QQ号]: 内容；不同 QQ 号代表不同用户，不能合并成同一人】\n【当前提问用户】${currentName} [QQ:${userId ?? '未知'}]\n${rawContext}`;
       return cachedGroupContext;
+    };
+    // 统一上下文组装器：群历史（"刚才群里说了什么"）+ 记忆命中（"历史事实"）合并，不再二选一——
+    // 旧逻辑 memoryContext 非空就跳过群历史，而记忆 recentTurns>0 时几乎恒非空，导致群上下文长期失效（线上实测）。
+    const buildChatContext = async (): Promise<{ context: string | undefined; ms: number }> => {
+      const startedAt = Date.now();
+      const parts: string[] = [];
+      const memory = await loadChatMemoryContext();
+      if (memory) parts.push(`【相关记忆】\n${memory}`);
+      const groupHistory = await loadGroupContext();
+      if (groupHistory) parts.push(groupHistory);
+      const context = parts.join('\n\n') || undefined;
+      log?.info('上下文组装', {
+        groupId: event.group_id, sources: parts.length,
+        memoryChars: memory?.length || 0, groupChars: groupHistory?.length || 0,
+        chars: context?.length || 0, ms: Date.now() - startedAt,
+      });
+      return { context, ms: Date.now() - startedAt };
     };
 
     const reportProblem = async (kind: string, error: unknown, extra?: Record<string, unknown>): Promise<void> => {
@@ -938,7 +982,16 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     };
 
     const router = createBotRouter(toRouterConfig(cfg, options.selfId?.()));
+    stageBegin('route');
     let decision = router.route(ctx);
+    stageEnd('route');
+    // ── 追问等待中：该会话有 clarifying 追问时，用户后续消息（含纯图答案、无需 @）都是对追问的回答 ──
+    // 线上实测：bot 追问"图片是不是 X"，用户回图（无@被忽略）再 @催促，图片永远进不了合并。
+    if (decision.kind === 'ignored' && options.hasPendingClarification?.({ chatType, groupId: event.group_id, userId })) {
+      const pendingText = stripNonTextCqSegments(rawMessage).trim();
+      decision = { kind: 'freeMode', commandText: pendingText, source: 'pending_clarification', params: { prompt: pendingText, tokens: [] } } as any;
+      log?.info('追问等待中：无触发消息转入澄清合并', { groupId: event.group_id, userId, hasImages: baseImages.length > 0, hasText: Boolean(pendingText) });
+    }
     // ── 关键词触发（优先于延续）：消息含触发词→拉上下文→模型判断意图→有意图改为 chat ──
     if (decision.kind === 'ignored' && chatType === 'group' && cfg.bot.keywordTrigger?.enabled) {
       const plainText = stripNonTextCqSegments(rawMessage).toLowerCase();
@@ -950,7 +1003,11 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         const cooldownMs = Math.max(3000, Number(cfg.bot.keywordTrigger.windowMs) || 10000);
         if (now - lastCheck >= cooldownMs) {
           keywordTriggerCooldowns.set(kwKey, now);
-          if (keywordTriggerCooldowns.size > 2000) keywordTriggerCooldowns.clear();
+          if (keywordTriggerCooldowns.size > 2000) {
+            const oldestKw = keywordTriggerCooldowns.keys().next().value;
+            if (oldestKw !== undefined) keywordTriggerCooldowns.delete(oldestKw);
+          }
+          stageBegin('keyword');
           let contextText = '';
           try {
             const history = await options.fetchGroupHistory?.(String(event.group_id || ''), String(event.message_id || ''), Math.max(3, Number(cfg.bot.keywordTrigger.contextMessages) || 5));
@@ -971,6 +1028,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
             // 缺了会被判成空@消息，回"我在。直接说需求就行"罐头话（线上实测）。
             decision = { kind: 'chat', source: 'keyword_trigger', confidence: 0.9, reason: 'keyword: ' + triggerWord, commandText: plainText, params: { prompt: plainText, tokens: [] } } as any;
           }
+          stageEnd('keyword');
         }
       }
     }
@@ -989,6 +1047,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         if (withinWindow && withinRounds && pastCooldown) {
           const plainText = stripNonTextCqSegments(rawMessage).trim();
           if (plainText) {
+            stageBegin('continue');
             const shouldContinue = await options.triggerIntentChecker?.checkContinueIntent({
               userText: plainText,
               userName: String(event.sender?.card || event.sender?.nickname || userId || ''),
@@ -1004,6 +1063,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
             } else {
               autoContinueStates.delete(acKey);
             }
+            stageEnd('continue');
           }
         } else if (!withinWindow || !withinRounds) {
           autoContinueStates.delete(acKey);
@@ -1011,7 +1071,16 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       }
     }
     if (decision.kind === 'ignored') {
+      // 无触发但带图的群消息：暂存图片引用（短窗），供后续 @bot 提问时并入模型输入。
+      if (chatType === 'group' && baseImages.length && event.group_id) {
+        const imageKey = `group:${String(event.group_id)}`;
+        const list = (recentImageMemory.get(imageKey) || []).filter((entry) => Date.now() - entry.at <= RECENT_IMAGE_WINDOW_MS);
+        for (const ref of baseImages) list.push({ ref, at: Date.now() });
+        while (list.length > RECENT_IMAGE_MAX * 3) list.shift();
+        recentImageMemory.set(imageKey, list);
+      }
       log?.info('消息被忽略', { reason: decision.reason, rawMessage: rawMessage.slice(0, 80) });
+      logTiming('ignored');
       return { handled: false, reason: decision.reason };
     }
     log?.info('路由决策', { kind: decision.kind, commandText: (decision as any).commandText?.slice(0, 80) });
@@ -1070,12 +1139,13 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     let result: BotEngineResult | null = null;
     if (!result && decision.kind !== 'command' && cfg.orchestration?.enabled && cfg.orchestration.mode === 'enforce' && options.enforceOrchestration) {
       let enforceProgress: ImageProgressHandle | undefined;
+      stageBegin('enforce');
       try {
-        // B（提速）：记忆检索命中时不再拉群历史——两者本互备上下文，
-        // 记忆 embedding ~0.3s，群历史 get_group_msg_history 实测 ~0.76s；
-        // 记忆未命中（无记忆/未开启/查询失败）时才回落群历史。
-        const memoryContext = await loadChatMemoryContext();
-        const groupContext = memoryContext ? undefined : await loadGroupContext();
+        // 统一上下文：群历史与记忆命中合并注入（不再二选一——记忆 recentTurns>0 时几乎恒非空，
+        // 旧逻辑导致群历史长期拉不到，bot 不知道群里在聊什么）。
+        stageBegin('context');
+        const { context: chatContext } = await buildChatContext();
+        stageEnd('context');
         // UCW：统一上下文——planner 能看到 chat 对话历史（解决"把这首歌按正确歌词重新生成"
         // 被理解成"按主题重新生成"的根因：planner 不知道 chat 之前说了什么）。
         let sessionHistory: string | undefined;
@@ -1103,8 +1173,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           images: baseImages,
           files: baseFiles.map((file) => ({ ...file })),
           referencedText: referenced ? extractReferenceText(referenced) : undefined,
-          groupContext,
-          memoryContext,
+          groupContext: chatContext,
           sessionHistory,
           sessionId,
           onProgress: async (event) => {
@@ -1123,6 +1192,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         await reportProblem('enforce-orchestration-error', error, { text: stripNonTextCqSegments(rawMessage).slice(0, 200) });
       } finally {
         enforceProgress?.done();
+        stageEnd('enforce');
       }
     }
 
@@ -1248,12 +1318,24 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const referencedVideos = referenced ? extractVideos(referenced) : [];
     const forwardVideos = forwardNodes.flatMap((n) => extractVideos(n as unknown as NapcatMessageEvent));
     const maxInputImages = Math.max(1, cfg.freeMode.maxInputImages || 6);
+    // 最近图片记忆：本条消息没带图时，并入此前因无触发被忽略的群图片（短窗），
+    // 支撑"先发图 → 再 @bot 提问"的常见用法（线上实测：图片被忽略后提问，bot 看不到图）。
+    let recentImageRefs: string[] = [];
+    if (!baseImages.length && (decision.kind === 'freeMode' || decision.kind === 'chat')) {
+      const imageKey = chatType === 'group' ? `group:${String(event.group_id)}` : `private:${String(userId)}`;
+      const recentList = (recentImageMemory.get(imageKey) || []).filter((entry) => Date.now() - entry.at <= RECENT_IMAGE_WINDOW_MS);
+      if (recentList.length) {
+        recentImageRefs = recentList.slice(-RECENT_IMAGE_MAX).map((entry) => entry.ref);
+        log?.info('并入最近未处理图片', { groupId: event.group_id, count: recentImageRefs.length });
+      }
+    }
     // 引用/转发图片/视频是否并入模型输入:受 freeMode.includeQuotedMessage 控制(默认 true)。
     // 当前消息自带图/视频始终保留。
     const quotedImages = includeQuoted ? [...referencedImages, ...forwardImages] : [];
     const quotedVideos = includeQuoted ? [...referencedVideos, ...forwardVideos] : [];
     const enrichedImages = dedupeImageUrls([
       ...baseImages,
+      ...recentImageRefs,
       ...quotedImages,
     ]).slice(0, maxInputImages);
     const enrichedVideos = dedupeVideoUrls([
@@ -1312,6 +1394,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           log?.info('回复发送完成', { kind: 'empty-mention' });
           // 罐头回复同样登记延续状态：否则用户紧跟着的补充消息进不了延续判断（线上实测被忽略）。
           armAutoContinue(chatType, event.group_id, userId, cannedText, true);
+          logTiming('empty-mention');
           return { handled: true, kind: 'empty-mention' };
         }
         const hasFiles = baseFiles.length > 0 || Boolean(referenced && extractFiles(referenced).length > 0);
@@ -1321,6 +1404,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         // 只有模型不可用、超时、低置信度或返回非法 JSON 时才回退正则。
         if (cleanText && !cleanText.startsWith('你正在分析用户上传的文件') && !cleanText.startsWith('用户请求读取文件')) {
           const intentConfig = options.getConfig().intentRecognition;
+          stageBegin('intent');
           const intent = await classifyNaturalLanguageIntent({
             client: options.app.client,
             text: cleanText,
@@ -1330,6 +1414,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
             fallback: fallbackIntent(cleanText, hasFiles, cfg, options),
             logger: options.logger,
           });
+          stageEnd('intent');
           options.logger?.info('自然语言意图识别', {
             intent: intent.intent,
             args: intent.args.slice(0, 100),
@@ -1492,16 +1577,19 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         }
 
         if (!result) {
-          const context = [(await loadChatMemoryContext()), (await loadGroupContext())].filter(Boolean).join('\n\n') || undefined;
-          if (context) log?.info('群上下文已注入', { groupId: event.group_id, contextChars: context.length, currentUserId: userId });
+          stageBegin('context');
+          const { context } = await buildChatContext();
+          stageEnd('context');
           const engineInput = {
             text: cleanText, images: modelImages, videos: enrichedVideos,
             hasReferencedImage, hasReferencedVideo, chatType, sessionId, context, referenceText, forwardText,
             featureContext: { chatType, groupId: event.group_id, userId, promptChars: cleanText.length },
           };
+          stageBegin('engine');
           result = forceChat
             ? await options.app.engine.handleExplicit('chat', engineInput, { prompt: cleanText })
             : await options.app.handle(engineInput);
+          stageEnd('engine');
         }
       } else if (decision.kind === 'command') {
         // 命令类:图片用富化后的(引用图片可达改图/反推),提示词保持原始 args 不注入引用文本。
@@ -1628,15 +1716,18 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const sendDelay = resultFeatureId ? options.featureGate?.sendDelayMs(resultFeatureId) || 0 : 0;
     if (sendDelay > 0) await new Promise((resolve) => setTimeout(resolve, sendDelay));
     let sent: import('../../../packages/reply/src/index.js').ReplyDispatchResult | null;
+    stageBegin('send');
     try {
       const effectiveMaxMessages = cfg.orchestration.reply.countProgressInBudget
         ? Math.max(1, cfg.orchestration.reply.maxMessages - progressMessagesSent)
         : cfg.orchestration.reply.maxMessages;
       sent = await sendResult(engine, replyCtx, result, options.voice, options.voiceEligible, trackedReply, reportProblem, effectiveMaxMessages, options.materializeAudio);
     } catch (error) {
+      stageEnd('send');
       await reportProblem('reply-send-error', error, { kind: result.kind, textChars: result.text?.length || 0 });
       return { handled: false, reason: 'reply-send-error' };
     }
+    stageEnd('send');
     if (cfg.bot.autoRecallImages && result.images?.length && sent?.success && options.deleteMessage) {
       const ids = sent.messageIds?.length ? sent.messageIds : (sent.messageId !== undefined ? [sent.messageId] : []);
       if (ids.length) sentMessages.remove(sentChatKey(chatType, event.group_id, userId), ids);
@@ -1670,6 +1761,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       armAutoContinue(chatType, event.group_id, userId, result.text || '', source !== 'auto_continue');
     }
     log?.info('回复发送完成', { kind: result.kind });
+    logTiming('replied');
     return { handled: result.handled, kind: result.kind };
   }
 
@@ -1677,8 +1769,15 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
   function attach(adapter: { on(event: string, handler: (data: any) => void | Promise<void>): unknown }): void {
     adapter.on('message', (data) => {
       const event = data as NapcatMessageEvent;
-      void handleMessageEvent(event).catch(async (error) => {
-        try {
+      const attachEntryAt = Date.now();
+      void handleMessageEvent(event)
+        .then((r) => {
+          // 全流程总耗时兜底：覆盖不经 logTiming 的命令/审批等出口。
+          log?.info('消息处理总耗时', { totalMs: Date.now() - attachEntryAt, kind: r.kind, handled: r.handled });
+        })
+        .catch(async (error) => {
+          log?.info('消息处理总耗时', { totalMs: Date.now() - attachEntryAt, kind: 'unhandled-error' });
+          try {
           await options.reportProblem?.({
             kind: 'unhandled-message-error',
             error,
@@ -1705,6 +1804,10 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
   const keywordTriggerCooldowns = new Map<string, number>();
   /** 对话延续状态（groupId:userId → bot 回复时间/轮数/摘要）。 */
   const autoContinueStates = new Map<string, { lastBotReplyAt: number; rounds: number; lastContinueAt: number; lastBotReplyText: string }>();
+  /** 最近未处理图片记忆：无触发被忽略的群图片短窗暂存，支撑"先发图 → 再 @bot 提问"的常见用法。 */
+  const recentImageMemory = new Map<string, Array<{ ref: string; at: number }>>();
+  const RECENT_IMAGE_WINDOW_MS = 5 * 60 * 1000;
+  const RECENT_IMAGE_MAX = 2;
   /** 延续状态登记：bot 回复后记录该用户/群，窗口内下一条消息可自动延续。 */
   function armAutoContinue(chatType: 'group' | 'private', groupId: unknown, uid: unknown, replyText: string, hardTrigger: boolean): void {
     if (chatType !== 'group' || groupId === undefined || groupId === null || uid === undefined || uid === null) return;
@@ -1725,6 +1828,8 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
   }
   /** 戳一戳响应：只回应"戳 bot 本人"的事件，按用户冷却防刷，回复文案随机取自配置。 */
   const pokeCooldowns = new Map<string, number>();
+  /** 戳一戳防连续重复：记录每个会话上一条已发文案。 */
+  const lastPokeTexts = new Map<string, string>();
   /** 入群欢迎：每群冷却（批量入群只迎第一条），bot 自身入群不欢迎。 */
   const welcomeCooldowns = new Map<string, number>();
   async function handleNoticeEvent(data: any): Promise<void> {
@@ -1776,10 +1881,18 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const last = pokeCooldowns.get(key) || 0;
     if (cooldownMs > 0 && now - last < cooldownMs) return;
     pokeCooldowns.set(key, now);
-    if (pokeCooldowns.size > 2000) pokeCooldowns.clear();
+    if (pokeCooldowns.size > 2000) {
+      const oldestPoke = pokeCooldowns.keys().next().value;
+      if (oldestPoke !== undefined) pokeCooldowns.delete(oldestPoke);
+    }
     const replies = Array.isArray(poke.replies) ? poke.replies.map(String).filter(Boolean) : [];
     if (!replies.length) return;
-    const text = replies[Math.floor(Math.random() * replies.length)];
+    // 均匀随机 + 防连续重复：命中上一次文案时重抽一次（replies>1 时才有意义）。
+    let text = replies[Math.floor(Math.random() * replies.length)];
+    if (replies.length > 1 && text === lastPokeTexts.get(key)) {
+      text = replies[Math.floor(Math.random() * replies.length)];
+    }
+    lastPokeTexts.set(key, text);
     try {
       const sent = groupId
         ? await options.reply.sendGroupText(Number(groupId) || groupId, text)

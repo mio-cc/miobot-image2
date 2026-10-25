@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import client, { errorMessage } from '../api/client';
 import { useConfigStore } from '../stores/config';
 import { useCapabilityStore } from '../stores/capabilities';
@@ -196,6 +196,60 @@ function formatTime(value: string) {
     if (!value) return '';
     try { return new Date(value).toLocaleString('zh-CN', { hour12: false }); } catch { return value; }
 }
+
+/** 节点延迟：被动统计（bot 每次真实调用记录）+ 主动「测延迟」（逐节点发最小请求计时）。 */
+const latencyStats = ref<Record<string, any>>({});
+const latencyTesting = ref(false);
+const latencyStatus = ref('');
+const latencyResults = ref<Array<any> | null>(null);
+
+async function loadLatencyStats() {
+    try {
+        const res = await client.get('/nodes/latency');
+        latencyStats.value = res.data?.nodes || {};
+    } catch { /* bot 进程未运行时静默 */ }
+}
+onMounted(loadLatencyStats);
+
+function latencyOf(idx: number) {
+    return latencyStats.value[String(idx)] || null;
+}
+
+function latencyLabel(idx: number): string {
+    const stat = latencyOf(idx);
+    if (!stat || !stat.count) return '—';
+    const fails = stat.failCount ? ` · 失败${stat.failCount}` : '';
+    return `均值 ${stat.avgMs}ms / 最近 ${stat.lastMs}ms${fails}`;
+}
+
+async function runLatencyTest() {
+    latencyTesting.value = true;
+    latencyResults.value = null;
+    latencyStatus.value = '已提交检测：逐启用节点发最小请求计时（每个最多 10 秒）…';
+    try {
+        const res = await client.post('/nodes/latency-test');
+        const testId = res.data?.testId;
+        for (let i = 0; i < 90; i += 1) {
+            await new Promise((r) => setTimeout(r, 1000));
+            try {
+                const r2 = await client.get(`/nodes/latency-test/${testId}`);
+                if (r2.data?.result) {
+                    const results = r2.data.result.results || [];
+                    latencyResults.value = results;
+                    const okCount = results.filter((r: any) => r.ok).length;
+                    latencyStatus.value = `完成：${okCount}/${results.length} 个节点可用，耗时 ${Math.round((r2.data.result.durationMs || 0) / 100) / 10}s`;
+                    loadLatencyStats();
+                    latencyTesting.value = false;
+                    return;
+                }
+            } catch { /* pending → 继续轮询 */ }
+        }
+        latencyStatus.value = '检测超时（bot 进程可能未运行或节点全部无响应）';
+    } catch (error: any) {
+        latencyStatus.value = errorMessage(error, '提交检测失败');
+    }
+    latencyTesting.value = false;
+}
 </script>
 
 <template>
@@ -209,6 +263,9 @@ function formatTime(value: string) {
       </div>
       <div class="flex flex-wrap items-center gap-2">
         <input v-model="search" class="input-field !w-48" placeholder="搜索名称 / 地址 / 模型" />
+        <button class="btn-outline" :disabled="latencyTesting" @click="runLatencyTest">
+          {{ latencyTesting ? '检测中...' : '测延迟' }}
+        </button>
         <button class="btn-outline" :disabled="bulkRunning" @click="fetchAllModels">
           {{ bulkRunning ? '获取中...' : '批量获取模型' }}
         </button>
@@ -218,6 +275,17 @@ function formatTime(value: string) {
       </div>
     </header>
 
+    <p v-if="latencyStatus" class="text-xs mb-2 text-[color:var(--ink-2)]">{{ latencyStatus }}</p>
+    <div v-if="latencyResults" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2 mb-4">
+      <div v-for="r in latencyResults" :key="r.nodeIndex"
+        class="text-xs px-3 py-2 rounded border border-[color:var(--hairline-2)]"
+        :class="r.ok ? 'bg-[color:var(--surface)]' : 'bg-[color:var(--surface-2)]'">
+        <span :class="r.ok ? 'status-good' : 'status-crit'">{{ r.ok ? `✔ ${r.latencyMs}ms` : '✘ 不可用' }}</span>
+        <span class="ml-2 font-medium">{{ r.name || `节点 ${r.nodeIndex + 1}` }}</span>
+        <span class="ml-2 text-[color:var(--ink-3)] mono">{{ r.model }}</span>
+        <span v-if="r.error" class="block text-[11px] text-[color:var(--ink-3)] truncate" :title="r.error">{{ r.error }}</span>
+      </div>
+    </div>
     <p v-if="fetchError" class="status-crit text-xs mb-2">{{ fetchError }}</p>
     <p v-if="bulkStatus" class="text-xs mb-2 text-[color:var(--ink-2)]">{{ bulkStatus }}</p>
 
@@ -230,6 +298,7 @@ function formatTime(value: string) {
             <th class="th w-[104px]">方言</th>
             <th class="th">地址</th>
             <th class="th w-[76px]">密钥</th>
+            <th class="th w-[150px]" title="bot 真实调用的按节点延迟统计（均值/最近/失败次数）">延迟</th>
             <th class="th w-[72px] text-right">模型</th>
             <th class="th w-[96px]">并发</th>
             <th class="th w-[60px] text-center">启用</th>
@@ -261,6 +330,9 @@ function formatTime(value: string) {
                 <span v-if="node.hasKey || (node.key && !String(node.key).includes('••••'))" class="status-good">已设置</span>
                 <span v-else class="text-[color:var(--ink-3)]">未设置</span>
               </td>
+              <td class="px-3 py-2 cursor-pointer text-[11px] mono" :title="latencyLabel(idx)" @click="toggleRow(idx)">
+                <span :class="latencyOf(idx)?.failCount ? 'status-crit' : 'text-[color:var(--ink-2)]'">{{ latencyLabel(idx) }}</span>
+              </td>
               <td class="px-3 py-2 cursor-pointer text-right mono" @click="toggleRow(idx)">
                 <span :class="(node.models || []).length ? '' : 'text-[color:var(--ink-3)]'">{{ (node.models || []).length }}</span>
               </td>
@@ -286,7 +358,7 @@ function formatTime(value: string) {
             </tr>
 
             <tr v-if="expanded === idx" class="bg-[color:var(--surface-2)] border-b border-[color:var(--hairline-2)]">
-              <td colspan="9" class="px-4 py-4">
+              <td colspan="10" class="px-4 py-4">
                 <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
                   <FormField label="节点名称"><input v-model="node.name" class="input-field" placeholder="My Node" /></FormField>
                   <FormField label="节点类型">
@@ -349,7 +421,7 @@ function formatTime(value: string) {
           </template>
 
           <tr v-if="!rows.length">
-            <td colspan="9" class="px-4 py-8 text-center text-[color:var(--ink-3)] text-sm">
+            <td colspan="10" class="px-4 py-8 text-center text-[color:var(--ink-3)] text-sm">
               {{ search ? '没有匹配的节点' : '还没有节点' }}
             </td>
           </tr>

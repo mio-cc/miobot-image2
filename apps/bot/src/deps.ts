@@ -109,13 +109,17 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       const videoNote = videos.length
         ? `\n\n【用户附带了 ${videos.length} 个视频附件，当前模型无法直接解析视频内容；仅保留引用：${videos.slice(0, 3).map((v, i) => `[${i + 1}] ${String(v).slice(0, 120)}`).join(' ')}】`
         : '';
-      // 带图对话走 vision，不进会话记忆(图片上下文不便持久化)。
+      // 带图对话走 vision。会话补写文本部分（图片上下文不便持久化，但对话轮次要留，
+      // 否则 unifiedContext/多轮记忆缺失带图那轮，后续提问接不上）。
       if (images.length > 0 && client.can(req.model, 'vision')) {
         const promptBase = [contextSystem?.content, searchSystem?.content, req.text].filter(Boolean).join('\n\n');
         const prompt = `${promptBase}${videoNote}`;
         const visionReq: { model: string; prompt: string; imageUrls: string[]; maxTokens: number; reasoningEffort?: ReasoningEffort } = { model: req.model, prompt, imageUrls: images, maxTokens };
         if (reasoningEffort) visionReq.reasoningEffort = reasoningEffort;
         const res = await client.vision(nodeIndex, visionReq);
+        if (sessions && req.sessionId) {
+          sessions.append(req.sessionId, { role: 'user', content: `[图片×${images.length}] ${req.text}` }, { role: 'assistant', content: res.text });
+        }
         return { text: res.text };
       }
       // 模型无 vision 能力:图片被丢弃,记录警告便于排查(不阻塞纯文本回复)。

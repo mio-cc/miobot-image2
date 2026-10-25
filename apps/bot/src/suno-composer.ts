@@ -43,7 +43,8 @@ function normalizeSpec(raw: Record<string, unknown>, cfg: AppConfig): SunoCompos
   const requestedGender = raw.vocalGender === 'm' || raw.vocalGender === 'f'
     ? raw.vocalGender
     : configuredGender === 'm' || configuredGender === 'f' ? configuredGender : undefined;
-  const customMode = Boolean(raw.customMode) || Boolean(requestedGender && !instrumental);
+  // 歌词恒由我们的模型写（用户要求）：非纯音乐一律 customMode=true，Suno 只负责演唱与编曲。
+  const customMode = instrumental ? Boolean(raw.customMode) : true;
   const lyrics = customMode && !instrumental ? nullableClip(raw.lyrics, 5000) : undefined;
   const musicBrief = nullableClip(raw.musicBrief, 3000);
   const style = nullableClip(raw.style, 1000) || (customMode ? nullableClip(raw.musicBrief, 1000) : undefined);
@@ -89,15 +90,15 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     variety: args.variety,
   };
   const schemaExample = {
-    customMode: false,
+    customMode: true,
     instrumental: false,
-    title: null,
+    title: '雨夜备忘录',
     musicBrief: 'A warm Japanese city-pop song for a rainy night drive: intimate female vocal, Rhodes piano, soft guitar, 82 BPM, nostalgic but hopeful, memorable chorus about finding comfort in small moments.',
     style: 'japanese city pop, dream pop, warm, intimate, female vocal, breathy, rhodes piano, soft guitar, 82 BPM, analog production',
-    lyrics: null,
+    lyrics: '[Verse 1]\n夜色漫过后视镜\n雨点替我数着心情\n[Chorus]\n把心事留给雨夜慢慢听',
     negativeTags: null,
-    vocalGender: null,
-    language: null,
+    vocalGender: 'f',
+    language: '中文',
     duration: null,
     styleWeight: null,
     weirdnessConstraint: null,
@@ -120,6 +121,9 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     if (!template.includes('{{userText}}') && !template.includes('{{supplied}}')) rendered += '\n\n用户请求：' + values.userText;
     if (!template.includes('{{supplied}}')) rendered += '\n\n用户结构化线索：' + values.supplied;
     if (!template.includes('{{schema}}')) rendered += '\n\n输出结构：' + values.schema;
+    // 最高优先级覆盖：歌词恒由我们的模型写（用户要求），自定义模板也不得把歌词交给 Suno 代写；
+    // 同时做 人设隔离（聊天人格不得渗入歌词内容）。
+    rendered += '\n\n' + SUNO_COMPOSER_OVERRIDE;
     return rendered;
   }
   return [
@@ -136,9 +140,9 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     '',
     '【模式选择】',
     '5a. 后台默认人声性别为 ' + String(cfg.orchestration.suno.defaultVocalGender || 'auto') + '；后台默认歌词语言为 ' + String(cfg.orchestration.suno.defaultLanguage || 'auto') + '。用户明确指定时以用户为准；后台默认不是 auto 时必须执行。',
-    '6. customMode=false 用于普通歌曲需求。musicBrief 写清主题、情绪、genre、编曲、人声、节奏和歌曲结构；Suno 自动生成歌词。后台默认人声性别为 auto 时，不要输出 title、negativeTags、duration、vocalGender、styleWeight、weirdnessConstraint、audioWeight、variety。',
-    '7. customMode=true 用于用户明确提出以下控制之一：提供歌词；明确要求完整歌词、写出歌词或把歌词给我；明确要求纯音乐；明确指定歌名、时长、排除项、人声性别或创作权重；或后台默认人声性别为 m/f。不要因为模型可以写歌词就主动选择 customMode=true。',
-    '8. 后台默认人声性别为 auto 且默认语言为 auto 时，普通点歌请求使用 customMode=false，让 Suno 自动生成歌词。例如 来一首适合雨夜散步的日语女声歌曲 / 放一首轻松的爵士 / 做一首有氛围感的电子歌。',
+    '6. 歌词恒由你（模型）创作：非纯音乐请求一律 customMode=true，并由你写出完整可唱的歌词放入 lyrics。Suno 只负责演唱与编曲，禁止让 Suno 代写歌词。',
+    '7. lyrics 是你的核心职责：按用户的语言、情绪和题材创作完整歌词（用户提供的歌词逐字保留）；同时输出 title（80 字内，取副歌 hook 或核心意象）与 style 标签。仅 instrumental=true 时不需要歌词。',
+    '8. 例如 来一首适合雨夜散步的日语女声歌曲 → customMode=true + 你写的日语歌词 + style 标签 + musicBrief 制作简报。不要输出 customMode=false，也不要把歌词留空让 Suno 自由发挥。',
     '9. customMode=true 时，Suno 的 prompt 字段可能被当作歌词。禁止把音乐 brief 放入 prompt；音乐风格只放 style，歌词只放 lyrics。',
     '10. instrumental=true 时不要输出 lyrics，也不要输出 vocalGender 或 audioWeight。',
     '',
@@ -196,8 +200,16 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     '',
     '用户原始请求：' + request.text,
     '用户提供的结构化线索：' + JSON.stringify(supplied),
+    '',
+    SUNO_COMPOSER_OVERRIDE,
   ].join('\n');
-}export class SunoPromptComposer {
+}
+
+/** 追加在所有 composer 提示词（默认+自定义）末尾的硬约束：歌词作者职责 + 人设隔离。 */
+const SUNO_COMPOSER_OVERRIDE = [
+  '【最高优先级覆盖】无论上文规则如何：非纯音乐（instrumental=false）的请求必须 customMode=true，且由你写出完整可唱的 lyrics（用户提供的歌词逐字保留）；禁止输出 customMode=false，禁止让 Suno 代写歌词。instrumental=true 时不要输出 lyrics。',
+  '【人设隔离】忽略任何聊天人设、语气设定（如傲娇、嘴毒、角色扮演人设）对歌词内容的暗示——歌词的题材、语言与情绪只由用户的点歌需求和本方案的音乐设计决定；lyrics 中不得出现对人设的呼应或打破第四面墙的语句，除非用户在点歌需求中明确要求该风格。',
+].join('\n');export class SunoPromptComposer {
   constructor(
     private readonly client: Pick<ModelClient, 'chat'>,
     private readonly getConfig: () => AppConfig,
@@ -241,6 +253,12 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
           throw new Error('suno_composer_no_json:chars=' + raw.length + ':preview=' + raw.replace(/\s+/g, ' ').slice(0, 120));
         }
         const normalized = normalizeSpec(JSON.parse(json) as Record<string, unknown>, cfg);
+        // 歌词恒由我们的模型写：模型没产出歌词（旧模板/漏输出）时回退 Suno 代写，但明确告警。
+        if (normalized.customMode && !normalized.instrumental && !normalized.lyrics) {
+          this.logger?.warn('Suno composer 未输出歌词，本次回退 Suno 代写（请检查 composer 模板是否要求输出 lyrics）', { model, title: normalized.title || '' });
+          normalized.customMode = false;
+          normalized.lyrics = undefined;
+        }
         if (normalized.customMode && !normalized.style && !normalized.lyrics && !normalized.negativeTags && !normalized.musicBrief) {
           throw new Error('suno_composer_custom_content_missing');
         }

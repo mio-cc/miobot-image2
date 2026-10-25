@@ -639,6 +639,32 @@ export class WebApi {
         if (!result) return json(404, { success: false, error: 'capability_test_pending_or_not_found', testId });
         return ok({ success: true, testId, result });
       }
+      if (method === 'POST' && path === '/api/nodes/latency-test') {
+        const actionFile = process.env.MIOBOT_NODE_LATENCY_ACTION_FILE || nodePath.join(miobotDataDir(), 'node-latency-actions.jsonl');
+        const testId = `nlt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        await fs.mkdir(nodePath.dirname(actionFile), { recursive: true });
+        await fs.appendFile(actionFile, JSON.stringify({ id: testId, actor: 'panel', createdAt: new Date().toISOString() }) + '\n', 'utf8');
+        return ok({ success: true, queued: true, testId, status: 'queued' });
+      }
+      if (method === 'GET' && path.startsWith('/api/nodes/latency-test/')) {
+        const testId = decodeURIComponent(path.slice('/api/nodes/latency-test/'.length));
+        const resultFile = process.env.MIOBOT_NODE_LATENCY_RESULT_FILE || nodePath.join(miobotDataDir(), 'node-latency-results.json');
+        const content = await fs.readFile(resultFile, 'utf8').catch(() => '');
+        let results: unknown[] = [];
+        try { const parsed = JSON.parse(content || '{}'); results = Array.isArray(parsed?.results) ? parsed.results : []; } catch { results = []; }
+        const result = (results as Array<Record<string, unknown>>).find((item) => String(item.id || '') === testId);
+        if (!result) return json(404, { success: false, error: 'latency_test_pending_or_not_found', testId });
+        return ok({ success: true, testId, result });
+      }
+      if (method === 'GET' && path === '/api/nodes/latency') {
+        // 被动采集快照：bot 进程每次真实模型调用记录的按节点延迟/成败。
+        const snapshotFile = nodePath.join(miobotDataDir(), 'node-latency.json');
+        const content = await fs.readFile(snapshotFile, 'utf8').catch(() => '');
+        let nodes: unknown = {};
+        let updatedAt = '';
+        try { const parsed = JSON.parse(content || '{}'); nodes = parsed?.nodes || {}; updatedAt = String(parsed?.updatedAt || ''); } catch { nodes = {}; }
+        return ok({ success: true, updatedAt, nodes });
+      }
       if (method === 'GET' && path === '/api/orchestration/jobs') {
         const jobFile = process.env.MIOBOT_PENDING_JOB_FILE || nodePath.join(miobotDataDir(), 'orchestration-pending-jobs.json');
         const content = await fs.readFile(jobFile, 'utf8').catch(() => '');

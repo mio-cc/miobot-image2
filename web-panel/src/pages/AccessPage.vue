@@ -275,8 +275,8 @@ function commitBlacklist() {
     <SectionCard title="群聊上下文" hint="@bot 时自动带上最近的群聊记录，让回答接得住话题" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <ToggleField v-model="config.bot.groupContext.enabled" label="启用群聊上下文" />
-        <FormField label="拉取条数" hint="太多会明显推高 token 消耗">
-          <input v-model.number="config.bot.groupContext.messageCount" type="number" min="1" max="200"
+        <FormField label="拉取条数" hint="范围 5-100（超出会被后端钳制）；太多会明显推高 token 消耗">
+          <input v-model.number="config.bot.groupContext.messageCount" type="number" min="5" max="100"
             :disabled="!config.bot.groupContext.enabled" class="input-field" />
         </FormField>
         <FormField label="最大字符数">

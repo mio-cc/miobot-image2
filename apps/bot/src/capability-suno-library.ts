@@ -3,10 +3,6 @@ import { SunoClient, extractJsonObject } from '../../../packages/orchestration/s
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { SunoSongHistoryRecord, SunoSongHistoryStore } from './suno-song-history.js';
 
-function scopeOf(store: SunoSongHistoryStore, invocation: CapabilityInvocation): string {
-  return store.scopeKey(invocation.request.chat.type, invocation.request.chat.groupId, invocation.request.user.qq);
-}
-
 function argString(args: Record<string, unknown>, key: string): string | undefined {
   const value = args[key];
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -23,22 +19,12 @@ function globalHistoryOutput(store: SunoSongHistoryStore, limit = 20): Execution
   };
 }
 
-function missingSongResult(invocation: CapabilityInvocation, store: SunoSongHistoryStore, { scoped = false } = {}): ExecutionResult {
-  // 默认列全局历史；replace_section 仍限会话内（编辑消耗生成额度，跨会话编辑暂不放开），列本会话历史。
-  const list = scoped
-    ? {
-        kind: 'text' as const,
-        text: store.formatList(scopeOf(store, invocation), 20),
-        priority: 5,
-        mergeable: true,
-        meta: { role: 'suno_history', sourceCapability: 'audio.music.replace_section', skipTts: true, disableVoice: true },
-      }
-    : globalHistoryOutput(store, 20);
+function missingSongResult(invocation: CapabilityInvocation, store: SunoSongHistoryStore): ExecutionResult {
   return {
     jobId: invocation.plan.planId,
     stepId: invocation.step.id,
     status: 'needs_input',
-    outputs: [list],
+    outputs: [globalHistoryOutput(store, 20)],
     diagnostics: { missingInformation: ['要选择哪一首歌？请回复歌曲序号或歌名。'] },
   };
 }
@@ -234,12 +220,13 @@ export class SunoReplaceSectionCapabilityHandler implements CapabilityHandler {
   }
   async execute(invocation: CapabilityInvocation): Promise<ExecutionResult> {
     const args = invocation.step.args || {};
-    const record = this.options.store.find(scopeOf(this.options.store, invocation), {
+    // 全局共享：可定位任何人生成的歌（编辑消耗发起人的生成额度）。
+    const record = this.options.store.findGlobal({
       recordId: argString(args, 'recordId'),
-      sequence: Number(args.sequence) || Number(argString(args, 'selection')),
+      globalSeq: Number(args.globalSeq) || Number(args.sequence) || Number(argString(args, 'selection')),
       title: argString(args, 'title'),
     });
-    if (!record) return missingSongResult(invocation, this.options.store, { scoped: true });
+    if (!record) return missingSongResult(invocation, this.options.store);
     if (!record.taskId || !record.audioId) {
       return {
         jobId: invocation.plan.planId,
@@ -257,7 +244,7 @@ export class SunoReplaceSectionCapabilityHandler implements CapabilityHandler {
         stepId: invocation.step.id,
         status: 'needs_input',
         outputs: [],
-        diagnostics: { missingInformation: ['这一部分想改成什么内容？'] },
+        diagnostics: { missingInformation: ['想把哪一段改成什么内容？比如"第二段副歌换成…"。'] },
       };
     }
     const appCfg = this.options.getConfig();
@@ -298,8 +285,9 @@ export class SunoReplaceSectionCapabilityHandler implements CapabilityHandler {
         jobId: invocation.plan.planId,
         stepId: invocation.step.id,
         status: 'needs_input',
-        outputs: [],
-        diagnostics: { missingInformation: ['要替换哪一段？请给出至少 10 秒的起止秒数，例如第 30 秒到第 45 秒。'] },
+        // 附全局历史列表：模型/用户可以据此把目标歌说清楚（澄清合并链路会把它带进上下文）。
+        outputs: [globalHistoryOutput(this.options.store, 20)],
+        diagnostics: { missingInformation: ['想替换哪一段？可以直接说"第二段副歌换成…"，我会自动定位；也可以给出至少 10 秒的起止秒数。'] },
       };
     }
     const promptText = argString(args, 'prompt') || inferred?.prompt || change;
@@ -371,5 +359,42 @@ export class SunoReplaceSectionCapabilityHandler implements CapabilityHandler {
     } catch (error) {
       return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'failed', outputs: [], error: String((error as Error)?.message || error), retryable: false };
     }
+  }
+}
+
+export class SunoLyricsCapabilityHandler implements CapabilityHandler {
+  constructor(private readonly store: SunoSongHistoryStore) {}
+
+  async execute(invocation: CapabilityInvocation): Promise<ExecutionResult> {
+    const args = invocation.step.args || {};
+    const record = this.store.findGlobal({
+      recordId: argString(args, 'recordId'),
+      globalSeq: Number(args.globalSeq) || Number(args.sequence) || Number(argString(args, 'selection')),
+      title: argString(args, 'title'),
+    });
+    if (!record) return missingSongResult(invocation, this.store);
+    const title = record.title || record.requestText || '未命名歌曲';
+    if (!record.lyrics || !record.lyrics.trim()) {
+      return {
+        jobId: invocation.plan.planId,
+        stepId: invocation.step.id,
+        status: 'needs_input',
+        outputs: [{ kind: 'text', text: `「${title}」没有保存歌词（生成时上游未返回）。`, priority: 5, mergeable: true, meta: { skipTts: true, disableVoice: true, sourceCapability: 'audio.music.lyrics' } }],
+        diagnostics: { missingInformation: ['这首歌没有已保存的歌词。'] },
+      };
+    }
+    return {
+      jobId: invocation.plan.planId,
+      stepId: invocation.step.id,
+      status: 'success',
+      outputs: [{
+        kind: 'text',
+        text: `「${title}」的歌词：\n${record.lyrics}`,
+        priority: 10,
+        mergeable: true,
+        meta: { skipTts: true, disableVoice: true, historyId: record.id, sourceCapability: 'audio.music.lyrics' },
+      }],
+      diagnostics: { lyricsChars: record.lyrics.length, taskId: record.taskId },
+    };
   }
 }
