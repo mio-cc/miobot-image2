@@ -117,10 +117,11 @@ export class TriggerIntentChecker {
     const cfg = this.options.getConfig();
     if (!cfg.bot.autoContinue?.requireModelCheck) return true;
     const prompt = [
-      '你是群聊对话延续判定器。机器人刚回复了用户的消息，用户紧接着又发了一条（没有@机器人）。',
-      '判断：用户这条新消息是否是在继续跟机器人的对话？',
-      '回应了机器人的回答、追问、补充、表达了看法 → 在继续(true)',
-      '换话题跟别人聊天、发表情包、@了其他人 → 不在继续(false)',
+      '你是群聊消息判定器。机器人刚回复过这个用户，用户紧接着又发了一条消息（没有@机器人）。',
+      '背景事实：这个用户刚跟机器人有过一轮交互，机器人回复了他。现在他发了新消息。',
+      '',
+      '由你根据消息语义和上下文判断：用户这条消息是否是在跟机器人说话？',
+      '',
       '只输出 JSON：{"continue": true} 或 {"continue": false}',
       '',
       '机器人的回复（摘要）：' + input.botLastReply.slice(0, 300),
