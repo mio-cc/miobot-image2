@@ -69,11 +69,22 @@ export class TriggerIntentChecker {
         temperature: 0,
         timeoutMs: 5000,
       });
-      const intent = extractBoolean(String(result.text || ''), 'intent');
-      return intent === true;
+      const raw = String(result.text || '');
+      const intent = extractBoolean(raw, 'intent');
+      // 诊断：记录模型实际回了什么（截断 200 字），方便定位判断不准的原因。
+      this.options.logger?.info('意图判断模型响应', {
+        node: nodeIndex,
+        model,
+        raw: raw.replace(/\s+/g, ' ').slice(0, 200),
+        parsed: intent === undefined ? 'unparseable' : String(intent),
+      });
+      // 触发词已命中 → 模型明确说 false 才不触发；
+      // 模型输出解析不出 true/false（格式错误/中文/空回复）→ 默认触发（别漏掉用户）。
+      return intent !== false;
     } catch (error) {
-      this.options.logger?.warn('关键词意图判断失败（视为无意图）', { error: String((error as Error)?.message || error) });
-      return false;
+      this.options.logger?.warn('关键词意图判断模型调用失败，触发词已命中默认触发', { error: String((error as Error)?.message || error), node: nodeIndex, model });
+      // 模型调用失败 → 触发词已命中 → 默认触发（宁可多回不漏）。
+      return true;
     }
   }
 
