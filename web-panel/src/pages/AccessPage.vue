@@ -137,7 +137,9 @@ function commitBlacklist() {
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
-        <FormField label="通用 action"><input v-model.number="config.napcat.actionTimeoutMs" type="number" min="3000" step="1000" class="input-field" /></FormField>
+        <FormField label="通用 action" hint="未单独设超时的 action（好友请求、群历史、get_image 等）都用它；范围 3s-30min">
+          <input v-model.number="config.napcat.actionTimeoutMs" type="number" min="3000" max="1800000" step="1000" class="input-field" />
+        </FormField>
         <FormField label="文本发送"><input v-model.number="config.napcat.textSendTimeoutMs" type="number" min="3000" step="1000" class="input-field" /></FormField>
         <FormField label="图片上传"><input v-model.number="config.napcat.imageSendTimeoutMs" type="number" min="10000" step="5000" class="input-field" /></FormField>
         <FormField label="文件发送"><input v-model.number="config.napcat.fileSendTimeoutMs" type="number" min="10000" step="10000" class="input-field" /></FormField>
@@ -311,8 +313,8 @@ function commitBlacklist() {
 
     <SectionCard title="消息与限流总策略" hint="全局闸门；逐能力配额（冷却/日限/并发）在各能力页「启用与配额」卡配置" class="mb-4 mt-4">
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <FormField label="每用户每分钟消息上限" hint="T2.2 防刷屏闸；0 = 关闭，超出静默丢弃">
-          <input v-model.number="config.bot.messageRateLimitPerMinute" type="number" min="0" max="1000" class="input-field" />
+        <FormField label="每用户每分钟消息上限" hint="T2.2 防刷屏闸；0 = 关闭，超出静默丢弃；范围 0-60（超出会被后端钳制）">
+          <input v-model.number="config.bot.messageRateLimitPerMinute" type="number" min="0" max="60" class="input-field" />
         </FormField>
         <FormField label="消息过期阈值 (秒)" hint="积压/重连后迟到的消息直接丢弃不回复；0 = 不限">
           <input v-model.number="config.bot.staleMessageMaxAgeSeconds" type="number" min="0" max="3600" class="input-field" />

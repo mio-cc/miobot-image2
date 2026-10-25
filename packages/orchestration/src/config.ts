@@ -362,9 +362,10 @@ function record(value: unknown): Record<string, any> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {};
 }
 
-function numberIn(value: unknown, fallback: number, min: number, max: number): number {
+function numberIn(value: unknown, fallback: number, min: number, max?: number): number {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
+  if (max === undefined) return Math.max(min, n);
   return Math.min(max, Math.max(min, n));
 }
 
@@ -522,9 +523,9 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
         allowedScopes: v.allowedScopes === 'private' || v.allowedScopes === 'group' ? v.allowedScopes : 'both',
         userCanChange: bool(v.userCanChange, d.voice.userCanChange),
         licensedOnly: bool(v.licensedOnly, d.voice.licensedOnly),
-        maxCandidates: numberIn(v.maxCandidates, d.voice.maxCandidates, 1, 10),
+        maxCandidates: numberIn(v.maxCandidates, d.voice.maxCandidates, 1),
         candidateTtlMs: numberIn(v.candidateTtlMs, d.voice.candidateTtlMs, 60000, 3600000),
-        previewMaxChars: numberIn(v.previewMaxChars, d.voice.previewMaxChars, 1, 200),
+        previewMaxChars: numberIn(v.previewMaxChars, d.voice.previewMaxChars, 1),
         previewCooldownMs: numberIn(v.previewCooldownMs, d.voice.previewCooldownMs, 0, 3600000),
         previewDailyLimit: numberIn(v.previewDailyLimit, d.voice.previewDailyLimit, 0, 1000),
         voicesApiUrl: String(v.voicesApiUrl || d.voice.voicesApiUrl).trim(),
@@ -565,7 +566,7 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
     execution: {
       maxSteps: numberIn(execution.maxSteps, d.execution.maxSteps, 1, 1000),
       maxParallelSteps: numberIn(execution.maxParallelSteps, d.execution.maxParallelSteps, 1, 64),
-      maxDepth: numberIn(execution.maxDepth, d.execution.maxDepth, 1, 100),
+      maxDepth: numberIn(execution.maxDepth, d.execution.maxDepth, 1),
       maxDurationMs: numberIn(execution.maxDurationMs, d.execution.maxDurationMs, 1000, 86400000),
       maxCost: numberIn(execution.maxCost, d.execution.maxCost, 0, 1000000),
       maxModelRounds: numberIn(execution.maxModelRounds, d.execution.maxModelRounds, 1, 100),
@@ -581,14 +582,14 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       userPromptTemplate: String(planner.userPromptTemplate || d.planner.userPromptTemplate),
       capabilityDescriptions: Object.fromEntries(Object.entries(planner.capabilityDescriptions && typeof planner.capabilityDescriptions === 'object' && !Array.isArray(planner.capabilityDescriptions) ? planner.capabilityDescriptions : d.planner.capabilityDescriptions).map(([key, value]) => [String(key), String(value ?? '')]).filter(([, value]) => Boolean(value))),
       actionAlignmentGuardEnabled: bool(planner.actionAlignmentGuardEnabled ?? planner.visualIntentGuardEnabled, d.planner.actionAlignmentGuardEnabled),
-      alignmentGuardConfidenceThreshold: numberIn(planner.alignmentGuardConfidenceThreshold, d.planner.alignmentGuardConfidenceThreshold, 0, 1),
-      alignmentReviewMaxTokens: numberIn(planner.alignmentReviewMaxTokens, d.planner.alignmentReviewMaxTokens, 1, 200000),
-      capabilityTopK: numberIn(planner.capabilityTopK, d.planner.capabilityTopK, 1, 100),
-      minConfidence: numberIn(planner.minConfidence, d.planner.minConfidence, 0, 1),
-      maxRepairAttempts: numberIn(planner.maxRepairAttempts, d.planner.maxRepairAttempts, 0, 10),
+      alignmentGuardConfidenceThreshold: numberIn(planner.alignmentGuardConfidenceThreshold, d.planner.alignmentGuardConfidenceThreshold, 0),
+      alignmentReviewMaxTokens: numberIn(planner.alignmentReviewMaxTokens, d.planner.alignmentReviewMaxTokens, 1),
+      capabilityTopK: numberIn(planner.capabilityTopK, d.planner.capabilityTopK, 1),
+      minConfidence: numberIn(planner.minConfidence, d.planner.minConfidence, 0),
+      maxRepairAttempts: numberIn(planner.maxRepairAttempts, d.planner.maxRepairAttempts, 0),
       // 实测 bug：面板改了最大追问轮数但不生效——归一化被 Math.min(1,...) 硬钳到 1。
       // numberIn 的范围已从 0-1 放宽到 0-5（合理上限），去掉外层 Math.min。
-      maxClarifications: numberIn(planner.maxClarifications, d.planner.maxClarifications, 0, 5),
+      maxClarifications: numberIn(planner.maxClarifications, d.planner.maxClarifications, 0),
       clarificationTimeoutMs: numberIn(planner.clarificationTimeoutMs, d.planner.clarificationTimeoutMs, 1000, 86400000),
     },
     help: { extraText: String(help.extraText || '') },
@@ -624,11 +625,11 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       maskArgs: bool(approval.maskArgs, d.approval.maskArgs),
     },
     reply: {
-      maxMessages: numberIn(reply.maxMessages, d.reply.maxMessages, 1, 20),
+      maxMessages: numberIn(reply.maxMessages, d.reply.maxMessages, 1),
       maxResultItems: numberIn(reply.maxResultItems, d.reply.maxResultItems, 1, 1000),
       preferNestedForward: bool(reply.preferNestedForward, d.reply.preferNestedForward),
       nestedMaxNodes: numberIn(reply.nestedMaxNodes, d.reply.nestedMaxNodes, 1, 200),
-      nestedMaxDepth: numberIn(reply.nestedMaxDepth, d.reply.nestedMaxDepth, 1, 5),
+      nestedMaxDepth: numberIn(reply.nestedMaxDepth, d.reply.nestedMaxDepth, 1),
       // truncate 仍是合法显式选择（旧配置兼容）；默认（缺省/非法值）才是 forward。
       overflowPolicy: reply.overflowPolicy === 'truncate' || reply.overflowPolicy === 'link' || reply.overflowPolicy === 'zip' || reply.overflowPolicy === 'reject' || reply.overflowPolicy === 'forward' ? reply.overflowPolicy : 'forward',
       textFallback: reply.textFallback === 'off' || reply.textFallback === 'on_forward_fail' ? reply.textFallback : 'always',
@@ -638,7 +639,7 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
     promptOptimization: {
       enabled: bool(promptOptimization.enabled, d.promptOptimization.enabled),
       scope: promptOptimization.scope === 'all' ? 'all' : 'task',
-      canaryPercent: numberIn(promptOptimization.canaryPercent, d.promptOptimization.canaryPercent, 0, 100),
+      canaryPercent: numberIn(promptOptimization.canaryPercent, d.promptOptimization.canaryPercent, 0),
       minSamples: numberIn(promptOptimization.minSamples, d.promptOptimization.minSamples, 1, 100000),
       requireOwnerApproval: bool(promptOptimization.requireOwnerApproval, d.promptOptimization.requireOwnerApproval),
       activeVersionId: String(promptOptimization.activeVersionId || ''),
@@ -657,11 +658,11 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       composerNodeIndex: suno.composerNodeIndex === undefined ? undefined : numberIn(suno.composerNodeIndex, d.suno.composerNodeIndex ?? 0, 0, 10000),
       composerModel: suno.composerModel === undefined ? undefined : String(suno.composerModel || '').trim(),
       composerPromptTemplate: String(suno.composerPromptTemplate || ''),
-        composerMaxTokens: numberIn(suno.composerMaxTokens, d.suno.composerMaxTokens, 1, 200000),
-        composerTemperature: numberIn(suno.composerTemperature, d.suno.composerTemperature, 0, 2),
+        composerMaxTokens: numberIn(suno.composerMaxTokens, d.suno.composerMaxTokens, 1),
+        composerTemperature: numberIn(suno.composerTemperature, d.suno.composerTemperature, 0),
         sendLyricsWithMusic: bool(suno.sendLyricsWithMusic, d.suno.sendLyricsWithMusic),
-        historyMaxRecords: numberIn(suno.historyMaxRecords, d.suno.historyMaxRecords, 1, 1000),
-        historyPromptLimit: numberIn(suno.historyPromptLimit, d.suno.historyPromptLimit, 1, 50),
+        historyMaxRecords: numberIn(suno.historyMaxRecords, d.suno.historyMaxRecords, 1),
+        historyPromptLimit: numberIn(suno.historyPromptLimit, d.suno.historyPromptLimit, 1),
       defaultVocalGender: suno.defaultVocalGender === 'm' || suno.defaultVocalGender === 'f' ? suno.defaultVocalGender : 'auto',
       defaultLanguage: String(suno.defaultLanguage || '').trim().slice(0, 80),
       timeoutMs: numberIn(suno.timeoutMs, d.suno.timeoutMs, 1000, 3600000),
@@ -670,7 +671,7 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       format: suno.format === 'wav' || suno.format === 'flac' ? suno.format : 'mp3',
       maxConcurrent: numberIn(suno.maxConcurrent, d.suno.maxConcurrent, 1, 20),
       maxQueue: numberIn(suno.maxQueue, d.suno.maxQueue, 1, 1000),
-      maxRetries: numberIn(suno.maxRetries, d.suno.maxRetries, 0, 10),
+      maxRetries: numberIn(suno.maxRetries, d.suno.maxRetries, 0),
       quotaPerUserPerDay: numberIn(suno.quotaPerUserPerDay, d.suno.quotaPerUserPerDay, 0, 10000),
       createPath: String(suno.createPath || d.suno.createPath),
       statusPath: String(suno.statusPath || d.suno.statusPath),

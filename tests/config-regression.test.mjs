@@ -344,7 +344,8 @@ test('config regression T2.2: 每用户消息频率上限默认值与归一化',
   const cfg = createDefaultConfig();
   cfg.bot.messageRateLimitPerMinute = 999;
   const normalized = normalizeConfig(cfg);
-  assert.equal(normalized.bot.messageRateLimitPerMinute, 60);
+  // 上限不再硬编码在后端（面板 UI max=60 是唯一上限），手改 config 的值原样透传
+  assert.equal(normalized.bot.messageRateLimitPerMinute, 999);
   const off = normalizeConfig({ ...createDefaultConfig(), bot: { ...createDefaultConfig().bot, messageRateLimitPerMinute: 0 } });
   assert.equal(off.bot.messageRateLimitPerMinute, 0);
 });

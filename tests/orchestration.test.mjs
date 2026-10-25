@@ -244,7 +244,8 @@ test('orchestration: config normalization clamps unsafe values', () => {
   assert.equal(cfg.mode, 'enforce');
   assert.equal(cfg.execution.maxSteps, 1000);
   assert.equal(cfg.execution.maxDurationMs, 1000);
-  assert.equal(cfg.reply.maxMessages, 20);
+  // reply.maxMessages 是面板字段：上限以 UI 为准（UI max=20），手改 config 的值透传不再后端钳制
+  assert.equal(cfg.reply.maxMessages, 999);
   assert.equal(cfg.approval.allowGroupReply, true);
   assert.deepEqual(cfg.approval.adminQqIds, ['900']);
   assert.equal(cfg.suno.maxDurationSeconds, 900);
