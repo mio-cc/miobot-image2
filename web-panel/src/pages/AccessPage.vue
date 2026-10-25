@@ -214,6 +214,35 @@ function commitBlacklist() {
         </div>
       </div>
 
+      <div class="grid grid-cols-1 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
+        <div class="text-xs font-medium">人格设定（bot 的名字/性格/说话风格，注入 chat 系统提示词）</div>
+        <div class="flex items-end"><ToggleField v-model="config.bot.persona.enabled" label="启用人格设定" hint="关闭时使用默认系统提示词" /></div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <FormField label="bot 名字" hint="例如：大肥鱼、小mi（注入'你的名字是XX'）">
+            <input v-model="config.bot.persona.name" class="input-field" placeholder="大肥鱼" :disabled="!config.bot.persona.enabled" />
+          </FormField>
+          <div></div>
+        </div>
+        <FormField label="人格系统提示词" hint="描述 bot 的性格/说话风格/语气/回复长度等（5000 字以内）">
+          <textarea v-model="config.bot.persona.systemPrompt" class="input-field min-h-[120px]" rows="5"
+            placeholder="你是一群朋友里的搞怪担当。说话风格：随意、幽默、偶尔用表情包、喜欢吐槽。回复长度：短句为主，不超过3句话。语气：朋友之间的闲聊感，不是客服。你有自己的喜好和观点。"
+            :disabled="!config.bot.persona.enabled" />
+        </FormField>
+      </div>
+
+      <div class="grid grid-cols-1 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
+        <div class="text-xs font-medium">统一上下文（planner 能看到 chat 对话历史，多轮交互更连贯）</div>
+        <div class="flex items-end"><ToggleField v-model="config.bot.unifiedContext.enabled" label="启用统一上下文" hint="planner 能看到用户和机器人之前说了什么" /></div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <FormField label="Planner 历史轮数" hint="planner 能看到最近几条对话（2-30）">
+            <input v-model.number="config.bot.unifiedContext.plannerHistoryTurns" type="number" min="2" max="30" class="input-field" :disabled="!config.bot.unifiedContext.enabled" />
+          </FormField>
+          <FormField label="历史字符上限" hint="对话历史的字符预算（500-20000）">
+            <input v-model.number="config.bot.unifiedContext.plannerHistoryChars" type="number" min="500" max="20000" class="input-field" :disabled="!config.bot.unifiedContext.enabled" />
+          </FormField>
+        </div>
+      </div>
+
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
         <div class="md:col-span-3 text-xs font-medium">事件源（notice / request）</div>
         <div class="flex items-end"><ToggleField v-model="config.bot.poke.enabled" label="戳一戳响应" hint="被戳时从回复池随机回一句" /></div>

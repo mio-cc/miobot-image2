@@ -77,13 +77,22 @@ export function createBotApp(options: BotAppOptions): BotApp {
   });
   const planner = options.planner || createModelPlanner(client, () => toBotRouting(options.getConfig()).freeModeNodeIndex);
   const pipeline = options.pipeline || createImagePromptPipeline(client, options.getConfig);
+  // 人格系统提示词：面板配置的 bot.persona 优先于硬编码默认值（每次请求现读支持热重载）。
+  const effectiveChatSystemPrompt = (): string => {
+    const persona = options.getConfig().bot?.persona;
+    if (persona?.enabled && persona.systemPrompt?.trim()) {
+      const name = persona.name?.trim();
+      return (name ? `你的名字是${name}。` : '') + persona.systemPrompt.trim();
+    }
+    return options.chatSystemPrompt ?? DEFAULT_CHAT_SYSTEM_PROMPT;
+  };
   const deps = createModelBackedDeps({
     client,
     // ComfyUI 生图分支需要完整 AppConfig 读取节点 kind/profile；漏传会退回普通模型请求。
     getConfig: options.getConfig,
     getRouting: () => toBotRouting(options.getConfig()),
     sessions,
-    chatSystemPrompt: options.chatSystemPrompt ?? DEFAULT_CHAT_SYSTEM_PROMPT,
+    chatSystemPrompt: effectiveChatSystemPrompt(),
     pipeline,
     search: options.search,
     logger: options.log,

@@ -158,6 +158,7 @@ export interface BotRuntimeOptions {
     referencedText?: string;
     groupContext?: string;
     memoryContext?: string;
+    sessionHistory?: string;
     sessionId?: string;
     plan?: IntentPlan;
     forceLegacyExecution?: boolean;
@@ -1071,6 +1072,25 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         // 记忆未命中（无记忆/未开启/查询失败）时才回落群历史。
         const memoryContext = await loadChatMemoryContext();
         const groupContext = memoryContext ? undefined : await loadGroupContext();
+        // UCW：统一上下文——planner 能看到 chat 对话历史（解决"把这首歌按正确歌词重新生成"
+        // 被理解成"按主题重新生成"的根因：planner 不知道 chat 之前说了什么）。
+        let sessionHistory: string | undefined;
+        if (cfg.bot.unifiedContext?.enabled) {
+          const turns = options.app.sessions?.get(sessionId) || [];
+          const maxTurns = Math.max(2, Number(cfg.bot.unifiedContext.plannerHistoryTurns) || 10);
+          const maxChars = Math.max(500, Number(cfg.bot.unifiedContext.plannerHistoryChars) || 4000);
+          const recent = turns.slice(-maxTurns);
+          let total = 0;
+          const lines: string[] = [];
+          for (let i = recent.length - 1; i >= 0; i -= 1) {
+            const turn = recent[i];
+            const line = `[${turn.role === 'user' ? '用户' : '机器人'}] ${String(turn.content).slice(0, 200)}`;
+            if (total + line.length > maxChars && lines.length >= 2) break;
+            total += line.length;
+            lines.unshift(line);
+          }
+          if (lines.length) sessionHistory = '【最近的对话历史】\n' + lines.join('\n');
+        }
         const orchestrated = await options.enforceOrchestration({
           text: stripNonTextCqSegments(rawMessage),
           chatType,
@@ -1081,6 +1101,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           referencedText: referenced ? extractReferenceText(referenced) : undefined,
           groupContext,
           memoryContext,
+          sessionHistory,
           sessionId,
           onProgress: async (event) => {
             if (enforceProgress) return;
