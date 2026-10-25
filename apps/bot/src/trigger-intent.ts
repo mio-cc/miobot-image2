@@ -27,9 +27,13 @@ export class TriggerIntentChecker {
   private chatNode(): { nodeIndex: number; model: string } {
     const cfg = this.options.getConfig();
     const kt = cfg.bot.keywordTrigger;
-    const nodeIndex = Number(kt?.intentNodeIndex ?? cfg.llm.chatNodeIndex ?? 0);
-    const model = String(kt?.intentModel || cfg.llm.chatModel || '');
-    return { nodeIndex, model };
+    // 实测 bug：intentNodeIndex 默认 0（非 null），?? 不穿透到 chatNodeIndex
+    // → 意图判断打到 node 0（可能没有 chat 模型）→ API 静默失败 → 永远 false。
+    // 修正：intentModel 为空 = 用户没单独配 → 节点和模型都跟 chat 走。
+    if (!String(kt?.intentModel || '').trim()) {
+      return { nodeIndex: Number(cfg.llm.chatNodeIndex ?? 0), model: String(cfg.llm.chatModel || '') };
+    }
+    return { nodeIndex: Number(kt?.intentNodeIndex ?? cfg.llm.chatNodeIndex ?? 0), model: String(kt.intentModel) };
   }
 
   /** 关键词触发意图："这个用户是否在跟 bot 说话？" */
