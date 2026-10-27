@@ -26,6 +26,7 @@ import { renderTextToImage } from '../../../packages/image-compose/src/index.js'
 import type { BrowserRenderService, RenderedImage } from '../../../packages/browser-render/src/index.js';
 import { createImageProgress, type ImageProgressKind, type ImageProgressHandle } from './image-progress.js';
 import { buildHelpText } from './help-text.js';
+import { stripInlineImagePayloads } from '../../../packages/agent-runtime/src/index.js';
 
 /** Napcat(OneBot) 上报的消息事件(只取本环需要的字段)。 */
 export interface NapcatMessageEvent {
@@ -525,11 +526,16 @@ export async function handleCodeRenderRequest(
       '- SVG/HTML/Canvas 必须可渲染，标签完整，代码自包含。',
     ].join('\n');
     const prompt = String(cfg.codeRender.promptTemplate || '').replaceAll('{{userContent}}', request.slice(0, 10000)) + qualitySuffix;
+    const configuredModelTimeoutMs = Math.max(0, Number(cfg.codeRender.timeoutMs) || 0);
+    const primaryModelTimeoutMs = Math.max(180_000, configuredModelTimeoutMs);
+    const fallbackModelTimeoutMs = Math.max(primaryModelTimeoutMs, Number(cfg.agent?.timeoutMs) || 0);
+    const codeModelMaxTokens = Math.max(32_768, Math.max(0, Number(cfg.codeRender.maxTokens) || 0));
+    const primaryKey = `${codeNodeIndex}:${String(cfg.codeRender.model || '').trim()}`;
     const chat = async (candidate: { nodeIndex: number; model: string }, content: string) => options.app.client.chat(candidate.nodeIndex, {
       model: candidate.model,
       messages: [{ role: 'user', content }],
-      timeoutMs: cfg.codeRender.timeoutMs,
-      maxTokens: cfg.codeRender.maxTokens,
+      timeoutMs: `${candidate.nodeIndex}:${candidate.model}` === primaryKey ? primaryModelTimeoutMs : fallbackModelTimeoutMs,
+      maxTokens: codeModelMaxTokens,
     });
     let artifact: unknown;
     let lastError = '';
@@ -537,13 +543,20 @@ export async function handleCodeRenderRequest(
       lastCandidate = candidate;
       stage = 'model';
       try {
+        options.logger?.info('代码画图模型尝试', { nodeIndex: candidate.nodeIndex, model: candidate.model, timeoutMs: `${candidate.nodeIndex}:${candidate.model}` === primaryKey ? primaryModelTimeoutMs : fallbackModelTimeoutMs, maxTokens: codeModelMaxTokens });
         const first = await chat(candidate, prompt);
+        if (first.truncated === true || String(first.finishReason || '').toLowerCase() === 'length') {
+          const usage = first.usage ? `；completionTokens=${first.usage.completionTokens ?? 'unknown'}` : '';
+          throw new Error(`代码模型输出被 token 上限截断（推理模型需要更大输出预算）${usage}`);
+        }
         lastText = String(first.text || '').trim();
         if (!lastText) {
           options.logger?.warn('代码画图模型返回空文本，重试一次', { nodeIndex: candidate.nodeIndex, model: candidate.model });
           const retry = await chat(candidate, prompt);
+          if (retry.truncated === true || String(retry.finishReason || '').toLowerCase() === 'length') throw new Error('代码模型输出被 token 上限截断（推理模型需要更大输出预算）');
           lastText = String(retry.text || '').trim();
         }
+        if (!lastText) throw new Error('代码模型返回空文本');
         stage = 'parse';
         try {
           artifact = parseRenderArtifact(lastText);
@@ -2380,6 +2393,9 @@ async function postProcessReplyPlanOutputs(plan: any, options: {
   materializeAudio?: (audios: string[]) => Promise<string[]>;
 }, ctx: ReplyContext): Promise<any> {
   const outputs = allReplyPlanOutputs(plan);
+  for (const output of outputs) {
+    if (typeof output?.text === 'string') output.text = stripInlineImagePayloads(output.text);
+  }
   const imageOutputs = outputs.filter((output) => output?.kind === 'image' && String(output?.url || '').trim());
   const gallerySyncOutputs = imageOutputs.filter(isGallerySyncEligibleImageOutput);
   const audioOutputs = outputs.filter((output) => output?.kind === 'audio' && String(output?.url || '').trim());
@@ -2512,9 +2528,13 @@ export async function sendResult(
     materializeAudio?: (audios: string[]) => Promise<string[]>;
   },
 ): Promise<import('../../../packages/reply/src/index.js').ReplyDispatchResult | null> {
+  if (result.text) result = { ...result, text: stripInlineImagePayloads(String(result.text)) };
   if (result.replyPlan) {
     try {
       let planToSend = result.replyPlan;
+      for (const output of allReplyPlanOutputs(planToSend)) {
+        if (typeof output?.text === 'string') output.text = stripInlineImagePayloads(output.text);
+      }
       // P0-5：Agent 工具产物与旧链路 result.images 走同一后处理链
       // （图库同步 → 压缩 → 物化），不能因产物在 ReplyPlan 里就跳过。
       planToSend = await postProcessReplyPlanOutputs(planToSend, {

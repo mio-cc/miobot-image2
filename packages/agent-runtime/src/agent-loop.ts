@@ -23,6 +23,7 @@ import type { AgentSessionStore } from './session-manager.js';
 import { ASK_USER_TOOL_NAME, ASK_USER_TOOL_SPEC } from './ask-user-tool.js';
 import { REPLY_PRESENTATION_TOOL_NAME, REPLY_PRESENTATION_TOOL_SPEC } from './reply-presentation-tool.js';
 import { parseReplyPresentationArguments } from './reply-presentation-tool.js';
+import { sanitizeStructuredPayload, stripInlineImagePayloads } from './text-sanitize.js';
 import type { AgentReplyPreference } from './types.js';
 import { UPDATE_PLAN_TOOL_NAME, UPDATE_PLAN_TOOL_SPEC } from './plan-tool.js';
 import {
@@ -1154,7 +1155,7 @@ export class AgentRuntime implements AgentLoop {
           String(output.text || '').trim(),
           output.url ? String(output.url) : '',
         ]),
-      ].filter(Boolean).join('\n');
+      ].map((part) => stripInlineImagePayloads(part)).filter(Boolean).join('\n');
       if (!text) continue;
       parts.push('[' + String(result.toolName || result.callId || 'tool') + ']\n' + text);
     }
@@ -1306,7 +1307,7 @@ function ensureBatchResults(calls: ToolCall[], results: ToolResult[]): ToolResul
 
 function serializeToolResult(result: ToolResult): string {
   try {
-    return JSON.stringify({
+    return JSON.stringify(sanitizeStructuredPayload({
       callId: result.callId,
       ...(result.toolName ? { toolName: result.toolName } : {}),
       ok: result.ok,
@@ -1315,7 +1316,7 @@ function serializeToolResult(result: ToolResult): string {
       ...(result.error ? { error: result.error } : {}),
       ...(result.jobId ? { jobId: result.jobId } : {}),
       ...(result.pending ? { pending: true } : {}),
-    });
+    }));
   } catch {
     return JSON.stringify({ callId: result.callId, ok: result.ok, error: { code: 'tool_execution_failed', message: 'Result was not serializable.' } });
   }

@@ -2,6 +2,7 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
+import sharp from 'sharp';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
 import type { AppConfig, BrowserRenderConfig, CodeRenderConfig } from '../../config/src/index.js';
 
@@ -118,6 +119,19 @@ export async function assertSafePublicUrl(raw: string, allowPrivate = false): Pr
   return url;
 }
 
+function sanitizeSvgSource(value: string): string {
+  let text = String(value || '').trim();
+  if (text.startsWith('```')) { const nl = text.indexOf('\n'); text = nl >= 0 ? text.slice(nl + 1) : text.slice(3); }
+  if (text.endsWith('```')) text = text.slice(0, -3);
+  text = text.trim();
+  const lower = text.toLowerCase();
+  const start = lower.indexOf('<svg');
+  if (start >= 0) text = text.slice(start);
+  const close = text.toLowerCase().indexOf('</svg>');
+  if (close >= 0) text = text.slice(0, close + 6);
+  return text.trim();
+}
+
 export function normalizeCodeArtifact(input: unknown, config: BrowserRenderConfig): CodeArtifact {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('代码画图结构必须是对象');
   const raw = input as Record<string, any>;
@@ -133,7 +147,7 @@ export function normalizeCodeArtifact(input: unknown, config: BrowserRenderConfi
     html: raw.html === undefined ? undefined : String(raw.html).slice(0, config.maxCodeChars),
     css: raw.css === undefined ? undefined : String(raw.css).slice(0, config.maxCodeChars),
     js: raw.js === undefined ? undefined : String(raw.js).slice(0, config.maxCodeChars),
-    svg: raw.svg === undefined ? undefined : String(raw.svg).slice(0, config.maxCodeChars),
+    svg: raw.svg === undefined ? undefined : sanitizeSvgSource(String(raw.svg)).slice(0, config.maxCodeChars),
     waitMs: clampInt(raw.waitMs, 600, 0, 10000),
     readyExpression: raw.readyExpression === undefined ? undefined : String(raw.readyExpression).slice(0, 500),
     fullPage: raw.fullPage === true,
@@ -293,10 +307,35 @@ export function createBrowserRenderer(options: BrowserRendererOptions): BrowserR
     return { path: filePath, name, mime: 'image/png', width, height, size: stat.size, source };
   }
 
+  async function renderSvgFallback(artifact: CodeArtifact, outputDir: string): Promise<RenderedImage> {
+    await fs.mkdir(outputDir, { recursive: true });
+    const name = `code-${Date.now()}-${randomUUID().slice(0, 8)}.png`;
+    const filePath = path.join(outputDir, name);
+    const buffer = await sharp(Buffer.from(artifact.svg || ''))
+      .resize(artifact.width, artifact.height, { fit: 'fill' })
+      .png()
+      .toBuffer();
+    if (buffer.length > config().maxScreenshotBytes) throw new Error(`SVG 渲染超过大小上限 ${config().maxScreenshotBytes} bytes`);
+    await fs.writeFile(filePath, buffer);
+    options.logger?.warn('Chromium 不可用，已使用 SVG 光栅化兜底', { width: artifact.width, height: artifact.height, bytes: buffer.length });
+    return { path: filePath, name, mime: 'image/png', width: artifact.width, height: artifact.height, size: buffer.length, source: artifact };
+  }
+
   async function renderCodeInternal(artifactInput: unknown, outputDir: string): Promise<RenderedImage> {
     const cfg = config();
     if (!cfg.enabled) throw new Error('浏览器渲染未启用');
     const artifact = normalizeCodeArtifact(artifactInput, cfg);
+    try {
+      return await renderCodeWithBrowser(artifact, outputDir);
+    } catch (error) {
+      if (artifact.format !== 'svg') throw error;
+      options.logger?.warn('Chromium 渲染失败，尝试 SVG 光栅化兜底', { error: String((error as Error)?.message || error) });
+      return await renderSvgFallback(artifact, outputDir);
+    }
+  }
+
+  async function renderCodeWithBrowser(artifact: CodeArtifact, outputDir: string): Promise<RenderedImage> {
+    const cfg = config();
     const html = await buildCodeDocument(artifact);
     const { context, page } = await newPage(artifact.width, artifact.height);
     try {

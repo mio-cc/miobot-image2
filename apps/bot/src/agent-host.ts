@@ -11,6 +11,7 @@ import {
   type AgentTurnStatus,
   type AgentToolPreflight,
   type AgentToolResult,
+  stripInlineImagePayloads,
 } from '../../../packages/agent-runtime/src/index.js';
 import { ToolExecutor, ToolRegistry } from '../../../packages/tool-runtime/src/index.js';
 import type { ReplyPreferenceStore } from './reply-preference-store.js';
@@ -317,7 +318,7 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
     const isMigrated = options.isMigratedTool || ((name: string) => bindings.has(name));
     const onlyMigratedTools = executedToolNames.length === 0 || executedToolNames.every((name) => isMigrated(name));
     const sideEffectToolExecuted = sideEffectExecuted || executedToolNames.some((name) => SIDE_EFFECT_CAPABILITY_TOOLS.has(name));
-    const turnText = String(turn.text || '').trim();
+    const turnText = stripInlineImagePayloads(String(turn.text || '').trim());
     const approvalHandoff = mode === 'enforce' && turn.status === 'suspended' && Boolean(turn.pendingApproval);
     const jobHandoff = mode === 'enforce' && turn.status === 'suspended' && Boolean(turn.pendingJob);
     const partialFromTools = !turnText && turn.status === 'failed' ? partialToolResultsText(collectedResults) : '';
@@ -452,7 +453,7 @@ function partialToolResultsText(results: NonNullable<AgentTurnResult['toolResult
     const text = [
       String(result.content || '').trim(),
       ...(result.outputs || []).flatMap((output) => [String(output.text || '').trim(), output.url ? String(output.url) : '']),
-    ].filter(Boolean).join('\n');
+    ].map((part) => stripInlineImagePayloads(part)).filter(Boolean).join('\n');
     if (!text) continue;
     parts.push('[' + String(result.toolName || result.callId || 'tool') + ']\n' + text);
   }
@@ -468,7 +469,7 @@ function toolResultsToReplyOutputs(results: NonNullable<AgentTurnResult['toolRes
       outputs.push({
         kind: output.kind,
         ...(output.id ? { id: output.id } : {}),
-        ...(output.text !== undefined ? { text: output.text } : {}),
+        ...(output.text !== undefined ? { text: stripInlineImagePayloads(String(output.text)) } : {}),
         ...(output.url !== undefined ? { url: output.url } : {}),
         ...(output.mime !== undefined ? { mime: output.mime } : {}),
         ...(output.size !== undefined ? { size: output.size } : {}),

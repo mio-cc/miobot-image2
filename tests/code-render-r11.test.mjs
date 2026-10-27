@@ -64,7 +64,7 @@ test('code.render: empty output twice fails with stage diagnostics, not silent s
     () => handleCodeRenderRequest(options, '用代码画一只猫', 'private', undefined, '1', 's'),
     /代码模型返回空文本/,
   );
-  assert.ok(logs.some((entry) => entry.message === '代码画图失败' && entry.data?.stage === 'parse'));
+  assert.ok(logs.some((entry) => entry.message === '代码画图失败' && entry.data?.stage === 'model'));
   assert.ok(logs.some((entry) => entry.message === '代码画图模型返回空文本，重试一次'));
 });
 
@@ -119,4 +119,40 @@ test('code.render: tool contract is semantic and describes artifact fit, not tri
   assert.match(descriptor.description, /图像生成|位图/);
   assert.doesNotMatch(descriptor.description, /用户说|用代码画XX/);
   assert.deepEqual(descriptor.inputSchema?.required, ['userContent']);
+});
+
+
+test('code.render: gives reasoning models enough output budget and time', async () => {
+  let request;
+  const options = optionsFor(async (req) => {
+    request = req;
+    return { text: '{"format":"svg","svg":"<svg/>"}' };
+  });
+  options.getConfig().codeRender.maxTokens = 4096;
+  options.getConfig().codeRender.timeoutMs = 30000;
+  await handleCodeRenderRequest(options, '用代码画一个鲸鱼娘', 'private', undefined, '1', 's');
+  assert.ok(Number(request.maxTokens) >= 32768, 'reasoning output budget must not be 4096');
+  assert.ok(Number(request.timeoutMs) >= 180000, 'code generation needs more than 30s');
+});
+
+test('code.render: truncated output is rejected instead of being treated as a valid artifact', async () => {
+  const options = optionsFor(async () => ({ text: '' }));
+  const cfg = options.getConfig();
+  cfg.codeRender.model = 'truncated-code-model';
+  cfg.agent.mainNodeIndex = 1;
+  cfg.agent.mainModel = 'good-agent-model';
+  cfg.llm.apiKeys.push({ ...cfg.llm.apiKeys[0], name: 'agent-node', models: ['good-agent-model'] });
+  let calls = 0;
+  options.app.client = {
+    async chat(_node, request) {
+      calls += 1;
+      if (request.model === 'truncated-code-model') {
+        return { text: '{"format":"svg","svg":"<svg><circle cx="1" cy="1" r="1"/></svg>"}', finishReason: 'length', truncated: true };
+      }
+      return { text: '{"format":"svg","svg":"<svg><circle cx="50" cy="50" r="40"/></svg>"}', finishReason: 'stop' };
+    },
+  };
+  const result = await handleCodeRenderRequest(options, '用代码画一个鲸鱼娘', 'private', undefined, '1', 's');
+  assert.equal(calls, 2);
+  assert.equal(result.result?.images?.length, 1);
 });

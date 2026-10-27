@@ -75,6 +75,12 @@ const config = computed(() => configStore.config);
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <ToggleField v-model="config.browserRender.allowPrivateHosts" label="允许截图内网/本机地址" hint="默认关闭；开启会带来 SSRF 风险，不建议" />
         <ToggleField v-model="config.codeRender.enabled" label="启用代码画图" hint="模型选择在「能力分工 → 代码画图」" />
+        <FormField label="代码模型输出上限 (tokens)" hint="reasoning 和 SVG 正文共用；建议 32768，最低 32768">
+          <input v-model.number="config.codeRender.maxTokens" type="number" min="32768" max="65536" step="1024" class="input-field" />
+        </FormField>
+        <FormField label="代码模型超时 (ms)" hint="单次代码模型请求；最低 180000">
+          <input v-model.number="config.codeRender.timeoutMs" type="number" min="180000" max="300000" step="10000" class="input-field" />
+        </FormField>
       </div>
       <ul class="text-xs text-[color:var(--ink-3)] space-y-1 list-disc pl-5 mt-3">
         <li>代码渲染默认完全阻断 http/https/ws 网络请求，只允许内联 HTML/CSS/JS、SVG 和本地 Three.js。</li>

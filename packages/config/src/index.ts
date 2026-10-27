@@ -436,7 +436,7 @@ const DEFAULT_CONFIG: AppConfig = {
   freeMode: { enabled: false, nodeIndex: 0, model: 'gpt-4o-mini', timeoutMs: 120000, maxInputImages: 6, maxOutputImages: 4, includeQuotedMessage: true, preferEditWhenImagePresent: true, plannerPromptTemplate: P.free },
   intentRecognition: { enabled: true, nodeIndex: 0, model: '', timeoutMs: 12000, maxTokens: 240, minConfidence: 0.65, promptTemplate: P.naturalIntent },
   browserRender: { enabled: true, executablePath: '', noSandbox: true, enableWebgl: true, timeoutMs: 45000, launchTimeoutMs: 20000, idleCloseMs: 60000, maxConcurrency: 1, maxQueue: 3, maxCodeChars: 200000, maxWidth: 4096, maxHeight: 4096, defaultWidth: 1080, defaultHeight: 1080, maxScreenshotBytes: 20971520, allowPrivateHosts: false },
-  codeRender: { enabled: true, nodeIndex: 0, model: '', timeoutMs: 30000, maxTokens: 4096, promptTemplate: P.codeRender },
+  codeRender: { enabled: true, nodeIndex: 0, model: '', timeoutMs: 180000, maxTokens: 32768, promptTemplate: P.codeRender },
   comfyuiTransform: { enabled: true, nodeIndex: 0, model: '', timeoutMs: 20000, maxTokens: 2400, promptTemplate: COMFYUI_PROMPT_ONLY_TEMPLATE_V5 },
   orchestration: defaultOrchestrationConfig(),
   ...defaultConfigV3Sections(),
@@ -673,8 +673,8 @@ function normalizeAppConfig(input: R, warnings: string[], migrations: MigrationN
   codeRender.enabled = bool(codeRender.enabled, true);
   codeRender.nodeIndex = clampNode(codeRender.nodeIndex, free.nodeIndex);
   codeRender.model = str(codeRender.model, free.model || llm.chatModel, false).trim() || free.model || llm.chatModel;
-  codeRender.timeoutMs = clamp(codeRender.timeoutMs, 30000, 5000, 120000, true);
-  codeRender.maxTokens = clamp(codeRender.maxTokens, 4096, 256, 32768, true);
+  codeRender.timeoutMs = clamp(codeRender.timeoutMs, 180000, 5000, 300000, true);
+  codeRender.maxTokens = clamp(codeRender.maxTokens, 32768, 256, 65536, true);
   codeRender.promptTemplate = str(codeRender.promptTemplate, P.codeRender, false) || P.codeRender;
   const comfyuiTransform = { ...DEFAULT_CONFIG.comfyuiTransform, ...obj((cfg as any).comfyuiTransform) };
   comfyuiTransform.enabled = bool(comfyuiTransform.enabled, true);

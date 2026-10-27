@@ -10,7 +10,8 @@ test('browser render: config defaults and hard limits', () => {
   assert.equal(config.browserRender.maxConcurrency, 1);
   assert.equal(config.browserRender.maxQueue, 3);
   assert.equal(config.codeRender.enabled, true);
-  assert.equal(config.codeRender.timeoutMs, 30000);
+  assert.equal(config.codeRender.timeoutMs, 180000);
+  assert.equal(config.codeRender.maxTokens, 32768);
 });
 
 test('browser render: Chromium arguments include resource limits and exclude dangerous flags', () => {
@@ -48,4 +49,18 @@ test('browser render: SSRF guard rejects local/private/file URLs', async () => {
   await assert.rejects(() => assertSafePublicUrl('http://localhost/'), /本机|内网|保留/);
   await assert.rejects(() => assertSafePublicUrl('file:///etc/passwd'), /http\/https/);
   await assert.rejects(() => assertSafePublicUrl('http://user:pass@example.com/'), /用户名|密码/);
+});
+
+
+test('browser render: strips accidental svg labels and extracts a complete root SVG', () => {
+  const config = normalizeConfig({});
+  const labeled = ['svg', '<svg xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="8"/></svg>'].join('\n');
+  const spec = normalizeCodeArtifact({ format: 'svg', svg: labeled }, config.browserRender);
+  assert.ok(spec.svg?.startsWith('<svg'));
+  assert.ok(spec.svg?.endsWith('</svg>'));
+  const fence = String.fromCharCode(96).repeat(3);
+  const fenced = [fence + 'svg', '<svg><rect width="1" height="1"/></svg>', fence].join('\n');
+  const second = normalizeCodeArtifact({ format: 'svg', svg: fenced }, config.browserRender);
+  assert.ok(second.svg?.startsWith('<svg'));
+  assert.ok(second.svg?.endsWith('</svg>'));
 });

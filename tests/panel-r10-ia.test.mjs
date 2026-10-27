@@ -43,3 +43,11 @@ test('panel R10 IA: canvas frontend untouched (router untouched / canvas pages a
   assert.ok(fs.existsSync(canvasDir));
   assert.equal(/canvas/i.test(routerSource), true, '画布管理路由应保留');
 });
+
+test('panel: render page exposes code model output budget and timeout', () => {
+  const source = fs.readFileSync(path.join(root, 'web-panel/src/pages/RenderPage.vue'), 'utf8');
+  assert.match(source, /config\.codeRender\.maxTokens/);
+  assert.match(source, /config\.codeRender\.timeoutMs/);
+  assert.match(source, /32768/);
+  assert.match(source, /180000/);
+});

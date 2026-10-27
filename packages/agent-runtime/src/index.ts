@@ -9,3 +9,4 @@ export * from './plan-tool.js';
 export * from './output-repair.js';
 export * from './agent-loop.js';
 export * from './agent-output.js';
+export * from './text-sanitize.js';
