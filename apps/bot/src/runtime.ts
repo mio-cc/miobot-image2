@@ -485,6 +485,18 @@ export async function handleCodeRenderRequest(
   const configuredNodeIndex = cfg.codeRender?.nodeIndex;
   const codeNodeIndex = resolveConfiguredModelNode(cfg, configuredNodeIndex, cfg.codeRender?.model);
   const codeNode = cfg.llm.apiKeys?.[codeNodeIndex];
+  const candidates: Array<{ nodeIndex: number; model: string }> = [];
+  const addCandidate = (nodeIndex: number | undefined, model: string | undefined) => {
+    const normalizedModel = String(model || '').trim();
+    if (!normalizedModel || !Number.isFinite(Number(nodeIndex))) return;
+    const candidate = { nodeIndex: Number(nodeIndex), model: normalizedModel };
+    if (!candidates.some((item) => item.nodeIndex === candidate.nodeIndex && item.model === candidate.model)) candidates.push(candidate);
+  };
+  addCandidate(codeNodeIndex, cfg.codeRender?.model);
+  // 代码模型可能按量/按 key 限流或返回空文本；Agent 主模型是合理的兜底，
+  // 但只在 primary 失败时使用，不能改变正常的代码画图模型路由。
+  addCandidate(cfg.agent?.mainNodeIndex, cfg.agent?.mainModel);
+  addCandidate(cfg.llm.chatNodeIndex, cfg.llm.chatModel);
   options.logger?.info('代码画图路由', {
     configuredNodeIndex,
     nodeIndex: codeNodeIndex,
@@ -493,6 +505,7 @@ export async function handleCodeRenderRequest(
     browserRenderer: Boolean(options.browserRenderer),
     nodeKind: codeNode?.kind || '',
     nodeModels: codeNode?.models || [],
+    fallbackCandidates: candidates.slice(1),
   });
   if (!cfg.codeRender?.enabled) return { message: '代码画图功能未启用。' };
   if (!options.browserRenderer) return { message: '代码画图缺少浏览器渲染服务。' };
@@ -500,45 +513,70 @@ export async function handleCodeRenderRequest(
   const release = await options.featureGate?.acquire({ featureId: 'code.render', chatType, groupId, userId, promptChars: request.length });
   let stage = 'model';
   let lastText = '';
+  let lastCandidate = candidates[0];
   try {
-    const prompt = String(cfg.codeRender.promptTemplate || '').replaceAll('{{userContent}}', request.slice(0, 10000));
-    const chat = async (content: string) => options.app.client.chat(codeNodeIndex, {
-      model: cfg.codeRender.model,
+    const qualitySuffix = [
+      '',
+      '【代码画图质量要求】',
+      '- 输出必须是一张完整、构图清楚的插图，主体轮廓完整、比例可信；',
+      '- 如果是角色，必须画出清晰的头部、身体、服装/配饰和动作，不能只画一个漂浮的脸或几何符号；',
+      '- 使用分层上色、明暗和背景，避免大面积纯色、路径重叠和不可辨识碎片；',
+      '- 保留用户要求的角色、动作、风格和文字，不要用水印、乱码或 emoji 代替画面；',
+      '- SVG/HTML/Canvas 必须可渲染，标签完整，代码自包含。',
+    ].join('\n');
+    const prompt = String(cfg.codeRender.promptTemplate || '').replaceAll('{{userContent}}', request.slice(0, 10000)) + qualitySuffix;
+    const chat = async (candidate: { nodeIndex: number; model: string }, content: string) => options.app.client.chat(candidate.nodeIndex, {
+      model: candidate.model,
       messages: [{ role: 'user', content }],
       timeoutMs: cfg.codeRender.timeoutMs,
       maxTokens: cfg.codeRender.maxTokens,
     });
-    const first = await chat(prompt);
-    lastText = String(first.text || '').trim();
-    if (!lastText) {
-      options.logger?.warn('代码画图模型返回空文本，重试一次', {
-        nodeIndex: codeNodeIndex,
-        model: cfg.codeRender.model,
-      });
-      const retry = await chat(prompt);
-      lastText = String(retry.text || '').trim();
-    }
     let artifact: unknown;
-    stage = 'parse';
-    try {
-      artifact = parseRenderArtifact(lastText);
-    } catch (parseError) {
-      options.logger?.warn('代码画图输出不是可解析结构，发起一次修复', {
-        error: String((parseError as Error)?.message || parseError),
-        outputPreview: lastText.slice(0, 240),
-        nodeIndex: codeNodeIndex,
-        model: cfg.codeRender.model,
-      });
-      const repairPrompt = [
-        '你上一次输出不符合代码画图协议。现在只输出一个合法 JSON 对象，不要 Markdown、不要解释。',
-        '格式：{"format":"html|svg|canvas|three","title":"作品标题","width":1080,"height":1080,"html":"可选","css":"可选","js":"可选","svg":"当format=svg时","sendSource":false}',
-        '用户要求：' + request.slice(0, 6000),
-        lastText ? ('上一次输出：' + lastText.slice(0, 6000)) : '上一次输出为空。',
-      ].join('\n\n');
-      const repaired = await chat(repairPrompt);
-      lastText = String(repaired.text || '').trim();
-      artifact = parseRenderArtifact(lastText);
+    let lastError = '';
+    for (const candidate of candidates) {
+      lastCandidate = candidate;
+      stage = 'model';
+      try {
+        const first = await chat(candidate, prompt);
+        lastText = String(first.text || '').trim();
+        if (!lastText) {
+          options.logger?.warn('代码画图模型返回空文本，重试一次', { nodeIndex: candidate.nodeIndex, model: candidate.model });
+          const retry = await chat(candidate, prompt);
+          lastText = String(retry.text || '').trim();
+        }
+        stage = 'parse';
+        try {
+          artifact = parseRenderArtifact(lastText);
+          break;
+        } catch (parseError) {
+          options.logger?.warn('代码画图输出不是可解析结构，发起一次修复', {
+            error: String((parseError as Error)?.message || parseError),
+            outputPreview: lastText.slice(0, 240),
+            nodeIndex: candidate.nodeIndex,
+            model: candidate.model,
+          });
+          const repairPrompt = [
+            '你上一次输出不符合代码画图协议。现在只输出一个合法 JSON 对象，不要 Markdown、不要解释。',
+            '格式：{"format":"html|svg|canvas|three","title":"作品标题","width":1080,"height":1080,"html":"可选","css":"可选","js":"可选","svg":"当format=svg时","sendSource":false}',
+            '用户要求：' + request.slice(0, 6000),
+            '【质量要求】必须是一张完整、主体清晰、有分层上色和背景的插图；如果是角色，画出身体、服装和动作。',
+            lastText ? ('上一次输出：' + lastText.slice(0, 6000)) : '上一次输出为空。',
+          ].join('\n\n');
+          const repaired = await chat(candidate, repairPrompt);
+          lastText = String(repaired.text || '').trim();
+          artifact = parseRenderArtifact(lastText);
+          break;
+        }
+      } catch (error) {
+        lastError = String((error as Error)?.message || error);
+        options.logger?.warn('代码画图候选模型失败，尝试下一个', {
+          nodeIndex: candidate.nodeIndex,
+          model: candidate.model,
+          error: lastError,
+        });
+      }
     }
+    if (!artifact) throw new Error(lastError || '代码画图没有生成可用产物');
     stage = 'browser';
     const rendered = await options.browserRenderer.renderCode(artifact, options.generatedFileDir);
     stage = 'upload';
@@ -547,8 +585,9 @@ export async function handleCodeRenderRequest(
   } catch (error) {
     options.logger?.error('代码画图失败', {
       stage,
-      nodeIndex: codeNodeIndex,
-      model: cfg.codeRender?.model,
+      nodeIndex: lastCandidate?.nodeIndex,
+      model: lastCandidate?.model,
+      attempted: candidates,
       error: String((error as Error)?.message || error),
       outputPreview: lastText.slice(0, 300),
     });

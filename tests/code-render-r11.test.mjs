@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { createDefaultConfig } from '../dist/packages/config/src/index.js';
 import { handleCodeRenderRequest } from '../dist/apps/bot/src/runtime.js';
+import { builtinCapabilityDescriptors } from '../dist/packages/orchestration/src/index.js';
 
 function optionsFor(chat, logs = []) {
   const cfg = createDefaultConfig();
@@ -77,4 +78,45 @@ test('code.render: node index auto-corrects when configured model belongs to ano
   const result = await handleCodeRenderRequest(options, '用 SVG 画按钮', 'private', undefined, '1', 's');
   assert.equal(seenNode, 1);
   assert.equal(result.result?.images?.length, 1);
+});
+
+test('code.render: empty/erroring primary model falls back to the Agent main model', async () => {
+  const options = optionsFor(async () => ({ text: '' }));
+  const cfg = options.getConfig();
+  cfg.codeRender.model = 'broken-code-model';
+  cfg.agent.mainNodeIndex = 1;
+  cfg.agent.mainModel = 'good-agent-model';
+  cfg.llm.apiKeys.push({ ...cfg.llm.apiKeys[0], name: 'agent-node', models: ['good-agent-model'] });
+  const seenModels = [];
+  options.app.client = {
+    async chat(_node, request) {
+      seenModels.push(request.model);
+      if (request.model === 'broken-code-model') throw new Error('primary unavailable');
+      return { text: '{"format":"svg","svg":"<svg><circle cx="50" cy="50" r="40"/></svg>"}' };
+    },
+  };
+  const result = await handleCodeRenderRequest(options, '用代码画一个鲸鱼娘', 'private', undefined, '1', 's');
+  assert.equal(result.result?.images?.length, 1);
+  assert.deepEqual(seenModels, ['broken-code-model', 'good-agent-model']);
+});
+
+test('code.render: prompt carries the quality contract for generated illustrations', async () => {
+  let prompt = '';
+  const options = optionsFor(async (request) => {
+    prompt = String(request.messages[0].content);
+    return { text: '{"format":"svg","svg":"<svg/>"}' };
+  });
+  await handleCodeRenderRequest(options, '用代码画一个鲸鱼娘', 'private', undefined, '1', 's');
+  assert.match(prompt, /代码画图质量要求/);
+  assert.match(prompt, /完整.*构图/);
+});
+
+
+test('code.render: tool contract is semantic and describes artifact fit, not trigger words', () => {
+  const descriptor = builtinCapabilityDescriptors().find((item) => item.id === 'code.render');
+  assert.ok(descriptor);
+  assert.match(descriptor.description, /可检查|可复现|源码/);
+  assert.match(descriptor.description, /图像生成|位图/);
+  assert.doesNotMatch(descriptor.description, /用户说|用代码画XX/);
+  assert.deepEqual(descriptor.inputSchema?.required, ['userContent']);
 });

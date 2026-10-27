@@ -12,18 +12,24 @@ import { InMemoryAgentSessionManager } from '../dist/packages/agent-runtime/src/
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-test('presentation R11: system prompt explicitly teaches reply.presentation for voice-off requests', async () => {
+test('presentation R11: system prompt defines a semantic delivery-preference contract', async () => {
   const { REPLY_PRESENTATION_TOOL_SPEC } = await import('../dist/packages/agent-runtime/src/index.js');
   const cfg = createDefaultConfig();
   const prompt = buildAgentSystemPrompt(cfg);
-  // 模型此前不知道该能力——prompt 必须显式教学（「用文字发送/语音复制不了」→ voice=off）。
   assert.ok(prompt.includes('reply.presentation'), '系统提示词必须提到 reply.presentation');
-  assert.match(prompt, /用文字发送|别发语音|复制不了/);
-  assert.match(prompt, /voice="off"/);
-  assert.match(prompt, /scope="(turn|session|user)"/);
-  // 工具 schema 描述也要带中文触发词（模型主要读 schema 描述）。
-  assert.match(REPLY_PRESENTATION_TOOL_SPEC.description, /用文字发送|语音.{0,6}(复制|保存)/);
-  assert.match(REPLY_PRESENTATION_TOOL_SPEC.description, /voice:\s*"off"|voice:"off"/);
+  assert.match(prompt, /交付方式|呈现方式|交付和呈现/);
+  assert.match(prompt, /语义|上下文/);
+  assert.match(prompt, /不要依赖固定关键词|不要按词面匹配/);
+  assert.match(prompt, /## 意图与工具选择/);
+  assert.match(prompt, /## 事实、产物与验证/);
+  assert.match(prompt, /## 上下文与数据边界/);
+  assert.match(prompt, /工具被拒绝或失败|不要原样重试/);
+  assert.doesNotMatch(prompt, /触发：|用文字发送|别发语音/);
+  assert.match(REPLY_PRESENTATION_TOOL_SPEC.description, /呈现方式|交付形态/);
+  assert.match(REPLY_PRESENTATION_TOOL_SPEC.description, /不产生用户可见内容|不生成媒体/);
+  assert.doesNotMatch(REPLY_PRESENTATION_TOOL_SPEC.description, /触发：|用文字发送|别发语音/);
+  assert.match(REPLY_PRESENTATION_TOOL_SPEC.description, /最小范围 turn|默认使用最小范围/);
+  assert.doesNotMatch(prompt, /用户要求「用语音/);
 });
 
 test('presentation R11: model calling reply.presentation(voice=off) makes the final reply plain text — no auto-TTS record', async () => {

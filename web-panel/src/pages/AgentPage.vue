@@ -142,7 +142,7 @@ function removeExposure(id: string) {
     <SectionCard title="工具注册表" hint="工具 schema 预算、并行与默认重试；exposure 可按工具 ID 覆盖" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4">
         <ToggleField v-model="tools.enabled" label="启用新工具注册表" />
-        <FormField label="每轮最多工具"><input v-model.number="tools.maxToolsPerTurn" type="number" min="1" max="200" class="input-field" /></FormField>
+        <FormField label="每轮最多工具" hint="这里是 schema 露出上限；建议 >= 12。设得太小会把 code.render、browser.render 等 domain 工具裁掉。"><input v-model.number="tools.maxToolsPerTurn" type="number" min="1" max="200" class="input-field" /></FormField>
         <FormField label="Schema 字节上限"><input v-model.number="tools.maxToolSchemaBytes" type="number" min="1000" class="input-field" /></FormField>
         <FormField label="默认超时 (ms)"><input v-model.number="tools.defaultTimeoutMs" type="number" min="1000" class="input-field" /></FormField>
         <FormField label="默认重试"><input v-model.number="tools.defaultMaxRetries" type="number" min="0" max="10" class="input-field" /></FormField>

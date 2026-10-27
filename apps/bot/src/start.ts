@@ -144,6 +144,13 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     });
   };
   logImageRoutingSnapshot(getConfig());
+  if (Number(getConfig().toolRegistry?.maxToolsPerTurn || 0) < 8) {
+    logger.warn('工具露出上限过小：domain 工具可能被裁掉', {
+      maxToolsPerTurn: getConfig().toolRegistry?.maxToolsPerTurn,
+      recommended: 24,
+      examplesAtRisk: ['code.render', 'browser.render', 'canvas.gallery', 'file.generate'],
+    });
+  }
   const dataDir = options.dataDir || (options.configFilePath ? path.dirname(options.configFilePath) : path.resolve('.runtime'));
     const sunoSongHistory = new SunoSongHistoryStore({ filePath: path.join(dataDir, "suno-song-history.json"), maxRecords: () => getConfig().orchestration.suno.historyMaxRecords || 100, logger });
   const auditService = new AuditService({
@@ -1079,6 +1086,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       // P1-C（R10 修复）：后台 toolRegistry.exposure 覆盖优先于静态推导；
       // stateful 能力缺省 core，其余由 descriptor 推导，后台显式配置最终生效。
       const configuredExposure = cfg.toolRegistry?.exposure?.[descriptor.id];
+      // tts.speak 是底层合成工具，不是回复方式开关；Agent 语音偏好走 reply.presentation。
+      if (descriptor.id === 'tts.speak' && !configuredExposure) return [];
       const binding = createCapabilityToolBinding(descriptor, handler, {
         ...(configuredExposure ? { exposure: configuredExposure } : STATEFUL_CAPABILITY_TOOLS.has(descriptor.id) ? { exposure: 'core' } : {}),
         ...(!descriptor.timeoutMs ? { timeoutMs: Math.max(1000, cfg.toolRegistry.defaultTimeoutMs) } : {}),

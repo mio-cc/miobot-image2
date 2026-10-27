@@ -150,7 +150,10 @@ export class TtsCapabilityHandler implements CapabilityHandler {
   async execute(invocation: CapabilityInvocation): Promise<ExecutionResult> {
     const cfg = this.getConfig().bot.tts;
     if (!cfg.enabled) return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'failed', outputs: [], error: 'tts_disabled' };
-    const text = stringArg(invocation.step.args, ['text', 'prompt']) || invocation.request.text;
+    // tts.speak 只朗读调用方明确提供的文本；绝不把用户原消息当 TTS 文本。
+    // 回复方式的语音开关必须走 reply.presentation(voice=on)，由最终 ReplyPlan 统一朗读。
+    const text = stringArg(invocation.step.args, ['text', 'prompt']);
+    if (!text) return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'failed', outputs: [], error: 'tts_text_required' };
     const audio = await synthesizeSpeech(cfg, text, { logger: this.logger });
     return baseResult(invocation, [{ kind: 'audio', url: audio.file, mime: 'audio/' + audio.format, priority: 10, mergeable: false, meta: { bytes: audio.bytes, spokenText: text, preferredVoice: true, voiceRequested: true, sourceCapability: 'tts.speak' } }]);
   }
