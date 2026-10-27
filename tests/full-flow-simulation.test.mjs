@@ -144,6 +144,7 @@ async function createSim() {
 function makeRuntime(sim, { ownerQQs = ['2'], deletedIds } = {}) {
   const owner = { ownerQQs: () => ownerQQs, handle: async () => null };
   const cfg = createDefaultConfig();
+  cfg.agent.enabled = false; cfg.agent.mode = 'off'; // 旧引擎/命令路径测试（新聊天语义由 agent-r9-fixes.test.mjs 覆盖）
   cfg.bot.botQqId = '10000';
   cfg.bot.ownerQQs = ownerQQs;
   cfg.llm.chatEnabled = true;
@@ -206,7 +207,7 @@ test('图片可见性: 用户回复(引用)一条图片消息并 @bot → 模型
   const runtime = createBotMessageRuntime({
     app: { handle: async (input) => { engineInputs.push(input); return { kind: 'chat', handled: true, text: '看到了', decision: { kind: 'chat', params: {} } }; }, engine: { async handleExplicit() { return null; } }, sessions: { clear() {}, get: () => [], append() {} }, registry: () => ({}), client: {} },
     reply: sim.adapter,
-    getConfig: () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; c.llm.chatEnabled = true; c.bot.replyStrategies.text = 'plain'; return c; },
+    getConfig: () => { const c = createDefaultConfig(); c.agent.enabled = false; c.agent.mode = 'off'; c.bot.botQqId = '10000'; c.llm.chatEnabled = true; c.bot.replyStrategies.text = 'plain'; return c; },
     selfId: () => '10000', botName: 'Mio',
     prepareInputImages: async (images) => images.map((u) => /^(https?:|data:)/.test(String(u)) ? u : 'https://test.local/' + String(u).replace(/^local:/, '')),
     fetchReferencedMessage: async (replyId) => storedMessages[String(replyId)] || null,
@@ -228,7 +229,7 @@ test('图片可见性: 追问等待中用户只发一张图（无@无文字）�
   const runtime = createBotMessageRuntime({
     app: { handle: async (input) => { engineInputs.push(input); return { kind: 'chat', handled: true, text: 'ok', decision: { kind: 'chat', params: {} } }; }, engine: { async handleExplicit() { return null; } }, sessions: { clear() {}, get: () => [], append() {} }, registry: () => ({}), client: {} },
     reply: sim.adapter,
-    getConfig: () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; c.llm.chatEnabled = true; c.bot.replyStrategies.text = 'plain'; return c; },
+    getConfig: () => { const c = createDefaultConfig(); c.agent.enabled = false; c.agent.mode = 'off'; c.bot.botQqId = '10000'; c.llm.chatEnabled = true; c.bot.replyStrategies.text = 'plain'; return c; },
     selfId: () => '10000', botName: 'Mio',
     prepareInputImages: async (images) => images.map((u) => /^(https?:|data:)/.test(String(u)) ? u : 'https://test.local/' + String(u).replace(/^local:/, '')),
     hasPendingClarification: ({ userId }) => userId === 3, // 该用户有等待回答的追问
@@ -253,7 +254,7 @@ test('图片可见性: 先发图(被忽略) → 再 @bot 提问(无图) → 最�
   const runtime = createBotMessageRuntime({
     app: { handle: async (input) => { engineInputs.push(input); return { kind: 'chat', handled: true, text: '看到了', decision: { kind: 'chat', params: {} } }; }, engine: { async handleExplicit() { return null; } }, sessions: { clear() {}, get: () => [], append() {} }, registry: () => ({}), client: {} },
     reply: sim.adapter,
-    getConfig: () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; c.llm.chatEnabled = true; c.bot.replyStrategies.text = 'plain'; return c; },
+    getConfig: () => { const c = createDefaultConfig(); c.agent.enabled = false; c.agent.mode = 'off'; c.bot.botQqId = '10000'; c.llm.chatEnabled = true; c.bot.replyStrategies.text = 'plain'; return c; },
     selfId: () => '10000', botName: 'Mio',
     prepareInputImages: async (images) => images.map((u) => /^(https?:|data:)/.test(String(u)) ? u : 'https://test.local/' + String(u).replace(/^local:/, '')),
     reportProblem: async () => true,

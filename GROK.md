@@ -22,7 +22,7 @@
 2. **包解析靠 npm workspaces 的 symlink**：源码里写 `import ... from '@miobot-v2/shared'`，运行时由 `node_modules/@miobot-v2/*` 软链解析到各 `packages/*`，每个包的 `package.json` 的 `main` 指向 `../../dist/packages/<x>/src/index.js`。`tsconfig.json` 里的 `paths` 仅供 tsc/编辑器用。
 3. **两套运行时并存（v2 新架构 + legacy 旧脚本）**：
    - `scripts/miobot-service.mjs` 是总编排，默认同时拉起 web(v2) + bot(v2)。
-   - 用环境变量可回退：`MIOBOT_BOT_RUNTIME=legacy` 改用 `scripts/bot-runtime.mjs`（3000+ 行旧单体）；`MIOBOT_WEB_RUNTIME=legacy` 改用 `scripts/local-verify-server.mjs`。
+   - 回退：`MIOBOT_WEB_RUNTIME=legacy` 改用 `scripts/local-verify-server.mjs`；bot 旧运行时（`scripts/bot-runtime.mjs`）已随 R9/R10 旧链路删除移除，`MIOBOT_BOT_RUNTIME=legacy` 不再受支持。
    - 新架构在 `apps/` + `packages/`；旧脚本在 `scripts/*.mjs`（legacy）。
 4. **配置文件位置**：`MIOBOT_CONFIG_PATH` 或 `.runtime/config.json`。Linux 默认 `/var/lib/miobot-v2/config.json`。缺省时用 `createDefaultConfig()`。
 5. **绝对不要把真实密钥/Token/服务器 IP/Cookie 写进代码或提交 Git**（见根 `README.md` 安全段）。
@@ -57,7 +57,7 @@ Napcat-OmniBot-v2/
 │   ├── miobot-service.mjs        # 总编排（拉起 web+bot）
 │   ├── bot-runtime-v2.mjs        # 新 bot 启动器（import dist/apps/bot）
 │   ├── local-verify-server-v2.mjs# 新 web 启动器
-│   ├── bot-runtime.mjs / local-verify-server.mjs  # legacy 3000+ 行旧单体
+│   ├── local-verify-server.mjs  # legacy web 旧单体（bot 旧脚本已删除）
 │   └── trace-canvas-generation.mjs
 ├── tests/                # Node 测试（*.test.mjs），数量以 npm test 实际输出为准（908+，见活文档原则）
 ├── web-panel/            # Vue 管理面板源码（独立 vite 工程）
@@ -154,7 +154,7 @@ npm test                      # build + node --test tests/*.test.mjs
 npm start                     # miobot-service：web(v2)+bot(v2)
 npm run start:bot             # 仅 bot(v2)
 npm run start:verify          # 仅 web(v2)
-MIOBOT_BOT_RUNTIME=legacy npm start   # bot 回退旧脚本
+MIOBOT_WEB_RUNTIME=legacy npm start  # web 回退旧单体（bot 无 legacy）
 MIOBOT_ENABLE_BOT=0 npm start         # 只起 web，不起 bot
 
 # 前端
@@ -201,7 +201,7 @@ bash deploy-linux.sh install|git-update|rebuild|start|stop|restart|status|logs|d
 ## 12. 坑点 / 注意
 
 - **改完必须 `npm run build`**，否则 dist 不更新，运行时跑旧代码。
-- legacy 脚本（`scripts/bot-runtime.mjs` 等）是 3000+ 行旧单体，与 v2 并行运行互不干扰，**新功能不要往 legacy 里写**。
+- legacy web 脚本（`scripts/local-verify-server.mjs`）是旧单体；bot 旧脚本已删除，`MIOBOT_BOT_RUNTIME=legacy` 不再受支持。
 - 旧项目 `C:\Users\Administrator\Desktop\GPT_Image2_napcat_bot-main\Napcat-OmniBot` 是**只读**参考，禁止修改或覆盖（见 `REWRITE_STATE.md` 的 `blocked_scope`）。
 - `web-canvas` 与根工程用不同包管理器（pnpm vs npm），不要混。
 - 配置 `normalize` 很严格：越界/非法值会被 clamp 或回退默认值，排查"配置没生效"先看 `normalizeAppConfig`。

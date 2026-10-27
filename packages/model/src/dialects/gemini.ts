@@ -1,5 +1,7 @@
-import { ModelError, type ChatRequest, type Dialect, type ImageArtifact, type ImageEditRequest, type ImageGenerationRequest, type ImageResult, type ModelNode, type ModelOperation, type RequestPlan, type TextResult, type VisionRequest } from '../ports.js';
+import { ModelError, type ChatParseContext, type ChatRequest, type Dialect, type ImageArtifact, type ImageEditRequest, type ImageGenerationRequest, type ImageResult, type ModelNode, type ModelOperation, type RequestPlan, type TextResult, type VisionRequest } from '../ports.js';
 import { asRecord, joinUrl } from './shared.js';
+import { geminiToolAdapter, hasToolMessages, toGeminiContents, type ProviderToolMessage } from '../../../provider-tools/src/index.js';
+import { applyJsonFallbackParse, jsonFallbackRequestMessages, nativeResult, normalizeToolChoice, requestToolNames, resolveToolProtocol } from './tool-support.js';
 
 const OPS: ModelOperation[] = ['chat', 'vision', 'interrogate', 'image.generate', 'image.edit'];
 
@@ -46,25 +48,30 @@ export const geminiDialect: Dialect = {
   id: 'gemini',
   supports: (op) => OPS.includes(op),
   buildChat(node: ModelNode, req: ChatRequest): RequestPlan {
-    const { systemInstruction, contents } = buildContents(req.messages);
-    const body: Record<string, unknown> = { contents };
-    if (systemInstruction) body.systemInstruction = systemInstruction;
+    const protocol = resolveToolProtocol(req);
+    const toolNames = requestToolNames(req);
+    const built = protocol === 'json-fallback'
+      ? buildContents(jsonFallbackRequestMessages(req))
+      : hasToolMessages(req.messages as unknown as Array<Record<string, unknown>>)
+        ? toGeminiContents(req.messages as ProviderToolMessage[], { toolNames })
+        : buildContents(req.messages);
+    const body: Record<string, unknown> = { contents: built.contents };
+    if (built.systemInstruction) body.systemInstruction = built.systemInstruction;
     const generationConfig: Record<string, unknown> = {};
     if (req.maxTokens !== undefined) generationConfig.maxOutputTokens = req.maxTokens;
     if (req.temperature !== undefined) generationConfig.temperature = req.temperature;
     if (Object.keys(generationConfig).length) body.generationConfig = generationConfig;
+    if (protocol === 'native') {
+      body.tools = geminiToolAdapter.buildTools(req.toolSpecs || [], { toolNames });
+      const choice = normalizeToolChoice(req.toolChoice);
+      if (choice) body.toolConfig = geminiToolAdapter.buildToolChoice(choice);
+    } else if (!req.toolSpecs?.length && req.tools) {
+      body.tools = req.tools;
+    }
     return { method: 'POST', url: generateContentUrl(node, req.model), headers: headers(node), body };
   },
-  parseChat(data: unknown): TextResult {
-    const root = asRecord(data);
-    if (root.error !== undefined) { const e = asRecord(root.error); throw new ModelError(String(e.message || root.error), { category: 'upstream', retryable: false, status: typeof e.code === 'number' ? e.code : undefined }); }
-    const candidates = Array.isArray(root.candidates) ? root.candidates : [];
-    for (const c of candidates) {
-      const parts = Array.isArray(asRecord(asRecord(c).content).parts) ? asRecord(asRecord(c).content).parts : [];
-      const text = parts.map((p: unknown) => String(asRecord(p).text || '')).filter(Boolean).join('\n');
-      if (text.trim()) return { text, raw: data };
-    }
-    throw new ModelError('Gemini response missing candidates[].content.parts[].text', { category: 'validation', retryable: false });
+  parseChat(data: unknown, context: ChatParseContext = {}): TextResult {
+    return parseGeminiChat(data, context);
   },
   buildVision(node: ModelNode, req: VisionRequest): RequestPlan {
     return this.buildChat!(node, { model: req.model, messages: [{ role: 'user', content: [{ type: 'text', text: req.prompt }, ...req.imageUrls.map((url) => ({ type: 'image_url', image_url: { url } }))] }], maxTokens: req.maxTokens });
@@ -105,3 +112,30 @@ export const geminiDialect: Dialect = {
     return { images, raw: data };
   },
 };
+
+function parseGeminiChat(data: unknown, context: ChatParseContext = {}): TextResult {
+  const root = asRecord(data);
+  if (root.error !== undefined) {
+    const error = asRecord(root.error);
+    throw new ModelError(String(error.message || root.error), { category: 'upstream', retryable: false, status: typeof error.code === 'number' ? error.code : undefined });
+  }
+  const candidate = Array.isArray(root.candidates) ? asRecord(root.candidates[0]) : {};
+  const finishReason = String(candidate.finishReason ?? candidate.finish_reason ?? '').trim() || undefined;
+  const native = geminiToolAdapter.parseToolResponse(data, {
+    ...context,
+    ...(finishReason ? { finishReason } : {}),
+  });
+  const parts = Array.isArray(asRecord(candidate.content).parts) ? asRecord(candidate.content).parts : [];
+  const text = parts.map((part: unknown) => String(asRecord(part).text || '')).filter(Boolean).join('\n');
+  const base: TextResult = {
+    text,
+    raw: data,
+    ...(native.finishReason ? { finishReason: native.finishReason } : {}),
+    ...(native.truncated ? { truncated: true } : {}),
+  };
+  if (context.toolProtocol === 'json-fallback') return applyJsonFallbackParse(base, context);
+  if (!text.trim() && !native.toolCalls.length && !native.issues.length) {
+    throw new ModelError('Gemini response missing candidates[].content.parts[].text', { category: 'validation', retryable: false });
+  }
+  return nativeResult(base, native);
+}

@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
@@ -264,7 +264,7 @@ test('migration: export adds version, exportedAt, and normalized config payload'
 test('migration: exported v2 wrapper can be imported again', () => {
   const exported = exportConfig({ bot: { replyStrategies: { text: 'plain', image: 'forward', multiImage: 'quote' } } }, { exportedAt: '2026-05-27T12:00:00.000Z' });
   const result = importConfig(exported);
-  assert.equal(result.sourceFormat, 'export-wrapper-v2');
+  assert.equal(result.sourceFormat, 'export-wrapper-v3');
   assert.equal(result.config.bot.replyStrategies.text, 'plain');
   assert.equal(result.config.bot.replyStrategies.multiImage, 'quote');
 });

@@ -1,0 +1,18 @@
+﻿{
+  "name": "@miobot-v2/provider-tools",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Provider-native and JSON-fallback tool protocol adapters for Miobot V2.",
+  "main": "../../dist/packages/provider-tools/src/index.js",
+  "types": "../../dist/packages/provider-tools/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "../../dist/packages/provider-tools/src/index.d.ts",
+      "default": "../../dist/packages/provider-tools/src/index.js"
+    }
+  },
+  "dependencies": {
+    "@miobot-v2/tool-runtime": "0.0.0"
+  }
+}

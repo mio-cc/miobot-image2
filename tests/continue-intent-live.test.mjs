@@ -70,6 +70,7 @@ function liveAvailable() {
 
 function makeCfg(node) {
   const cfg = createDefaultConfig();
+  cfg.agent.enabled = false; cfg.agent.mode = 'off'; // 旧引擎/命令路径测试（新聊天语义由 agent-r9-fixes.test.mjs 覆盖）
   cfg.bot.botQqId = '10000';
   cfg.bot.ownerQQs = ['1'];
   cfg.llm.chatEnabled = true;

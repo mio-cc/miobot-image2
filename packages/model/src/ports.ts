@@ -1,4 +1,6 @@
-import type { PackageDescriptor } from '@miobot-v2/shared';
+﻿import type { PackageDescriptor } from '@miobot-v2/shared';
+import type { ProviderToolChoice, ProviderToolIssue, ProviderToolProtocol } from '../../provider-tools/src/index.js';
+import type { ToolSpec } from '../../tool-runtime/src/index.js';
 
 export const MODEL_PACKAGE: PackageDescriptor = { name: '@miobot-v2/model', phase: 'P2-model' };
 
@@ -43,16 +45,38 @@ export interface ModelNode {
 
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
+export type ModelToolProtocol = 'auto' | ProviderToolProtocol;
+export type ModelToolChoice = ProviderToolChoice;
+
+export interface ChatMessage {
+  role: string;
+  content: unknown;
+  /** Provider-neutral assistant tool calls. */
+  toolCalls?: ToolCall[];
+  /** Provider-neutral tool result correlation id. */
+  toolCallId?: string;
+  name?: string;
+}
+
+export interface ChatParseContext {
+  toolProtocol?: ProviderToolProtocol;
+  toolNames?: string[];
+}
+
 export interface ChatRequest {
   model: string;
-  messages: Array<{ role: string; content: unknown }>;
+  messages: ChatMessage[];
   timeoutMs?: number;
   maxTokens?: number;
   temperature?: number;
   reasoningEffort?: ReasoningEffort;
-  /** T3.2：OpenAI 兼容 function calling——tools / tool_choice 原样透传，不支持的服务会报错或忽略。 */
+  /** Legacy raw provider tools. Kept for compatible callers. */
   tools?: unknown[];
   toolChoice?: unknown;
+  /** R2 canonical tool loadout. When present, dialects build provider-native declarations. */
+  toolSpecs?: ToolSpec[];
+  /** auto selects native where supported; json-fallback never uses native tools. */
+  toolProtocol?: ModelToolProtocol;
 }
 
 export interface VisionRequest {
@@ -120,6 +144,8 @@ export interface VideoGenerationRequest {
   pollTimeoutMs?: number;
   /** 轮询间隔（默认 5000ms，对齐官方 REST 示例）。 */
   pollIntervalMs?: number;
+  /** 提交后拿到 request_id 时立即回调，供上层持久化外部任务 ID。 */
+  onExternalTask?: (taskId: string) => void;
   /**
    * 为 true 时不自动轮询，直接返回 pending/requestId（单测或上层自管轮询用）。
    * 默认 false：对调用方表现为「拿到视频 URL 即完成」。
@@ -136,13 +162,26 @@ export interface TextUsage {
 }
 
 /** T3.2：FC 出参——message.tool_calls 的规范化形态（arguments 已解析为对象）。 */
+/** T3.2：FC 出参——message.tool_calls 的规范化形态（arguments 已解析为对象）。 */
 export interface ToolCall {
   id?: string;
   name: string;
   arguments: Record<string, unknown>;
+  /** Original provider argument JSON, retained for schema repair diagnostics. */
+  rawArguments?: string;
+  parseError?: string;
 }
 
-export interface TextResult { text: string; raw: unknown; status?: number; usage?: TextUsage; toolCalls?: ToolCall[] }
+export interface TextResult {
+  text: string;
+  raw: unknown;
+  status?: number;
+  usage?: TextUsage;
+  toolCalls?: ToolCall[];
+  toolCallIssues?: ProviderToolIssue[];
+  finishReason?: string;
+  truncated?: boolean;
+}
 
 export type ImageArtifactKind = 'base64' | 'url';
 export interface ImageArtifact { kind: ImageArtifactKind; data: string; mimeType?: string; revisedPrompt?: string; index: number }
@@ -193,7 +232,7 @@ export interface Dialect {
   /** 该方言在协议层是否声明支持某操作（与"具体模型能力"不同）。 */
   supports(op: ModelOperation): boolean;
   buildChat(node: ModelNode, req: ChatRequest): RequestPlan;
-  parseChat(data: unknown): TextResult;
+  parseChat(data: unknown, context?: ChatParseContext): TextResult;
   buildVision?(node: ModelNode, req: VisionRequest): RequestPlan;
   buildImageGeneration?(node: ModelNode, req: ImageGenerationRequest): RequestPlan;
   buildImageEdit?(node: ModelNode, req: ImageEditRequest): RequestPlan;

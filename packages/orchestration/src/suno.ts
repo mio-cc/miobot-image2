@@ -1,4 +1,4 @@
-export interface SunoGenerateInput {
+﻿export interface SunoGenerateInput {
   prompt: string;
   lyrics?: string;
   title?: string;
@@ -193,7 +193,7 @@ export class SunoClient {
       if (input.title) body.title = input.title;
       if (input.style) body.style = input.style;
       if (input.negativeTags) body.negativeTags = input.negativeTags;
-      if (input.vocalGender) body.vocalGender = input.vocalGender;
+      if (!input.instrumental && input.vocalGender) body.vocalGender = input.vocalGender;
       if (Number.isFinite(Number(input.styleWeight))) body.styleWeight = Number(input.styleWeight);
       if (Number.isFinite(Number(input.weirdnessConstraint))) body.weirdnessConstraint = Number(input.weirdnessConstraint);
       if (!input.instrumental && Number.isFinite(Number(input.audioWeight))) body.audioWeight = Number(input.audioWeight);

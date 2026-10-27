@@ -4,11 +4,11 @@ import type { PackageDescriptor } from '@miobot-v2/shared';
 
 export const BOT_APP: PackageDescriptor = {
   name: '@miobot-v2/app-bot',
-  phase: 'P4-bot-engine',
+  phase: 'P4-agent-runtime',
 };
 
 export { createBotApp, DEFAULT_CHAT_SYSTEM_PROMPT, type BotApp, type BotAppOptions } from './app.js';
-export { createModelBackedDeps, createModelPlanner, artifactToString, artifactsToStrings, videoArtifactToString, videoArtifactsToStrings, type ModelDepsOptions } from './deps.js';
+export { createModelBackedDeps, artifactToString, artifactsToStrings, videoArtifactToString, videoArtifactsToStrings, type ModelDepsOptions, type RuntimeDeps } from './deps.js';
 export { createImagePromptPipeline, type ImagePromptPipeline } from './image-pipeline.js';
 export { runInComfyUiQueue, ComfyUiQueueError, comfyUiQueueSnapshot, resetComfyUiQueuesForTest } from './comfyui-queue.js';
 export { sanitizeComfyUiPrompt, sanitizeComfyUiParams } from './comfyui.js';
@@ -33,7 +33,7 @@ export {
 } from './image-input.js';
 export { buildTtsRequest, ttsTimeoutForText, synthesizeSpeech, shouldUseTts, activeFishVoiceId, fishVoiceCandidates, type TtsRequestPlan, type TtsAudio, type TtsSynthesizeOptions } from './tts.js';
 export { parseOwnerCommand, isOwner, type OwnerCommand, type OwnerParseContext } from './owner.js';
-export { toModelNodes, toEngineRoutingConfig, toBotRouting, type BotRouting } from './config-bridge.js';
+export { toModelNodes, toBotRouting, type BotRouting } from './config-bridge.js';
 export {
   createBotMessageRuntime,
   toRouterConfig,
@@ -44,7 +44,6 @@ export {
   normalizeImageUrl,
   normalizeVideoUrl,
   segmentsToRaw,
-  NATURAL_INTENT_CATALOG,
   allReplyPlanOutputs,
   selectPrimaryTextForTts,
   replacePrimaryTextWithAudio,
@@ -70,7 +69,7 @@ export {
 export function describeBotAppSkeleton() {
   return {
     app: '@miobot-v2/app-bot',
-    phase: 'P4-bot-engine' as const,
-    packages: ['@miobot-v2/bot-engine', '@miobot-v2/model', '@miobot-v2/config'],
+    phase: 'P4-agent-runtime' as const,
+    packages: ['@miobot-v2/agent-runtime', '@miobot-v2/model', '@miobot-v2/config'],
   };
 }

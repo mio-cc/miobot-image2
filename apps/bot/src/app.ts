@@ -1,11 +1,11 @@
-import { createBotEngine, type BotEngine, type BotEngineInput, type BotEngineResult, type BotEngineOptions } from '../../../packages/bot-engine/src/index.js';
+import { ExplicitExecutor, type ExplicitExecutorOptions } from './explicit-executor.js';
 import { createModelClient, createReloadableRegistry, type CapabilityRegistry, type ModelClient } from '../../../packages/model/src/index.js';
 import { createSessionStore, type SessionStore } from '../../../packages/core/src/index.js';
-import type { PlannerClient } from '../../../packages/intent-router/src/index.js';
 import type { WebSearchService } from '../../../packages/search/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
-import { toBotRouting, toEngineRoutingConfig, toModelNodes, toCapabilityOverrides } from './config-bridge.js';
-import { createModelBackedDeps, createModelPlanner } from './deps.js';
+import { toBotRouting, toModelNodes, toCapabilityOverrides } from './config-bridge.js';
+import { createModelBackedDeps } from './deps.js';
+import type { RuntimeInput, RuntimeResult, RuntimeExplicitEngine } from './runtime-types.js';
 import { createImagePromptPipeline, type ImagePromptPipeline } from './image-pipeline.js';
 
 export const DEFAULT_CHAT_SYSTEM_PROMPT = '你是 Miobot，一个运行在 QQ/Napcat 上的中文机器人。回答要简洁、直接、有帮助。';
@@ -22,8 +22,6 @@ export interface BotAppOptions {
    * 调用方想复用自己那份 createReloadableRegistry 时传函数即可。
    */
   registry?: CapabilityRegistry | (() => CapabilityRegistry);
-  /** 自定义规划器；不传则用 ModelClient 后端(freeMode 节点)。 */
-  planner?: PlannerClient;
   /** 会话记忆；不传则按 config.llm.maxConversationRounds/Chars 自动创建。 */
   sessions?: SessionStore;
   /** chat 系统提示词。 */
@@ -31,7 +29,7 @@ export interface BotAppOptions {
   /** 生图提示词流水线；不传则用 ModelClient 后端(模板渲染+润色+安全改写)。 */
   pipeline?: ImagePromptPipeline;
   /** 动作执行前的功能限额/并发钩子。 */
-  beforeDispatch?: BotEngineOptions['beforeDispatch'];
+  beforeDispatch?: ExplicitExecutorOptions['beforeDispatch'];
   /** 联网搜索服务；不传则关闭搜索注入。 */
   search?: WebSearchService;
   /** 可选日志器（透传给 BotEngine，用于诊断意图路由的 gate/caps 决策）。 */
@@ -39,17 +37,17 @@ export interface BotAppOptions {
 }
 
 export interface BotApp {
-  engine: BotEngine;
+  engine: RuntimeExplicitEngine;
   client: ModelClient;
   sessions: SessionStore;
   /** 现读的能力注册表。每次调用返回当前配置对应的实例——能力覆盖改了不必重启。 */
   registry: () => CapabilityRegistry;
   /** 处理一条入站消息（自动意图路由 + 能力门控分发）。 */
-  handle(input: BotEngineInput): Promise<BotEngineResult>;
+  handle(input: RuntimeInput): Promise<RuntimeResult>;
 }
 
 /**
- * 组装 bot 应用：bot-engine(编排) + model(统一模型层) + 会话记忆 + 规划器 + 配置桥接。
+ * 组装 bot 应用：ExplicitExecutor(显式操作) + model(统一模型层) + 会话记忆 + 配置桥接。
  * 这是 bot-runtime.mjs 里"failover/能力/分发/会话"内联逻辑的去向——现在全在可测的包里。
  *
  * 热重载说明：路由(nodeIndex)、引擎配置、节点表、能力注册表**全部**每次现读，
@@ -75,7 +73,6 @@ export function createBotApp(options: BotAppOptions): BotApp {
     maxChars: () => options.getConfig().llm.maxConversationChars,
     ttlMs: () => Math.max(0, (options.getConfig().llm.sessionTtlMinutes ?? 0) * 60_000),
   });
-  const planner = options.planner || createModelPlanner(client, () => toBotRouting(options.getConfig()).freeModeNodeIndex);
   const pipeline = options.pipeline || createImagePromptPipeline(client, options.getConfig);
   // 人格系统提示词：面板配置的 bot.persona 优先于硬编码默认值（每次请求现读支持热重载）。
   const effectiveChatSystemPrompt = (): string => {
@@ -97,12 +94,10 @@ export function createBotApp(options: BotAppOptions): BotApp {
     search: options.search,
     logger: options.log,
   });
-  const engine = createBotEngine({
+  const engine = new ExplicitExecutor({
     deps,
-    getConfig: () => toEngineRoutingConfig(options.getConfig()),
+    getConfig: options.getConfig,
     registry: getRegistry,
-    planner,
-    log: options.log,
     beforeDispatch: options.beforeDispatch,
   });
   return {
@@ -110,6 +105,6 @@ export function createBotApp(options: BotAppOptions): BotApp {
     client,
     sessions,
     registry: getRegistry,
-    handle: (input) => engine.handleAuto(input),
+    handle: (input) => engine.handleExplicit('chat', input, { prompt: input.text }),
   };
 }

@@ -52,6 +52,7 @@ function sentText(action) {
 
 function makeConfig(overrides = {}) {
   const cfg = createDefaultConfig();
+  cfg.agent.enabled = true; cfg.agent.mode = 'enforce'; // R9 后自然语言走 Agent：本文件用 agentRuntime mock 断言等价语义
   cfg.bot.botQqId = '10000';
   cfg.bot.ownerQQs = ['1'];
   cfg.llm.chatEnabled = true;
@@ -148,7 +149,7 @@ test('角度-多用户: 两个用户同时在同一群触发，互不干扰', as
   const runtime = createBotMessageRuntime({
     app, reply: sim.adapter, getConfig: () => cfg,
     selfId: () => '10000', botName: 'Mio', reportProblem: async () => true,
-    enforceOrchestration: async (input) => {
+    agentRuntime: async (input) => {
       replies.push({ user: String(input.userId), text: input.text });
       await sleep(30);
       return { handled: true, result: { kind: 'chat', handled: true, text: 'ok:' + input.text, decision: { kind: 'chat', source: 'model', confidence: 1, reason: '', params: { prompt: '', tokens: [] } } } };
@@ -182,6 +183,8 @@ test('角度-恢复: 会话快照重启恢复后延续判断仍工作', async ()
   const runtime = createBotMessageRuntime({
     app, reply: sim.adapter, getConfig: () => cfg,
     selfId: () => '10000', botName: 'Mio', reportProblem: async () => true,
+    // R9 后自然语言走 Agent：注入 mock 让 bot 回复建立延续状态（autoContinue 判定逻辑与路径无关）。
+    agentRuntime: async () => ({ handled: true, text: '在的' }),
     triggerIntentChecker: {
       checkKeywordIntent: async () => false,
       checkContinueIntent: async (input) => {
@@ -303,7 +306,7 @@ test('角度-联合: 人格+统一上下文同时开启正常工作', async () =
   const runtime = createBotMessageRuntime({
     app, reply: sim.adapter, getConfig: () => cfg,
     selfId: () => '10000', botName: 'Mio', reportProblem: async () => true,
-    enforceOrchestration: async (input) => {
+    agentRuntime: async (input) => {
       enforceInputs.push(input);
       return { handled: true, result: { kind: 'chat', handled: true, text: 'ok', decision: { kind: 'chat', source: 'model', confidence: 1, reason: '', params: { prompt: '', tokens: [] } } } };
     },
@@ -313,8 +316,11 @@ test('角度-联合: 人格+统一上下文同时开启正常工作', async () =
     sim.sendEvent({ post_type: 'message', message_type: 'group', group_id: 100, user_id: 2, message_id: 50, raw_message: '[CQ:at,qq=10000]再来一张狗', message: [{ type: 'at', data: { qq: '10000' } }, { type: 'text', data: { text: '再来一张狗' } }] });
     await waitUntil(() => enforceInputs.length > 0, 4000, 'enforce called');
     const input = enforceInputs[0];
-    assert.ok(input.sessionHistory, '统一上下文应注入对话历史');
-    assert.ok(input.sessionHistory.includes('画只猫'), '历史中应包含之前的画猫请求');
+    // R9 后统一上下文由 Agent session 承载（runtime 不再向旧 planner 传 sessionHistory）：
+    // 断言 agent 收到 sessionId,历史在 app.sessions 中可取。
+    assert.ok(input.sessionId, 'agent 输入应带 sessionId（会话历史在 agent session 内）');
+    const history = app.sessions.get(input.sessionId) || [];
+    assert.ok(history.some((turn) => String(turn.content).includes('画只猫')), 'agent 会话历史应包含之前的画猫请求');
     assert.equal(cfg.bot.persona.enabled, true, '人格应同时启用');
   } finally { await sim.close(); }
 });
@@ -329,7 +335,7 @@ test('角度-分流: 精确命令走命令网关不进 enforce', async () => {
   const runtime = createBotMessageRuntime({
     app: makeApp(), reply: sim.adapter, getConfig: () => cfg,
     selfId: () => '10000', botName: 'Mio', reportProblem: async () => true,
-    enforceOrchestration: async (input) => {
+    agentRuntime: async (input) => {
       enforceCalls.push(input.text);
       return { handled: false, reason: 'skip' };
     },

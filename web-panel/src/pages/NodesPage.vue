@@ -366,7 +366,7 @@ async function runLatencyTest() {
                       <option v-for="k in NODE_KINDS" :key="k.value" :value="k.value">{{ k.label }}</option>
                     </select>
                   </FormField>
-                  <FormField label="协议方言" hint="决定端点与请求体形态">
+                  <FormField label="协议方言" hint="决定端点/请求体形态与原生 tool calling 适配：openai/anthropic/gemini 用原生工具调用，其余自动 JSON fallback">
                     <select v-model="node.provider" class="input-field">
                       <option v-for="p in PROVIDERS" :key="p.value" :value="p.value">{{ p.label }}</option>
                     </select>

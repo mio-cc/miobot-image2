@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+﻿import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { count, create, insert, remove, search, type AnyOrama } from '@orama/orama';
@@ -101,6 +101,9 @@ export interface RetrieveMemoryInput {
   groupId?: string;
   userId: string;
   query: string;
+  topK?: number;
+  minScore?: number;
+  maxContextChars?: number;
 }
 
 export interface MemoryHit {
@@ -254,6 +257,9 @@ export class ChatMemoryService {
     const memory = this.options.getConfig().orchestration.memory;
     if (!memory.enabled) return { context: '', hits: [], degraded: false, namespaces: [] };
     const query = String(input.query || '').trim();
+    const topK = Math.max(1, Math.trunc(Number(input.topK) || memory.topK));
+    const minScore = Number.isFinite(Number(input.minScore)) ? Number(input.minScore) : memory.minScore;
+    const maxContextChars = Math.max(200, Math.trunc(Number(input.maxContextChars) || memory.maxContextChars));
     const namespaces: MemoryNamespace[] = input.chatType === 'group'
       ? [
           { kind: 'group', botId: input.botId, groupId: String(input.groupId || '') },
@@ -283,11 +289,11 @@ export class ChatMemoryService {
             mode: 'vector',
             vector: { value: queryVector, property: 'embedding' },
             where,
-            limit: Math.max(1, memory.topK),
+            limit: topK,
           } as any);
           for (const hit of result.hits as any[]) {
             const doc = hit.document as MemoryDocument;
-            if (Number(hit.score || 0) < memory.minScore && doc.scope !== 'group_shared') continue;
+            if (Number(hit.score || 0) < minScore && doc.scope !== 'group_shared') continue;
             all.push({ ...doc, score: Number(hit.score || 0), recent: false });
           }
         } catch (error) {
@@ -300,7 +306,7 @@ export class ChatMemoryService {
           const full = await search(db, {
             term: query,
             where,
-            limit: Math.max(1, memory.topK),
+            limit: topK,
           } as any);
           for (const hit of full.hits as any[]) {
             const doc = hit.document as MemoryDocument;
@@ -338,7 +344,7 @@ export class ChatMemoryService {
       const stamp = hit.createdAt.slice(0, 16).replace('T', ' ');
       const role = hit.role === 'assistant' ? '助手' : hit.role === 'system' ? '摘要' : '用户';
       const line = `[${stamp}] ${hit.authorName} [QQ:${hit.userId}] (${role}): ${hit.text.replace(/\s+/g, ' ').slice(0, 500)}`;
-      if (chars + line.length + 1 > memory.maxContextChars) break;
+      if (chars + line.length + 1 > maxContextChars) break;
       lines.push(line);
       chars += line.length + 1;
     }

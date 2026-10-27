@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import client, { errorMessage } from '../api/client';
 import { useConfigStore } from '../stores/config';
@@ -37,11 +37,12 @@ const errorCount = computed(() => recentLogs.value.filter(item => item.level ===
 const warnCount = computed(() => recentLogs.value.filter(item => item.level === 'warn').length);
 
 const metrics = ref<any>(null);
-const chartSeries = ref<'message' | 'image' | 'chat'>('message');
+const chartSeries = ref<'message' | 'image' | 'chat' | 'agent_failure'>('message');
 const seriesOptions = [
     { key: 'message', label: '消息' },
     { key: 'chat', label: '对话' },
     { key: 'image', label: '生图' },
+    { key: 'agent_failure', label: 'Agent 失败' },
 ] as const;
 
 /** stat tile 用的四项指标；平均耗时来自后端累计的时长统计。 */

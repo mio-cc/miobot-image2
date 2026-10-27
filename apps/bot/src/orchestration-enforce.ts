@@ -1,6 +1,6 @@
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { BotApp } from './app.js';
-import type { BotEngineResult, BotEngineInput } from '../../../packages/bot-engine/src/index.js';
+import type { RuntimeInput as BotEngineInput, RuntimeResult as BotEngineResult } from './runtime-types.js';
 import type { ModelClient } from '../../../packages/model/src/index.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 import {
@@ -12,6 +12,8 @@ import {
   CapabilityRegistry,
   createPermissionPolicyFromDefaults,
   buildReplyPlan,
+  resolveReplyPolicy,
+  textCharsOf,
   buildDeterministicPlanSummary,
   executeIntentPlan,
   hashApprovalPayload,
@@ -41,7 +43,7 @@ import {
   type UserRequest,
   type OrchestrationTrace,
 } from '../../../packages/orchestration/src/index.js';
-import { LegacyEngineCapabilityHandler, type LegacyCapabilityKind } from './capability-legacy.js';
+import { ModelCapabilityHandler, type ModelCapabilityKind } from './capability-model.js';
 import { VoiceCurrentCapabilityHandler, VoicePreviewCapabilityHandler, VoiceSearchCapabilityHandler, VoiceSelectCapabilityHandler, type FishAudioVoiceService } from './voice-service.js';
 import { SunoPromptComposer } from './suno-composer.js';
 import { SunoCapabilityHandler } from './capability-suno.js';
@@ -106,7 +108,7 @@ export interface EnforceOrchestrationResult {
   problem?: { kind: string; error: string };
 }
 
-const LEGACY_KINDS: LegacyCapabilityKind[] = ['chat.reply', 'image.generate', 'image.edit', 'image.interrogate', 'video.generate'];
+const MODEL_CAPABILITY_KINDS: ModelCapabilityKind[] = ['chat.reply', 'image.generate', 'image.edit', 'image.interrogate', 'video.generate'];
 
 /** T3.6：一次编排请求的模型用量累计（planner/角色/composer 全部计入）。 */
 export interface ModelUsageTotals {
@@ -153,8 +155,8 @@ export class OrchestrationEnforcer {
       low: 'allow', medium: 'allow', high: 'ask_admin', critical: 'ask_admin',
     }), this.options.featureGate);
     this.refreshConfig(this.options.getConfig());
-    for (const kind of LEGACY_KINDS) {
-      const handler = this.options.handlers?.get(kind) || new LegacyEngineCapabilityHandler(this.options.app, kind);
+    for (const kind of MODEL_CAPABILITY_KINDS) {
+      const handler = this.options.handlers?.get(kind) || new ModelCapabilityHandler(this.options.app, kind);
       this.dispatcher.registerHandler(kind, handler);
     }
     const sunoComposer = new SunoPromptComposer(this.options.client, this.options.getConfig, this.options.logger);
@@ -174,7 +176,7 @@ export class OrchestrationEnforcer {
     this.dispatcher.registerHandler('prompt.enhance', new PromptCapabilityHandler(this.options.client, this.options.getConfig, 'enhance'));
     this.dispatcher.registerHandler('prompt.translate', new PromptCapabilityHandler(this.options.client, this.options.getConfig, 'translate'));
     this.dispatcher.registerHandler('template.list', new TemplateListCapabilityHandler(this.options.getConfig));
-    this.dispatcher.registerHandler('template.use', new LegacyEngineCapabilityHandler(this.options.app, 'image.generate'));
+    this.dispatcher.registerHandler('template.use', new ModelCapabilityHandler(this.options.app, 'image.generate'));
     this.dispatcher.registerHandler('tts.speak', new TtsCapabilityHandler(this.options.getConfig, this.options.logger));
     this.dispatcher.registerHandler('help', new HelpCapabilityHandler(this.options.getConfig));
     this.dispatcher.registerHandler('model.catalog.list', new ModelCatalogCapabilityHandler(this.options.getConfig));
@@ -379,6 +381,15 @@ export class OrchestrationEnforcer {
   /** 面板/诊断用：当前全部能力（含插件）。 */
   listCapabilities(): CapabilityDescriptor[] {
     return this.registry.list();
+  }
+
+  /** R5：把既有能力 handler 暴露给新 ToolExecutor，避免重写业务实现。 */
+  getCapabilityHandler(capabilityId: string): CapabilityHandler | undefined {
+    return this.dispatcher.getHandler(capabilityId);
+  }
+
+  async probeExternalTask(capability: string, taskId: string): Promise<ExternalTaskProbeResult | undefined> {
+    return this.options.externalTaskProbe?.({ capability, taskId });
   }
 
   /** 该会话是否有等待回答的澄清追问（runtime 据此把无触发消息转入追问合并，含纯图答案）。 */
@@ -811,7 +822,14 @@ export class OrchestrationEnforcer {
           this.options.pendingJobs?.delete(pendingKey);
           appendTrace('plan', '追问回答仍无法合并', { jobId, error: resolved.error });
           // 群内给用户一条引导（而非只 DM 管理员后群内静默）；问题上报照常发给管理员。
-          return { handled: true, result: this.messageEngineResult('我没法从当前消息里拿到需要的补充——图片请重新发送并@我，文字直接回复即可。'), problem: { kind: 'clarification_resolution_failed', error: resolved.error || '模型无法将用户补充信息合并到计划' } };
+          const routineUnresolved = /clarification_unresolved/i.test(String(resolved.error || ""));
+          // 不在群内塞固定图片引导。把当前消息交回正常聊天/旧链路：
+          // 用户可能是在结束话题、表达情绪或拒绝追问，而不是漏发图片。
+          return {
+            handled: false,
+            reason: "clarification_resolution_failed",
+            ...(routineUnresolved ? {} : { problem: { kind: "clarification_resolution_failed", error: resolved.error || "模型无法将用户补充信息合并到计划" } }),
+          };
         }
         plan = { ...resolved.value, modelRoundsUsed: roleRoundsUsed };
         resumePlan = plan;
@@ -1499,17 +1517,9 @@ export class OrchestrationEnforcer {
 
   private makeReplyPlan(outputs: ExecutionOutput[]): ReplyPlan {
     const cfg = this.options.getConfig();
-    return buildReplyPlan(outputs, {
-      maxMessages: cfg.orchestration.reply.maxMessages,
-      maxResultItems: cfg.orchestration.reply.maxResultItems,
-      preferNestedForward: cfg.orchestration.reply.preferNestedForward,
-      includeTruncationNotice: cfg.orchestration.reply.includeTruncationNotice,
-      nestedMaxNodes: cfg.orchestration.reply.nestedMaxNodes,
-      nestedMaxDepth: cfg.orchestration.reply.nestedMaxDepth,
-      overflowPolicy: cfg.orchestration.reply.overflowPolicy,
-      textMaxChars: cfg.bot.textReply.maxChars,
-      textFallback: cfg.orchestration.reply.textFallback,
-    });
+    const resolved = resolveReplyPolicy({ config: cfg, textChars: textCharsOf(outputs) });
+    const plan = buildReplyPlan(outputs, resolved.options);
+    return { ...plan, policy: resolved.policy };
   }
   private messageEngineResult(text: string): BotEngineResult {
     return {

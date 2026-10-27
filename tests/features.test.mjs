@@ -9,7 +9,6 @@ import {
 } from '../dist/packages/shared/src/features.js';
 import { importConfig, normalizeConfig } from '../dist/packages/config/src/index.js';
 import { routeBotMessage } from '../dist/packages/bot-router/src/index.js';
-import { createIntentRouter } from '../dist/packages/intent-router/src/index.js';
 import { createAdminService } from '../dist/packages/admin-service/src/index.js';
 import { toModelNodes } from '../dist/apps/bot/src/config-bridge.js';
 import { sanitizeModelImageReferences } from '../dist/apps/bot/src/deps.js';
@@ -98,22 +97,6 @@ test('features: explicit command honors group activation and private scope', () 
   assert.equal(privateMessage.command, 'genImage');
 });
 
-test('features: naturalLanguage switch gates FreeMode intents', async () => {
-  const input = { text: '帮我画一只橘猫', images: [], chatType: 'private' };
-  const enabled = createIntentRouter({
-    allowedKinds: ['chat', 'image.generate'],
-    capabilities: { chat: true, imageGenerate: true },
-  });
-  assert.equal((await enabled.route(input)).kind, 'image.generate');
-
-  const disabled = createIntentRouter({
-    allowedKinds: ['chat'],
-    capabilities: { chat: true, imageGenerate: true },
-  });
-  const decision = await disabled.route(input);
-  assert.equal(decision.kind, 'chat');
-  assert.equal(decision.degradedFrom, 'image.generate');
-});
 
 test('features: an explicitly empty feature list does not fall back to legacy commands', () => {
   const groupHelp = routeBotMessage(

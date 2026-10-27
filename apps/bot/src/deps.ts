@@ -1,12 +1,11 @@
-import type { BotEngineDeps } from '../../../packages/bot-engine/src/index.js';
 import type { ImageArtifact, ImageResult, ModelClient, ReasoningEffort, VideoArtifact, VideoResult } from '../../../packages/model/src/index.js';
-import type { PlannerClient } from '../../../packages/intent-router/src/index.js';
 import type { SessionStore } from '../../../packages/core/src/index.js';
 import type { BotRouting } from './config-bridge.js';
 import type { ImagePromptPipeline } from './image-pipeline.js';
 import type { WebSearchService } from '../../../packages/search/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import { generateComfyUiImages } from './comfyui.js';
+import { reportExternalTaskFromHandler } from '../../../packages/orchestration/src/external-task-context.js';
 
 /** 把 model 层的图像产物统一成可直接发送/压缩的字符串（url 原样、base64 转 data URL）。 */
 export function artifactToString(artifact: ImageArtifact): string {
@@ -19,7 +18,7 @@ export function artifactsToStrings(result: ImageResult): string[] {
   return (result.images || []).map(artifactToString);
 }
 
-/** 视频产物 → 可发 QQ 的 file 引用（url 或 data:video/...;base64）。 */
+/** 视频产物 → 可发 QQ 的 file 引 （url 或 data:video/...;base64）。 */
 export function videoArtifactToString(artifact: VideoArtifact): string {
   if (artifact.kind === 'url') return artifact.data;
   const mime = artifact.mimeType || 'video/mp4';
@@ -30,10 +29,18 @@ export function videoArtifactsToStrings(result: VideoResult): string[] {
   return (result.videos || []).map(videoArtifactToString).filter((u) => String(u || '').trim());
 }
 
+export interface RuntimeDeps {
+  chat(req: { model: string; text: string; images?: string[]; videos?: string[]; sessionId?: string; nodeIndex?: number; context?: string; timeoutMs?: number; maxTokens?: number; reasoningEffort?: ReasoningEffort; forceSearch?: boolean }): Promise<{ text: string }>;
+  generateImages(req: { model: string; prompt: string; size?: string; width?: number; height?: number; count?: number; quality?: string; templateId?: string }): Promise<{ images: string[] }>;
+  editImage(req: { model: string; prompt: string; images: string[]; size?: string; width?: number; height?: number; quality?: string }): Promise<{ images: string[] }>;
+  interrogate(req: { model: string; images: string[]; prompt?: string }): Promise<{ text: string }>;
+  generateVideo(req: { model: string; prompt: string; imageUrl?: string; duration?: number; aspectRatio?: string; resolution?: string }): Promise<{ videos: string[] }>;
+}
+
 export interface ModelDepsOptions {
   client: ModelClient;
   getConfig?: () => AppConfig;
-  /** 每次调用读取当前路由（支持热重载切节点）。 */
+  /** 每次调 读取当前路由（支持热重载切节点）。 */
   getRouting: () => BotRouting;
   /** 会话记忆(可选)；提供后 chat 带历史并回存。 */
   sessions?: SessionStore;
@@ -48,7 +55,7 @@ export interface ModelDepsOptions {
 }
 
 /**
- * 用 model 层 + 路由实现 bot-engine 需要的下游能力 BotEngineDeps。
+ * 用 model 层 + 路由实现显式执行层需要的下游能力 RuntimeDeps。
  * - chat 带图且模型有 vision 能力时自动走 vision；否则走 chat,并按 sessionId 带入/回存会话记忆;
  * - 生图/改图结果统一转成字符串数组交回引擎。
  * 注：templateId 的模板渲染属于 image/enhance 层职责,model 层只收已渲染的 prompt。
@@ -74,7 +81,7 @@ export function sanitizeModelImageReferences(images: string[]): { images: string
   return { images: kept, dropped: Math.max(0, images.length - kept.length) };
 }
 
-export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps {
+export function createModelBackedDeps(options: ModelDepsOptions): RuntimeDeps {
   const { client, getConfig, getRouting, sessions, chatSystemPrompt, pipeline, search, logger } = options;
   return {
     async chat(req) {
@@ -83,11 +90,11 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       const rawImages = (req.images || []).filter(Boolean);
       const sanitizedImages = sanitizeModelImageReferences(rawImages);
       const images = sanitizedImages.images;
-      if (sanitizedImages.dropped > 0) logger?.warn('模型输入图片引用不安全或不可用，已丢弃', { dropped: sanitizedImages.dropped, total: rawImages.length });
+      if (sanitizedImages.dropped > 0) logger?.warn('模型输入图片引 不安全或不可 ，已丢弃', { dropped: sanitizedImages.dropped, total: rawImages.length });
       const videos = (req.videos || []).filter(Boolean);
       // 群聊上下文：@bot 时拉取的最近群聊记录，作为 system 前置注入，让 bot 知道在聊什么。
       const contextSystem = req.context
-        ? { role: 'system', content: `【群内最近对话上下文】\n${req.context}\n（每条格式为 昵称 [QQ号]: 内容；QQ号是用户唯一身份，不同QQ号是不同的人，绝不能把不同QQ的消息当成同一个人。请结合当前提问用户和上下文判断谁在说话；相关则回复，无关则正常回复，不要生硬搬运上下文内容）` }
+        ? { role: 'system', content: `【群内最近对话上下文】\n${req.context}\n（每条格式为 昵称 [QQ号]: 内容；QQ号是 户唯一身份，不同QQ号是不同的人，绝不能把不同QQ的消息当成同一个人。请结合当前提问 户和上下文判断谁在说话；相关则回复，无关则正常回复，不要生硬搬运上下文内容）` }
         : null;
       let searchSystem: { role: 'system'; content: string } | null = null;
       if (search?.shouldSearch(req.text, req.forceSearch)) {
@@ -97,7 +104,7 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
           logger?.info('已注入联网搜索结果', { provider: response.provider, resultCount: response.results.length, cached: response.cached, durationMs: response.durationMs });
         } catch (error) {
           logger?.warn('联网搜索失败，继续无搜索回答', { error: String((error as Error)?.message || error) });
-          searchSystem = { role: 'system', content: '【联网搜索失败】本次没有取得可靠的外部资料。不要编造最新信息或来源；如用户询问实时信息，请明确说明搜索失败。' };
+          searchSystem = { role: 'system', content: '【联网搜索失败】本次没有取得可靠的外部资料。不要编造最新信息或来源；如 户询问实时信息，请明确说明搜索失败。' };
         }
       }
       // 推理模型(gpt-5/o1/o3/o4/codex)需要 reasoning_effort 字段, 否则部分上游代理
@@ -107,7 +114,7 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
       const reasoningEffort = req.reasoningEffort as ReasoningEffort | undefined;
       // 当前对话模型普遍不支持视频理解：把视频 URL 以文字提示注入，避免当图片喂 vision 崩掉。
       const videoNote = videos.length
-        ? `\n\n【用户附带了 ${videos.length} 个视频附件，当前模型无法直接解析视频内容；仅保留引用：${videos.slice(0, 3).map((v, i) => `[${i + 1}] ${String(v).slice(0, 120)}`).join(' ')}】`
+        ? `\n\n【 户附带了 ${videos.length} 个视频附件，当前模型无法直接解析视频内容；仅保留引 ：${videos.slice(0, 3).map((v, i) => `[${i + 1}] ${String(v).slice(0, 120)}`).join(' ')}】`
         : '';
       // 带图对话走 vision。会话补写文本部分（图片上下文不便持久化，但对话轮次要留，
       // 否则 unifiedContext/多轮记忆缺失带图那轮，后续提问接不上）。
@@ -127,7 +134,7 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
         logger?.warn('模型无 vision 能力,图片被丢弃', { model: req.model, imageCount: images.length });
       }
       if (videos.length) {
-        logger?.info('chat 路径收到视频附件,已降级为文字引用', { model: req.model, videoCount: videos.length });
+        logger?.info('chat 路径收到视频附件,已降级为文字引 ', { model: req.model, videoCount: videos.length });
       }
       const history = sessions && req.sessionId ? sessions.get(req.sessionId) : [];
       const messages: Array<{ role: string; content: unknown }> = [];
@@ -228,35 +235,13 @@ export function createModelBackedDeps(options: ModelDepsOptions): BotEngineDeps 
         timeoutMs: routing.videoTimeoutMs,
         pollTimeoutMs: routing.videoPollTimeoutMs,
         pollIntervalMs: routing.videoPollIntervalMs,
+        onExternalTask: (taskId: string) => reportExternalTaskFromHandler(taskId),
       });
       const videos = videoArtifactsToStrings(res);
       if (!videos.length) {
         throw new Error('视频生成完成但未返回可播放 URL（可能仍 pending 或上游异常）');
       }
       return { videos };
-    },
-  };
-}
-
-/**
- * ModelClient 后端的意图规划器:自由模式/歧义判定时,intent-router 用它做一次 LLM 判定。
- * 走 freeMode 节点;不具备 vision 时 intent-router 会自动只传文本。
- *
- * 多模态:buildPlannerMessages 会在 visionEnabled 时把 image_url 拼进 messages。
- * OpenAI 兼容(含 xAI grok-4.5)的 /chat/completions 直接透传 content 数组即可识图。
- * 若某条 message content 含 image_url 而模型无 vision 能力,上游可能 4xx —— 由
- * IntentRouter.plannerVisionEnabled 在调用前按档案门控避免盲发。
- */
-export function createModelPlanner(client: ModelClient, getNodeIndex: () => number): PlannerClient {
-  return {
-    async createText(req) {
-      const res = await client.chat(getNodeIndex(), {
-        model: req.model,
-        messages: req.messages,
-        timeoutMs: req.timeoutMs,
-        maxTokens: req.maxTokens,
-      });
-      return { text: res.text, raw: res.raw };
     },
   };
 }

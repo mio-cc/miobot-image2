@@ -12,7 +12,7 @@
 | P1 | shared/config/logger/core/storage 内核 | ✅ 完成并通过 |
 | P2 | model 多厂商兼容加固（你重点要求的） | ✅ 完成并通过 |
 | P3 | napcat/reply/bot-router/image/free-mode 业务包 | ✅ 完成并通过 |
-| P4 | bot-engine + apps/bot 装配 | ✅ 完成并**默认上线**（`bot-runtime-v2.mjs` 21 行薄入口→`apps/bot/start`；旧 3194 行脚本降为 `MIOBOT_BOT_RUNTIME=legacy` 备份） |
+| P4 | bot-engine + apps/bot 装配 | ✅ 完成并**默认上线**（`bot-runtime-v2.mjs` 21 行薄入口→`apps/bot/start`；旧 3194 行脚本已随 R9/R10 删除，`MIOBOT_BOT_RUNTIME=legacy` 已移除） |
 | P5 | admin-service + apps/admin | 🟡 包+入口+测试已过；**未接线**——线上 web/admin 仍由 `local-verify-server.mjs`（3231 行）承载 |
 | P6 | canvas-service + apps/canvas | 🟡 包+入口+测试已过；**未接线**——线上 canvas 仍由 `local-verify-server.mjs` 承载 |
 | P7 | web-panel 组件化 | 🟡 仅 composables（useToast/useApi/useConfig/useLogs）；App.vue 仍 4500 行，无 `pages/` |

@@ -3,6 +3,7 @@ export * from './permissions.js';
 export * from './approvals.js';
 export * from './capabilities.js';
 export * from './reply-plan.js';
+export * from './reply-policy.js';
 export * from './plan.js';
 export * from './commands.js';
 export * from './config.js';

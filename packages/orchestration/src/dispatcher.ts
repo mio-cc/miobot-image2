@@ -120,6 +120,10 @@ export class CapabilityDispatcher {
     return this.handlers.has(String(capabilityId));
   }
 
+  getHandler(capabilityId: string): CapabilityHandler | undefined {
+    return this.handlers.get(String(capabilityId));
+  }
+
   authorize(
     request: UserRequest,
     plan: IntentPlan,

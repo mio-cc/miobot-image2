@@ -47,7 +47,7 @@ import {
 } from '../dist/packages/orchestration/src/index.js';
 import { ApprovalRuntime } from '../dist/apps/bot/src/approval-runtime.js';
 import { executionFromBotResult } from '../dist/apps/bot/src/capability-runtime-adapters.js';
-import { LegacyEngineCapabilityHandler } from '../dist/apps/bot/src/capability-legacy.js';
+import { ModelCapabilityHandler } from '../dist/apps/bot/src/capability-model.js';
 import { createReplyStrategyEngine } from '../dist/packages/reply/src/index.js';
 import { SunoCapabilityHandler } from '../dist/apps/bot/src/capability-suno.js';
 import { HelpCapabilityHandler, TtsCapabilityHandler } from '../dist/apps/bot/src/capability-basic.js';
@@ -1507,9 +1507,9 @@ test('orchestration: clarification is hard-capped at one question per job', asyn
   const first = await enforcer.handle({ text: '帮我弄一下', chatType: 'private', userId: '7' });
   assert.ok(first.result.text.includes('请再说具体一点'));
   const second = await enforcer.handle({ text: '就是那个', chatType: 'private', userId: '7' });
-  assert.equal(second.handled, true);
-  // 合并失败时给用户一条群内引导（而非静默）；问题上报照常 DM 管理员。
-  assert.match(second.result.text, /没法从当前消息里拿到需要的补充/);
+  assert.equal(second.handled, false);
+  // 合并失败时不再在群里塞固定图片引导；交回正常聊天/旧链路处理当前消息。
+  assert.equal(second.result, undefined);
   assert.equal(second.problem.kind, 'clarification_resolution_failed');
   assert.equal(store.list().length, 0);
   assert.equal(calls, 2);
@@ -2764,7 +2764,7 @@ test('legacy chat.reply bypasses auto intent routing on internal prompt text', a
   let autoHandleCalls = 0;
   let explicitKind = null;
   let explicitPrompt = null;
-  const handler = new LegacyEngineCapabilityHandler({
+  const handler = new ModelCapabilityHandler({
     async handle() { autoHandleCalls += 1; return { kind: 'image.generate', handled: true, images: ['wrong.png'] }; },
     engine: {
       async handleExplicit(kind, _input, params) {

@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia';
+﻿import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 import client, { errorMessage } from '../api/client';
 import { useAuthStore } from './auth';
@@ -19,6 +19,7 @@ const SECTION_LABELS: Record<string, string> = {
     promptsChat: '远程模板库', freeMode: '自由模式', huggingFace: 'HuggingFace', panel: '面板',
     intentRecognition: '意图识别', browserRender: '浏览器渲染', codeRender: '代码画图',
     comfyuiTransform: 'ComfyUI 参数转化', search: '联网搜索', orchestration: '智能编排',
+    agent: 'Agent 运行时', toolRegistry: '工具注册表', replyPolicy: '回复策略', contextPolicy: '上下文策略',
 };
 
 export const useConfigStore = defineStore('config', () => {
@@ -105,6 +106,12 @@ export const useConfigStore = defineStore('config', () => {
         c.orchestration.promptOptimization.versions ||= [];
         c.orchestration.suno ||= {};
         c.orchestration.audit ||= {};
+        c.agent ||= {};
+        c.agent.repair ||= {};
+        c.toolRegistry ||= {};
+        c.toolRegistry.exposure ||= {};
+        c.replyPolicy ||= {};
+        c.contextPolicy ||= {};
     }
 
     function markSaved() {

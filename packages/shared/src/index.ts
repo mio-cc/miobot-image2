@@ -1,8 +1,8 @@
 export type ReplyStrategy = 'forward' | 'at' | 'quote' | 'plain' | 'text-image';
 export type LegacyReplyFormat = Exclude<ReplyStrategy, 'plain' | 'text-image'>;
 export type RouteKind = 'ignored' | 'chat' | 'help' | 'image' | 'free-mode';
-export type PackagePhase = 'P2-skeleton' | 'P3-config' | 'P4-infrastructure' | 'P5-llm-adapter' | 'P6-napcat-adapter' | 'P7-reply-strategy' | 'P8-image-module' | 'P9-free-mode' | 'P10-bot-router' | 'P11-web-panel' | 'P12-config-regression' | 'P3-intent-router' | 'P2-model' | 'P4-bot-engine' | 'P4-storage' | 'P5-admin-service' | 'P6-canvas-service';
-export type ConfigSourceFormat = 'bare-config' | 'export-wrapper-v1' | 'export-wrapper-v2' | 'unknown-wrapper' | 'invalid';
+export type PackagePhase = 'P2-skeleton' | 'P3-config' | 'P4-infrastructure' | 'P5-llm-adapter' | 'P6-napcat-adapter' | 'P7-reply-strategy' | 'P8-image-module' | 'P10-bot-router' | 'P11-web-panel' | 'P12-config-regression' | 'P2-model' | 'P4-agent-runtime' | 'P4-storage' | 'P5-admin-service' | 'P6-canvas-service';
+export type ConfigSourceFormat = 'bare-config' | 'export-wrapper-v1' | 'export-wrapper-v2' | 'export-wrapper-v3' | 'unknown-wrapper' | 'invalid';
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export interface PackageDescriptor {

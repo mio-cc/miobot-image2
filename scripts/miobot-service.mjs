@@ -47,16 +47,21 @@ function shutdown(code = 0) {
 process.on('SIGTERM', () => shutdown(0));
 process.on('SIGINT', () => shutdown(0));
 
-// Bot runtime: defaults to the rebuilt v2 architecture (apps/bot).
-// Set MIOBOT_BOT_RUNTIME=legacy to fall back to the old scripts/bot-runtime.mjs.
-const useLegacyBot = String(process.env.MIOBOT_BOT_RUNTIME || 'v2').toLowerCase() === 'legacy';
-const botScript = useLegacyBot ? 'scripts/bot-runtime.mjs' : 'scripts/bot-runtime-v2.mjs';
+// Bot runtime: 只保留 v2（apps/bot）。
+// P1-D（R10 修复）：旧 scripts/bot-runtime.mjs 已随旧链路删除，不再保留 legacy 分支——
+// 保留会形成指向不存在文件的坏回滚路径。设置 legacy 时明确报错退出。
+const requestedBot = String(process.env.MIOBOT_BOT_RUNTIME || 'v2').toLowerCase();
+if (requestedBot === 'legacy') {
+  console.error('[service] MIOBOT_BOT_RUNTIME=legacy 不再受支持：旧 bot 运行时已移除。请使用 v2（默认）。');
+  process.exit(2);
+}
+const botScript = 'scripts/bot-runtime-v2.mjs';
 
 // Web runtime: defaults to the rebuilt v2 launcher (apps/admin + apps/canvas 装配式)。
 // Set MIOBOT_WEB_RUNTIME=legacy to fall back to the old monolith scripts/local-verify-server.mjs.
 const useLegacyWeb = String(process.env.MIOBOT_WEB_RUNTIME || 'v2').toLowerCase() === 'legacy';
 const webScript = useLegacyWeb ? 'scripts/local-verify-server.mjs' : 'scripts/local-verify-server-v2.mjs';
 
-console.log(`[service] starting web/admin/canvas(${useLegacyWeb ? 'legacy' : 'v2'})${enableBot ? ` + bot(${useLegacyBot ? 'legacy' : 'v2'})` : ''}`);
+console.log(`[service] starting web/admin/canvas(${useLegacyWeb ? 'legacy' : 'v2'})${enableBot ? ' + bot(v2)' : ''}`);
 start('web', webScript);
 if (enableBot) start('bot', botScript);

@@ -1,4 +1,4 @@
-import { formatHistoryMessageText, senderIdentity, type NapcatHistoryMessage } from './group-context.js';
+﻿import { formatHistoryMessageText, senderIdentity, type NapcatHistoryMessage } from './group-context.js';
 
 /**
  * 消息内容富化:把 get_msg(引用消息) / get_forward_msg(合并转发) 拉到的外部内容,
@@ -30,7 +30,7 @@ export function extractForwardIds(message: AnyMessage | string | undefined | nul
       }
     }
   }
-  const raw = typeof message === 'string' ? message : (message && typeof message.raw_message === 'string' ? message.raw_message : '');
+  const raw = typeof message === 'string' ? message : (message && typeof message.raw_message === 'string' ? message.raw_message : (message && typeof (message as AnyMessage & { message?: unknown }).message === 'string' ? (message as AnyMessage & { message: string }).message : ''));
   for (const m of String(raw).matchAll(/\[CQ:forward,[^\]]*(?:id|file|resid|res_id|forward_id)=([^,\]]+)/gi)) {
     if (m[1]) ids.push(safeDecode(m[1]));
   }

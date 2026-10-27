@@ -1,5 +1,10 @@
-import type { BotTtsConfig } from '../../../packages/config/src/index.js';
+﻿import type { BotTtsConfig } from '../../../packages/config/src/index.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
+
+/** 渲染 TTS 前置处理提示词，占位符只接受 {{text}}。 */
+export function renderTtsPreprocessPrompt(template: string, text: string): string {
+  return String(template || '').replace(/\{\{\s*text\s*\}\}/g, () => String(text || ''));
+}
 
 export interface TtsRequestPlan {
   url: string;

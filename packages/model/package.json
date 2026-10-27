@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "description": "Unified multi-dialect model layer: openai / anthropic / gemini / huggingface / custom, with per-model capability profiles.",
+  "dependencies": {
+    "@miobot-v2/provider-tools": "0.0.0",
+    "@miobot-v2/tool-runtime": "0.0.0"
+  },
   "main": "../../dist/packages/model/src/index.js",
   "types": "../../dist/packages/model/src/index.d.ts",
   "exports": {

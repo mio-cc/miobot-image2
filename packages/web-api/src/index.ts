@@ -4,6 +4,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import nodePath from 'node:path';
 import {
   builtinComfyUiProfile,
+  CONFIG_MIGRATION_TABLE,
+  CONFIG_SCHEMA_VERSION,
+  CONFIG_V3_FIELD_METADATA,
   createDefaultConfig,
   exportConfig,
   importConfig as importAppConfig,
@@ -121,6 +124,43 @@ function miobotDataDir(): string {
   // MIOBOT_RUNTIME_DIR；不能悄悄退回固定 /var/lib 路径，否则自定义
   // 数据目录时面板审批/记忆/能力测试会写到另一个目录。
   return String(process.env.MIOBOT_DATA_DIR || process.env.MIOBOT_RUNTIME_DIR || '/var/lib/miobot-v2');
+}
+
+function replyPreferenceFilePath(): string {
+  return process.env.MIOBOT_REPLY_PREFERENCES_FILE || nodePath.join(miobotDataDir(), 'reply-preferences.json');
+}
+
+interface StoredReplyPreferenceRecord {
+  scope: 'session' | 'user';
+  key: string;
+  preference: Record<string, unknown>;
+  updatedAt: string;
+  expiresAt?: string;
+}
+
+async function readReplyPreferenceRecords(): Promise<StoredReplyPreferenceRecord[]> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(replyPreferenceFilePath(), 'utf8'));
+    const records = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.records) ? parsed.records : [];
+    return (records as StoredReplyPreferenceRecord[]).filter((record) =>
+      (record?.scope === 'session' || record?.scope === 'user') && Boolean(record.key) && Boolean(record.preference));
+  } catch {
+    return [];
+  }
+}
+
+async function writeReplyPreferenceRecords(records: StoredReplyPreferenceRecord[]): Promise<void> {
+  const file = replyPreferenceFilePath();
+  await fs.mkdir(nodePath.dirname(file), { recursive: true });
+  const temp = file + '.tmp';
+  await fs.writeFile(temp, JSON.stringify({ version: 1, records }, null, 2), 'utf8');
+  await fs.rename(temp, file);
+}
+
+async function auditReplyPreferenceAction(action: string, data: Record<string, unknown>): Promise<void> {
+  const file = process.env.MIOBOT_AUDIT_FILE || nodePath.join(miobotDataDir(), 'audit.jsonl');
+  await fs.mkdir(nodePath.dirname(file), { recursive: true });
+  await fs.appendFile(file, JSON.stringify({ timestamp: new Date().toISOString(), type: action, actor: 'panel', data }) + '\n', 'utf8');
 }
 
 /**
@@ -667,12 +707,19 @@ export class WebApi {
       }
       if (method === 'GET' && path === '/api/orchestration/jobs') {
         const jobFile = process.env.MIOBOT_PENDING_JOB_FILE || nodePath.join(miobotDataDir(), 'orchestration-pending-jobs.json');
-        const content = await fs.readFile(jobFile, 'utf8').catch(() => '');
-        let jobs: unknown[] = [];
-        try { const parsed = JSON.parse(content || '{}'); jobs = Array.isArray(parsed?.jobs) ? parsed.jobs : []; } catch { jobs = []; }
+        const agentJobFile = process.env.MIOBOT_TOOL_JOB_FILE || nodePath.join(miobotDataDir(), 'agent-tool-jobs.json');
+        const readJobs = async (file: string, source: string): Promise<unknown[]> => {
+          const content = await fs.readFile(file, 'utf8').catch(() => '');
+          try {
+            const parsed = JSON.parse(content || '{}');
+            return (Array.isArray(parsed?.jobs) ? parsed.jobs : []).map((job: unknown) => (
+              job && typeof job === 'object' ? { ...(job as Record<string, unknown>), source } : job
+            ));
+          } catch { return []; }
+        };
+        const jobs = [...await readJobs(jobFile, 'orchestration'), ...await readJobs(agentJobFile, 'agent')];
         return ok({ success: true, jobs });
-      }
-      if (method === 'POST' && path === '/api/orchestration/approvals') {
+      }      if (method === 'POST' && path === '/api/orchestration/approvals') {
         const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
         const code = String(body.code || '').trim().toUpperCase();
         const decision = String(body.decision || '').trim().toLowerCase();
@@ -923,6 +970,51 @@ export class WebApi {
         const descriptors = applyCapabilityOverrides(allCapabilityDescriptors(), cfg.orchestration?.capabilityOverrides || {});
         const gated = applyRuntimeCapabilityGates(descriptors, { sunoEnabled: Boolean(cfg.orchestration?.suno?.enabled), externalEnabled: Boolean(cfg.orchestration?.externalProviders?.enabled), allowlist: cfg.orchestration?.externalProviders?.allowlist || [] });
         return ok({ success: true, capabilities: gated.map((item) => ({ ...item, health: capabilityHealth(cfg, item) })), manifest: buildCapabilityManifest(gated) });
+      }
+      if (method === 'GET' && path === '/api/reply-preferences') {
+        const records = await readReplyPreferenceRecords();
+        const now = Date.now();
+        return ok({
+          success: true,
+          records: records.map((record) => ({
+            ...record,
+            expired: Boolean(record.expiresAt && Date.parse(record.expiresAt) <= now),
+          })),
+        });
+      }
+      if (method === 'POST' && path === '/api/reply-preferences/delete') {
+        const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
+        const scope = body.scope === 'session' || body.scope === 'user' ? body.scope : undefined;
+        const key = String(body.key || '').trim();
+        if (!scope || !key) return json(400, { success: false, error: 'scope(session|user) and key are required' });
+        const records = await readReplyPreferenceRecords();
+        const next = records.filter((record) => !(record.scope === scope && record.key === key));
+        const removed = records.length - next.length;
+        if (removed) {
+          await writeReplyPreferenceRecords(next);
+          await auditReplyPreferenceAction('reply_preference.deleted', { scope, key, removed });
+        }
+        return ok({ success: true, removed });
+      }
+      if (method === 'POST' && path === '/api/reply-preferences/clear') {
+        const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
+        const scope = body.scope === 'session' || body.scope === 'user' ? body.scope : undefined;
+        const records = await readReplyPreferenceRecords();
+        const next = scope ? records.filter((record) => record.scope !== scope) : [];
+        const removed = records.length - next.length;
+        if (removed) {
+          await writeReplyPreferenceRecords(next);
+          await auditReplyPreferenceAction('reply_preference.cleared', { scope: scope || 'all', removed });
+        }
+        return ok({ success: true, removed });
+      }
+      if (method === 'GET' && path === '/api/config/schema') {
+        return ok({
+          success: true,
+          schemaVersion: CONFIG_SCHEMA_VERSION,
+          fields: CONFIG_V3_FIELD_METADATA,
+          migrations: CONFIG_MIGRATION_TABLE,
+        });
       }
       if (method === 'GET' && path === '/api/config') {
         return ok({ success: true, config: this.repository.getMaskedConfig(), revision: this.repository.revision, auth: this.repository.getAuthSnapshot(false) });

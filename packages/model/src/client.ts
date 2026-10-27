@@ -1,4 +1,4 @@
-import { extractTextUsage } from './usage.js';
+﻿import { extractTextUsage } from './usage.js';
 import { CapabilityRegistry, createCapabilityRegistry } from './capability/registry.js';
 import { applyFix, applyLearned, diagnose, healingKey, rememberFix } from './capability/healing.js';
 import { imageEditTransportsFor } from './capability/params.js';
@@ -11,6 +11,8 @@ import { huggingFaceDialect } from './dialects/huggingface.js';
 import { openAiDialect } from './dialects/openai.js';
 import { defaultFetchTransport } from './transport.js';
 import { buildOpenAiVideoStatus } from './dialects/shared.js';
+import { parseContextForRequest } from './dialects/tool-support.js';
+import { classifyProviderResponse } from './provider-errors.js';
 import {
   ModelError,
   type ChatRequest,
@@ -25,6 +27,7 @@ import {
   type RequestPlan,
   type TextResult,
   type Transport,
+  type VideoArtifact,
   type VideoGenerationRequest,
   type VideoResult,
   type VisionRequest,
@@ -136,7 +139,8 @@ export class ModelClient {
   }
 
   async chat(nodeIndex: number, req: ChatRequest): Promise<TextResult> {
-    return this.run('chat', nodeIndex, req.model, req.timeoutMs, (d, n) => d.buildChat(n, req), ModelClient.withUsage((d, data) => d.parseChat(data)));
+    const parseContext = parseContextForRequest(req);
+    return this.run('chat', nodeIndex, req.model, req.timeoutMs, (d, n) => d.buildChat(n, req), ModelClient.withUsage((d, data) => d.parseChat(data, parseContext)));
   }
   /** T3.6：文本类调用统一在解析后补挂 usage（方言未提取时从原始响应兜底抓取）。 */
   private static withUsage(parse: (dialect: Dialect, data: unknown) => TextResult): (dialect: Dialect, data: unknown) => TextResult {
@@ -227,13 +231,43 @@ export class ModelClient {
   async generateVideo(nodeIndex: number, req: VideoGenerationRequest): Promise<VideoResult> {
     const initial = await this.run('video.generate', nodeIndex, req.model, req.timeoutMs,
       (d, n) => requireBuilder(d, 'buildVideoGeneration', n, req), (d, data) => requireVideoParser(d, data));
+    const requestId = initial.videos.find((v) => v.requestId)?.requestId || initial.videos[0]?.requestId;
+    if (requestId) req.onExternalTask?.(requestId);
     if (req.waitForCompletion === false) return initial;
     if (!initial.pending) return initial;
-    const requestId = initial.videos.find((v) => v.requestId)?.requestId || initial.videos[0]?.requestId;
     if (!requestId) {
       throw new ModelError('Video generation pending but missing request_id', { category: 'validation', retryable: false, code: 'video_missing_request_id' });
     }
     return this.pollVideoUntilDone(nodeIndex, req, requestId, initial);
+  }
+
+  /**
+   * R9：崩溃恢复用的单次视频状态探测，不进入轮询循环。
+   * 返回 running/failed/expired 或已完成的可播放产物。
+   */
+  async probeVideo(nodeIndex: number, requestId: string, timeoutMs = 30_000): Promise<{
+    status: 'running' | 'success' | 'failed' | 'expired';
+    videos?: VideoArtifact[];
+    error?: string;
+  }> {
+    const primary = this.resolveIndex(nodeIndex);
+    const node = this.nodes[primary];
+    if (!node) throw new ModelError(`节点索引 ${primary} 不存在`, { category: 'validation', retryable: false });
+    const dialect = dialectFor(node);
+    const plan = typeof dialect.buildVideoStatus === 'function'
+      ? dialect.buildVideoStatus(node, requestId)
+      : buildOpenAiVideoStatus(node, requestId);
+    const response = await this.gated(primary, () => this.transport({ ...plan, timeoutMs: Math.max(1_000, Math.trunc(timeoutMs)) }));
+    if (response.status >= 400) throw errorFromResponse(response);
+    try {
+      const parsed = requireVideoParser(dialect, response.data);
+      if (parsed.pending || !parsed.videos.some((video) => String(video.data || '').trim())) return { status: 'running' as const };
+      return { status: 'success' as const, videos: parsed.videos };
+    } catch (error) {
+      if (error instanceof ModelError && error.code === 'video_expired') return { status: 'expired' as const, error: error.message };
+      if (error instanceof ModelError && error.code === 'video_failed') return { status: 'failed' as const, error: error.message };
+      throw error;
+    }
   }
 
   /**
@@ -569,19 +603,25 @@ function isGenerationTimeout(op: ModelOperation, error: unknown): boolean {
 
 function shouldFailover(error: unknown): boolean {
   if (error instanceof ModelError) {
+    const s = error.status || 0;
+    // Bad credentials / missing models are terminal for the node but still worth
+    // trying on another key or endpoint.
+    if ([401, 403, 404, 408, 409, 425, 429, 500, 502, 503, 504, 529].includes(s)) return true;
     if (error.category === 'validation') return false;
     if (error.retryable) return true;
-    const s = error.status || 0;
-    return [408, 409, 429, 500, 502, 503, 504, 401, 403, 404].includes(s) || ['network', 'timeout', 'upstream'].includes(error.category);
+    return ['network', 'timeout', 'upstream'].includes(error.category);
   }
   return true; // 未知错误（网络等）默认可转移
 }
 
 function errorFromResponse(response: HttpResponse): ModelError {
-  const data: any = response.data;
-  const err = data && typeof data === 'object' ? (data.error ?? data) : data;
-  const message = typeof err === 'string' ? err : String(err?.message || `HTTP ${response.status}`);
-  return new ModelError(message, { category: 'upstream', retryable: response.status >= 500 || response.status === 429, status: response.status });
+  const classification = classifyProviderResponse(response.status, response.data);
+  return new ModelError(classification.message, {
+    category: classification.category,
+    retryable: classification.retryable,
+    status: response.status,
+    code: classification.code || classification.kind,
+  });
 }
 
 function delay(ms: number): Promise<void> {

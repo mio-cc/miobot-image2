@@ -19,16 +19,16 @@
       "@miobot-v2/image": ["packages/image/src/index.ts"],
       "@miobot-v2/reply": ["packages/reply/src/index.ts"],
       "@miobot-v2/bot-router": ["packages/bot-router/src/index.ts"],
-      "@miobot-v2/intent-router": ["packages/intent-router/src/index.ts"],
       "@miobot-v2/model": ["packages/model/src/index.ts"],
-      "@miobot-v2/bot-engine": ["packages/bot-engine/src/index.ts"],
-      "@miobot-v2/free-mode": ["packages/free-mode/src/index.ts"],
       "@miobot-v2/storage": ["packages/storage/src/index.ts"],
       "@miobot-v2/admin-service": ["packages/admin-service/src/index.ts"],
       "@miobot-v2/canvas-service": ["packages/canvas-service/src/index.ts"],
       "@miobot-v2/web-api": ["packages/web-api/src/index.ts"],
       "@miobot-v2/web-panel": ["packages/web-panel/src/index.ts"],
-    "@miobot-v2/orchestration": ["packages/orchestration/src/index.ts"]
+    "@miobot-v2/orchestration": ["packages/orchestration/src/index.ts"],
+    "@miobot-v2/tool-runtime": ["packages/tool-runtime/src/index.ts"],
+    "@miobot-v2/provider-tools": ["packages/provider-tools/src/index.ts"],
+    "@miobot-v2/agent-runtime": ["packages/agent-runtime/src/index.ts"]
     }
   },
   "include": [

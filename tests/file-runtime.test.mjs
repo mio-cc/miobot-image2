@@ -1,10 +1,17 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 import { createDefaultConfig, normalizeConfig } from '../dist/packages/config/src/index.js';
+/** R9 修复后 Agent 默认 enforce：文件运行时测试走旧命令路径，显式关闭 agent（聊天语义另测）。 */
+function normalizeConfigWithAgentOff(input) {
+  const cfg = normalizeConfig(typeof input === 'function' ? input() : input);
+  if (cfg.agent) { cfg.agent.enabled = false; cfg.agent.mode = 'off'; cfg.intentRecognition.enabled = false; }
+  return cfg;
+}
+
 import { createBotMessageRuntime, detectFileGenerateRequest, extractFiles } from '../dist/apps/bot/src/runtime.js';
 import { PendingFileIndex } from '../dist/packages/file-ingest/src/index.js';
 
@@ -29,7 +36,7 @@ test('runtime file: same-message file read downloads, parses, and asks chat mode
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'miobot-runtime-file-'));
   const source = path.join(dir, 'source.txt');
   await fs.writeFile(source, 'Miibot private file content', 'utf8');
-  const cfg = normalizeConfig({ ...createDefaultConfig(), bot: { ...createDefaultConfig().bot, replyStrategies: { text: 'plain', image: 'plain', multiImage: 'plain', video: 'plain', multiVideo: 'forward', file: 'forward', multiFile: 'forward', mixed: 'forward' } } });
+  const cfg = normalizeConfigWithAgentOff({ ...createDefaultConfig(), bot: { ...createDefaultConfig().bot, replyStrategies: { text: 'plain', image: 'plain', multiImage: 'plain', video: 'plain', multiVideo: 'forward', file: 'forward', multiFile: 'forward', mixed: 'forward' } } });
   cfg.bot.botQqId = '100';
   cfg.bot.files.enabled = true;
   const index = new PendingFileIndex({ filePath: path.join(dir, 'pending.json') });
@@ -84,7 +91,7 @@ test('runtime file: same-message file read downloads, parses, and asks chat mode
 
 test('runtime file: generation command builds and sends a file', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'miobot-runtime-filegen-'));
-  const cfg = normalizeConfig({ ...createDefaultConfig(), bot: { ...createDefaultConfig().bot, replyStrategies: { text: 'plain', image: 'plain', multiImage: 'plain', video: 'plain', multiVideo: 'forward', file: 'plain', multiFile: 'forward', mixed: 'forward' } } });
+  const cfg = normalizeConfigWithAgentOff({ ...createDefaultConfig(), bot: { ...createDefaultConfig().bot, replyStrategies: { text: 'plain', image: 'plain', multiImage: 'plain', video: 'plain', multiVideo: 'forward', file: 'plain', multiFile: 'forward', mixed: 'forward' } } });
   cfg.bot.botQqId = '100';
   const filesSent = [];
   let uploadCalled = false;
@@ -130,7 +137,7 @@ test('runtime file: generation command builds and sends a file', async () => {
 });
 
 test('runtime image: schedules auto recall using returned message id', async () => {
-  const cfg = normalizeConfig(createDefaultConfig());
+  const cfg = normalizeConfigWithAgentOff(createDefaultConfig());
   cfg.bot.botQqId = '100';
   cfg.bot.autoRecallImages = true;
   cfg.bot.autoRecallDelaySeconds = 1;
@@ -177,7 +184,7 @@ test('runtime file: detects natural-language md/document generation but not imag
 
 test('runtime file: natural-language md request produces a real .md file instead of chat text', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'miobot-natural-filegen-'));
-  const cfg = normalizeConfig(createDefaultConfig());
+  const cfg = normalizeConfigWithAgentOff(createDefaultConfig());
   cfg.bot.botQqId = '100';
   cfg.freeMode.enabled = true;
   cfg.bot.replyStrategies.text = 'forward';
@@ -224,7 +231,7 @@ test('runtime file: natural-language md request produces a real .md file instead
 
 
 test('runtime intent: model chat intent bypasses freeMode planner and calls explicit chat', async () => {
-  const cfg = normalizeConfig(createDefaultConfig());
+  const cfg = normalizeConfigWithAgentOff(createDefaultConfig());
   cfg.bot.botQqId = '100';
   cfg.freeMode.enabled = true;
   cfg.intentRecognition.enabled = true;

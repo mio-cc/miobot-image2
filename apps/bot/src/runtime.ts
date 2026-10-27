@@ -1,4 +1,4 @@
-import { createBotRouter, extractReplyId, isAllowedByWhitelist, isGroupUserBlacklisted, stripNonTextCqSegments, type BotMessageContext, type BotRouteDecision, type BotRouterConfig } from '../../../packages/bot-router/src/index.js';
+﻿import { createBotRouter, extractReplyId, isAllowedByWhitelist, isGroupUserBlacklisted, stripNonTextCqSegments, type BotMessageContext, type BotRouteDecision, type BotRouterConfig } from '../../../packages/bot-router/src/index.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { FEATURE_DEFINITIONS, type FeatureSetting } from '../../../packages/shared/src/features.js';
@@ -6,21 +6,22 @@ import { createSentMessageTracker, createTrackingReplyClient, partitionRecallEnt
 import { createReplyStrategyEngine, type ReplyClient, type ReplyContext, type ReplyStrategyConfig } from '../../../packages/reply/src/index.js';
 import { dedupeImageUrls, dedupeVideoUrls } from '../../../packages/napcat/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
-import type { BotEngineResult } from '../../../packages/bot-engine/src/index.js';
+import type { RuntimeResult as BotEngineResult } from './runtime-types.js';
 import type { BotApp } from './app.js';
 import { isOwner, parseOwnerCommand, type OwnerCommand } from './owner.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 import { fetchGroupContext, senderIdentity, type GroupContextOptions, type NapcatHistoryMessage } from './group-context.js';
+// P0-1 方式二：off 模式保留旧自然语言意图链（R9 误删，恢复以保回滚能力）。
+import { classifyNaturalLanguageIntent, type IntentCatalogItem, type IntentFallback } from './intent-recognition.js';
 import { extractForwardIds, extractReferenceText, formatForwardMessages, isReferencedFromBot } from './message-enrichment.js';
 import type { CanvasGallerySyncInput } from './canvas-gallery.js';
-import type { IntentPlan, UserRequest } from '../../../packages/orchestration/src/index.js';
+import type { ReplyPlan } from '../../../packages/orchestration/src/index.js';
 import { normalizeReplyFingerprint, replyContentHash } from '../../../packages/orchestration/src/index.js';
 import { describeImageReference, type ImageInputPreparer } from './image-input.js';
 import { DEFAULT_FILE_PARSE_LIMITS, PendingFileIndex, parseFile, formatParsedFileForModel, type FileParseLimits, type PendingFileRecord, type ParsedFileResult } from '../../../packages/file-ingest/src/index.js';
 import { DEFAULT_FILEGEN_LIMITS, generateFile, generatedFileSpecFromJson, type GeneratedFileSpec, type GeneratedFileType } from '../../../packages/filegen/src/index.js';
 import { FeatureLimitError, type FeatureGate } from './feature-gate.js';
 import { sanitizeModelImageReferences } from './deps.js';
-import { classifyNaturalLanguageIntent, type IntentCatalogItem, type IntentFallback } from './intent-recognition.js';
 import { renderTextToImage } from '../../../packages/image-compose/src/index.js';
 import type { BrowserRenderService, RenderedImage } from '../../../packages/browser-render/src/index.js';
 import { createImageProgress, type ImageProgressKind, type ImageProgressHandle } from './image-progress.js';
@@ -124,22 +125,11 @@ export interface BotRuntimeOptions {
    * 不注入时所有埋点都是空操作。
    */
   metrics?: {
-    record(event: 'message' | 'command' | 'chat' | 'image' | 'video' | 'audio' | 'voice' | 'error', count?: number): void;
+    record(event: 'message' | 'command' | 'chat' | 'image' | 'video' | 'audio' | 'voice' | 'error' | 'agent_failure' | 'agent_unavailable', count?: number): void;
     recordDuration(key: string, ms: number): void;
     durationAverage?(key: string): number | undefined;
   };
   /** 进度消息开关；默认关闭，start.ts 开启。 */
-  /** 智能编排影子规划；只生成计划，不执行、不影响现有回复。 */
-  shadowOrchestration?: (input: {
-    request: UserRequest;
-    text: string;
-    chatType: 'group' | 'private';
-    groupId?: string | number;
-    userId?: string | number;
-    images?: string[];
-    referencedText?: string;
-    groupContext?: string;
-  }) => Promise<void>;
   /** 管理员审批回复入口；命中后优先于 owner 命令和普通路由。 */
   handleApprovalReply?: (input: {
     text: string;
@@ -147,23 +137,6 @@ export interface BotRuntimeOptions {
     groupId?: string | number;
     chatType: 'group' | 'private';
   }) => Promise<{ handled: boolean; reason?: string }>;
-  /** enforce 模式下调用新编排器；返回 handled=false 时回退旧链路。 */
-  enforceOrchestration?: (input: {
-    text: string;
-    chatType: 'group' | 'private';
-    groupId?: string | number;
-    userId?: string | number;
-    images?: string[];
-    files?: Array<Record<string, unknown>>;
-    referencedText?: string;
-    groupContext?: string;
-    memoryContext?: string;
-    sessionHistory?: string;
-    sessionId?: string;
-    plan?: IntentPlan;
-    forceLegacyExecution?: boolean;
-    onProgress?: (event: { type: 'plan'; jobId: string; requestId: string; capabilityIds: string[]; stepIds: string[] }) => void | Promise<void>;
-  }) => Promise<{ handled: boolean; result?: BotEngineResult; reason?: string; problem?: { kind: string; error: string } }>;
   /** 所有异常/问题统一私聊管理员，绝不回复用户。 */
   reportProblem?: (input: {
     kind: string;
@@ -198,6 +171,39 @@ export interface BotRuntimeOptions {
     sessionId?: string;
     onProgress?: (event: { type: 'plan'; jobId: string; requestId: string; capabilityIds: string[]; stepIds: string[] }) => void | Promise<void>;
   }) => Promise<{ handled: boolean; result?: BotEngineResult; reason?: string; problem?: { kind: string; error: string } }>;
+  /** P0-1 方式二：自然语言旧编排链（OrchestrationEnforcer）钩子——off 回退与回滚期保留。
+   *  enforce 模式且注入时，off 回退分支会优先走此链（与 HEAD 行为一致）。 */
+  enforceOrchestration?: (input: {
+    text: string;
+    chatType: 'group' | 'private';
+    groupId?: string | number;
+    userId?: string | number;
+    images?: string[];
+    files?: Array<Record<string, unknown>>;
+    referencedText?: string;
+    groupContext?: string;
+    memoryContext?: string;
+    sessionHistory?: string;
+    sessionId?: string;
+    onProgress?: (event: { type: 'plan'; jobId: string; requestId: string; capabilityIds: string[]; stepIds: string[] }) => void | Promise<void>;
+  }) => Promise<{ handled: boolean; result?: BotEngineResult; reason?: string; problem?: { kind: string; error: string } }>;
+  /** Agent Runtime 旁路/接管；enforce 是唯一 owner，未产出结果时受控失败且不回退旧链；shadow 仅观察。 */
+  agentRuntime?: (input: {
+    text: string;
+    chatType: 'group' | 'private';
+    groupId?: string | number;
+    userId?: string | number;
+    images?: string[];
+    videos?: string[];
+    audios?: string[];
+    files?: Array<Record<string, unknown>>;
+    referencedText?: string;
+    forwardText?: string;
+    groupContext?: string;
+    memoryContext?: string;
+    sessionId?: string;
+    requestId?: string;
+  }) => Promise<{ handled: boolean; text?: string; replyPlan?: ReplyPlan; reason?: string; problem?: { kind: string; error: string }; meta?: Record<string, unknown> }>;
   progressMessages?: boolean;
   /** 慢任务提醒间隔；默认 60 秒，0 关闭。 */
   progressReminderMs?: number;
@@ -219,7 +225,7 @@ export interface BotRuntimeResult {
 const DEFAULT_CLEAR_ALIASES = '/clear, 新对话, 清除对话, 清空对话, clear';
 
 /**
- * 实时收发环:Napcat 消息 → bot-router 决策 → bot-engine(handleAuto/handleExplicit) → reply 发送。
+ * 实时收发环:Napcat 消息 → bot-router 决策 → AgentRuntime/ExplicitExecutor → ReplyPlan 发送。
  * chat 带会话记忆(sessionId);clear 清会话;help 自动生成。纯装配 + 依赖注入,可用 fake 单测。
  */
 interface FileCommandOutcome {
@@ -337,12 +343,6 @@ function filePrompt(userRequest: string, type: GeneratedFileType): string {
   ].join('\n');
 }
 
-export function detectFileGenerateRequest(text: string): boolean {
-  const value = String(text || '').trim();
-  if (!value) return false;
-  return /(?:生成|创建|制作|导出|写|整理|做|给我).{0,32}(?:md|markdown|word|docx|excel|xlsx|ppt|pptx|pdf|txt|csv|json|zip|文件|文档|表格|幻灯片|演示文稿)/i.test(value);
-}
-
 export const NATURAL_INTENT_CATALOG: IntentCatalogItem[] = [
   { id: 'chat', label: '普通聊天', effect: 'answer', description: '直接回答、解释、判断、写作或对话；不创建新产物，不修改外部状态。' },
   { id: 'help', label: '帮助', effect: 'answer', description: '用户询问机器人怎么用、有哪些功能、怎么发命令。' },
@@ -373,8 +373,6 @@ function availableIntentCatalog(cfg: AppConfig): IntentCatalogItem[] {
     if (item.id === 'code.render' && (!cfg.browserRender?.enabled || cfg.codeRender?.enabled === false)) return false;
     if (item.id === 'web.screenshot' && !cfg.browserRender?.enabled) return false;
     const def = FEATURE_DEFINITIONS.find((entry) => entry.id === item.id);
-    // 新自然语言意图路由由全局 intentRecognition.enabled 控制；
-    // 旧 naturalLanguage 开关只影响原 FreeMode planner，避免旧配置里默认 false 把新路由一并关掉。
     return Boolean(def?.implemented) && settings[item.id]?.enabled !== false;
   });
 }
@@ -393,8 +391,31 @@ function fallbackIntent(text: string, hasFiles: boolean, cfg: AppConfig, options
   if (hasFiles && cfg.bot.features?.['file.read']?.enabled !== false && /(总结|概括|分析|读取|解析|提取|讲什么|说了什么|内容|翻译|检查)/i.test(text)) {
     return { intent: 'file.read', args: text, confidence: 0.8 };
   }
+  // P0-1 方式二（续）：承接 HEAD intent-router signals 的强词直判，让 off 回退保有旧路由能力。
+  if (cfg.llm?.videoEnabled && cfg.bot.features?.['video.generate']?.enabled !== false && /(生成视频|做视频|制作视频|来个视频|生成一段视频|视频生成)/i.test(text)) {
+    return { intent: 'video.generate', args: text, confidence: 0.95 };
+  }
+  if (cfg.orchestration?.suno?.enabled && cfg.bot.features?.['audio.music.generate']?.enabled !== false && /(写(一)?首(歌|曲)|作(一)?首(歌|曲)|来(一)?首(歌|曲)|生成(一)?首(歌|曲)|谱曲|写歌词)/i.test(text)) {
+    return { intent: 'audio.music.generate', args: text, confidence: 0.9 };
+  }
+  if (cfg.bot.features?.['image.edit']?.enabled !== false && /(改图|修图|重绘|局部重绘|扩图|图生图|去水印|换背景|换脸|美化一下|inpaint|img2img)/i.test(text)) {
+    return { intent: 'image.edit', args: text, confidence: 0.9 };
+  }
+  if (cfg.bot.features?.['image.generate']?.enabled !== false && /(画一张|画个|画只|画条|帮我画|给我画|生图|文生图|生成一张|来一张|text to image|t2i)/i.test(text)) {
+    return { intent: 'image.generate', args: text, confidence: 0.9 };
+  }
+  if (cfg.bot.features?.['image.interrogate']?.enabled !== false && /(反推|反向提示词|提取提示词|识图|interrogate)/i.test(text)) {
+    return { intent: 'image.interrogate', args: text, confidence: 0.9 };
+  }
   return { intent: 'chat', args: text, confidence: 0 };
 }
+
+export function detectFileGenerateRequest(text: string): boolean {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  return /(?:生成|创建|制作|导出|写|整理|做|给我).{0,32}(?:md|markdown|word|docx|excel|xlsx|ppt|pptx|pdf|txt|csv|json|zip|文件|文档|表格|幻灯片|演示文稿)/i.test(value);
+}
+
 
 interface RenderCommandOutcome {
   result?: BotEngineResult;
@@ -696,6 +717,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const baseImages = extractImages(event);
     const baseVideos = extractVideos(event);
     const baseFiles = extractFiles(event);
+    const baseAudios = extractAudios(event);
     const userId = event.user_id ?? event.sender?.user_id;
     const sessionId = chatType === 'group' ? `group:${event.group_id}:${userId}` : `private:${userId}`;
     // 全流程阶段计时：入口即起表（此前 startedAt 在编排之后才起算，chat 均值不含前置阶段）。
@@ -730,12 +752,13 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       if (groupContextLoaded) return cachedGroupContext;
       groupContextLoaded = true;
       const gc = cfg.bot.groupContext;
-      if (chatType !== 'group' || !gc?.enabled || !options.fetchGroupHistory || !event.message_id || !event.group_id) return undefined;
+      const cp = cfg.contextPolicy;
+      if (chatType !== 'group' || !(cp?.groupContextEnabled ?? gc?.enabled) || !options.fetchGroupHistory || !event.message_id || !event.group_id) return undefined;
       const ctxOptions: GroupContextOptions = {
-        messageCount: gc.messageCount,
+        messageCount: cp?.groupContextMessages ?? gc.messageCount,
         skipForward: gc.skipForward,
         includeImages: gc.includeImages,
-        maxChars: gc.maxChars,
+        maxChars: cp?.groupContextMaxChars ?? gc.maxChars,
       };
       const rawContext = await fetchGroupContext({
         fetchHistory: options.fetchGroupHistory,
@@ -747,7 +770,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       if (!rawContext) {
         // 拉取为空不再静默：可能是 get_group_msg_history 失败、skipForward/图片占位过滤光、或群里本来就没人说话。
         if (chatType === 'group' && gc?.enabled && event.message_id && event.group_id) {
-          log?.warn('群历史上下文为空', { groupId: event.group_id, messageCount: gc.messageCount, skipForward: gc.skipForward, maxChars: gc.maxChars });
+          log?.warn('群历史上下文为空', { groupId: event.group_id, messageCount: cp?.groupContextMessages ?? gc.messageCount, skipForward: gc.skipForward, maxChars: cp?.groupContextMaxChars ?? gc.maxChars });
         }
         return undefined;
       }
@@ -755,8 +778,8 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       cachedGroupContext = `【群聊上下文；格式：昵称 [QQ号]: 内容；不同 QQ 号代表不同用户，不能合并成同一人】\n【当前提问用户】${currentName} [QQ:${userId ?? '未知'}]\n${rawContext}`;
       return cachedGroupContext;
     };
-    // 统一上下文组装器：群历史（"刚才群里说了什么"）+ 记忆命中（"历史事实"）合并，不再二选一——
-    // 旧逻辑 memoryContext 非空就跳过群历史，而记忆 recentTurns>0 时几乎恒非空，导致群上下文长期失效（线上实测）。
+    // 统一上下文组装器：群历史（"刚才群里说了什么"）+ 记忆命中（"历史事时"）合并，不再二选一——
+    // 旧逻辑 memoryContext 非空就跳过群历史，而记忆 recentTurns>0 时几乎恒非空，导致群上下文长期失效（线上时测）。
     const buildChatContext = async (): Promise<{ context: string | undefined; ms: number }> => {
       const startedAt = Date.now();
       const parts: string[] = [];
@@ -931,7 +954,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
 
     // 引用消息富化:get_msg 拉取被回复的消息 → 取其图片/转发内容,并判定是否回复的是 bot("回复 bot"触发依赖此判定)。
     // 注意: reply id 必须同时从 segments 与 CQ 取(legacy bot-runtime 的 extractReplyIdFromSegments || extractReplyIdFromRaw)。
-    // 仅依赖 raw_message 时,部分 Napcat/OneBot 实现只在 message[] 里放 reply 段,会导致引用图完全丢失。
+    // 仅依赖 raw_message 时,部分 Napcat/OneBot 时现只在 message[] 里放 reply 段,会导致引用图完全丢失。
     // 文件消息只登记元数据，不主动下载。用户之后引用这条消息或发送文件编号时才读取内容。
     if (options.fileIndex && baseFiles.length && cfg.bot.files?.enabled !== false) {
       const userKey = String(userId ?? '');
@@ -975,6 +998,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       chatType,
       rawMessage,
       messageId: event.message_id,
+      replyToMessageId: replyId,
       groupId: event.group_id,
       userId,
       replyToBot,
@@ -986,7 +1010,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     let decision = router.route(ctx);
     stageEnd('route');
     // ── 追问等待中：该会话有 clarifying 追问时，用户后续消息（含纯图答案、无需 @）都是对追问的回答 ──
-    // 线上实测：bot 追问"图片是不是 X"，用户回图（无@被忽略）再 @催促，图片永远进不了合并。
+    // 线上时测：bot 追问"图片是不是 X"，用户回图（无@被忽略）再 @催促，图片永远进不了合并。
     if (decision.kind === 'ignored' && options.hasPendingClarification?.({ chatType, groupId: event.group_id, userId })) {
       const pendingText = stripNonTextCqSegments(rawMessage).trim();
       decision = { kind: 'freeMode', commandText: pendingText, source: 'pending_clarification', params: { prompt: pendingText, tokens: [] } } as any;
@@ -1025,7 +1049,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           log?.info('关键词触发判断', { triggerWord, hasIntent: Boolean(hasIntent), contextLines: contextText.split('\n').length });
           if (hasIntent) {
             // commandText 必须带上：enforce 失败回退旧链路时，旧链路从 commandText 取用户原文；
-            // 缺了会被判成空@消息，回"我在。直接说需求就行"罐头话（线上实测）。
+            // 缺了会被判成空@消息，回"我在。直接说需求就行"罐头话（线上时测）。
             decision = { kind: 'chat', source: 'keyword_trigger', confidence: 0.9, reason: 'keyword: ' + triggerWord, commandText: plainText, params: { prompt: plainText, tokens: [] } } as any;
           }
           stageEnd('keyword');
@@ -1058,7 +1082,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
               acState.rounds += 1;
               acState.lastContinueAt = now;
               // commandText 必须带上：enforce 失败回退旧链路时，旧链路从 commandText 取用户原文；
-              // 缺了会被判成空@消息，回"我在。直接说需求就行"罐头话（线上实测）。
+              // 缺了会被判成空@消息，回"我在。直接说需求就行"罐头话（线上时测）。
               decision = { kind: 'chat', source: 'auto_continue', confidence: 0.85, reason: 'continue_round_' + acState.rounds, commandText: plainText, params: { prompt: plainText, tokens: [] } } as any;
             } else {
               autoContinueStates.delete(acKey);
@@ -1098,33 +1122,71 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         messageId: event.message_id,
       })).catch(() => undefined);
     }
-    if (cfg.orchestration?.enabled && cfg.orchestration.mode === 'shadow' && decision.kind !== 'command' && options.shadowOrchestration) {
-      const shadowText = stripNonTextCqSegments(rawMessage);
-      if (shadowText) {
-        void options.shadowOrchestration({
-          request: {
-            requestId: `shadow_${Date.now()}`,
-            chat: { type: chatType, groupId: event.group_id === undefined ? undefined : String(event.group_id), userId: userId === undefined ? undefined : String(userId) },
-            user: { qq: String(userId || ''), role: 'user' },
-            text: shadowText,
-            attachments: baseImages.map((image) => ({ kind: 'image', ref: image })),
-            receivedAt: new Date().toISOString(),
-          },
-          text: shadowText,
-          chatType,
-          groupId: event.group_id,
-          userId,
-          images: baseImages,
-          referencedText: referenced ? extractReferenceText(referenced) : undefined,
-          groupContext: await loadGroupContext(),
-        }).catch((error) => reportProblem('shadow-planner-error', error, { text: shadowText.slice(0, 200) }));
-      }
-    }
 
 
     // 本会话的最新消息序号——迟到的 chat 回复发送前会核对，被更新消息取代则不发。
     const seq = ++messageSeq;
     recordSessionSeq(sessionId, seq);
+
+    // 转发富化:展开当前消息/引用消息里的合并转发(get_forward_msg),取文本 + 图片,
+    // 连同引用消息的图片,合并进最终送模型的 images,避免引用图片与转发内容丢失。
+    const forwardIds = [...extractForwardIds(event), ...(referenced ? extractForwardIds(referenced) : [])];
+    const forwardNodes = await expandForwards(forwardIds, options, log);
+    const referenceBody = referenced ? extractReferenceText(referenced).trim() : '';
+    const referenceText = referenced && referenceBody ? `${senderIdentity(referenced)}: ${referenceBody}` : '';
+    const forwardText = forwardNodes.length ? formatForwardMessages(forwardNodes, { maxChars: 4000 }) : '';
+    const referencedImages = referenced ? extractImages(referenced) : [];
+    const forwardImages = forwardNodes.flatMap((n) => extractImages(n as unknown as NapcatMessageEvent));
+    const referencedVideos = referenced ? extractVideos(referenced) : [];
+    const forwardVideos = forwardNodes.flatMap((n) => extractVideos(n as unknown as NapcatMessageEvent));
+    const referencedAudios = referenced ? extractAudios(referenced) : [];
+    const forwardAudios = forwardNodes.flatMap((n) => extractAudios(n as unknown as NapcatMessageEvent));
+    const maxInputImages = Math.max(1, cfg.freeMode.maxInputImages || 6);
+    // 最近图片记忆：本条消息没带图时，并入此前因无触发被忽略的群图片（短窗），
+    // 支撑"先发图 → 再 @bot 提问"的常见用法（线上时测：图片被忽略后提问，bot 看不到图）。
+    let recentImageRefs: string[] = [];
+    if (!baseImages.length && (decision.kind === 'freeMode' || decision.kind === 'chat')) {
+      const imageKey = chatType === 'group' ? `group:${String(event.group_id)}` : `private:${String(userId)}`;
+      const recentList = (recentImageMemory.get(imageKey) || []).filter((entry) => Date.now() - entry.at <= RECENT_IMAGE_WINDOW_MS);
+      if (recentList.length) {
+        recentImageRefs = recentList.slice(-RECENT_IMAGE_MAX).map((entry) => entry.ref);
+        log?.info('并入最近未处理图片', { groupId: event.group_id, count: recentImageRefs.length });
+      }
+    }
+    // 引用/转发图片/视频是否并入模型输入:受 freeMode.includeQuotedMessage 控制(默认 true)。
+    // 当前消息自带图/视频始终保留。
+    const quotedImages = includeQuoted ? [...referencedImages, ...forwardImages] : [];
+    const quotedVideos = includeQuoted ? [...referencedVideos, ...forwardVideos] : [];
+    const enrichedImages = dedupeImageUrls([
+      ...baseImages,
+      ...recentImageRefs,
+      ...quotedImages,
+    ]).slice(0, maxInputImages);
+    const enrichedVideos = dedupeVideoUrls([
+      ...baseVideos,
+      ...quotedVideos,
+    ]).slice(0, maxInputImages);
+    const enrichedAudios = Array.from(new Set([...baseAudios, ...(includeQuoted ? [...referencedAudios, ...forwardAudios] : [])].filter(Boolean))).slice(0, maxInputImages);
+    const hasReferencedImage = includeQuoted && (referencedImages.length > 0 || forwardImages.length > 0);
+    const hasReferencedVideo = includeQuoted && (referencedVideos.length > 0 || forwardVideos.length > 0);
+    const preparedImages = options.prepareInputImages && enrichedImages.length
+      ? await options.prepareInputImages(enrichedImages)
+      : enrichedImages;
+    const sanitizedImages = sanitizeModelImageReferences(preparedImages.filter((image) => Boolean(String(image || '').trim())));
+    const modelImages = sanitizedImages.images;
+    const droppedImages = Math.max(0, enrichedImages.length - modelImages.length);
+    if (enrichedImages.length) {
+      log?.info('模型输入图片准备完成', {
+        imageCount: modelImages.length,
+        droppedImages,
+        imageRefs: modelImages.slice(0, 3).map(describeImageReference),
+      });
+    }
+    if (droppedImages > 0) log?.warn('部分图片无法读取，已从模型输入移除', { droppedImages, totalImages: enrichedImages.length });
+    if (enrichedImages.length > 0 && modelImages.length === 0) {
+      await reportProblem('image-input-failed', '图片读取失败。QQ 图片 URL 可能已过期，Napcat 也没能返回可用的图片内容。', { imageCount: enrichedImages.length });
+      return { handled: true, kind: 'image-input-failed' };
+    }
 
     const replyCtx: ReplyContext = {
       chatType,
@@ -1137,62 +1199,69 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const engine = createReplyStrategyEngine(trackedReply, toReplyStrategyConfig(cfg));
 
     let result: BotEngineResult | null = null;
-    if (!result && decision.kind !== 'command' && cfg.orchestration?.enabled && cfg.orchestration.mode === 'enforce' && options.enforceOrchestration) {
-      let enforceProgress: ImageProgressHandle | undefined;
-      stageBegin('enforce');
+    let agentEnforceFailed = false;
+
+    // R5.6：Agent Runtime 旁路/接管。默认 flag 关闭；enforce 覆盖 chat 与 freeMode，
+    // R5.6：enforce 已覆盖 chat 与 freeMode；精确命令仍在 command gateway 提前分流。
+    const agentMode = cfg.agent?.enabled ? cfg.agent.mode : 'off';
+    const agentEligible = decision.kind === 'chat' || decision.kind === 'freeMode';
+    const agentShouldRun = Boolean(options.agentRuntime) && agentEligible && (
+      agentMode === 'shadow' || agentMode === 'enforce'
+    );
+    const agentText = stripNonTextCqSegments(rawMessage).trim();
+    const agentHasConversationContext = Boolean(agentText || referenceText || forwardText);
+    const agentHasAttachments = modelImages.length > 0 || enrichedVideos.length > 0 || enrichedAudios.length > 0 || baseFiles.length > 0;
+    const agentPromptText = agentText;
+    const agentPendingClarificationAnswer = (decision as any).source === 'pending_clarification';
+    const agentHasInput = Boolean(agentPromptText || agentHasConversationContext || agentHasAttachments || agentPendingClarificationAnswer);
+    if (agentMode === 'enforce' && agentEligible && !options.agentRuntime) {
+      agentEnforceFailed = true;
+      log?.warn('Agent Runtime enforce 未注入，禁止回退旧链路');
+    }
+    if (!result && agentShouldRun && agentHasInput) {
+      stageBegin('agent');
       try {
-        // 统一上下文：群历史与记忆命中合并注入（不再二选一——记忆 recentTurns>0 时几乎恒非空，
-        // 旧逻辑导致群历史长期拉不到，bot 不知道群里在聊什么）。
-        stageBegin('context');
-        const { context: chatContext } = await buildChatContext();
-        stageEnd('context');
-        // UCW：统一上下文——planner 能看到 chat 对话历史（解决"把这首歌按正确歌词重新生成"
-        // 被理解成"按主题重新生成"的根因：planner 不知道 chat 之前说了什么）。
-        let sessionHistory: string | undefined;
-        if (cfg.bot.unifiedContext?.enabled) {
-          const turns = options.app.sessions?.get(sessionId) || [];
-          const maxTurns = Math.max(2, Number(cfg.bot.unifiedContext.plannerHistoryTurns) || 10);
-          const maxChars = Math.max(500, Number(cfg.bot.unifiedContext.plannerHistoryChars) || 4000);
-          const recent = turns.slice(-maxTurns);
-          let total = 0;
-          const lines: string[] = [];
-          for (let i = recent.length - 1; i >= 0; i -= 1) {
-            const turn = recent[i];
-            const line = `[${turn.role === 'user' ? '用户' : '机器人'}] ${String(turn.content).slice(0, 200)}`;
-            if (total + line.length > maxChars && lines.length >= 2) break;
-            total += line.length;
-            lines.unshift(line);
-          }
-          if (lines.length) sessionHistory = '【最近的对话历史】\n' + lines.join('\n');
-        }
-        const orchestrated = await options.enforceOrchestration({
-          text: stripNonTextCqSegments(rawMessage),
+        const agentGroupContext = agentMode === 'enforce' ? (await buildChatContext()).context : undefined;
+        const agentOutcome = await options.agentRuntime!({
+          text: agentPromptText,
           chatType,
           groupId: event.group_id,
           userId,
-          images: baseImages,
+          // P0-4：Agent 用准备好的真实图片输入（含引用图/转发图/最近图），不再只传原始 ref。
+          images: modelImages,
+          videos: enrichedVideos,
+          audios: enrichedAudios,
           files: baseFiles.map((file) => ({ ...file })),
-          referencedText: referenced ? extractReferenceText(referenced) : undefined,
-          groupContext: chatContext,
-          sessionHistory,
+          referencedText: referenceText || undefined,
+          forwardText: forwardText || undefined,
+          groupContext: agentGroupContext,
           sessionId,
-          onProgress: async (event) => {
-            if (enforceProgress) return;
-            const progressKind = imageProgressKindForCapabilities(event.capabilityIds);
-            if (!progressKind) return;
-            enforceProgress = startImageProgress(engine, replyCtx, options, progressKind, log, () => { progressMessagesSent += 1; });
-          },
+          requestId: `agent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         });
-        if (orchestrated.problem) {
-          await reportProblem(orchestrated.problem.kind, orchestrated.problem.error, { intent: decision.kind });
+        if (agentOutcome.problem) {
+          await reportProblem(agentOutcome.problem.kind, agentOutcome.problem.error, { intent: decision.kind, agentReason: agentOutcome.reason });
         }
-        if (orchestrated.handled && orchestrated.result) result = orchestrated.result;
-        else if (orchestrated.reason) log?.info('智能编排回退旧链路', { reason: orchestrated.reason });
+        const agentReplyText = String(agentOutcome.text || '');
+        if (agentMode === 'enforce' && agentOutcome.handled && (agentReplyText.trim() || agentOutcome.replyPlan)) {
+          result = {
+            kind: 'chat',
+            decision: decision as any,
+            handled: true,
+            ...(agentReplyText.trim() ? { text: agentReplyText } : {}),
+            ...(agentOutcome.replyPlan ? { replyPlan: agentOutcome.replyPlan } : {}),
+          };
+          log?.info('Agent Runtime 接管会话', { mode: agentMode, reason: agentOutcome.reason, hasReplyPlan: Boolean(agentOutcome.replyPlan) });
+        } else if (agentMode === 'enforce') {
+          agentEnforceFailed = true;
+          log?.warn('Agent Runtime 接管失败，禁止回退旧链路', { mode: agentMode, reason: agentOutcome.reason });
+        } else if (agentOutcome.reason) {
+          log?.info('Agent Runtime 未接管，回退旧链路', { mode: agentMode, reason: agentOutcome.reason });
+        }
       } catch (error) {
-        await reportProblem('enforce-orchestration-error', error, { text: stripNonTextCqSegments(rawMessage).slice(0, 200) });
+        if (agentMode === 'enforce') agentEnforceFailed = true;
+        await reportProblem('agent-runtime-error', error, { intent: decision.kind });
       } finally {
-        enforceProgress?.done();
-        stageEnd('enforce');
+        stageEnd('agent');
       }
     }
 
@@ -1306,62 +1375,6 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       }
     }
 
-    // 转发富化:展开当前消息/引用消息里的合并转发(get_forward_msg),取文本 + 图片,
-    // 连同引用消息的图片,合并进最终送模型的 images,避免引用图片与转发内容丢失。
-    const forwardIds = [...extractForwardIds(event), ...(referenced ? extractForwardIds(referenced) : [])];
-    const forwardNodes = await expandForwards(forwardIds, options, log);
-    const referenceBody = referenced ? extractReferenceText(referenced).trim() : '';
-    const referenceText = referenced && referenceBody ? `${senderIdentity(referenced)}: ${referenceBody}` : '';
-    const forwardText = forwardNodes.length ? formatForwardMessages(forwardNodes, { maxChars: 4000 }) : '';
-    const referencedImages = referenced ? extractImages(referenced) : [];
-    const forwardImages = forwardNodes.flatMap((n) => extractImages(n as unknown as NapcatMessageEvent));
-    const referencedVideos = referenced ? extractVideos(referenced) : [];
-    const forwardVideos = forwardNodes.flatMap((n) => extractVideos(n as unknown as NapcatMessageEvent));
-    const maxInputImages = Math.max(1, cfg.freeMode.maxInputImages || 6);
-    // 最近图片记忆：本条消息没带图时，并入此前因无触发被忽略的群图片（短窗），
-    // 支撑"先发图 → 再 @bot 提问"的常见用法（线上实测：图片被忽略后提问，bot 看不到图）。
-    let recentImageRefs: string[] = [];
-    if (!baseImages.length && (decision.kind === 'freeMode' || decision.kind === 'chat')) {
-      const imageKey = chatType === 'group' ? `group:${String(event.group_id)}` : `private:${String(userId)}`;
-      const recentList = (recentImageMemory.get(imageKey) || []).filter((entry) => Date.now() - entry.at <= RECENT_IMAGE_WINDOW_MS);
-      if (recentList.length) {
-        recentImageRefs = recentList.slice(-RECENT_IMAGE_MAX).map((entry) => entry.ref);
-        log?.info('并入最近未处理图片', { groupId: event.group_id, count: recentImageRefs.length });
-      }
-    }
-    // 引用/转发图片/视频是否并入模型输入:受 freeMode.includeQuotedMessage 控制(默认 true)。
-    // 当前消息自带图/视频始终保留。
-    const quotedImages = includeQuoted ? [...referencedImages, ...forwardImages] : [];
-    const quotedVideos = includeQuoted ? [...referencedVideos, ...forwardVideos] : [];
-    const enrichedImages = dedupeImageUrls([
-      ...baseImages,
-      ...recentImageRefs,
-      ...quotedImages,
-    ]).slice(0, maxInputImages);
-    const enrichedVideos = dedupeVideoUrls([
-      ...baseVideos,
-      ...quotedVideos,
-    ]).slice(0, maxInputImages);
-    const hasReferencedImage = includeQuoted && (referencedImages.length > 0 || forwardImages.length > 0);
-    const hasReferencedVideo = includeQuoted && (referencedVideos.length > 0 || forwardVideos.length > 0);
-    const preparedImages = options.prepareInputImages && enrichedImages.length
-      ? await options.prepareInputImages(enrichedImages)
-      : enrichedImages;
-    const sanitizedImages = sanitizeModelImageReferences(preparedImages.filter((image) => Boolean(String(image || '').trim())));
-    const modelImages = sanitizedImages.images;
-    const droppedImages = Math.max(0, enrichedImages.length - modelImages.length);
-    if (enrichedImages.length) {
-      log?.info('模型输入图片准备完成', {
-        imageCount: modelImages.length,
-        droppedImages,
-        imageRefs: modelImages.slice(0, 3).map(describeImageReference),
-      });
-    }
-    if (droppedImages > 0) log?.warn('部分图片无法读取，已从模型输入移除', { droppedImages, totalImages: enrichedImages.length });
-    if (enrichedImages.length > 0 && modelImages.length === 0) {
-      await reportProblem('image-input-failed', '图片读取失败。QQ 图片 URL 可能已过期，Napcat 也没能返回可用的图片内容。', { imageCount: enrichedImages.length });
-      return { handled: true, kind: 'image-input-failed' };
-    }
     if (referenced || forwardNodes.length || baseVideos.length) {
       log?.info('消息内容已富化', {
         replyId: replyId || null,
@@ -1384,90 +1397,111 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const startedAt = Date.now();
 
     try {
-      if (result) { /* 智能编排已产出结果，跳过旧意图链 */ } else if (decision.kind === 'chat' || decision.kind === 'freeMode') {
-        // 纯用户文本送意图路由(不污染 edit/generate prompt);引用/转发文本由 engine 仅在 chat 路径注入。
+      if (result) { /* 新链路已产出结果，跳过旧意图链 */ } else if (agentEnforceFailed) {
+        const failureResult: BotEngineResult = {
+          kind: 'chat',
+          decision: decision as any,
+          handled: true,
+          text: '这次没有处理成功，请稍后再试。',
+        };
+        try {
+          await sendResult(engine, replyCtx, failureResult, options.voice, options.voiceEligible, trackedReply, reportProblem, cfg.orchestration.reply.maxMessages, options.materializeAudio, {
+          syncImagesToGallery: options.syncImagesToGallery,
+          compressImages: options.compressImages,
+          materializeImages: options.materializeImages,
+          materializeAudio: options.materializeAudio,
+        });
+        } catch (error) {
+          await reportProblem('agent-enforce-reply-failed', error, { intent: decision.kind });
+          return { handled: false, reason: 'agent-enforce-reply-failed' };
+        }
+        metrics?.record('agent_failure');
+        await reportProblem('agent-enforce-failed', 'Agent Runtime did not produce a handled result', { intent: decision.kind });
+        logTiming('agent-enforce-failed');
+        return { handled: true, kind: 'agent-enforce-failed' };
+      } else if (decision.kind === 'chat' || decision.kind === 'freeMode') {
         const cleanText = stripNonTextCqSegments(decision.commandText);
-        // 空 @（无文本/图/视频/引用）不值得跑完整 LLM 流水线，直接快捷回复。
         if (!cleanText && !enrichedImages.length && !enrichedVideos.length && !referenceText && !forwardText) {
           const cannedText = '我在。直接说需求就行，比如提问、「生图 一只猫」，或发「帮助」看指令。';
           await engine.replyText(replyCtx, cannedText, 'quote');
-          log?.info('回复发送完成', { kind: 'empty-mention' });
-          // 罐头回复同样登记延续状态：否则用户紧跟着的补充消息进不了延续判断（线上实测被忽略）。
           armAutoContinue(chatType, event.group_id, userId, cannedText, true);
-          logTiming('empty-mention');
           return { handled: true, kind: 'empty-mention' };
         }
-        const hasFiles = baseFiles.length > 0 || Boolean(referenced && extractFiles(referenced).length > 0);
-        let forceChat = false;
-
-        // 自然语言主入口：模型读取当前可用功能清单，输出一个意图；
-        // 只有模型不可用、超时、低置信度或返回非法 JSON 时才回退正则。
-        if (cleanText && !cleanText.startsWith('你正在分析用户上传的文件') && !cleanText.startsWith('用户请求读取文件')) {
-          const intentConfig = options.getConfig().intentRecognition;
-          stageBegin('intent');
-          const intent = await classifyNaturalLanguageIntent({
-            client: options.app.client,
-            text: cleanText,
-            config: intentConfig,
-            catalog: availableIntentCatalog(cfg),
-            context: { chatType, hasImages: modelImages.length > 0, hasFiles },
-            fallback: fallbackIntent(cleanText, hasFiles, cfg, options),
-            logger: options.logger,
-          });
-          stageEnd('intent');
-          options.logger?.info('自然语言意图识别', {
-            intent: intent.intent,
-            args: intent.args.slice(0, 100),
-            fileType: intent.fileType,
-            confidence: intent.confidence,
-            source: intent.source,
-            reason: intent.reason,
-          });
-          if (intent.source === 'model' && intent.intent === 'chat') forceChat = true;
-
-          const engineFeatureInput = {
-            text: intent.args,
-            images: modelImages,
-            videos: enrichedVideos,
-            hasReferencedImage,
-            hasReferencedVideo,
-            chatType,
-            sessionId,
-            featureId: intent.intent,
-            featureContext: { chatType, groupId: event.group_id, userId, promptChars: intent.args.length },
-          };
-
-          if (intent.intent === 'file.generate') {
-            try {
-              const syntheticDecision = {
-                kind: 'command' as const,
-                command: 'fileGenerate' as const,
-                args: intent.args,
-                commandText: cleanText,
-                trigger: (decision as any).trigger,
-                metadata: { featureId: 'file.generate' },
-              };
-              const outcome = await handleFileGenerateCommand(options, syntheticDecision, event, chatType, sessionId, userId, intent.fileType || requestedFileType(cleanText));
+        // P0-1（R9 修复，最终语义）：
+        // - enforce 未注入 / 未接管 → 受控失败（不回退、不发固定文案之外的兜底）。
+        // - shadow → Agent 旁路观察，不发送任何内容（含配置提示），消息未处理返回。
+        // - off → 保留旧自然语言引擎回退（freeMode/命令引擎仍可用），
+        //   满足"旧配置升级后普通聊天仍可用"；同时不向用户发送系统配置提示。
+        if (agentMode === 'off') {
+          const offContext = await buildChatContext();
+          // P0-1 方式二：off 保留完整旧自然语言意图链（R9 误删，恢复以保回滚）：
+          // 模型意图识别（classifyNaturalLanguageIntent）→ 正则兜底（fallbackIntent）
+          // → file.generate/file.read/code.render/web.screenshot/music/chat 显式分流。
+          const legacyText = stripNonTextCqSegments(decision.commandText);
+          try {
+            const hasFiles = baseFiles.length > 0 || Boolean(referenced && extractFiles(referenced).length > 0);
+            // P0-1 方式二：旧编排链注入且启用时，自然语言优先走 OrchestrationEnforcer（HEAD 行为）。
+            if (options.enforceOrchestration && cfg.orchestration?.enabled && cfg.orchestration.mode === 'enforce') {
+              stageBegin('enforce');
+              try {
+                const orchestrated = await options.enforceOrchestration({
+                  text: legacyText,
+                  chatType,
+                  ...(event.group_id !== undefined ? { groupId: event.group_id } : {}),
+                  ...(userId !== undefined ? { userId } : {}),
+                  images: modelImages,
+                  files: baseFiles.map((file) => ({ ...file })),
+                  ...(referenced ? { referencedText: referenceText } : {}),
+                  ...(offContext.context ? { groupContext: offContext.context } : {}),
+                  sessionId,
+                });
+                if (orchestrated.problem) {
+                  await reportProblem(orchestrated.problem.kind, orchestrated.problem.error, { intent: decision.kind });
+                }
+                if (orchestrated.handled && orchestrated.result) {
+                  result = orchestrated.result;
+                  stageEnd('enforce');
+                } else if (orchestrated.reason) {
+                  log?.info('旧编排回退继续走意图链', { reason: orchestrated.reason });
+                  stageEnd('enforce');
+                } else {
+                  stageEnd('enforce');
+                }
+              } catch (error) {
+                stageEnd('enforce');
+                await reportProblem('enforce-orchestration-error', error, { text: legacyText.slice(0, 200) });
+              }
+            }
+            let legacyIntent: import('./intent-recognition.js').IntentClassification;
+            if (legacyText && !legacyText.startsWith('你正在分析用户上传的文件') && !legacyText.startsWith('用户请求读取文件')) {
+              stageBegin('intent');
+              legacyIntent = await classifyNaturalLanguageIntent({
+                client: options.app.client,
+                text: legacyText,
+                config: options.getConfig().intentRecognition,
+                catalog: availableIntentCatalog(cfg),
+                context: { chatType, hasImages: modelImages.length > 0, hasFiles },
+                fallback: fallbackIntent(legacyText, hasFiles, cfg, options),
+                logger: options.logger,
+              });
+              stageEnd('intent');
+            } else {
+              legacyIntent = { ...fallbackIntent(legacyText, hasFiles, cfg, options), source: 'regex' as const };
+            }
+            log?.info('off 模式回退旧意图链', { intent: legacyIntent.intent, confidence: legacyIntent.confidence, source: legacyIntent.source });
+            // 模型明确判 chat（source=model）时跳过 freeMode planner，直接显式 chat（HEAD forceChat 语义）。
+            const legacyForceChat = legacyIntent.source === 'model' && legacyIntent.intent === 'chat';
+            if (legacyIntent.intent === 'file.generate') {
+              const syntheticDecision = { kind: 'command' as const, command: 'fileGenerate' as const, args: legacyIntent.args, commandText: legacyText, trigger: (decision as any).trigger, metadata: { featureId: 'file.generate' } };
+              const outcome = await handleFileGenerateCommand(options, syntheticDecision, event, chatType, sessionId, userId, legacyIntent.fileType || requestedFileType(legacyText));
               if (outcome.message) {
                 if (isProblemText(outcome.message)) await reportProblem('outcome-message', outcome.message, { kind: 'file-generate' });
                 else await engine.replyText(replyCtx, outcome.message, 'quote');
                 return { handled: true, kind: 'file-generate' };
               }
               if (outcome.result) result = outcome.result;
-            } catch (error) {
-              await reportProblem('file-generate-error', error, { intent: decision.kind });
-              return { handled: false, reason: 'file-generate-error' };
-            }
-          } else if (intent.intent === 'file.read') {
-            try {
-              const syntheticDecision = {
-                kind: 'command' as const,
-                command: 'fileRead' as const,
-                args: intent.args,
-                commandText: cleanText,
-                trigger: (decision as any).trigger,
-                metadata: { featureId: 'file.read' },
-              };
+            } else if (legacyIntent.intent === 'file.read') {
+              const syntheticDecision = { kind: 'command' as const, command: 'fileRead' as const, args: legacyIntent.args, commandText: legacyText, trigger: (decision as any).trigger, metadata: { featureId: 'file.read' } };
               const outcome = await handleFileReadCommand(options, syntheticDecision, event, chatType, userId, replyId, referenced, baseFiles, sessionId);
               if (outcome.message) {
                 if (isProblemText(outcome.message)) await reportProblem('outcome-message', outcome.message, { kind: 'file-read' });
@@ -1475,121 +1509,69 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
                 return { handled: true, kind: 'file-read' };
               }
               if (outcome.result) result = outcome.result;
-            } catch (error) {
-              await reportProblem('file-read-error', error, { intent: decision.kind });
-              return { handled: false, reason: 'file-read-error' };
-            }
-          } else if (intent.intent === 'search.web') {
-            result = await options.app.engine.handleExplicit('chat', { ...engineFeatureInput, forceSearch: true }, { prompt: intent.args });
-          } else if (intent.intent === 'image.generate' || intent.intent === 'image.edit' || intent.intent === 'image.interrogate' || intent.intent === 'video.generate') {
-            const progress = startImageProgress(engine, replyCtx, options, imageProgressKindForIntent(intent.intent)!, log, () => { progressMessagesSent += 1; });
-            try {
-              result = await options.app.engine.handleExplicit(intent.intent as any, engineFeatureInput, { prompt: intent.args });
-            } finally {
-              progress?.done();
-            }
-          } else if (intent.intent === 'audio.music.generate') {
-            const progress = startImageProgress(engine, replyCtx, options, 'audio.music.generate', log, () => { progressMessagesSent += 1; });
-            try {
-              const musicPlan: IntentPlan = {
-                planId: `legacy_music_${Date.now()}`,
-                requestId: `legacy_music_${Date.now()}`,
-                goal: intent.args,
-                understanding: {
-                  goal: intent.args,
-                  desiredOutcome: 'generate',
-                  constraints: [],
-                  missingInformation: [],
-                  confidence: intent.confidence || 1,
-                },
-                steps: [{ id: 'music', capability: 'audio.music.generate', args: { request: intent.args } }],
-                needsClarification: false,
-                confidence: intent.confidence || 1,
-                source: 'command',
-              };
-              const orchestrated = await options.enforceOrchestration?.({
-                text: intent.args,
-                chatType,
-                groupId: event.group_id,
-                userId,
-                images: modelImages,
-                files: baseFiles.map((file) => ({ ...file })),
-                referencedText: referenceText,
-                sessionId,
-                plan: musicPlan,
-                forceLegacyExecution: true,
-              });
-              if (orchestrated?.problem) {
-                await reportProblem(orchestrated.problem.kind, orchestrated.problem.error, { intent: intent.intent });
-              }
-              if (!orchestrated?.handled || !orchestrated.result) {
-                await reportProblem('music-generation-unavailable', '音乐生成链路未返回结果', { intent: intent.intent });
-                return { handled: true, kind: 'music-generation-unavailable' };
-              }
-              result = orchestrated.result;
-            } catch (error) {
-              await reportProblem('music-generation-error', error, { intent: intent.intent });
-              return { handled: true, kind: 'music-generation-error' };
-            } finally {
-              progress?.done();
-            }
-          } else if (intent.intent === 'code.render') {
-            try {
-              const outcome = await handleCodeRenderRequest(options, intent.args, chatType, event.group_id, userId, sessionId);
+            } else if (legacyIntent.intent === 'search.web') {
+              result = await options.app.engine.handleExplicit('chat', { text: legacyIntent.args, images: modelImages, ...(enrichedVideos.length ? { videos: enrichedVideos } : {}), hasReferencedImage, hasReferencedVideo, chatType, sessionId, ...(offContext.context ? { context: offContext.context } : {}), forceSearch: true }, { prompt: legacyIntent.args });
+            } else if (legacyIntent.intent === 'image.generate' || legacyIntent.intent === 'image.edit' || legacyIntent.intent === 'image.interrogate' || legacyIntent.intent === 'video.generate') {
+              const progressKind = imageProgressKindForIntent(legacyIntent.intent);
+              const progress = progressKind ? startImageProgress(engine, replyCtx, options, progressKind, log, () => { progressMessagesSent += 1; }) : undefined;
+              try {
+                result = await options.app.engine.handleExplicit(legacyIntent.intent as any, { text: legacyIntent.args, images: modelImages, ...(enrichedVideos.length ? { videos: enrichedVideos } : {}), hasReferencedImage, hasReferencedVideo, chatType, sessionId, ...(offContext.context ? { context: offContext.context } : {}) }, { prompt: legacyIntent.args });
+              } finally { progress?.done(); }
+            } else if (legacyIntent.intent === 'code.render') {
+              const outcome = await handleCodeRenderRequest(options, legacyIntent.args, chatType, event.group_id, userId, sessionId);
               if (outcome.message) {
                 if (isProblemText(outcome.message)) await reportProblem('outcome-message', outcome.message, { kind: 'code-render' });
                 else await engine.replyText(replyCtx, outcome.message, 'quote');
                 return { handled: true, kind: 'code-render' };
               }
               if (outcome.result) result = outcome.result;
-            } catch (error) {
-              await reportProblem('code-render-error', error, { intent: decision.kind });
-              return { handled: false, reason: 'code-render-error' };
-            }
-          } else if (intent.intent === 'web.screenshot') {
-            try {
-              const outcome = await handleWebScreenshotRequest(options, intent.args, chatType, event.group_id, userId);
+            } else if (legacyIntent.intent === 'web.screenshot') {
+              const outcome = await handleWebScreenshotRequest(options, legacyIntent.args, chatType, event.group_id, userId);
               if (outcome.message) {
                 if (isProblemText(outcome.message)) await reportProblem('outcome-message', outcome.message, { kind: 'web-screenshot' });
                 else await engine.replyText(replyCtx, outcome.message, 'quote');
                 return { handled: true, kind: 'web-screenshot' };
               }
               if (outcome.result) result = outcome.result;
-            } catch (error) {
-              await reportProblem('web-screenshot-error', error, { intent: decision.kind });
-              return { handled: false, reason: 'web-screenshot-error' };
+            } else if (legacyIntent.intent === 'help') {
+              await engine.replyText(replyCtx, buildHelpText(cfg));
+              return { handled: true, kind: 'help' };
+            } else if (legacyIntent.intent === 'clear') {
+              options.app.sessions.clear(sessionId);
+              await engine.replyText(replyCtx, '已开启新对话，之前的上下文已清除。');
+              return { handled: true, kind: 'clear' };
+            } else if (legacyIntent.intent === 'file.list') {
+              const files = options.fileIndex ? options.fileIndex.list(chatType, event.group_id, userId, 10) : [];
+              await engine.replyText(replyCtx, formatFileList(files));
+              return { handled: true, kind: 'file-list' };
+            } else if (legacyIntent.intent === 'template.library') {
+              await engine.replyText(replyCtx, buildTemplateLibraryText(cfg));
+              return { handled: true, kind: 'templateLibrary' };
             }
-          } else if (intent.intent === 'help') {
-            await engine.replyText(replyCtx, buildHelpText(cfg));
-            return { handled: true, kind: 'help' };
-          } else if (intent.intent === 'clear') {
-            options.app.sessions.clear(sessionId);
-            await engine.replyText(replyCtx, '已开启新对话，之前的上下文已清除。');
-            return { handled: true, kind: 'clear' };
-          } else if (intent.intent === 'file.list') {
-            const files = options.fileIndex ? options.fileIndex.list(chatType, event.group_id, userId, 10) : [];
-            await engine.replyText(replyCtx, formatFileList(files));
-            return { handled: true, kind: 'file-list' };
-          } else if (intent.intent === 'template.library') {
-            await engine.replyText(replyCtx, buildTemplateLibraryText(cfg));
-            return { handled: true, kind: 'templateLibrary' };
+            if (!result) {
+              // chat 兜底：模型明确 chat 时走显式 chat 引擎（跳过 freeMode planner）；
+              // 其余（正则兜底）交回 BotApp.handle（freeMode planner/信号路由，与旧链路一致）。
+              const engineInput = { text: legacyText, images: modelImages, ...(enrichedVideos.length ? { videos: enrichedVideos } : {}), hasReferencedImage, hasReferencedVideo, chatType, sessionId, ...(offContext.context ? { context: offContext.context } : {}), ...(referenceText ? { referenceText } : {}), ...(forwardText ? { forwardText } : {}), featureContext: { chatType, groupId: event.group_id, userId, promptChars: legacyText.length } };
+              result = legacyForceChat
+                ? await options.app.engine.handleExplicit('chat', engineInput, { prompt: legacyText })
+                : await options.app.handle(engineInput);
+            }
+          } catch (error) {
+            await reportProblem('legacy-engine-error', error, { intent: decision.kind });
+            return { handled: false, reason: 'legacy-engine-error' };
           }
-        }
-
-        if (!result) {
-          stageBegin('context');
-          const { context } = await buildChatContext();
-          stageEnd('context');
-          const engineInput = {
-            text: cleanText, images: modelImages, videos: enrichedVideos,
-            hasReferencedImage, hasReferencedVideo, chatType, sessionId, context, referenceText, forwardText,
-            featureContext: { chatType, groupId: event.group_id, userId, promptChars: cleanText.length },
-          };
-          stageBegin('engine');
-          result = forceChat
-            ? await options.app.engine.handleExplicit('chat', engineInput, { prompt: cleanText })
-            : await options.app.handle(engineInput);
-          stageEnd('engine');
+        } else {
+          // shadow：只旁路观察，不发送配置提示，不打扰用户。
+          const notifyKey = `${chatType}:${event.group_id ?? ''}:${userId ?? ''}`;
+          const now = Date.now();
+          const lastNotify = agentUnavailableNotifyAt.get(notifyKey) || 0;
+          if (now - lastNotify >= 60_000) {
+            agentUnavailableNotifyAt.set(notifyKey, now);
+            metrics?.record('agent_unavailable');
+            await reportProblem('agent-unavailable', `自然语言消息未处理：Agent 运行于 shadow 模式。验收后请切换 enforce。`, { intent: decision.kind, agentMode });
+          }
+          logTiming('agent-shadow-unavailable');
+          return { handled: false, reason: 'agent-shadow' };
         }
       } else if (decision.kind === 'command') {
         // 命令类:图片用富化后的(引用图片可达改图/反推),提示词保持原始 args 不注入引用文本。
@@ -1644,7 +1626,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       imageCount: (result as any).images?.length || 0, videoCount: (result as any).videos?.length || 0,
       reason: (result as any).reason || (result as any).decision?.reason,
     });
-    // 按实际产出的能力计数，总览页的四张卡和 24 小时图就是靠这里。
+    // 按时际产出的能力计数，总览页的四张卡和 24 小时图就是靠这里。
     const elapsed = Date.now() - startedAt;
     if (result.kind === 'chat') { metrics?.record('chat'); metrics?.recordDuration('chat', elapsed); }
     else if (result.kind === 'image.generate' || result.kind === 'image.edit') {
@@ -1721,7 +1703,12 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       const effectiveMaxMessages = cfg.orchestration.reply.countProgressInBudget
         ? Math.max(1, cfg.orchestration.reply.maxMessages - progressMessagesSent)
         : cfg.orchestration.reply.maxMessages;
-      sent = await sendResult(engine, replyCtx, result, options.voice, options.voiceEligible, trackedReply, reportProblem, effectiveMaxMessages, options.materializeAudio);
+      sent = await sendResult(engine, replyCtx, result, options.voice, options.voiceEligible, trackedReply, reportProblem, effectiveMaxMessages, options.materializeAudio, {
+          syncImagesToGallery: options.syncImagesToGallery,
+          compressImages: options.compressImages,
+          materializeImages: options.materializeImages,
+          materializeAudio: options.materializeAudio,
+        });
     } catch (error) {
       stageEnd('send');
       await reportProblem('reply-send-error', error, { kind: result.kind, textChars: result.text?.length || 0 });
@@ -1806,6 +1793,8 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
   const autoContinueStates = new Map<string, { lastBotReplyAt: number; rounds: number; lastContinueAt: number; lastBotReplyText: string }>();
   /** 最近未处理图片记忆：无触发被忽略的群图片短窗暂存，支撑"先发图 → 再 @bot 提问"的常见用法。 */
   const recentImageMemory = new Map<string, Array<{ ref: string; at: number }>>();
+  /** P0-1（R9 修复）：Agent off/shadow 下自然语言消息的员通知冷却（会话粒度，60s 一条）。 */
+  const agentUnavailableNotifyAt = new Map<string, number>();
   const RECENT_IMAGE_WINDOW_MS = 5 * 60 * 1000;
   const RECENT_IMAGE_MAX = 2;
   /** 延续状态登记：bot 回复后记录该用户/群，窗口内下一条消息可自动延续。 */
@@ -1943,7 +1932,47 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     }
   }
 
-  return { handleMessageEvent, attach, handleNoticeEvent, handleRequestEvent };
+  async function sendAgentOutcome(input: {
+    chatType: 'group' | 'private';
+    groupId?: number | string;
+    userId?: number | string;
+    text?: string;
+    replyPlan?: ReplyPlan;
+    reason?: string;
+  }): Promise<BotRuntimeResult> {
+    const cfg = options.getConfig();
+    const replyCtx: ReplyContext = {
+      chatType: input.chatType,
+      groupId: input.groupId,
+      userId: input.userId,
+      senderId: input.userId,
+      botName: options.botName || 'Miobot',
+    };
+    const result: BotEngineResult = {
+      kind: 'chat',
+      decision: { kind: 'chat', source: 'agent', confidence: 1, reason: input.reason || 'approval_resume', params: { prompt: input.text || '', tokens: [] }, usedPlanner: true } as any,
+      handled: true,
+      ...(input.text ? { text: input.text } : {}),
+      ...(input.replyPlan ? { replyPlan: input.replyPlan } : {}),
+    };
+    const reportForSend = async (kind: string, error: unknown, extra: Record<string, unknown> = {}) => {
+      try { await options.reportProblem?.({ kind, error, chatType: input.chatType, groupId: input.groupId, userId: input.userId, ...extra }); } catch { /* reporting must not mask send failure */ }
+    };
+    const engine = createReplyStrategyEngine(trackedReply, toReplyStrategyConfig(cfg));
+    try {
+      await sendResult(engine, replyCtx, result, options.voice, options.voiceEligible, trackedReply, reportForSend, cfg.orchestration.reply.maxMessages, options.materializeAudio, {
+          syncImagesToGallery: options.syncImagesToGallery,
+          compressImages: options.compressImages,
+          materializeImages: options.materializeImages,
+          materializeAudio: options.materializeAudio,
+        });
+      return { handled: true, kind: 'chat' };
+    } catch (error) {
+      try { await options.reportProblem?.({ kind: 'approval-resume-send-error', error, chatType: input.chatType, groupId: input.groupId, userId: input.userId }); } catch { /* already returning send failure */ }
+      return { handled: false, kind: 'chat', reason: 'approval-resume-send-error' };
+    }
+  }
+  return { handleMessageEvent, attach, handleNoticeEvent, handleRequestEvent, sendAgentOutcome };
 }
 
 function imageProgressKindForIntent(intent: string): ImageProgressKind | undefined {
@@ -2115,6 +2144,72 @@ export function allReplyPlanOutputs(plan: any): any[] {
   return (plan?.groups || []).flatMap((group: any) => group.outputs || []);
 }
 
+/**
+ * P0-5（R9 修复）：ReplyPlan 内的媒体产物与旧链路 result.images 走同一后处理链：
+ * 图片 → Canvas 图库同步 → 压缩 → Napcat 物化；音频 → 物化。
+ * 图库同步需要 prompt：优先取输出 meta.sourcePrompt / meta.prompt，其次组级 meta。
+ * 任一步失败保留原引用回退（与旧链路 result.images 分支一致），不吞发送。
+ */
+async function postProcessReplyPlanOutputs(plan: any, options: {
+  syncImagesToGallery?: (input: CanvasGallerySyncInput) => Promise<string[]>;
+  compressImages?: (images: string[]) => Promise<string[]>;
+  materializeImages?: (images: string[]) => Promise<string[]>;
+  materializeAudio?: (audios: string[]) => Promise<string[]>;
+}, ctx: ReplyContext): Promise<any> {
+  const outputs = allReplyPlanOutputs(plan);
+  const imageOutputs = outputs.filter((output) => output?.kind === 'image' && String(output?.url || '').trim());
+  const audioOutputs = outputs.filter((output) => output?.kind === 'audio' && String(output?.url || '').trim());
+  if (!imageOutputs.length && !audioOutputs.length) return plan;
+
+  // 图片：图库同步（仅生图/改图语义；prompt 取产物 meta）
+  if (options.syncImagesToGallery && imageOutputs.length) {
+    const imageUrls = imageOutputs.map((output) => String(output.url));
+    const prompt = String(imageOutputs[0]?.meta?.sourcePrompt || imageOutputs[0]?.meta?.prompt || '').trim();
+    try {
+      const synced = await options.syncImagesToGallery({
+        mode: 'generate',
+        prompt,
+        images: imageUrls,
+        context: { chatType: ctx.chatType, groupId: ctx.groupId, userId: ctx.userId },
+      });
+      if (Array.isArray(synced) && synced.length === imageUrls.length) {
+        imageOutputs.forEach((output, index) => { output.url = synced[index]; });
+      }
+    } catch { /* 图库失败不阻塞发送：保留原引用 */ }
+  }
+  // 图片：压缩
+  if (options.compressImages && imageOutputs.length) {
+    const imageUrls = imageOutputs.map((output) => String(output.url));
+    try {
+      const compressed = await options.compressImages(imageUrls);
+      if (Array.isArray(compressed) && compressed.length) {
+        imageOutputs.forEach((output, index) => { output.url = compressed[index] ?? output.url; });
+      }
+    } catch { /* 压缩失败保留原引用 */ }
+  }
+  // 图片：物化到 Napcat 共享目录
+  if (options.materializeImages && imageOutputs.length) {
+    const imageUrls = imageOutputs.map((output) => String(output.url));
+    try {
+      const local = await options.materializeImages(imageUrls);
+      if (Array.isArray(local) && local.length) {
+        imageOutputs.forEach((output, index) => { output.url = local[index] ?? output.url; });
+      }
+    } catch { /* 物化失败保留原引用 */ }
+  }
+  // 音频：物化
+  if (options.materializeAudio && audioOutputs.length) {
+    const audioUrls = audioOutputs.map((output) => String(output.url));
+    try {
+      const local = await options.materializeAudio(audioUrls);
+      if (Array.isArray(local) && local.length) {
+        audioOutputs.forEach((output, index) => { output.url = local[index] ?? output.url; });
+      }
+    } catch { /* 物化失败保留原引用 */ }
+  }
+  return plan;
+}
+
 function planSpeaksFingerprint(plan: any, fingerprint: string): boolean {
   if (!fingerprint) return false;
   return allReplyPlanOutputs(plan).some((output: any) => {
@@ -2186,15 +2281,34 @@ export async function sendResult(
   reportProblem?: (kind: string, error: unknown, extra?: Record<string, unknown>) => Promise<void>,
   maxMessages?: number,
   materializeAudio?: (audios: string[]) => Promise<string[]>,
+  postProcess?: {
+    syncImagesToGallery?: (input: CanvasGallerySyncInput) => Promise<string[]>;
+    compressImages?: (images: string[]) => Promise<string[]>;
+    materializeImages?: (images: string[]) => Promise<string[]>;
+    materializeAudio?: (audios: string[]) => Promise<string[]>;
+  },
 ): Promise<import('../../../packages/reply/src/index.js').ReplyDispatchResult | null> {
   if (result.replyPlan) {
     try {
       let planToSend = result.replyPlan;
+      // P0-5：Agent 工具产物与旧链路 result.images 走同一后处理链
+      // （图库同步 → 压缩 → 物化），不能因产物在 ReplyPlan 里就跳过。
+      planToSend = await postProcessReplyPlanOutputs(planToSend, {
+        syncImagesToGallery: postProcess?.syncImagesToGallery,
+        compressImages: postProcess?.compressImages,
+        materializeImages: postProcess?.materializeImages,
+        materializeAudio: postProcess?.materializeAudio ?? materializeAudio,
+      }, ctx);
+      const planPolicy = planToSend.policy;
+      const effectiveMaxMessages = Math.max(1, Math.min(
+        Math.max(1, Math.trunc(Number(maxMessages) || 12)),
+        Math.max(1, Math.trunc(Number(planPolicy?.maxMessages) || Number(maxMessages) || 12)),
+      ));
       const planHasAudio = allReplyPlanOutputs(planToSend).some((output) => output.kind === 'audio');
-      const target = voice && !planHasAudio ? selectPrimaryTextForTts(planToSend) : null;
+      const target = planPolicy?.voice !== 'off' && voice && !planHasAudio ? selectPrimaryTextForTts(planToSend) : null;
       if (voice && target) {
         let eligible = true;
-        if (voiceEligible) {
+        if (planPolicy?.voice !== 'on' && voiceEligible) {
           try { eligible = await voiceEligible(target.text, { chatType: ctx.chatType, groupId: ctx.groupId, userId: ctx.userId }); }
           catch { eligible = false; }
         }
@@ -2205,16 +2319,15 @@ export async function sendResult(
               planToSend = replacePrimaryTextWithAudio(planToSend, target, file);
             } else if (voiceEligible) {
               await reportProblem?.('auto-tts-synthesize-failed', '自动 TTS 返回空文件', { textChars: target.text.length });
-              // 合成为空没有产生音频，保留文本作为安全回退。
             }
           } catch (error) {
             await reportProblem?.('auto-tts-synthesize-error', error, { textChars: target.text.length });
-            // 合成抛错时 voice 尚未发送音频，保留文本，避免用户收不到回复。
           }
         }
       }
       if (!allReplyPlanOutputs(planToSend).length) return null;
-      const planned = await engine.replyPlan(ctx, planToSend, { maxMessages });
+      const sendCtx = planPolicy?.reference === 'none' ? { ...ctx, replyToMessageId: undefined } : ctx;
+      const planned = await engine.replyPlan(sendCtx, planToSend, { maxMessages: effectiveMaxMessages });
       if (planned.uncertain) {
         await reportProblem?.('reply-send-uncertain', planned.error || 'reply plan send uncertain', {
           sentCount: planned.sentCount,
@@ -2234,7 +2347,7 @@ export async function sendResult(
   }
   const files = (result.files || []).filter(Boolean) as Array<string | { file: string; name?: string }>;
   let audios = (result.audio || []).filter(Boolean);
-  // 次要优化（2026-10-24 实测）：99KB record 走 base64 WS 上行 4.6s；配置了共享目录时
+  // 次要优化（2026-10-24 时测）：99KB record 走 base64 WS 上行 4.6s；配置了共享目录时
   // 落盘走 file:// 路径由 Napcat 本地读取。auto-TTS 的语音在 start.ts 的 voice() 内同款物化。
   if (audios.length) {
     try {
@@ -2401,6 +2514,13 @@ export function extractImages(event: NapcatMessageEvent | { message?: unknown; c
  */
 export function extractVideos(event: NapcatMessageEvent | { message?: unknown; content?: unknown; raw_message?: string } | null | undefined): string[] {
   return extractMediaRefs(event, ['video'], /\[CQ:video,([^\]]*)\]/gi, normalizeVideoUrl, dedupeVideoUrls);
+}
+
+/**
+ * 从消息事件提取语音/录音引用；语音不转写，只作为附件上下文交给 Agent。
+ */
+export function extractAudios(event: NapcatMessageEvent | { message?: unknown; content?: unknown; raw_message?: string } | null | undefined): string[] {
+  return extractMediaRefs(event, ['record', 'voice'], /\[CQ:(?:record|voice),([^\]]*)\]/gi, (url) => String(url || '').trim(), (urls) => Array.from(new Set(urls)));
 }
 
 /**

@@ -8,7 +8,7 @@ import { parseOpenAiText } from '../dist/packages/model/src/dialects/shared.js';
  * T3.2 planner 双通道语料：同一组用户输入，Function Calling 通道与 JSON 通道
  * 必须产出等价的规范化计划（capability/步骤结构）——通道只是出参格式的差别。
  *
- * 与 tests/intent-corpus.test.mjs 的分工：那份语料测 intent-router 信号层
+ * 旧意图路由模块已删除；本语料只验证当前 planner 的 function-calling 契约。
  * （不接模型的正则/词库直判），这份测 planner 的两条模型出参通道。
  */
 const corpus = [

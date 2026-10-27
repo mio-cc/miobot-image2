@@ -1,0 +1,15 @@
+﻿{
+  "name": "@miobot-v2/tool-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Provider-neutral tool contracts, schema validation, registry and executor boundary for Miobot V2.",
+  "main": "../../dist/packages/tool-runtime/src/index.js",
+  "types": "../../dist/packages/tool-runtime/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "../../dist/packages/tool-runtime/src/index.d.ts",
+      "default": "../../dist/packages/tool-runtime/src/index.js"
+    }
+  }
+}

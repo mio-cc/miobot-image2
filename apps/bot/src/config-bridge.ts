@@ -1,7 +1,4 @@
 import type { AppConfig, ConfigCapabilityOverride } from '../../../packages/config/src/index.js';
-import type { IntentKind } from '../../../packages/intent-router/src/index.js';
-import { FEATURE_DEFINITIONS, type FeatureSetting } from '../../../packages/shared/src/features.js';
-import type { EngineRoutingConfig } from '../../../packages/bot-engine/src/index.js';
 import type { CapabilityOverride, ModelNode, ModelOperation, ProviderDialect } from '../../../packages/model/src/index.js';
 
 /** bot 各能力使用哪个节点（对应 16 路由表里 bot 那几条）。 */
@@ -82,42 +79,6 @@ function expandApiNodeHeaders(headers: Record<string, string> | undefined, apiKe
     if (expanded) out[key] = expanded;
   }
   return out;
-}
-
-export function toEngineRoutingConfig(cfg: AppConfig): EngineRoutingConfig {
-  return {
-    chatEnabled: cfg.llm.chatEnabled,
-    chatModel: cfg.llm.chatModel,
-    imageEnabled: cfg.llm.imageEnabled,
-    imageModel: cfg.llm.imageModel,
-    editModel: cfg.llm.editModel,
-    interrogateModel: cfg.llm.interrogateModel,
-    videoEnabled: cfg.llm.videoEnabled,
-    videoModel: cfg.llm.videoModel,
-    freeModeModel: cfg.freeMode.model,
-    freeModeNodeIndex: cfg.freeMode.nodeIndex,
-    freeModeEnabled: cfg.freeMode.enabled,
-    preferEditWhenImagePresent: cfg.freeMode.preferEditWhenImagePresent,
-    maxOutputImages: cfg.freeMode.maxOutputImages,
-    plannerTimeoutMs: cfg.freeMode.timeoutMs,
-    plannerPromptTemplate: cfg.freeMode.plannerPromptTemplate,
-    reasoningEffort: cfg.llm.reasoningEffort,
-    allowedIntents: allowedIntentKinds(cfg),
-  };
-}
-
-/** AppConfig → bot 各能力的节点索引。 */
-/** 后台「命令与意图」里勾选的自然语言能力，决定 planner/信号可以落到哪些动作。 */
-function allowedIntentKinds(cfg: AppConfig): IntentKind[] {
-  const settings = (cfg.bot.features || {}) as Record<string, FeatureSetting>;
-  const kinds = new Set<IntentKind>(['chat']);
-  for (const def of FEATURE_DEFINITIONS) {
-    if (!def.implemented || !def.intentKind) continue;
-    const setting = settings[def.id];
-    if (!setting?.enabled || !setting.naturalLanguage) continue;
-    kinds.add(def.intentKind as IntentKind);
-  }
-  return [...kinds];
 }
 
 export function toBotRouting(cfg: AppConfig): BotRouting {

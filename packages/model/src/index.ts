@@ -12,3 +12,4 @@ export { customDialect } from './dialects/custom.js';
 export { defaultFetchTransport } from './transport.js';
 export * from './client.js';
 export { NodeConcurrencyGate, type GateSnapshotItem, type ConcurrencyLimit } from './gate.js';
+export * from './provider-errors.js';

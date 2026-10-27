@@ -1,4 +1,4 @@
-import type { BotEngineResult } from '../../../packages/bot-engine/src/index.js';
+import type { RuntimeResult as BotEngineResult } from './runtime-types.js';
 import type { CapabilityHandler, CapabilityInvocation, ExecutionOutput, ExecutionResult } from '../../../packages/orchestration/src/index.js';
 
 export function executionFromBotResult(

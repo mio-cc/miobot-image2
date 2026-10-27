@@ -1,4 +1,5 @@
 import { ModelError, type ImageArtifact, type ImageResult, type ModelNode, type RequestPlan, type TextResult, type VideoArtifact, type VideoJobStatus, type VideoResult } from '../ports.js';
+import { classifyProviderError } from '../provider-errors.js';
 
 export function asRecord(value: unknown): Record<string, any> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, any>) : {};
@@ -43,12 +44,16 @@ export function assertNoTopLevelError(data: unknown): void {
   const root = asRecord(data);
   if (root.error !== undefined) {
     const err = asRecord(root.error);
-    const message = typeof root.error === 'string' ? root.error : String(err.message || 'Upstream provider error');
-    const status = typeof err.status === 'number' ? err.status : undefined;
-    throw new ModelError(message, { category: 'upstream', retryable: status ? status >= 500 : false, status, code: typeof err.code === 'string' ? err.code : undefined });
+    const status = typeof err.status === 'number' ? err.status : typeof err.code === 'number' ? err.code : undefined;
+    const classification = classifyProviderError({ status, error: root.error, body: data });
+    throw new ModelError(classification.message, {
+      category: classification.category,
+      retryable: classification.retryable,
+      status,
+      code: classification.code || classification.kind,
+    });
   }
 }
-
 /** 从 OpenAI 风格响应取文本。 */
 export function parseOpenAiText(data: unknown): TextResult {
   assertNoTopLevelError(data);

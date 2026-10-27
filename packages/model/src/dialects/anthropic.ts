@@ -1,5 +1,7 @@
-import { ModelError, type ChatRequest, type Dialect, type ModelNode, type ModelOperation, type RequestPlan, type TextResult, type VisionRequest } from '../ports.js';
+import { ModelError, type ChatParseContext, type ChatRequest, type Dialect, type ModelNode, type ModelOperation, type RequestPlan, type TextResult, type VisionRequest } from '../ports.js';
 import { asRecord, joinUrl } from './shared.js';
+import { anthropicToolAdapter, hasToolMessages, toAnthropicMessages, type ProviderToolMessage } from '../../../provider-tools/src/index.js';
+import { applyJsonFallbackParse, jsonFallbackRequestMessages, nativeResult, normalizeToolChoice, requestToolNames, resolveToolProtocol } from './tool-support.js';
 
 const OPS: ModelOperation[] = ['chat', 'vision', 'interrogate'];
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -44,19 +46,28 @@ export const anthropicDialect: Dialect = {
   id: 'anthropic',
   supports: (op) => OPS.includes(op),
   buildChat(node: ModelNode, req: ChatRequest): RequestPlan {
-    const { system, messages } = splitMessages(req.messages);
+    const protocol = resolveToolProtocol(req);
+    const toolNames = requestToolNames(req);
+    const { system, messages } = protocol === 'json-fallback'
+      ? splitMessages(jsonFallbackRequestMessages(req))
+      : hasToolMessages(req.messages as unknown as Array<Record<string, unknown>>)
+        ? toAnthropicMessages(req.messages as ProviderToolMessage[], { toolNames })
+        : splitMessages(req.messages);
     const body: Record<string, unknown> = { model: req.model, max_tokens: req.maxTokens ?? 1024, messages };
     if (system) body.system = system;
     if (req.temperature !== undefined) body.temperature = req.temperature;
+    if (protocol === 'native') {
+      body.tools = anthropicToolAdapter.buildTools(req.toolSpecs || [], { toolNames });
+      const choice = normalizeToolChoice(req.toolChoice);
+      if (choice) body.tool_choice = anthropicToolAdapter.buildToolChoice(choice);
+    } else if (!req.toolSpecs?.length && req.tools) {
+      body.tools = req.tools;
+      if (req.toolChoice !== undefined) body.tool_choice = req.toolChoice;
+    }
     return { method: 'POST', url: joinUrl(node.baseUrl, '/v1/messages'), headers: headers(node), body };
   },
-  parseChat(data: unknown): TextResult {
-    const root = asRecord(data);
-    if (root.error !== undefined) { const e = asRecord(root.error); throw new ModelError(String(e.message || root.error), { category: 'upstream', retryable: false }); }
-    const blocks = Array.isArray(root.content) ? root.content : [];
-    const text = blocks.map((b: unknown) => { const r = asRecord(b); return typeof r.text === 'string' ? r.text : ''; }).filter(Boolean).join('\n');
-    if (text.trim()) return { text, raw: data };
-    throw new ModelError('Anthropic response missing content[].text', { category: 'validation', retryable: false });
+  parseChat(data: unknown, context: ChatParseContext = {}): TextResult {
+    return parseAnthropicChat(data, context);
   },
   buildVision(node: ModelNode, req: VisionRequest): RequestPlan {
     const content = [
@@ -70,3 +81,29 @@ export const anthropicDialect: Dialect = {
     return { method: 'POST', url: joinUrl(node.baseUrl, '/v1/messages'), headers: headers(node), body };
   },
 };
+
+function parseAnthropicChat(data: unknown, context: ChatParseContext = {}): TextResult {
+  const root = asRecord(data);
+  if (root.error !== undefined) {
+    const error = asRecord(root.error);
+    throw new ModelError(String(error.message || root.error), { category: 'upstream', retryable: false });
+  }
+  const finishReason = String(root.stop_reason ?? '').trim() || undefined;
+  const native = anthropicToolAdapter.parseToolResponse(data, {
+    ...context,
+    ...(finishReason ? { finishReason } : {}),
+  });
+  const blocks = Array.isArray(root.content) ? root.content : [];
+  const text = blocks.map((block: unknown) => { const item = asRecord(block); return typeof item.text === 'string' ? item.text : ''; }).filter(Boolean).join('\n');
+  const base: TextResult = {
+    text,
+    raw: data,
+    ...(native.finishReason ? { finishReason: native.finishReason } : {}),
+    ...(native.truncated ? { truncated: true } : {}),
+  };
+  if (context.toolProtocol === 'json-fallback') return applyJsonFallbackParse(base, context);
+  if (!text.trim() && !native.toolCalls.length && !native.issues.length) {
+    throw new ModelError('Anthropic response missing content[].text', { category: 'validation', retryable: false });
+  }
+  return nativeResult(base, native);
+}

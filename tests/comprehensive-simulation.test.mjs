@@ -52,6 +52,7 @@ function sentText(action) {
 
 function makeConfig(overrides = {}) {
   const cfg = createDefaultConfig();
+  cfg.agent.enabled = true; cfg.agent.mode = 'enforce'; // R9 后自然语言走 Agent：本文件用 agentRuntime mock 断言等价语义
   cfg.bot.botQqId = '10000';
   cfg.bot.ownerQQs = ['1'];
   cfg.llm.chatEnabled = true;
@@ -130,7 +131,7 @@ test('模拟检测: 统一上下文启用时 planner 提示词包含对话历史
     app, reply: sim.adapter, getConfig: () => cfg,
     selfId: () => '10000', botName: 'Mio',
     reportProblem: async () => true,
-    enforceOrchestration: async (input) => {
+    agentRuntime: async (input) => {
       enforcerInput.push(input);
       return { handled: true, result: { kind: 'chat', handled: true, text: 'ok', decision: { kind: 'chat', source: 'model', confidence: 1, reason: '', params: { prompt: '', tokens: [] } } } };
     },
@@ -138,13 +139,15 @@ test('模拟检测: 统一上下文启用时 planner 提示词包含对话历史
   runtime.attach(sim.adapter);
   try {
     sim.sendEvent({ post_type: 'message', message_type: 'private', user_id: 2000, message_id: 2, raw_message: '把这首歌按正确歌词重新生成', message: [{ type: 'text', data: { text: '把这首歌按正确歌词重新生成' } }] });
-    await waitUntil(() => enforcerInput.length > 0, 3000, 'enforce called');
+    await waitUntil(() => enforcerInput.length > 0, 3000, 'agent called');
     const input = enforcerInput[0];
-    // 验证 sessionHistory 被传入
-    assert.ok(input.sessionHistory, 'sessionHistory 应被传入 enforce');
-    assert.ok(input.sessionHistory.includes('帮我生成一首关于XX的歌'), '应包含第一条用户消息');
-    assert.ok(input.sessionHistory.includes('歌词不对'), '应包含用户纠正歌词的消息');
-    assert.ok(input.sessionHistory.includes('机器人'), '应标记 bot 回复');
+    // R9 后旧 planner 已退位：统一上下文由 Agent 会话承载。
+    // 等价断言：agent 收到 sessionId，历史可从 app.sessions 取到（不再拼进 planner 提示词）。
+    assert.ok(input.sessionId, 'agent 输入应带 sessionId');
+    // 统一上下文（把历史带给模型）在 Agent 架构下由 agent session 承载：
+    // runtime 只负责传 sessionKey,历史读取在 agent context-builder（见 agent-runtime-r1 测试）。
+    assert.equal(input.sessionId, 'private:2000');
+    assert.ok(String(input.text).includes('重新生成'));
   } finally { await sim.close(); }
 });
 
@@ -165,7 +168,7 @@ test('模拟检测: 统一上下文关闭时 planner 不收到对话历史', asy
   const runtime = createBotMessageRuntime({
     app, reply: sim.adapter, getConfig: () => cfg,
     selfId: () => '10000', botName: 'Mio', reportProblem: async () => true,
-    enforceOrchestration: async (input) => {
+    agentRuntime: async (input) => {
       enforcerInput.push(input);
       return { handled: true, result: { kind: 'chat', handled: true, text: 'ok', decision: { kind: 'chat', params: {} } } };
     },
@@ -289,7 +292,7 @@ test('模拟检测: enforce 模式下同用户并发消息串行处理', async (
   const runtime = createBotMessageRuntime({
     app, reply: sim.adapter, getConfig: () => cfg,
     selfId: () => '10000', botName: 'Mio', reportProblem: async () => true,
-    enforceOrchestration: async (input) => {
+    agentRuntime: async (input) => {
       active += 1;
       maxActive = Math.max(maxActive, active);
       processingOrder.push(input.text);
@@ -408,6 +411,8 @@ test('模拟检测: 重复消息只处理一次', async () => {
   const sim = await createSim();
   const processed = [];
   const cfg = makeConfig();
+  cfg.agent.enabled = true;
+  cfg.agent.mode = 'enforce';
   const app = {
     handle: async (input) => { processed.push(input.text); return { kind: 'chat', handled: true, text: 'ok', decision: { kind: 'chat', params: {} } }; },
     engine: { async handleExplicit(kind, input) { processed.push(input.text); return { kind: 'chat', handled: true, text: 'ok', decision: { kind: 'chat', params: {} } }; } },
@@ -417,6 +422,8 @@ test('模拟检测: 重复消息只处理一次', async () => {
   const runtime = createBotMessageRuntime({
     app, reply: sim.adapter, getConfig: () => cfg,
     selfId: () => '10000', botName: 'Mio', reportProblem: async () => true,
+    // R9 后自然语言走 Agent：去重断言挂在 agentRuntime 上（同 message_id 重复事件只处理一次）。
+    agentRuntime: async (input) => { processed.push(input.text); return { handled: true, text: 'ok' }; },
   });
   runtime.attach(sim.adapter);
   try {

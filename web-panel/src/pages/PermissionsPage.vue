@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import client from '../api/client';
 import { useConfigStore } from '../stores/config';
@@ -317,6 +317,7 @@ watch(previewCapability, syncPreviewCapability);
     </SectionCard>
 
     <SectionCard title="管理员审批" hint="高风险动作私聊或群内发送给管理员，超时默认拒绝" class="mb-4">
+    <p class="text-xs text-[color:var(--ink-3)] mb-3 leading-relaxed">审批候选人会排除发起人：单管理员部署时，由该管理员本人发起的高风险操作无人可审。请至少配置两名管理员，或改由 owner 发起。</p>
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.approval.enabled" label="启用审批" /></div>
         <FormField label="Quorum">

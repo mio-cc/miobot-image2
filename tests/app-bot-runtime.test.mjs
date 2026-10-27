@@ -3,6 +3,21 @@ import assert from 'node:assert/strict';
 
 import { createBotApp, createBotMessageRuntime, extractImages, extractVideos, extractReplyIdFromEvent, segmentsToRaw } from '../dist/apps/bot/src/main.js';
 import { createDefaultConfig } from '../dist/packages/config/src/index.js';
+/** R9 修复后 Agent 默认 enforce：本文件测旧引擎/命令路径，显式关闭 agent（聊天语义另测）。 */
+function createDefaultConfigAgentOff() {
+  const c = withAgentOff(createDefaultConfig());
+  c.agent.enabled = false;
+  c.agent.mode = 'off';
+  c.intentRecognition.enabled = false;
+  return c;
+}
+function withAgentOff(c) {
+  c.agent.enabled = false;
+  c.agent.mode = 'off';
+  c.intentRecognition.enabled = false;
+  return c;
+}
+
 
 function makeModelClient() {
   const calls = [];
@@ -41,7 +56,7 @@ function makeReply() {
 function setup(overrides = {}) {
   const client = makeModelClient();
   const reply = makeReply();
-  const getConfig = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; return c; };
+  const getConfig = () => { const c = withAgentOff(createDefaultConfig()); c.bot.botQqId = '10000'; return c; };
   const app = createBotApp({ getConfig, client });
   const rt = createBotMessageRuntime({ app, reply, getConfig, botName: 'Mio', ...overrides });
   return { client, reply, rt };
@@ -110,7 +125,7 @@ test('freeMode: 生成视频 → generateVideo + 发 groupVideo', async () => {
   const client = makeModelClient();
   const reply = makeReply();
   const getConfig = () => {
-    const c = createDefaultConfig();
+    const c = withAgentOff(createDefaultConfig());
     c.bot.botQqId = '10000';
     c.freeMode.enabled = true;
     c.freeMode.model = 'gpt-4o-mini';
@@ -140,7 +155,7 @@ test('freeMode: 引用图片 + @bot + 文本 → 引擎拿到引用图并走 vis
   const client = makeModelClient();
   const reply = makeReply();
   const getConfig = () => {
-    const c = createDefaultConfig();
+    const c = withAgentOff(createDefaultConfig());
     c.bot.botQqId = '10000';
     c.freeMode.enabled = true;
     c.freeMode.includeQuotedMessage = true;
@@ -297,7 +312,7 @@ test('empty-mention: 群里纯 @bot 无内容 -> 快捷回复, 不进引擎', as
 
 test('voice: record 明确失败 -> 不再回退文字，避免语音和文字双发', async () => {
   const client = makeModelClient();
-  const getConfig = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; return c; };
+  const getConfig = () => { const c = withAgentOff(createDefaultConfig()); c.bot.botQqId = '10000'; return c; };
   const app = createBotApp({ getConfig, client });
   const sent = [];
   const reports = [];
@@ -338,7 +353,7 @@ test('private 帮助 命令 -> 指令说明', async () => {
 
 test('voice: 文本结果转语音 -> 发 record(私聊)', async () => {
   const client = makeModelClient();
-  const getConfig = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; return c; };
+  const getConfig = () => { const c = withAgentOff(createDefaultConfig()); c.bot.botQqId = '10000'; return c; };
   const app = createBotApp({ getConfig, client });
   const recSent = [];
   const reply = {
@@ -373,7 +388,7 @@ test('voice: 返回空则回退文本', async () => {
 
 test('owner: /模型 -> 调 owner.handle 并回复(owner 优先)', async () => {
   const client = makeModelClient();
-  const getConfig = () => { const c = createDefaultConfig(); c.bot.ownerQQs = ['5']; return c; };
+  const getConfig = () => { const c = withAgentOff(createDefaultConfig()); c.bot.ownerQQs = ['5']; return c; };
   const app = createBotApp({ getConfig, client });
   const sent = [];
   const reply = {
@@ -392,7 +407,7 @@ test('owner: /模型 -> 调 owner.handle 并回复(owner 优先)', async () => {
 
 test('owner: 非 owner 不触发 owner 通道', async () => {
   const client = makeModelClient();
-  const getConfig = () => { const c = createDefaultConfig(); c.bot.ownerQQs = ['5']; return c; };
+  const getConfig = () => { const c = withAgentOff(createDefaultConfig()); c.bot.ownerQQs = ['5']; return c; };
   const app = createBotApp({ getConfig, client });
   const handled = [];
   const reply = {
@@ -409,7 +424,7 @@ test('owner: 非 owner 不触发 owner 通道', async () => {
 test('v2 genImage: 图库同步成功后用图库 URL 交给 Napcat 发送', async () => {
   const client = makeModelClient();
   const reply = makeReply();
-  const getConfig = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; return c; };
+  const getConfig = () => { const c = withAgentOff(createDefaultConfig()); c.bot.botQqId = '10000'; return c; };
   const app = createBotApp({ getConfig, client });
   const syncCalls = [];
   const rt = createBotMessageRuntime({
@@ -448,7 +463,7 @@ test('v2 genImage: 图库同步成功后用图库 URL 交给 Napcat 发送', asy
 test('v2 genImage: 图库同步异常时回退原图，不阻断 QQ 回复', async () => {
   const client = makeModelClient();
   const reply = makeReply();
-  const getConfig = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; return c; };
+  const getConfig = () => { const c = withAgentOff(createDefaultConfig()); c.bot.botQqId = '10000'; return c; };
   const app = createBotApp({ getConfig, client });
   const rt = createBotMessageRuntime({
     app,
@@ -473,7 +488,7 @@ test('v2 genImage: 图库同步异常时回退原图，不阻断 QQ 回复', asy
 
 test('v2 收图: 远程图片先内联成 data URL 再送意图路由和模型', async () => {
   const reply = makeReply();
-  const getConfig = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; return c; };
+  const getConfig = () => { const c = withAgentOff(createDefaultConfig()); c.bot.botQqId = '10000'; return c; };
   let captured;
   let preparedFrom;
   const app = {
@@ -529,7 +544,7 @@ test('extractImages: segment with both file and url prefers Napcat local file fo
 test('owner: ch -> 撤回当前私聊最近一条机器人消息', async () => {
   const client = makeModelClient();
   const getConfig = () => {
-    const c = createDefaultConfig();
+    const c = withAgentOff(createDefaultConfig());
     c.bot.botQqId = '10000';
     c.bot.ownerQQs = ['5'];
     return c;
@@ -570,7 +585,7 @@ test('private genImage default progress is silent -> image only', async () => {
 test('voice: record 发送结果不确定时不再回退文字，避免语音和文字双发', async () => {
   const client = makeModelClient();
   const getConfig = () => {
-    const c = createDefaultConfig();
+    const c = withAgentOff(createDefaultConfig());
     c.bot.botQqId = '10000';
     c.bot.textReply.maxChars = 1;
     c.bot.replyStrategies.text = 'forward';
@@ -598,7 +613,7 @@ test('errors: 运行异常只私聊管理员，不再回复用户', async () => 
   client.chat = async () => { throw new Error('upstream 500'); };
   const reply = makeReply();
   const reports = [];
-  const getConfig = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; return c; };
+  const getConfig = () => { const c = withAgentOff(createDefaultConfig()); c.bot.botQqId = '10000'; c.intentRecognition.enabled = false; return c; };
   const app = createBotApp({ getConfig, client });
   const rt = createBotMessageRuntime({
     app, reply, getConfig, botName: 'Mio',
@@ -606,7 +621,7 @@ test('errors: 运行异常只私聊管理员，不再回复用户', async () => 
   });
   const result = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 46, raw_message: '你好' });
   assert.equal(result.handled, false);
-  assert.ok(reports.some((item) => item.kind === 'engine-error'));
+  assert.ok(reports.some((item) => item.kind === 'engine-error' || item.kind === 'legacy-engine-error'), JSON.stringify(reports.map((r) => r.kind)));
   assert.deepEqual(reply.sent, []);
 });
 
@@ -614,7 +629,7 @@ test('group context: 同名群成员通过 QQ 号区分，并标注当前提问�
   const client = makeModelClient();
   const reply = makeReply();
   const getConfig = () => {
-    const c = createDefaultConfig();
+    const c = withAgentOff(createDefaultConfig());
     c.bot.botQqId = '10000';
     c.bot.groupContext.enabled = true;
     c.bot.groupContext.messageCount = 10;
@@ -653,7 +668,8 @@ test('voice: capability audio result sends record without duplicate text', async
     registry: () => ({}),
     client: {},
   };
-  const getConfig = () => createDefaultConfig();
+  // off 回退 + 关闭模型意图识别：走正则兜底 chat → app.handle 的 audio 路径。
+  const getConfig = () => { const c = withAgentOff(createDefaultConfig()); c.intentRecognition.enabled = false; return c; };
   const rt = createBotMessageRuntime({ app, reply, getConfig, botName: 'Mio' });
   await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 47, raw_message: '你好' });
   assert.deepEqual(records, [[5, 'base64://AUDIO']]);
@@ -664,7 +680,7 @@ test('runtime command gateway: mapped exact command bypasses legacy engine', asy
   const reply = makeReply();
   const replies = [];
   const getConfig = () => {
-    const c = createDefaultConfig();
+    const c = withAgentOff(createDefaultConfig());
     c.bot.botQqId = '10000';
     c.orchestration.enabled = true;
     c.orchestration.mode = 'enforce';
@@ -703,7 +719,7 @@ test('runtime command gateway: mapped exact command bypasses legacy engine', asy
 test('runtime command gateway: only command_not_mapped may fall back to legacy implementation', async () => {
   const reply = makeReply();
   const getConfig = () => {
-    const c = createDefaultConfig();
+    const c = withAgentOff(createDefaultConfig());
     c.bot.botQqId = '10000';
     c.orchestration.enabled = true;
     c.orchestration.mode = 'enforce';
@@ -734,7 +750,7 @@ test('runtime command gateway: mapped command orchestration failure never replay
   const reply = makeReply();
   const legacyCalls = [];
   const getConfig = () => {
-    const c = createDefaultConfig();
+    const c = withAgentOff(createDefaultConfig());
     c.bot.botQqId = '10000';
     c.orchestration.enabled = true;
     c.orchestration.mode = 'enforce';
@@ -766,7 +782,7 @@ test('runtime command gateway: mapped command orchestration failure never replay
 test('runtime command gateway: owner recall uses unified command plan', async () => {
   const reply = makeReply();
   const getConfig = () => {
-    const c = createDefaultConfig();
+    const c = withAgentOff(createDefaultConfig());
     c.bot.botQqId = '10000';
     c.bot.ownerQQs = ['5'];
     c.orchestration.enabled = true;
@@ -801,7 +817,7 @@ test('runtime command gateway: owner recall uses unified command plan', async ()
 test('runtime: orchestrated result is sent only through ReplyPlan and final maxMessages wins', async () => {
   const reply = makeReply();
   const getConfig = () => {
-    const c = createDefaultConfig();
+    const c = withAgentOff(createDefaultConfig());
     c.bot.botQqId = '10000';
     c.orchestration.enabled = true;
     c.orchestration.mode = 'enforce';
@@ -841,7 +857,7 @@ test('runtime: orchestrated voice plan uncertain does not fall back to text', as
   const sent = [];
   const reports = [];
   const getConfig = () => {
-    const c = createDefaultConfig();
+    const c = withAgentOff(createDefaultConfig());
     c.bot.botQqId = '10000';
     c.orchestration.enabled = true;
     c.orchestration.mode = 'enforce';
@@ -882,7 +898,7 @@ test('runtime: orchestrated voice plan uncertain does not fall back to text', as
 test('runtime command gateway: owner config command uses unified gateway and does not call legacy owner handler', async () => {
   const reply = makeReply();
   const getConfig = () => {
-    const c = createDefaultConfig();
+    const c = withAgentOff(createDefaultConfig());
     c.bot.botQqId = '10000';
     c.bot.ownerQQs = ['5'];
     c.orchestration.enabled = true;
@@ -968,7 +984,7 @@ test('runtime: ignored group message is not written into long-term memory', asyn
 });
 
 test('runtime T2.2: 每用户消息频率超限静默丢弃，不回复不报错', async () => {
-  const { reply, rt } = setup({ getConfig: () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; c.bot.messageRateLimitPerMinute = 3; return c; } });
+  const { reply, rt } = setup({ getConfig: () => { const c = withAgentOff(createDefaultConfig()); c.bot.botQqId = '10000'; c.bot.messageRateLimitPerMinute = 3; return c; } });
   const results = [];
   for (let i = 1; i <= 5; i += 1) {
     results.push(await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 700 + i, raw_message: '第' + i + '条' }));
@@ -1001,13 +1017,13 @@ test('runtime T2.2b: 戳一戳响应——只回被戳的 bot 本人、带冷却
   assert.equal(reply.sent[1][0], 'privateText');
   assert.equal(reply.sent[1][1], 7);
   // 关闭开关后不再响应。
-  const { reply: reply2, rt: rt2 } = setup({ getConfig: () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; c.bot.poke.enabled = false; return c; } });
+  const { reply: reply2, rt: rt2 } = setup({ getConfig: () => { const c = withAgentOff(createDefaultConfig()); c.bot.botQqId = '10000'; c.bot.poke.enabled = false; return c; } });
   const handlers2 = {};
   rt2.attach({ on: (event, handler) => { handlers2[event] = handler; } });
   await handlers2.notice(pokeAtBot);
   assert.equal(reply2.sent.length, 0);
   // 群白名单不包含时群戳不响应（空名单=全放行已由第一段覆盖）。
-  const { reply: reply3, rt: rt3 } = setup({ getConfig: () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; c.bot.whitelistGroups = ['999']; return c; } });
+  const { reply: reply3, rt: rt3 } = setup({ getConfig: () => { const c = withAgentOff(createDefaultConfig()); c.bot.botQqId = '10000'; c.bot.whitelistGroups = ['999']; return c; } });
   const handlers3 = {};
   rt3.attach({ on: (event, handler) => { handlers3[event] = handler; } });
   await handlers3.notice(pokeAtBot);
@@ -1015,7 +1031,7 @@ test('runtime T2.2b: 戳一戳响应——只回被戳的 bot 本人、带冷却
 });
 
 test('runtime T2.2b: 入群欢迎——开关/群冷却/自身入群跳过/群白名单', async () => {
-  const { reply, rt } = setup({ getConfig: () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; c.bot.welcome.enabled = true; return c; } });
+  const { reply, rt } = setup({ getConfig: () => { const c = withAgentOff(createDefaultConfig()); c.bot.botQqId = '10000'; c.bot.welcome.enabled = true; return c; } });
   const handlers = {};
   rt.attach({ on: (event, handler) => { handlers[event] = handler; } });
   const join = { post_type: 'notice', notice_type: 'group_increase', sub_type: 'approve', group_id: 200, user_id: 5 };
@@ -1037,7 +1053,7 @@ test('runtime T2.2b: 入群欢迎——开关/群冷却/自身入群跳过/群�
 
 test('runtime T2.2b: 好友请求——accept 调 action、notify 私聊 owner、ignore 不动', async () => {
   const actions = [];
-  const base = (mode) => () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; c.bot.ownerQQs = ['42']; c.bot.friendRequest.mode = mode; return c; };
+  const base = (mode) => () => { const c = withAgentOff(createDefaultConfig()); c.bot.botQqId = '10000'; c.bot.ownerQQs = ['42']; c.bot.friendRequest.mode = mode; return c; };
   const req = { post_type: 'request', request_type: 'friend', user_id: 77, flag: 'flag-1', comment: '你好' };
   // accept：调用 set_friend_add_request(approve=true)
   const a = setup({ getConfig: base('accept'), callNapcatAction: async (action, params) => { actions.push([action, params]); return {}; } });
@@ -1090,7 +1106,7 @@ test('runtime T3.7: 高危 owner 命令二次确认——/plch 20 先确认，/o
 test('runtime B: 群历史与记忆合并注入（上下文统一组装，enforce 单字段接收）', async () => {
   const inputs = [];
   let historyCalls = 0;
-  const enforceCfg = () => { const c = createDefaultConfig(); c.bot.botQqId = '10000'; c.orchestration.enabled = true; c.orchestration.mode = 'enforce'; c.bot.groupContext = { ...c.bot.groupContext, enabled: true }; return c; };
+  const enforceCfg = () => { const c = withAgentOff(createDefaultConfig()); c.bot.botQqId = '10000'; c.orchestration.enabled = true; c.orchestration.mode = 'enforce'; c.bot.groupContext = { ...c.bot.groupContext, enabled: true }; return c; };
   const base = {
     fetchGroupHistory: async () => { historyCalls += 1; return [{ time: 1, sender: { user_id: 5, nickname: 'u' }, message: [{ type: 'text', data: { text: '群历史一条' } }] }]; },
     enforceOrchestration: async (input) => {

@@ -162,7 +162,7 @@ test('config regression: export then import is idempotent for normalized config'
   const exported = exportConfig(normalized, { exportedAt: '2026-05-28T01:00:00.000Z' });
   assert.equal(exported.version, CONFIG_SCHEMA_VERSION);
   const roundTrip = importConfig(exported);
-  assert.equal(roundTrip.sourceFormat, 'export-wrapper-v2');
+  assert.equal(roundTrip.sourceFormat, 'export-wrapper-v3');
   assert.deepEqual(roundTrip.config, normalized);
   assert.deepEqual(exportConfig(roundTrip.config, { exportedAt: '2026-05-28T01:00:00.000Z' }), exported);
 });
@@ -296,7 +296,7 @@ test('config regression: v3 orchestration settings survive export/import', () =>
 
   const normalized = normalizeConfig(cfg);
   const roundTrip = importConfig(exportConfig(normalized, { exportedAt: '2026-05-28T02:00:00.000Z' }));
-  assert.equal(roundTrip.sourceFormat, 'export-wrapper-v2');
+  assert.equal(roundTrip.sourceFormat, 'export-wrapper-v3');
   assert.deepEqual(roundTrip.config.orchestration, normalized.orchestration);
   assert.equal(roundTrip.config.orchestration.suno.apiKey, 'suno-secret-key');
   assert.equal(roundTrip.config.orchestration.suno.callbackSecret, 'callback-secret');

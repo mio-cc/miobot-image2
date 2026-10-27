@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Bot v2 launcher: runs the NEW architecture (apps/bot runtime: model+bot-engine+reply)
+// Bot v2 launcher: runs the NEW architecture (apps/bot runtime: model+AgentRuntime+reply)
 // against Napcat, in PARALLEL with the legacy scripts/bot-runtime.mjs.
 // Reads the same config.json (MIOBOT_CONFIG_PATH or .runtime/config.json).
 import path from 'node:path';

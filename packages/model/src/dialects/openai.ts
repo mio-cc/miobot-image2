@@ -1,4 +1,5 @@
 import type {
+  ChatParseContext,
   ChatRequest,
   Dialect,
   ImageEditRequest,
@@ -6,10 +7,13 @@ import type {
   ModelNode,
   ModelOperation,
   RequestPlan,
+  TextResult,
   VideoGenerationRequest,
   VisionRequest,
 } from '../ports.js';
 import { bearerHeaders, buildOpenAiVideoStatus, joinUrl, parseOpenAiImages, parseOpenAiText, parseOpenAiVideo } from './shared.js';
+import { hasToolMessages, openAiToolAdapter, toOpenAiMessages, type ProviderToolMessage } from '../../../provider-tools/src/index.js';
+import { applyJsonFallbackParse, jsonFallbackRequestMessages, nativeResult, normalizeToolChoice, parseContextForRequest, requestToolNames, resolveToolProtocol } from './tool-support.js';
 import {
   supportsReasoningEffort,
   supportsResponseFormat,
@@ -24,13 +28,29 @@ export const openAiDialect: Dialect = {
   id: 'openai',
   supports: (op) => OPS.includes(op),
   buildChat(node: ModelNode, req: ChatRequest): RequestPlan {
-    const body: Record<string, unknown> = { model: req.model, messages: req.messages };
+    const protocol = resolveToolProtocol(req);
+    const toolNames = requestToolNames(req);
+    const useToolMessages = hasToolMessages(req.messages as unknown as Array<Record<string, unknown>>);
+    const messages = protocol === 'json-fallback'
+      ? jsonFallbackRequestMessages(req)
+      : useToolMessages
+        ? toOpenAiMessages(req.messages as ProviderToolMessage[], { toolNames })
+        : req.messages;
+    const body: Record<string, unknown> = { model: req.model, messages };
     applyChatParams(body, req);
-    if (req.tools) body.tools = req.tools;
-    if (req.toolChoice !== undefined) body.tool_choice = req.toolChoice;
+    if (protocol === 'native') {
+      body.tools = openAiToolAdapter.buildTools(req.toolSpecs || [], { toolNames });
+      const choice = normalizeToolChoice(req.toolChoice);
+      if (choice) body.tool_choice = openAiToolAdapter.buildToolChoice(choice);
+    } else if (!req.toolSpecs?.length) {
+      if (req.tools) body.tools = req.tools;
+      if (req.toolChoice !== undefined) body.tool_choice = req.toolChoice;
+    }
     return { method: 'POST', url: joinUrl(node.baseUrl, '/chat/completions'), headers: bearerHeaders(node.apiKey, node.headers), body };
   },
-  parseChat: parseOpenAiText,
+  parseChat(data: unknown, context: ChatParseContext = {}): TextResult {
+    return parseOpenAiChat(data, context);
+  },
   buildVision(node: ModelNode, req: VisionRequest): RequestPlan {
     const content = [
       { type: 'text', text: req.prompt },
@@ -114,4 +134,52 @@ function clampCount(count?: number): number {
 /** 16:9 / 1:1 等视为 aspect_ratio 而非 OpenAI 像素 size。 */
 function looksLikeAspectRatio(value: string): boolean {
   return /^\d{1,2}:\d{1,2}$/.test(String(value || '').trim());
+}
+
+function parseOpenAiChat(data: unknown, context: ChatParseContext = {}): TextResult {
+  const native = openAiToolAdapter.parseToolResponse(data, {
+    ...context,
+    finishReason: openAiFinishReason(data),
+  });
+  const finishReason = native.finishReason;
+  let base: TextResult;
+  try {
+    base = parseOpenAiText(data);
+  } catch (error) {
+    const canRepair = context.toolProtocol === 'json-fallback' || native.toolCalls.length > 0 || native.issues.some((issue) => issue.code === 'truncated_output');
+    if (!canRepair) throw error;
+    base = {
+      text: native.text || openAiVisibleText(data),
+      raw: data,
+      ...(finishReason ? { finishReason } : {}),
+      ...(native.truncated ? { truncated: true } : {}),
+    };
+  }
+  const withMeta: TextResult = {
+    ...base,
+    ...(finishReason ? { finishReason } : {}),
+    ...(native.truncated ? { truncated: true } : {}),
+  };
+  if (context.toolProtocol === 'json-fallback') return applyJsonFallbackParse(withMeta, {
+    ...context,
+    ...(finishReason ? { toolProtocol: 'json-fallback' as const } : {}),
+  });
+  return nativeResult(withMeta, native);
+}
+
+function openAiFinishReason(data: unknown): string | undefined {
+  const root = data && typeof data === 'object' && !Array.isArray(data) ? data as Record<string, any> : {};
+  const choice = Array.isArray(root.choices) ? root.choices[0] : undefined;
+  const value = choice && typeof choice === 'object' ? (choice as Record<string, unknown>).finish_reason : undefined;
+  const reason = String(value ?? '').trim();
+  return reason || undefined;
+}
+
+function openAiVisibleText(data: unknown): string {
+  const root = data && typeof data === 'object' && !Array.isArray(data) ? data as Record<string, any> : {};
+  const message = root.choices?.[0]?.message;
+  const content = message?.content ?? root.output_text;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) return content.map((part) => part && typeof part === 'object' && typeof (part as any).text === 'string' ? (part as any).text : '').filter(Boolean).join('\n');
+  return '';
 }

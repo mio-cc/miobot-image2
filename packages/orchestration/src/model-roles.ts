@@ -129,7 +129,6 @@ export async function verifyPlanAlignmentWithModel(
     '用户请求：' + request.text,
     '附件：' + JSON.stringify(request.attachments || []),
     '当前计划：' + JSON.stringify(plan),
-    '能力清单：' + JSON.stringify(compactCatalog(catalog)),
   ].join('\n');
   const prompt = renderConfiguredRolePrompt(options, fallbackPrompt, { request: request.text, plan: JSON.stringify(plan), catalog: JSON.stringify(compactCatalog(catalog)) });
   try {
@@ -189,7 +188,6 @@ export async function replanWithAlignmentFeedbackWithModel(
     '原计划：' + JSON.stringify(priorPlan),
     '复核原因：' + review.reason,
     '建议能力：' + JSON.stringify(review.suggestedCapabilities || []),
-    '能力清单：' + JSON.stringify(compactCatalog(catalog)),
   ].join('\n');
   const prompt = renderConfiguredRolePrompt(options, fallbackPrompt, {
     request: request.text,
@@ -237,9 +235,10 @@ export async function generateClarificationWithModel(
 ): Promise<RoleCallResult<ClarificationGeneration>> {
   const fallbackPrompt = [
     '你是 Miobot 的对话追问生成器。',
-    '当前计划缺少继续执行所需的信息。请结合用户原话、上下文、附件、计划和能力清单，生成一句自然、具体、单一的问题。',
-    '不要使用固定模板；不要提到内部错误码、字段名、schema、validation issue 或实现细节。',
-    '问题必须使用用户当前语言，尽量引用当前话题、对象或上下文。如果存在多个可能目标，可以在问题中给出少量具体方向。',
+    '先判断当前计划是否已经有一个明确的具体任务；只有该任务缺少执行所需的关键参数时，才生成一个问题。',
+    '不要把普通聊天、情绪表达、吐槽、玩笑、拒绝或敷衍自动解释成功能请求，也不要生成能力问卷。',
+    '严禁向用户列举或暗示能力、功能类型或具体功能名；不要把问题写成你是想 A 还是 B。',
+    '如果用户只是在聊天或结束话题，应该让正常 chat 回应，不要在这里强行追问；必须追问时只问当前任务缺失的那一个具体信息，并引用当前话题。',
     '只输出 JSON：{"question":"向用户提出的问题","missingInformation":["模型理解到的缺失信息"]}。',
     '',
     '用户请求：' + request.text,
@@ -248,17 +247,15 @@ export async function generateClarificationWithModel(
     '历史上下文：' + JSON.stringify(request.history || []),
     '当前计划：' + JSON.stringify(plan),
     '结构化问题：' + JSON.stringify(issues),
-    '能力清单：' + JSON.stringify(compactCatalog(catalog)),
   ].join('\n');
   const prompt = renderConfiguredRolePrompt(options, fallbackPrompt, {
     request: request.text,
     plan: JSON.stringify(plan),
-    catalog: JSON.stringify(compactCatalog(catalog)),
     issues: JSON.stringify(issues),
   });
   try {
     const text = await callRole(client, { ...options, temperature: 0 }, roleMessages(
-      'You generate one contextual clarification question. Never expose internal error codes. Output only one JSON object.',
+      'You generate one contextual clarification question only when a concrete task is missing one concrete parameter. Never enumerate capabilities or turn casual chat into a capability questionnaire. Never expose internal codes. Output only one JSON object.',
       prompt,
     ));
     const json = extractJsonObject(text);
@@ -301,6 +298,7 @@ export async function repairPlanWithValidationFeedbackWithModel(
     '1. 如果能从已有上下文或能力清单中修复计划，输出一个可执行 IntentPlan。',
     '2. 如果必须让用户补充信息或做出选择，输出 needsClarification=true，并生成一句自然、具体、单一的问题。',
     '追问由你根据用户当前语境生成，不要复制 issue.code、requirement、schema 或内部错误文本。',
+    '追问只能针对当前计划缺少的一个具体参数，不得列举能力或把普通聊天变成功能问卷。',
     '只使用能力清单中的 id。需要多步时输出最小必要步骤和依赖关系。只输出完整 IntentPlan JSON。',
     '',
     '用户请求：' + request.text,
@@ -309,17 +307,15 @@ export async function repairPlanWithValidationFeedbackWithModel(
     '历史上下文：' + JSON.stringify(request.history || []),
     '当前计划：' + JSON.stringify(plan),
     '结构化问题：' + JSON.stringify(issues),
-    '能力清单：' + JSON.stringify(compactCatalog(catalog)),
   ].join('\n');
   const prompt = renderConfiguredRolePrompt(options, fallbackPrompt, {
     request: request.text,
     plan: JSON.stringify(plan),
-    catalog: JSON.stringify(compactCatalog(catalog)),
     issues: JSON.stringify(issues),
   });
   try {
     const text = await callRole(client, { ...options, temperature: 0 }, roleMessages(
-      'You repair plans or ask one contextual clarification question. Never expose internal codes. Output only one IntentPlan JSON object.',
+      'You repair plans or ask one contextual clarification question only for a concrete missing parameter. Never enumerate capabilities or turn casual chat into a task questionnaire. Never expose internal codes. Output only one IntentPlan JSON object.',
       prompt,
     ));
     const json = extractJsonObject(text);
@@ -344,7 +340,6 @@ export async function refinePlanWithModel(
     '',
     '用户请求：' + request.text,
     '当前计划：' + JSON.stringify(plan),
-    '能力清单：' + JSON.stringify(compactCatalog(catalog)),
   ].join('\n');
   const prompt = renderConfiguredRolePrompt(options, fallbackPrompt, { request: request.text, plan: JSON.stringify(plan), catalog: JSON.stringify(compactCatalog(catalog)) });
   try {
@@ -451,6 +446,7 @@ export async function resolveClarificationWithModel(
     '你是追问回答合并器。把用户对唯一一次追问的回答合并进当前 IntentPlan。',
     '不要重新理解成一个全新任务；必须保留当前计划中已经明确的步骤、依赖和参数。',
     '不得再次提出任何问题。信息仍然不足时输出 resolved=false。',
+    '如果用户回答是情绪、拒绝、敷衍或普通聊天，不要把它解释成新的能力任务；信息不足时直接 resolved=false。',
     '只能使用能力目录中的 capability id。',
     '输出严格 JSON：{"resolved":true,"plan":{完整 IntentPlan}} 或 {"resolved":false,"reason":"原因"}。',
     '',
@@ -459,18 +455,17 @@ export async function resolveClarificationWithModel(
     '追问上下文/可选项：' + String(options.context || ''),
     '用户回答：' + options.answer,
     '当前计划：' + JSON.stringify(plan || null),
-    '能力清单：' + JSON.stringify(compactCatalog(catalog)),
   ].join('\n');
-  const prompt = renderConfiguredRolePrompt(options, fallbackPrompt, { request: request.text, plan: JSON.stringify(plan || null), catalog: JSON.stringify(compactCatalog(catalog)), question: options.question, answer: options.answer, context: String(options.context || '') });
+  const prompt = renderConfiguredRolePrompt(options, fallbackPrompt, { request: request.text, plan: JSON.stringify(plan || null), question: options.question, answer: options.answer, context: String(options.context || '') });
   try {
     const text = await callRole(client, { ...options, temperature: 0 }, roleMessages(
-      'You merge one clarification answer into an existing plan. Never ask another question. Output only one JSON object.',
+      'You merge one clarification answer into an existing plan. Never reinterpret a refusal, joke or casual chat as a new capability task. Never enumerate capabilities or feature examples. Never ask another question. Output only one JSON object.',
       prompt,
     ));
     const json = extractJsonObject(text);
     if (!json) throw new Error('clarification_no_json');
     const parsed = JSON.parse(json) as Record<string, unknown>;
-    if (parsed.resolved === false) return { value: undefined, rounds: 1, fallback: false, error: String(parsed.reason || 'clarification_unresolved') };
+    if (parsed.resolved === false) return { value: undefined, rounds: 1, fallback: false, error: 'clarification_unresolved:' + String(parsed.reason || 'user_did_not_resolve') };
     const planCandidate = parsed.plan && typeof parsed.plan === 'object'
       ? parsed.plan
       : (parsed.planId || parsed.steps ? parsed : undefined);

@@ -33,10 +33,10 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '接入与准入', group: '接入', icon: 'chat' },
     },
     {
+        // P1-E（R10 收口）：旧规划器页重定向到 Agent 与工具；旧组件保留在仓库供回滚，
+        // 不再注册可导航路由（普通消息热路径已由 AgentRuntime 唯一接管）。
         path: '/planner',
-        name: 'planner',
-        component: () => import('../pages/PlannerPage.vue'),
-        meta: { title: '规划器', group: '编排', icon: 'route' },
+        redirect: '/agent',
     },
     {
         path: '/permissions',
@@ -81,16 +81,45 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../pages/CapabilityDetailPage.vue'),
     },
     {
+        // P1-E（R10 收口）：能力分工并入 Agent 与工具页。
         path: '/routing',
-        name: 'routing',
-        component: () => import('../pages/RoutingPage.vue'),
-        meta: { title: '能力分工', group: '模型', icon: 'route' },
+        redirect: '/agent',
     },
     {
         path: '/nodes',
         name: 'nodes',
         component: () => import('../pages/NodesPage.vue'),
         meta: { title: 'API 节点', group: '模型', icon: 'server' },
+    },
+    {
+        path: '/agent',
+        name: 'agent',
+        component: () => import('../pages/AgentPage.vue'),
+        meta: { title: 'Agent 与工具', group: 'Agent', icon: 'route' },
+    },
+    {
+        // P2（R10 收口）：Tools 目录与详情页（动态 ToolSpec 只读视图 + exposure 覆盖）。
+        path: '/tools',
+        name: 'tools',
+        component: () => import('../pages/ToolsPage.vue'),
+        meta: { title: '工具目录', group: 'Agent', icon: 'grid' },
+    },
+    {
+        path: '/tools/:id',
+        name: 'tool-detail',
+        component: () => import('../pages/ToolDetailPage.vue'),
+    },
+    {
+        path: '/jobs',
+        name: 'jobs',
+        component: () => import('../pages/JobsPage.vue'),
+        meta: { title: '异步任务', group: 'Agent', icon: 'check' },
+    },
+    {
+        path: '/prompts',
+        name: 'prompts',
+        component: () => import('../pages/PromptRegistryPage.vue'),
+        meta: { title: '提示词注册表', group: 'Agent', icon: 'template' },
     },
     {
         path: '/reply',
@@ -146,7 +175,7 @@ const routes: RouteRecordRaw[] = [
     },
     // 旧链接重定向：TR.1 拆页后 /orchestration 的内容分到了 /planner 等页；
     // TR.4 组页后 /bot 并入 /access、/logs 并入 /observability。
-    { path: '/orchestration', redirect: '/planner' },
+    { path: '/orchestration', redirect: '/agent' },
     { path: '/bot', redirect: '/access' },
     { path: '/logs', redirect: '/observability' },
     { path: '/:pathMatch(.*)*', redirect: '/overview' },

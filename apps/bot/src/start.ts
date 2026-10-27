@@ -1,21 +1,28 @@
-import { NapcatAdapter } from '../../../packages/napcat/src/index.js';
+﻿import { NapcatAdapter } from '../../../packages/napcat/src/index.js';
 import { createModelClient, createReloadableRegistry } from '../../../packages/model/src/index.js';
 import { ConfigStore } from '../../../packages/storage/src/index.js';
 import { createFileMetricsStore, createMetrics } from '../../../packages/core/src/metrics.js';
 import { createDefaultConfig, normalizeConfig, type AppConfig } from '../../../packages/config/src/index.js';
 import { ConsoleLogSink, createLogger, type StructuredLogger } from '../../../packages/logger/src/index.js';
 import { createBotApp } from './app.js';
+import { createAgentHost } from './agent-host.js';
+import { createCapabilityToolBinding, STATEFUL_CAPABILITY_TOOLS } from './capability-tool-adapter.js';
+import { createAgentToolPreflight } from './agent-tool-policy.js';
+import { FileToolIdempotencyStore, makeToolError, toolFailure, toolPending, toolSuccess, type ToolResult } from '../../../packages/tool-runtime/src/index.js';
+import { ToolJobRuntime, type ToolJobRecord } from './tool-job-runtime.js';
+import { ReplyPreferenceStore } from './reply-preference-store.js';
+import { hasPendingAgentClarification } from './pending-clarification.js';
+import { InMemoryAgentSessionManager, type AgentJobRecord, type AgentToolPreflightDecision, type AgentToolPreflightInput } from '../../../packages/agent-runtime/src/index.js';
 import { createBotMessageRuntime, handleCodeRenderRequest, handleFileGenerateCommand, handleFileReadCommand, handleWebScreenshotRequest, type BotRuntimeOptions, type FileReference, type NapcatMessageEvent } from './runtime.js';
 import { toModelNodes, toCapabilityOverrides } from './config-bridge.js';
-import { shouldUseTts, synthesizeSpeech } from './tts.js';
+import { renderTtsPreprocessPrompt, shouldUseTts, synthesizeSpeech } from './tts.js';
 import type { OwnerCommand } from './owner.js';
 import type { NapcatHistoryMessage } from './group-context.js';
 import { normalizeForwardPayload } from './message-enrichment.js';
 import { FeatureGate } from './feature-gate.js';
 import { createOutboundImageCompressor, materializeImagesForNapcat, materializeAudioForNapcat } from './image-output.js';
-import { runShadowOrchestration } from './orchestration-shadow.js';
 import { ApprovalRuntime } from './approval-runtime.js';
-import { buildCommandIntentPlan } from '../../../packages/orchestration/src/index.js';
+import { buildCommandIntentPlan, createPermissionPolicyFromDefaults, hashApprovalPayload, resolvePermission, type UserRole } from '../../../packages/orchestration/src/index.js';
 import { ApprovalActionConsumer } from './approval-actions.js';
 import { CapabilityTestActionConsumer } from './capability-test-actions.js';
 import { NodeLatencyActionConsumer, NodeLatencyRecorder, probeAllNodes, wrapClientWithLatency } from './node-latency.js';
@@ -48,7 +55,7 @@ import { fetchComfyUiObjectInfo, probeComfyUiPrompt } from '../../../packages/co
 import { SunoClient } from '../../../packages/orchestration/src/suno.js';
 import { PendingFileIndex, DEFAULT_FILE_PARSE_LIMITS } from '../../../packages/file-ingest/src/index.js';
 import { derivePanelToken } from '../../../packages/web-api/src/index.js';
-import { promises as fs, readFileSync } from 'node:fs';
+import { promises as fs, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createCanvasGallerySync } from './canvas-gallery.js';
@@ -79,7 +86,7 @@ export interface RunningBot {
 }
 
 /**
- * 启动 bot(v2 新架构):配置 → ModelClient(已加固方言/能力/规整) → bot-engine → runtime → 连 Napcat。
+ * 启动 bot(v2 新架构):配置 → ModelClient(已加固方言/能力/规整) → AgentRuntime → runtime → 连 Napcat。
  * 与旧 scripts/bot-runtime.mjs 并行,互不影响;验证通过后再让 miobot-service 指向它。
  */
 export function startBot(options: StartBotOptions = {}): RunningBot {
@@ -96,11 +103,11 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // 与 admin 同理：带着默认配置起来的 bot 是「白名单全空 = 谁都能用」，
   // 比起不起来危险得多。
   if (store?.isCorrupted()) {
-    throw new Error(`config.json 解析失败，bot 拒绝启动：${store.corruptionReason()}。原文件未被覆盖，修好语法后重启。`);
+    throw new Error(`config.json 解析失败，bot 拒绝动动：${store.corruptionReason()}。原文件未被覆盖，修好语法后重动。`);
   }
   // 每次用配置都问一次文件；mtime 没变时 loadIfChanged 直接给缓存，代价只有一次 stat。
-  // 这样面板保存后，bot 进程下一条消息就用上新配置，不需要重启——
-  // 否则 web 和 bot 是两个进程，面板那句「无需重启」对机器人是假的。
+  // 这样面板保存后，bot 进程下一条消息就用上新配置，不需要重动——
+  // 否则 web 和 bot 是两个进程，面板那句「无需重动」对机器人是假的。
   const getConfig = (): AppConfig => (store ? store.loadIfChanged() : config);
   const dataDir = options.dataDir || (options.configFilePath ? path.dirname(options.configFilePath) : path.resolve('.runtime'));
     const sunoSongHistory = new SunoSongHistoryStore({ filePath: path.join(dataDir, "suno-song-history.json"), maxRecords: () => getConfig().orchestration.suno.historyMaxRecords || 100, logger });
@@ -179,7 +186,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         if (error?.code !== 'ENOENT') throw error;
       }
     }
-    throw new Error('Napcat get_file 没有返回 base64、URL 或可访问的本地路径；请确认 enableLocalFile2Url 已开启');
+    throw new Error('Napcat get_file 没有返回 base64、URL 或可访问的本地路径；请确认 enableLocalFile2Url 已开动');
   }
 
   // 指标写文件，web 进程读同一个文件。不配路径就不统计。
@@ -205,7 +212,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   }
   void cleanupOldFiles(tempFileDir, 60 * 60 * 1000);
   void cleanupOldFiles(generatedFileDir, 3 * 24 * 60 * 60 * 1000);
-  // T2.5：临时/生成文件清理从"仅启动一次"改为每日巡检，防长运行进程磁盘无界增长。
+  // T2.5：临时/生成文件清理从"仅动动一次"改为每日巡检，防长运行进程磁盘无界增长。
   const fileCleanupTimer = setInterval(() => {
     void cleanupOldFiles(tempFileDir, 60 * 60 * 1000);
     void cleanupOldFiles(generatedFileDir, 3 * 24 * 60 * 60 * 1000);
@@ -322,7 +329,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // 注意别传 registry：createBotApp 一旦收到实例就退化成 `() => 该实例`，
   // 把它自己那条可热重载的分支整个绕过去。BotEngine 判断「这个模型支不支持生图/视频」
   // 用的就是这份注册表，于是用户在面板上加了能力覆盖、提示热重载成功，
-  // bot 那边照旧回「当前模型不支持」，重启才认。
+  // bot 那边照旧回「当前模型不支持」，重动才认。
   // T0.2：能力默认配额（面板未显式配置时按 costClass 兜底；answer 类对话能力不限，
   // 防刷屏只针对副作用能力——生图/视频/音乐/语音/搜索等）。
   // T2.9a：成本断路器（轻量版）——群日限即单群场景的全局日限近似：
@@ -391,13 +398,13 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     },
   });
 
-  // T2.3：会话持久化——启动恢复快照、每 60s 落盘、退出 flush，重启不再失忆。
+  // T2.3：会话持久化——动动恢复快照、每 60s 落盘、退出 flush，重动不再失忆。
   const sessionsFile = path.join(dataDir, 'sessions.json');
   try {
     const parsed = JSON.parse(readFileSync(sessionsFile, 'utf8'));
     const restored = app.sessions?.restore?.(parsed) || 0;
     if (restored > 0) logger?.info('会话快照已恢复', { restored });
-  } catch { /* 首次启动或快照损坏 */ }
+  } catch { /* 首次动动或快照损坏 */ }
   const writeSessionsSnapshot = async (): Promise<void> => {
     try {
       const dump = app.sessions?.dump?.();
@@ -425,7 +432,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     forwardSendTimeoutMs: nap.forwardSendTimeoutMs,
     getMessageTimeoutMs: nap.getMessageTimeoutMs,
     // 这三个面板上能改、config 里也归一化了，但以前压根没传给适配器，
-    // 于是「文件发送超时/重试次数/重试间隔」改了重启也不生效。
+    // 于是「文件发送超时/重试次数/重试间隔」改了重动也不生效。
     // videoSendTimeoutMs 的 fallback 链也依赖 fileSendTimeoutMs。
     fileSendTimeoutMs: nap.fileSendTimeoutMs,
     fileSendRetryCount: nap.fileSendRetryCount,
@@ -480,6 +487,10 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   };
 
   let jobRecoveryService: JobRecoveryService | undefined;
+  let resumeAgentApproval: ((approval: { approvalId: string; status: string }) => Promise<void>) | undefined;
+  let resumeAgentJob: ((job: ToolJobRecord) => Promise<void>) | undefined;
+  const resumedAgentJobs = new Set<string>();
+  const resumedAgentApprovals = new Set<string>();
   let approvalPersistQueue: Promise<void> = Promise.resolve();
   const approvalFile = process.env.MIOBOT_APPROVAL_FILE || path.join(dataDir, 'orchestration-approvals.json');
   let initialApprovals: any[] = [];
@@ -508,7 +519,13 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     maxPendingGlobal: () => getConfig().orchestration.approval.maxPendingGlobal,
     resendIntervalMs: () => getConfig().orchestration.approval.resendIntervalMs,
     maxResend: () => getConfig().orchestration.approval.maxResend,
-    onDecision: (approval) => jobRecoveryService?.onDecision(approval),
+    onDecision: (approval) => {
+      try { jobRecoveryService?.onDecision(approval); } catch { /* recovery failure must not affect approval */ }
+      if (approval.status !== 'pending' && !resumedAgentApprovals.has(approval.approvalId)) {
+        resumedAgentApprovals.add(approval.approvalId);
+        void resumeAgentApproval?.(approval).catch((error) => logger.warn('agent approval resume failed', { approvalId: approval.approvalId, error: String((error as Error)?.message || error) }));
+      }
+    },
     audit: (record) => auditService.append(record as any),
     persist: (approvals) => {
       const payload = JSON.stringify({ approvals }, null, 2);
@@ -532,7 +549,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       approvalRuntime.decideFromPanel(action.code, action.decision, action.actor || 'panel');
     },
   });
-  void approvalActionConsumer.start().catch((error) => logger.warn('审批面板文件监听启动失败', { error: String((error as Error)?.message || error) }));
+  void approvalActionConsumer.start().catch((error) => logger.warn('审批面板文件监听动动失败', { error: String((error as Error)?.message || error) }));
 
   const problemReporter = new ProblemReporter({
     adminQqIds: () => getConfig().orchestration.approval.adminQqIds,
@@ -553,7 +570,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
 
   // T4.3：定时提醒的 scheduler 引用（在下方 handlers 注册时尚未构造，声明在前闭包晚绑定）。
   let schedulerForSchedule: SchedulerService | undefined;
-  // T3.1：调度器 + 每日聚合日报（§11.5 静默观测闭环；默认关，面板/配置开启）。
+  // T3.1：调度器 + 每日聚合日报（§11.5 静默观测闭环；默认关，面板/配置开动）。
   const scheduler = new SchedulerService({
     filePath: path.join(dataDir, 'scheduled-jobs.json'),
     logger,
@@ -611,7 +628,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     scheduler.register({ id: 'daily-report', kind: 'daily', type: 'daily-report', hour: getConfig().bot.dailyReport.hour, minute: getConfig().bot.dailyReport.minute, enabled: true });
   }
   schedulerForSchedule = scheduler;
-  // T3.4：记忆夜间巩固——固定 03:30 低峰执行；memory 未启用时 consolidate 自身返回零计数。
+  // T3.4：记忆夜间巩固——固定 03:30 低峰执行；memory 未动用时 consolidate 自身返回零计数。
   scheduler.register({ id: 'memory-consolidate', kind: 'daily', type: 'memory-consolidate', hour: 3, minute: 30, enabled: true });
   void scheduler.start();
 
@@ -680,7 +697,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   const handlerFailure = (invocation: any, message: string) => ({
     jobId: invocation.plan.planId,
     stepId: invocation.step.id,
-    status: /失败|未启用|缺少|不可用|不支持|不存在|异常|failed|failure|error|timeout|unsupported|not supported/i.test(message) ? 'failed' as const : 'needs_input' as const,
+    status: /失败|未动用|缺少|不可用|不支持|不存在|异常|failed|failure|error|timeout|unsupported|not supported/i.test(message) ? 'failed' as const : 'needs_input' as const,
     outputs: [],
     error: message,
     diagnostics: { missingInformation: [message] },
@@ -842,13 +859,33 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
           return outputs.length ? { status: 'success' as const, outputs } : { status: 'running' as const };
         } catch { return undefined; }
       }
+      if (capability.startsWith('video.')) {
+        const nodeIndex = cfg.llm.videoNodeIndex;
+        const node = cfg.llm.apiKeys?.[nodeIndex];
+        if (!node || node.kind === 'comfyui') return undefined;
+        try {
+          const probed = await client.probeVideo(nodeIndex, taskId, 30000);
+          if (probed.status === 'running') return { status: 'running' as const };
+          if (probed.status === 'failed' || probed.status === 'expired') return { status: 'failed' as const, error: probed.error || `video_task_${probed.status}` };
+          const outputs = (probed.videos || [])
+            .filter((video) => Boolean(String(video.data || '').trim()))
+            .map((video) => ({
+              kind: 'video' as const,
+              url: video.kind === 'base64' ? `data:${video.mimeType || 'video/mp4'};base64,${video.data}` : video.data,
+              priority: 8,
+              mergeable: true,
+              meta: { requestId: video.requestId, mimeType: video.mimeType },
+            }));
+          return outputs.length ? { status: 'success' as const, outputs } : { status: 'running' as const };
+        } catch { return undefined; }
+      }
       return undefined;
     },
   });
   // 编排器就绪后接入能力默认配额解析（featureGate 先于 enforcer 创建，用闭包晚绑定）。
   describeCapabilityForGate = (id) => orchestrationEnforcer.describeCapabilityForGate(id);
   // T4.2：插件目录加载（dataDir/capabilities/*.mjs，工厂 (ctx) => {descriptor, handler}）；
-  // 清单 plugins.json 供 web 面板进程展示（面板可见）。单个失败只告警不拖垮启动。
+  // 清单 plugins.json 供 web 面板进程展示（面板可见）。单个失败只告警不拖垮动动。
   void (async () => {
     const capabilitiesDir = path.join(dataDir, 'capabilities');
     const manifest = await loadCapabilityPlugins(capabilitiesDir, { getConfig, client, logger, dataDir }, (plugin) => {
@@ -857,7 +894,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     if (manifest.length) logger.info('能力插件加载完成', { count: manifest.length, manifestFile: pluginManifestPath(capabilitiesDir) });
   })().catch((error) => logger.warn('能力插件目录加载异常', { error: String((error as Error)?.message || error) }));
   // T4.1：MCP servers（orchestration.mcpServers，配置得到本进程才会接入）——
-  // 启动连接、tools 转能力注册（默认全 deny，面板逐工具开启）；单个 server 失败只告警。
+  // 动动连接、tools 转能力注册（默认全 deny，面板逐工具开动）；单个 server 失败只告警。
   void (async () => {
     const servers = (getConfig().orchestration.mcpServers || []).filter((server) => server.enabled);
     for (const server of servers) {
@@ -920,7 +957,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       throw new Error('memory_action_unknown');
     },
   });
-  void memoryActionConsumer.start().catch((error) => logger.warn('记忆管理消费者启动失败', { error: String((error as Error)?.message || error) }));
+  void memoryActionConsumer.start().catch((error) => logger.warn('记忆管理消费者动动失败', { error: String((error as Error)?.message || error) }));
   const capabilityTestActionFile = process.env.MIOBOT_CAPABILITY_TEST_ACTION_FILE || path.join(dataDir, 'orchestration-capability-test-actions.jsonl');
   const capabilityTestResultFile = process.env.MIOBOT_CAPABILITY_TEST_RESULT_FILE || path.join(dataDir, 'orchestration-capability-test-results.json');
   const capabilityTestConsumer = new CapabilityTestActionConsumer({
@@ -930,8 +967,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     logger,
     onAction: (action) => orchestrationEnforcer.testCapability(action),
   });
-  void capabilityTestConsumer.start().catch((error) => logger.warn('能力测试消费者启动失败', { error: String((error as Error)?.message || error) }));
-  // 节点延迟主动检测消费者：面板「测延迟」→ JSONL 动作 → 逐启用节点发最小 ping。
+  void capabilityTestConsumer.start().catch((error) => logger.warn('能力测试消费者动动失败', { error: String((error as Error)?.message || error) }));
+  // 节点延迟主动检测消费者：面板「测延迟」→ JSONL 动作 → 逐动用节点发最小 ping。
   const nodeLatencyConsumer = new NodeLatencyActionConsumer({
     actionFile: process.env.MIOBOT_NODE_LATENCY_ACTION_FILE || path.join(dataDir, 'node-latency-actions.jsonl'),
     resultFile: process.env.MIOBOT_NODE_LATENCY_RESULT_FILE || path.join(dataDir, 'node-latency-results.json'),
@@ -944,13 +981,206 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       return { results, durationMs: Date.now() - startedAt };
     },
   });
-  void nodeLatencyConsumer.start().catch((error) => logger.warn('节点延迟检测消费者启动失败', { error: String((error as Error)?.message || error) }));
+  void nodeLatencyConsumer.start().catch((error) => logger.warn('节点延迟检测消费者动动失败', { error: String((error as Error)?.message || error) }));
+  const agentUserRole = (cfg: AppConfig, userId?: string | number): UserRole => {
+    const id = String(userId ?? '');
+    if ((cfg.bot.ownerQQs || []).map(String).includes(id)) return 'owner';
+    if ((cfg.orchestration.approval.adminQqIds || []).map(String).includes(id)) return 'admin';
+    return 'user';
+  };
+
+  // R5.1：先只把信息型/只读能力暴露给 Agent Runtime。生成、发送、删除和配置类工具
+  // 仍由旧链路独占，直到新发送层能完整承接 ReplyPlan、审批和异步任务。
+  const toolJobRuntime = new ToolJobRuntime({
+    filePath: process.env.MIOBOT_TOOL_JOB_FILE || path.join(dataDir, 'agent-tool-jobs.json'),
+    maxRecords: 2000,
+    onComplete: (job) => {
+      if (job.status === 'running' || resumedAgentJobs.has(job.jobId)) return;
+      resumedAgentJobs.add(job.jobId);
+      void resumeAgentJob?.(job).catch((error) => logger.warn('agent tool job resume failed', { jobId: job.jobId, error: String((error as Error)?.message || error) }));
+    },
+    onError: (error) => logger.warn('tool job persistence failed', { error: String((error as Error)?.message || error) }),
+  });
+  const resolveAgentJob = (record: AgentJobRecord) => {
+    const job = toolJobRuntime.get(record.jobId);
+    if (!job) {
+      return {
+        jobId: record.jobId,
+        status: 'failed' as const,
+        error: makeToolError({ code: 'tool_execution_failed', message: '异步任务记录不存在。', toolName: record.toolName }),
+      };
+    }
+    return {
+      jobId: job.jobId,
+      status: job.status,
+      ...(job.result ? { result: job.result } : {}),
+      ...(job.error ? {
+        error: makeToolError({
+          code: 'tool_execution_failed' as const,
+          message: job.error.message,
+          toolName: job.toolName,
+          details: { jobErrorCode: job.error.code },
+        }),
+      } : {}),
+    };
+  };
+  let warnedToolRegistryDisabled = false;
+  const agentToolBindings = () => {
+    const cfg = getConfig();
+    if (!cfg.toolRegistry.enabled) {
+      if (!warnedToolRegistryDisabled) {
+        warnedToolRegistryDisabled = true;
+        logger.warn('tool registry disabled: Agent enforce will run without external tools', { toolRegistryEnabled: false });
+      }
+      return [];
+    }
+    // P1-6（R9 修复）：不做静态白名单过滤——所有已注册能力（含 MCP/插件/session.clear 等动态注册）
+    // 一律生成 ToolSpec；hidden exposure 由 ToolRegistry.loadout 侧过滤。toolRegistry.defaultTimeoutMs
+    // 作为未声明 timeout 工具的缺省超时（P1-9）。
+    return orchestrationEnforcer.listCapabilities()
+    .flatMap((descriptor) => {
+      const handler = orchestrationEnforcer.getCapabilityHandler(descriptor.id);
+      if (!handler) return [];
+      // P1-C（R10 修复）：后台 toolRegistry.exposure 覆盖优先于静态推导；
+      // stateful 能力缺省 core，其余由 descriptor 推导，后台显式配置最终生效。
+      const configuredExposure = cfg.toolRegistry?.exposure?.[descriptor.id];
+      const binding = createCapabilityToolBinding(descriptor, handler, {
+        ...(configuredExposure ? { exposure: configuredExposure } : STATEFUL_CAPABILITY_TOOLS.has(descriptor.id) ? { exposure: 'core' } : {}),
+        ...(!descriptor.timeoutMs ? { timeoutMs: Math.max(1000, cfg.toolRegistry.defaultTimeoutMs) } : {}),
+      });
+      if (descriptor.mode !== 'async_job') return [binding];
+      const original = binding.handler;
+      binding.handler = async (call, spec, context) => {
+        const job = toolJobRuntime.create({ toolName: call.name, callId: call.id, sessionKey: context.sessionKey });
+        const run = (signal: AbortSignal) => Promise.resolve()
+          .then(() => original(call, spec, {
+            ...context,
+            signal,
+            metadata: {
+              ...(context.metadata || {}),
+              reportExternalTask: (taskId: string) => toolJobRuntime.recordExternalTask(job.jobId, taskId),
+            },
+          }))
+          .then((raw): ToolResult => {
+            const value = raw as any;
+            if (value && typeof value.callId === 'string' && typeof value.ok === 'boolean') return value as ToolResult;
+            if (value?.ok === false) {
+              return toolFailure(call.id, value.error || makeToolError({
+                code: 'tool_execution_failed',
+                message: `异步工具失败：${call.name}`,
+                callId: call.id,
+                toolName: call.name,
+              }), { toolName: call.name, content: value?.content, meta: value?.meta });
+            }
+            return toolSuccess(call.id, call.name, {
+              content: value?.content,
+              outputs: value?.outputs,
+              meta: value?.meta,
+            });
+          });
+        void toolJobRuntime.run(job.jobId, run, spec.timeoutMs);
+        return toolPending(call.id, job.jobId, {
+          toolName: call.name,
+          content: '异步任务已提交，完成后继续处理。',
+          meta: { asyncJob: true, sessionKey: context.sessionKey },
+        });
+      };
+      return [binding];
+    });
+  };
+  const agentPreflightToolCall = createAgentToolPreflight({ getConfig, approvalRuntime, resolveRole: agentUserRole, approvalMode: 'suspend' });
+
+  const agentSessionsFile = process.env.MIOBOT_AGENT_SESSIONS_FILE || path.join(dataDir, 'agent-sessions.json');
+  let initialAgentSessions: any[] = [];
+  try {
+    const parsed = JSON.parse(readFileSync(agentSessionsFile, 'utf8'));
+    initialAgentSessions = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.sessions) ? parsed.sessions : [];
+  } catch { /* first run or corrupt session file */ }
+  let agentSessionsPersistTimer: ReturnType<typeof setTimeout> | undefined;
+  let latestAgentSessionsSnapshot: any[] | undefined;
+  let agentSessionsPersistRunning = false;
+  const persistLatestAgentSessions = () => {
+    if (agentSessionsPersistRunning || !latestAgentSessionsSnapshot) return;
+    const sessions = latestAgentSessionsSnapshot;
+    latestAgentSessionsSnapshot = undefined;
+    agentSessionsPersistRunning = true;
+    try {
+      mkdirSync(path.dirname(agentSessionsFile), { recursive: true });
+      const payload = JSON.stringify({ version: 1, sessions });
+      const tempFile = agentSessionsFile + '.tmp';
+      writeFileSync(tempFile, payload, 'utf8');
+      try { renameSync(tempFile, agentSessionsFile); } catch { writeFileSync(agentSessionsFile, payload, 'utf8'); }
+    } catch (error) {
+      logger.warn('agent session persistence failed', { error: String((error as Error)?.message || error) });
+    } finally {
+      agentSessionsPersistRunning = false;
+      if (latestAgentSessionsSnapshot) scheduleAgentSessionsPersist();
+    }
+  };
+  const scheduleAgentSessionsPersist = () => {
+    if (agentSessionsPersistTimer) return;
+    agentSessionsPersistTimer = setTimeout(() => {
+      agentSessionsPersistTimer = undefined;
+      persistLatestAgentSessions();
+    }, 200);
+    agentSessionsPersistTimer.unref?.();
+  };
+  const agentSessions = new InMemoryAgentSessionManager({
+    getLimits: () => {
+      const cfg = getConfig();
+      const cp = cfg.contextPolicy;
+      return {
+        maxSessions: 2000,
+        maxMessagesPerSession: Math.max(4, cp.historyMaxRounds * 4),
+        maxCharsPerSession: Math.max(cp.historyMaxChars, 1000),
+        ttlMs: Math.max(0, Number(cfg.llm.sessionTtlMinutes || 0) * 60_000),
+      };
+    },
+    initialSessions: initialAgentSessions,
+    persist: (sessions) => {
+      latestAgentSessionsSnapshot = sessions;
+      scheduleAgentSessionsPersist();
+    },
+  });
+  const resolveAgentApproval = (record: { approvalId: string }) => {
+    const broker = approvalRuntime.getBroker();
+    broker.expire();
+    const approval = broker.get(record.approvalId);
+    return approval
+      ? { approvalId: approval.approvalId, status: approval.status, payloadHash: approval.payloadHash }
+      : { approvalId: record.approvalId, status: 'expired' as const };
+  };
+  const replyPreferenceStore = new ReplyPreferenceStore({
+    filePath: process.env.MIOBOT_REPLY_PREFERENCES_FILE || path.join(dataDir, 'reply-preferences.json'),
+    maxRecords: 5000,
+    onError: (error) => logger.warn('reply preference persistence failed', { error: String((error as Error)?.message || error) }),
+  });
+  const toolIdempotencyStore = new FileToolIdempotencyStore({
+    filePath: process.env.MIOBOT_TOOL_IDEMPOTENCY_FILE || path.join(dataDir, 'tool-idempotency.json'),
+    maxRecords: 5000,
+    maxAgeMs: 24 * 60 * 60 * 1000,
+    onError: (error) => logger.warn('tool idempotency persistence failed', { error: String((error as Error)?.message || error) }),
+  });
+  const agentHost = createAgentHost({
+    getConfig,
+    client,
+    logger,
+    sessions: agentSessions,
+    resolveApproval: resolveAgentApproval,
+    resolveJob: resolveAgentJob,
+    idempotencyStore: toolIdempotencyStore,
+    replyPreferenceStore,
+    spillDir: path.join(dataDir, 'tool-results'),
+    toolBindings: agentToolBindings,
+    preflightToolCall: agentPreflightToolCall,
+  });
+
   const runtime = createBotMessageRuntime({
     app,
     reply: adapter,
     getConfig: () => { syncNapcat(); return getConfig(); },
     // 追问等待中的会话：用户后续无触发消息（含纯图答案）转入澄清合并，不再被忽略。
-    hasPendingClarification: ({ chatType, groupId, userId }) => orchestrationEnforcer.hasPendingClarification(chatType, groupId, userId),
+    hasPendingClarification: ({ chatType, groupId, userId }) => orchestrationEnforcer.hasPendingClarification(chatType, groupId, userId) || hasPendingAgentClarification(agentSessions, { chatType, groupId, userId }),
     selfId: () => adapter.selfQqId || undefined,
     // T2.2b：好友请求自动通过等需要的通用 action 通道。
     callNapcatAction: (action, params) => adapter.callAction(action, params),
@@ -977,6 +1207,9 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         groupId: input.groupId === undefined ? undefined : String(input.groupId),
         userId: String(input.userId),
         query: input.query,
+        topK: getConfig().contextPolicy.memoryTopK,
+        minScore: getConfig().contextPolicy.memoryMinScore,
+        maxContextChars: getConfig().contextPolicy.memoryMaxChars,
       });
       const voiceScope = {
         chatType: input.chatType,
@@ -999,7 +1232,48 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         text: input.text,
         messageId: input.messageId === undefined ? undefined : String(input.messageId),
       });
-    },    enforceOrchestration: (input) => orchestrationEnforcer.handle(input),
+    },
+    agentRuntime: async (input) => {
+      const cfg = getConfig();
+      const mode = cfg.agent?.enabled ? cfg.agent.mode : 'off';
+      if (mode === 'shadow') {
+        const userRole = agentUserRole(cfg, input.userId);
+        void agentHost({ ...input, userRole })
+          .then((outcome) => logger.info('agent shadow turn', {
+            status: outcome.status,
+            handled: outcome.handled,
+            reason: outcome.reason,
+            modelRounds: outcome.turn?.usage?.modelRounds,
+            toolRounds: outcome.turn?.usage?.toolRounds,
+          }))
+          .catch((error) => logger.warn('agent shadow error', { error: String((error as Error)?.message || error) }));
+        return { handled: false, reason: 'agent_shadow_dispatched', meta: { shadow: true } };
+      }
+      const userRole = agentUserRole(cfg, input.userId);
+      const outcome = await agentHost({ ...input, userRole });
+      logger.info('agent runtime turn', {
+        mode: outcome.mode,
+        status: outcome.status,
+        handled: outcome.handled,
+        reason: outcome.reason,
+        modelRounds: outcome.turn?.usage?.modelRounds,
+        toolRounds: outcome.turn?.usage?.toolRounds,
+        safeTextFallback: outcome.turn?.meta?.safeTextFallback === true,
+        terminal: outcome.terminal === true,
+        replyPlanMessages: outcome.replyPlan?.messageCount,
+      });
+      return {
+        handled: outcome.handled,
+        ...(outcome.text ? { text: outcome.text } : {}),
+        ...(outcome.replyPlan ? { replyPlan: outcome.replyPlan } : {}),
+        ...(outcome.reason ? { reason: outcome.reason } : {}),
+        meta: {
+          status: outcome.status,
+          mode: outcome.mode,
+          ...(outcome.turn?.usage ? { usage: outcome.turn.usage } : {}),
+        },
+      };
+    },
     commandOrchestration: async (input) => {
       const plan = buildCommandIntentPlan({
         requestId: `cmd_${Date.now()}`,
@@ -1018,15 +1292,6 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         groupContext: input.groupContext,
         sessionId: input.sessionId,
         plan,
-      });
-    },
-    shadowOrchestration: async (input) => {
-      await runShadowOrchestration({
-        ...input,
-        config: getConfig(),
-        client,
-        logger,
-        groupContext: input.groupContext,
       });
     },
     fetchGroupHistory: async (groupId, anchorMessageId, count): Promise<NapcatHistoryMessage[]> => {
@@ -1100,7 +1365,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       const pre = tts.preprocess;
       if (pre?.enabled && String(pre.model || '').trim()) {
         try {
-          const rendered = String(pre.promptTemplate || '').replace(/\{\{\s*text\s*\}\}/g, text);
+          const rendered = renderTtsPreprocessPrompt(String(pre.promptTemplate || ''), text);
           const res = await client.chat(pre.nodeIndex, { model: pre.model, messages: [{ role: 'user', content: rendered }] });
           const out = String(res.text || '').trim();
           if (out) speakText = out.slice(0, Math.max(1, Number(pre.maxOutputChars || 1000)));
@@ -1146,7 +1411,168 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       handle: (command, ownerCtx) => handleOwnerCommand(command, ownerCtx, { getConfig, store }),
     },
   });
+  // P0-1（R9 修复）：旧自然语言链路已物理删除，Agent 是唯一主运行时。
+  // 显式关闭 Agent 时阻止 bot 消息处理（Napcat 连接保持但消息按未处理丢弃会让用户困惑，
+  // 也不允许给每个用户发固定提示）——启动即报管理员并阻止接入；面板照常可用以便修配置。
+  {
+    const bootCfg = getConfig();
+    const agentOff = !bootCfg.agent?.enabled || bootCfg.agent.mode === 'off';
+    const shadowOnly = bootCfg.agent?.enabled && bootCfg.agent.mode === 'shadow';
+    if (agentOff) {
+      const error = new Error('配置阻止启动：Agent 已显式关闭，而旧自然语言链路已移除（无回退路径）。请在后台开启 Agent enforce 后重启 bot。');
+      logger.error('bot 启动被配置阻断', { agentEnabled: bootCfg.agent?.enabled, agentMode: bootCfg.agent?.mode });
+      void problemReporter.report({ kind: 'agent-disabled-boot-block', error, chatType: 'private', message: 'Agent 已显式关闭且旧链路已删除，bot 拒绝启动；请在后台开启 Agent enforce。' }).catch(() => {});
+      throw error;
+    }
+    if (shadowOnly) {
+      logger.warn('Agent 运行于 shadow 模式：自然语言不会回复用户（也不会发送固定提示）。验收前请切到 enforce。', { agentMode: 'shadow' });
+    }
+  }
   runtime.attach(adapter);
+  resumeAgentApproval = async (approval) => {
+    const session = agentSessions.snapshot().find((candidate) =>
+      candidate.pendingApprovals?.some((item) => item.approvalId === approval.approvalId),
+    );
+    if (!session) return;
+    let chatType: 'group' | 'private';
+    let groupId: string | undefined;
+    let userId: string;
+    if (session.sessionKey.startsWith('private:')) {
+      chatType = 'private';
+      userId = session.sessionKey.slice('private:'.length);
+    } else if (session.sessionKey.startsWith('group:')) {
+      const rest = session.sessionKey.slice('group:'.length);
+      const separator = rest.indexOf(':');
+      if (separator <= 0) return;
+      chatType = 'group';
+      groupId = rest.slice(0, separator);
+      userId = rest.slice(separator + 1);
+    } else {
+      return;
+    }
+    if (!userId) return;
+    const cfg = getConfig();
+    const userRole = agentUserRole(cfg, userId);
+    const outcome = await agentHost({
+      text: '审批结果已确定，请根据工具结果继续完成原操作。',
+      chatType,
+      ...(groupId !== undefined ? { groupId } : {}),
+      userId,
+      sessionId: session.sessionKey,
+      requestId: `approval_${approval.approvalId}`,
+      userRole,
+    });
+    if (!outcome.handled) {
+      logger.warn('agent approval resume not handled', { approvalId: approval.approvalId, reason: outcome.reason });
+      return;
+    }
+    await runtime.sendAgentOutcome({
+      chatType,
+      ...(groupId !== undefined ? { groupId } : {}),
+      userId,
+      ...(outcome.text ? { text: outcome.text } : {}),
+      ...(outcome.replyPlan ? { replyPlan: outcome.replyPlan } : {}),
+      ...(outcome.reason ? { reason: outcome.reason } : {}),
+    });
+  };
+  resumeAgentJob = async (job) => {
+    let session = agentSessions.snapshot().find((candidate) =>
+      candidate.pendingJobs?.some((item) => item.jobId === job.jobId),
+    );
+    // Fast jobs may complete before AgentRuntime persists pendingJobs. Wait briefly.
+    for (let attempt = 0; !session && attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      session = agentSessions.snapshot().find((candidate) =>
+        candidate.pendingJobs?.some((item) => item.jobId === job.jobId),
+      );
+    }
+    if (!session) return;
+    let chatType: 'group' | 'private';
+    let groupId: string | undefined;
+    let userId: string;
+    if (session.sessionKey.startsWith('private:')) {
+      chatType = 'private';
+      userId = session.sessionKey.slice('private:'.length);
+    } else if (session.sessionKey.startsWith('group:')) {
+      const rest = session.sessionKey.slice('group:'.length);
+      const separator = rest.indexOf(':');
+      if (separator <= 0) return;
+      chatType = 'group';
+      groupId = rest.slice(0, separator);
+      userId = rest.slice(separator + 1);
+    } else {
+      return;
+    }
+    if (!userId) return;
+    const cfg = getConfig();
+    const userRole = agentUserRole(cfg, userId);
+    const outcome = await agentHost({
+      text: '异步任务结果已就绪，请根据工具结果继续完成原操作。',
+      chatType,
+      ...(groupId !== undefined ? { groupId } : {}),
+      userId,
+      sessionId: session.sessionKey,
+      requestId: `job_${job.jobId}`,
+      userRole,
+    });
+    if (!outcome.handled) {
+      logger.warn('agent tool job resume not handled', { jobId: job.jobId, reason: outcome.reason });
+      return;
+    }
+    await runtime.sendAgentOutcome({
+      chatType,
+      ...(groupId !== undefined ? { groupId } : {}),
+      userId,
+      ...(outcome.text ? { text: outcome.text } : {}),
+      ...(outcome.replyPlan ? { replyPlan: outcome.replyPlan } : {}),
+      ...(outcome.reason ? { reason: outcome.reason } : {}),
+    });
+  };
+  const recoverInterruptedToolJob = async (job: ToolJobRecord, attempt = 0): Promise<void> => {
+    attempt = Math.max(attempt, Math.max(0, Math.trunc(Number(job.probeAttempts) || 0)));
+    const finish = async (record: ToolJobRecord | undefined) => {
+      if (!record || resumedAgentJobs.has(record.jobId)) return;
+      resumedAgentJobs.add(record.jobId);
+      await resumeAgentJob?.(record);
+    };
+    if (job.error?.code !== 'tool_job_interrupted' || !job.externalTaskIds.length || !orchestrationEnforcer.probeExternalTask) {
+      await finish(job);
+      return;
+    }
+    let probe;
+    for (const taskId of job.externalTaskIds) {
+      probe = await orchestrationEnforcer.probeExternalTask(job.toolName, taskId);
+      if (probe) break;
+    }
+    if (probe?.status === 'running' && attempt < 20) {
+      const nextAttempt = toolJobRuntime.recordProbeAttempt(job.jobId);
+      const timer = setTimeout(() => {
+        void recoverInterruptedToolJob(job, nextAttempt).catch((error) => logger.warn('agent tool job probe failed', { jobId: job.jobId, error: String((error as Error)?.message || error) }));
+      }, 30_000);
+      timer.unref?.();
+      return;
+    }
+    if (probe?.status === 'success') {
+      const result = toolSuccess(job.callId, job.toolName, {
+        jobId: job.jobId,
+        content: '异步任务已完成。',
+        outputs: (probe.outputs || []) as any,
+      });
+      await finish(toolJobRuntime.reconcileInterrupted(job.jobId, result));
+      return;
+    }
+    if (probe?.status === 'failed') {
+      const result = toolFailure(job.callId, makeToolError({
+        code: 'tool_execution_failed',
+        message: probe.error || '异步任务执行失败。',
+        callId: job.callId,
+        toolName: job.toolName,
+      }), { toolName: job.toolName });
+      await finish(toolJobRuntime.reconcileInterrupted(job.jobId, result));
+      return;
+    }
+    await finish(job);
+  };
   const waitForAdapterConnected = async (timeoutMs = 60000): Promise<void> => {
     const deadline = Date.now() + timeoutMs;
     while (!adapter.getConnectionSnapshot().connected) {
@@ -1154,6 +1580,32 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   };
+  void (async () => {
+    try {
+      await waitForAdapterConnected();
+      const broker = approvalRuntime.getBroker();
+      broker.expire();
+      for (const session of agentSessions.snapshot()) {
+        for (const pending of session.pendingApprovals || []) {
+          if (resumedAgentApprovals.has(pending.approvalId)) continue;
+          const current = broker.get(pending.approvalId);
+          if (!current || current.status === 'pending') continue;
+          resumedAgentApprovals.add(pending.approvalId);
+          await resumeAgentApproval?.(current);
+        }
+      }
+      for (const job of toolJobRuntime.snapshot()) {
+        if (job.status === 'running' || resumedAgentJobs.has(job.jobId)) continue;
+        const hasPendingSession = agentSessions.snapshot().some((session) =>
+          session.pendingJobs?.some((pending) => pending.jobId === job.jobId),
+        );
+        if (!hasPendingSession) continue;
+        await recoverInterruptedToolJob(job);
+      }
+    } catch (error) {
+      logger.warn('persisted agent recovery failed', { error: String((error as Error)?.message || error) });
+    }
+  })();
   const resumePersistedJob = async (job: PendingJobRecord): Promise<void> => {
     await waitForAdapterConnected();
     const chat = job.originalRequest?.chat;
@@ -1224,7 +1676,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   adapter.connect();
 
   // T2.5：stop 改为异步——退出前 flush 审批/待办持久化队列（最多等 3s），
-  // 避免进程退出杀死排队中的原子写（重启后丢最后一条审批/任务状态）。
+  // 避免进程退出杀死排队中的原子写（重动后丢最后一条审批/任务状态）。
   const stop = async (): Promise<void> => {
     if (cleanupTimer) clearInterval(cleanupTimer);
     clearInterval(retentionTimer);
@@ -1237,6 +1689,9 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     memoryActionConsumer.stop();
     // T3.4：记忆防抖落盘的优雅退出 flush。
     try { await memoryService.flush(); } catch { /* best effort */ }
+    if (agentSessionsPersistTimer) clearTimeout(agentSessionsPersistTimer);
+    agentSessionsPersistTimer = undefined;
+    persistLatestAgentSessions();
     // T2.3：会话快照退出 flush。
     await writeSessionsSnapshot();
     adapter.disconnect();
@@ -1250,7 +1705,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
 
 /**
  * owner 指令要改并回存配置。这里必须收 getConfig 而不是一个 config 快照——
- * store.save 是**整文件覆盖**，拿启动快照去写等于把用户此后在面板上做的
+ * store.save 是**整文件覆盖**，拿动动快照去写等于把用户此后在面板上做的
  * 所有改动静默回滚掉，而且回滚发生在 bot 进程里，面板上完全看不出来。
  */
 interface OwnerHandlerDeps { getConfig: () => AppConfig; store?: ConfigStore<AppConfig> }
@@ -1293,7 +1748,7 @@ async function handleOwnerCommand(
     case 'ttsOn':
       return persistMutation((c) => {
         c.bot.tts.enabled = true;
-        return '已开启 TTS 语音回复。';
+        return '已开动 TTS 语音回复。';
       });
     case 'ttsOff':
       return persistMutation((c) => {

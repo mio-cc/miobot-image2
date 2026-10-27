@@ -19,9 +19,11 @@ export type MetricEvent =
   | 'video'     // 视频生成成功
   | 'audio'     // 音乐/音频生成成功
   | 'voice'     // 语音发送成功
+  | 'agent_failure'
+  | 'agent_unavailable'  // P0-1：Agent off/shadow 下自然语言未处理（管理员通知计数） // Agent enforce 未产出可交付结果
   | 'error';    // 处理失败
 
-export const METRIC_EVENTS: MetricEvent[] = ['message', 'command', 'chat', 'image', 'video', 'audio', 'voice', 'error'];
+export const METRIC_EVENTS: MetricEvent[] = ['message', 'command', 'chat', 'image', 'video', 'audio', 'voice', 'agent_failure', 'agent_unavailable', 'error'];
 
 const BUCKET_COUNT = 24;
 const HOUR_MS = 60 * 60 * 1000;

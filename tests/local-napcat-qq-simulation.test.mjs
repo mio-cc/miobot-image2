@@ -87,6 +87,7 @@ async function createNapcatSimulation(options = {}) {
 
 function makeConfig() {
   const cfg = createDefaultConfig();
+  cfg.agent.enabled = false; cfg.agent.mode = 'off'; // 旧引擎/命令路径测试（新聊天语义由 agent-r9-fixes.test.mjs 覆盖）
   cfg.bot.botQqId = '10000';
   cfg.bot.ownerQQs = ['1'];
   cfg.orchestration.approval.adminQqIds = ['900'];
@@ -267,6 +268,8 @@ test('local simulation: admin group approval reply is consumed before QQ routing
 test('local simulation: runtime failures are reported privately to admin and not sent to QQ user', async () => {
   const sim = await createNapcatSimulation();
   const cfg = makeConfig();
+  cfg.agent.enabled = true;
+  cfg.agent.mode = 'enforce';
   const app = makeApp(async () => { throw new Error('simulated upstream failure'); });
   const reports = [];
   const runtime = createBotMessageRuntime({
@@ -275,6 +278,8 @@ test('local simulation: runtime failures are reported privately to admin and not
     getConfig: () => cfg,
     selfId: () => sim.adapter.selfQqId || '10000',
     botName: 'Mio',
+    // R9 后自然语言走 Agent：让 agent 通道抛错，断言受控失败 + 管理员私聊上报 + 用户零异常泄漏。
+    agentRuntime: async () => { throw new Error('simulated upstream failure'); },
     reportProblem: async (input) => {
       reports.push(input);
       await sim.adapter.sendPrivateText('900', 'ERROR ' + input.kind);
@@ -289,8 +294,14 @@ test('local simulation: runtime failures are reported privately to admin and not
     });
     await waitUntil(() => sim.actions.some((action) => action.action === 'send_private_msg' && String(action.params?.user_id) === '900'), 3000, 'admin error report');
     await sleep(100);
-    assert.ok(reports.some((item) => item.kind === 'engine-error'));
-    assert.equal(sim.actions.some((action) => action.action === 'send_private_msg' && String(action.params?.user_id) === '2000'), false);
+    // R9 后自然语言走 Agent：异常经 agent 通道上报为 agent-runtime-error（用户侧零泄漏）。
+    assert.ok(reports.some((item) => item.kind === 'agent-runtime-error'), JSON.stringify(reports.map((r) => r.kind)));
+    // enforce 受控失败：用户只可能收到受控话术，绝不收到异常详情/堆栈。
+    const userReplies = sim.actions.filter((action) => action.action === 'send_private_msg' && String(action.params?.user_id) === '2000');
+    for (const reply of userReplies) {
+      const text = (reply.params?.message || []).map((s) => s?.data?.text || '').join('');
+      assert.ok(!text.includes('simulated upstream failure') && !text.includes('Error'), `异常详情泄漏给用户: ${text}`);
+    }
   } finally {
     await sim.close();
   }
@@ -411,6 +422,9 @@ test('local simulation: natural language enters OrchestrationEnforcer and ReplyP
       },
     }]]),
   });
+  // R9 后自然语言唯一入口是 Agent：enforcer 经 agentRuntime 侧通道调用（能力 handler 仍由其承载）。
+  cfg.agent.enabled = true;
+  cfg.agent.mode = 'enforce';
   const runtime = createBotMessageRuntime({
     app,
     reply: sim.adapter,
@@ -418,7 +432,13 @@ test('local simulation: natural language enters OrchestrationEnforcer and ReplyP
     selfId: () => sim.adapter.selfQqId || '10000',
     botName: 'Mio',
     reportProblem: async () => true,
-    enforceOrchestration: (input) => enforcer.handle(input),
+    agentRuntime: async (input) => {
+      const orchestrated = await enforcer.handle({ ...input, chatType: input.chatType, groupId: input.groupId, userId: input.userId, text: input.text, images: input.images || [], files: [], sessionId: input.sessionId });
+      if (orchestrated.handled && orchestrated.result) {
+        return { handled: true, text: orchestrated.result.text, ...(orchestrated.result.replyPlan ? { replyPlan: orchestrated.result.replyPlan } : {}) };
+      }
+      return { handled: false, reason: orchestrated.reason || 'enforcer_not_handled' };
+    },
   });
   runtime.attach(sim.adapter);
   try {
@@ -475,6 +495,9 @@ test('local simulation: ReplyPlan enforces QQ maxMessages while keeping files/au
       },
     }]]),
   });
+  // R9 后自然语言唯一入口是 Agent：enforcer 经 agentRuntime 通道调用。
+  cfg.agent.enabled = true;
+  cfg.agent.mode = 'enforce';
   const runtime = createBotMessageRuntime({
     app,
     reply: sim.adapter,
@@ -482,7 +505,13 @@ test('local simulation: ReplyPlan enforces QQ maxMessages while keeping files/au
     selfId: () => sim.adapter.selfQqId || '10000',
     botName: 'Mio',
     reportProblem: async () => true,
-    enforceOrchestration: (input) => enforcer.handle(input),
+    agentRuntime: async (input) => {
+      const orchestrated = await enforcer.handle({ ...input, chatType: input.chatType, groupId: input.groupId, userId: input.userId, text: input.text, images: input.images || [], files: [], sessionId: input.sessionId });
+      if (orchestrated.handled && orchestrated.result) {
+        return { handled: true, text: orchestrated.result.text, ...(orchestrated.result.replyPlan ? { replyPlan: orchestrated.result.replyPlan } : {}) };
+      }
+      return { handled: false, reason: orchestrated.reason || 'enforcer_not_handled' };
+    },
   });
   runtime.attach(sim.adapter);
   try {

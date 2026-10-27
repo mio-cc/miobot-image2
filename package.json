@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "napcat-omnibot-v2",
   "version": "0.1.1",
   "private": true,
@@ -14,10 +14,16 @@
     "test": "npm run build && node --test tests/*.test.mjs",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "start:verify": "node scripts/local-verify-server.mjs",
-    "start:bot": "node scripts/bot-runtime.mjs",
     "start:bot-v2": "node scripts/bot-runtime-v2.mjs",
     "trace:canvas": "node scripts/trace-canvas-generation.mjs",
     "check:chromium": "node scripts/check-chromium.mjs",
+    "check:r9": "node scripts/r9-readiness.mjs",
+    "check:r10:topology": "node scripts/r10-live-topology.mjs",
+    "check:r10:intent": "node scripts/r10-compare-intent.mjs",
+    "check:r10:suno-prompt": "node scripts/r10-live-suno-prompt.mjs",
+    "check:r9:externals": "node scripts/r9-readiness.mjs --strict-externals",
+    "soak:r9": "node scripts/r9-live-soak.mjs",
+    "soak:r9:spend": "node scripts/r9-live-soak.mjs --spend --wait --count=1",
     "deploy:linux": "bash deploy-linux.sh"
   },
   "devDependencies": {

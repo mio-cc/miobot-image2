@@ -1,4 +1,4 @@
-import {
+﻿import {
   ApprovalBroker,
   parseApprovalReply,
   renderApprovalPrompt,
@@ -65,6 +65,7 @@ export class ApprovalRuntime {
     resendTimer?: ReturnType<typeof setTimeout>;
     resendCount: number;
   }>();
+  private readonly proposalResendTimers = new Map<string, { timer: ReturnType<typeof setTimeout>; count: number }>();
 
   constructor(private readonly options: ApprovalRuntimeOptions) {
     this.broker = options.broker || new ApprovalBroker();
@@ -161,6 +162,95 @@ export class ApprovalRuntime {
     return outcome;
   }
 
+  /**
+   * Create and deliver an approval without waiting for the decision. AgentRuntime
+   * checkpoints the returned pendingApproval and resumes the tool call after the
+   * broker reaches a terminal state.
+   */
+  async propose(input: ApprovalRequestInput): Promise<ApprovalOutcome> {
+    const admins = Array.from(new Set(this.options.adminQqIds().map(String).filter(Boolean)));
+    const owners = Array.from(new Set((this.options.ownerQqIds?.() || []).map(String).filter(Boolean)));
+    const eligibleAdmins = admins.filter((qq) => qq !== input.requesterQq);
+    const eligibleOwners = owners.filter((qq) => qq !== input.requesterQq);
+    const quorum = input.quorum || 'any';
+    if (quorum === 'owner' ? !eligibleOwners.length : !eligibleAdmins.length) {
+      return { status: 'failed', error: quorum === 'owner' ? 'approval_owner_unavailable' : 'approval_admin_unavailable' };
+    }
+    this.broker.expire();
+    this.persist();
+    const pending = this.broker.list('pending');
+    const maxGlobal = Math.max(1, Number(typeof this.options.maxPendingGlobal === 'function' ? this.options.maxPendingGlobal() : this.options.maxPendingGlobal) || 50);
+    const maxPerUser = Math.max(1, Number(typeof this.options.maxPendingPerUser === 'function' ? this.options.maxPendingPerUser() : this.options.maxPendingPerUser) || 3);
+    if (pending.length >= maxGlobal) return { status: 'failed', error: 'approval_queue_full_global' };
+    if (pending.filter((item) => item.requesterQq === input.requesterQq).length >= maxPerUser) return { status: 'failed', error: 'approval_queue_full_user' };
+    const approval = this.broker.create({
+      requestId: input.requestId,
+      jobId: input.jobId,
+      stepId: input.stepId,
+      payload: input.payload,
+      capability: input.capability,
+      riskLevel: input.riskLevel,
+      requesterQq: input.requesterQq,
+      groupId: input.groupId,
+      adminQqIds: eligibleAdmins,
+      ownerQqIds: eligibleOwners,
+      quorum,
+      ttlMs: input.ttlMs,
+    });
+    this.audit('approval.created', approval);
+    try { input.onCreated?.(approval); } catch { /* job checkpoint must not block approval */ }
+    this.persist();
+    const prompt = renderApprovalPrompt(approval, { summary: input.summary, maskArgs: input.maskArgs });
+    const recipients = quorum === 'owner' ? eligibleOwners : eligibleAdmins;
+    const deliveries = await Promise.allSettled(recipients.map((admin) => this.options.sendPrivate(admin, prompt)));
+    const delivered = deliveries.some((item) => item.status === 'fulfilled' && (item.value.success || item.value.uncertain));
+    if (!delivered) {
+      this.broker.cancel(approval.approvalId, 'approval_delivery_failed');
+      this.persist();
+      const failed = this.broker.get(approval.approvalId);
+      if (failed) this.audit('approval.decided', failed, { reason: 'approval_delivery_failed' });
+      return { status: 'failed', approval: failed, error: 'approval_delivery_failed' };
+    }
+    this.scheduleProposalResend(approval, prompt, recipients);
+    return { status: 'pending', approval: this.broker.get(approval.approvalId) || approval };
+  }
+  private scheduleProposalResend(approval: ApprovalRequest, prompt: string, recipients: string[]): void {
+    const interval = Math.max(0, Math.trunc(Number(typeof this.options.resendIntervalMs === 'function' ? this.options.resendIntervalMs() : this.options.resendIntervalMs) || 0));
+    const maxResend = Math.max(0, Math.trunc(Number(typeof this.options.maxResend === 'function' ? this.options.maxResend() : this.options.maxResend) || 0));
+    if (interval <= 0 || maxResend <= 0 || !recipients.length) return;
+    let count = 0;
+    const arm = () => {
+      const timer = setTimeout(() => {
+        const current = this.broker.get(approval.approvalId);
+        if (!current || current.status !== 'pending') {
+          this.clearProposalResend(approval.approvalId);
+          return;
+        }
+        if (count >= maxResend) {
+          this.clearProposalResend(approval.approvalId);
+          return;
+        }
+        count += 1;
+        const resendText = '审批提醒（重发 ' + count + '/' + maxResend + '）\n' + prompt;
+        void Promise.allSettled(recipients.map((admin) => this.options.sendPrivate(admin, resendText)))
+          .finally(() => {
+            if (this.broker.get(approval.approvalId)?.status === 'pending') arm();
+            else this.clearProposalResend(approval.approvalId);
+          });
+        this.proposalResendTimers.set(approval.approvalId, { timer, count });
+      }, interval);
+      timer.unref?.();
+      this.proposalResendTimers.set(approval.approvalId, { timer, count });
+    };
+    arm();
+  }
+
+  private clearProposalResend(approvalId: string): void {
+    const entry = this.proposalResendTimers.get(String(approvalId));
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    this.proposalResendTimers.delete(String(approvalId));
+  }
   private audit(type: string, approval: ApprovalRequest, extra: Record<string, unknown> = {}): void {
     try {
       this.options.audit?.({
@@ -188,6 +278,7 @@ export class ApprovalRuntime {
 
   private notifyDecision(approval: ApprovalRequest): void {
     if (approval.status === 'pending') return;
+    this.clearProposalResend(approval.approvalId);
     try { this.options.onDecision?.(approval); } catch { /* recovery must not break approval handling */ }
   }
 
@@ -195,6 +286,7 @@ export class ApprovalRuntime {
     const cutoff = now - Math.max(1, Math.trunc(Number(retentionDays) || 180)) * 24 * 60 * 60 * 1000;
     const removed = this.broker.pruneTerminal(cutoff, new Set(Array.from(protectedApprovalIds).map(String)));
     if (removed.length) this.persist();
+    for (const approval of removed) this.clearProposalResend(approval.approvalId);
     return removed;
   }
   /** 启动或定时扫描：没有内存 waiter 的过期审批通过 onDecision 恢复 Job。 */

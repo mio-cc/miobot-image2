@@ -1,4 +1,4 @@
-export type UserRole = 'guest' | 'user' | 'admin' | 'owner';
+﻿export type UserRole = 'guest' | 'user' | 'admin' | 'owner';
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
 export type PermissionMode = 'allow' | 'ask_admin' | 'deny';
 export type ApprovalState = 'pending' | 'approved' | 'rejected' | 'expired' | 'cancelled';
@@ -161,6 +161,16 @@ export interface ReplyGroup {
   messageCount: number;
 }
 
+export interface ReplyPlanPolicy {
+  enabled: boolean;
+  maxMessages: number;
+  maxChars: number;
+  mode: 'auto' | 'direct' | 'quote' | 'plain' | 'forward';
+  forwardStyle: 'auto' | 'nested' | 'flat';
+  voice: 'auto' | 'on' | 'off';
+  reference: 'auto' | 'quote' | 'none';
+  forcedForward: boolean;
+}
 export interface ReplyPlan {
   groups: ReplyGroup[];
   messageCount: number;
@@ -170,6 +180,7 @@ export interface ReplyPlan {
   noticeIncluded?: boolean;
   noticeSuppressed?: boolean;
     dedupedCount?: number;
+  policy?: ReplyPlanPolicy;
 }
 
 export interface PermissionRule {

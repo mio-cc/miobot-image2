@@ -15,6 +15,7 @@ import ToggleField from '../components/ToggleField.vue';
 const configStore = useConfigStore();
 const config = computed(() => configStore.config);
 const orch = computed(() => config.value?.orchestration);
+const replyPolicy = computed(() => config.value?.replyPolicy);
 
 const strategyOptions = [
     { value: 'forward', label: '合并转发' },
@@ -128,6 +129,39 @@ const strategyOptions = [
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.reply.preferNestedForward" label="优先嵌套合并转发" /></div>
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.reply.countProgressInBudget" label="进度消息计入预算" /></div>
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.reply.includeTruncationNotice" label="显示截断说明" /></div>
+      </div>
+    </SectionCard>
+
+    <SectionCard v-if="replyPolicy" title="ReplyPolicy（统一回复策略）" hint="Agent 与编排共用：硬上限、偏好来源、强制转发与语音默认值" class="mb-4">
+      <div class="flex flex-wrap gap-3 mb-4">
+        <ToggleField v-model="replyPolicy.enabled" label="启用 ReplyPolicy" hint="关闭时沿用旧回复预算与策略" />
+        <ToggleField v-model="replyPolicy.allowModelOverride" label="允许模型请求表现" />
+        <ToggleField v-model="replyPolicy.allowSessionPreferences" label="允许会话偏好" />
+        <ToggleField v-model="replyPolicy.allowUserPreferences" label="允许用户长期偏好" />
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4">
+        <FormField label="默认语音策略">
+          <select v-model="replyPolicy.defaultVoice" class="input-field">
+            <option value="auto">auto</option><option value="on">on</option><option value="off">off</option>
+          </select>
+        </FormField>
+        <FormField label="强制转发阈值" hint="文本达到该字符数即强制合并转发（auto/direct/plain/forward 全部模式生效，模型请求 direct 也不可绕过）">
+          <input v-model.number="replyPolicy.forcedForwardThreshold" type="number" min="1" max="100000" class="input-field" />
+        </FormField>
+        <FormField label="硬最大字符数" hint="单条消息不可超过的硬上限">
+          <input v-model.number="replyPolicy.hardMaxChars" type="number" min="1" max="100000" class="input-field" />
+        </FormField>
+        <FormField label="硬最大消息数" hint="最终发送预算，优先生效">
+          <input v-model.number="replyPolicy.hardMaxMessages" type="number" min="1" max="100" class="input-field" />
+        </FormField>
+        <FormField label="会话偏好 TTL (ms)" hint="0 表示不过期">
+          <input v-model.number="replyPolicy.sessionPreferenceTtlMs" type="number" min="0" class="input-field" />
+        </FormField>
+        <FormField label="用户偏好 TTL (ms)" hint="0 表示不过期">
+          <input v-model.number="replyPolicy.userPreferenceTtlMs" type="number" min="0" class="input-field" />
+        </FormField>
+        <FormField label="音频发送约束"><div class="tag">强制直发，不可转发</div></FormField>
+        <FormField label="文件发送约束"><div class="tag">强制直发，不可转发</div></FormField>
       </div>
     </SectionCard>
 

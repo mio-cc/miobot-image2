@@ -193,7 +193,8 @@ export class ImageModule {
   }
 
   async interrogate(input: InterrogateInput): Promise<InterrogateResult> {
-    const prompt = input.prompt || this.options.interrogatePromptTemplate || '请分析这张图片，并反推一段适合图像生成模型复现它的提示词。';
+      const promptTemplate = input.prompt || this.options.interrogatePromptTemplate || '请分析这张图片，并反推一段适合图像生成模型复现它的提示词。';
+      const prompt = renderPromptTemplate(promptTemplate, { prompt: input.prompt || '', imageUrl: input.imageUrl, image: input.imageUrl }) || promptTemplate;
     const timeoutMs = positiveInt(input.timeoutMs, this.options.interrogateTimeoutMs);
     try {
       const result = await this.options.llm.createVision({

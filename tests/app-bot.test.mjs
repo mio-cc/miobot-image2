@@ -1,4 +1,4 @@
-import test from 'node:test';
+﻿import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
@@ -6,7 +6,6 @@ import {
   createModelBackedDeps,
   artifactToString,
   toModelNodes,
-  toEngineRoutingConfig,
   toBotRouting,
 } from '../dist/apps/bot/src/main.js';
 import { createDefaultConfig } from '../dist/packages/config/src/index.js';
@@ -53,18 +52,12 @@ test('config-bridge: inferDialect honors explicit dialect / provider, falls back
   assert.equal(nodes[2].dialect, 'openai');
 });
 
-test('config-bridge: routing config + node indexes pulled from AppConfig', () => {
+test('config-bridge: routing node indexes pulled from AppConfig', () => {
   const cfg = createDefaultConfig();
-  cfg.llm.chatModel = 'gpt-4o-mini';
+  cfg.llm.chatNodeIndex = 2;
   cfg.llm.imageModel = 'gpt-image-2';
-  cfg.llm.chatNodeIndex = 0;
-  cfg.freeMode.model = 'gpt-4o-mini';
-  const routing = toEngineRoutingConfig(cfg);
-  assert.equal(routing.chatModel, 'gpt-4o-mini');
-  assert.equal(routing.imageModel, 'gpt-image-2');
-  assert.equal(routing.freeModeModel, 'gpt-4o-mini');
   const r = toBotRouting(cfg);
-  assert.equal(typeof r.chatNodeIndex, 'number');
+  assert.equal(r.chatNodeIndex, 2);
   assert.equal(typeof r.imageNodeIndex, 'number');
 });
 
@@ -112,7 +105,7 @@ test('artifactToString: base64 -> data URL, url -> passthrough', () => {
 test('createBotApp: end-to-end 画一只猫 -> image.generate via injected client', async () => {
   const client = makeClient();
   const app = createBotApp({ getConfig: () => createDefaultConfig(), client });
-  const r = await app.handle({ text: '画一只猫' });
+  const r = await app.engine.handleExplicit('image.generate', { text: '画一只猫', chatType: 'private', sessionId: 'private:1' }, { prompt: '画一只猫' });
   assert.equal(r.kind, 'image.generate');
   assert.deepEqual(r.images, ['data:image/png;base64,AAAA']);
   assert.equal(client.calls[0][0], 'generate');
@@ -124,7 +117,7 @@ test('createBotApp: chat fallback when image model lacks capability (gated to ch
   cfg.llm.imageModel = 'deepseek-chat'; // 纯文本模型
   cfg.llm.editModel = 'deepseek-chat';
   const app = createBotApp({ getConfig: () => cfg, client });
-  const r = await app.handle({ text: '画一只猫' });
+  const r = await app.engine.handleExplicit('image.generate', { text: '画一只猫', chatType: 'private', sessionId: 'private:1' }, { prompt: '画一只猫' });
   assert.equal(r.kind, 'chat');
   assert.equal(client.calls.some((c) => c[0] === 'generate'), false);
 });
@@ -170,7 +163,7 @@ test('createBotApp: ComfyUI image node is routed through ComfyUI even with injec
 
   try {
     const app = createBotApp({ getConfig: () => cfg, client });
-    const r = await app.handle({ text: '画一只猫' });
+  const r = await app.engine.handleExplicit('image.generate', { text: '画一只猫', chatType: 'private', sessionId: 'private:1' }, { prompt: '画一只猫' });
     assert.equal(r.kind, 'image.generate');
     assert.equal(client.calls.some((c) => c[0] === 'generate'), false);
     assert.ok(requests.some(([url]) => String(url).endsWith('/prompt')));

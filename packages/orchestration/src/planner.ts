@@ -1,4 +1,4 @@
-import type { CapabilityDescriptor, IntentPlan, PlanUnderstanding, UserRequest } from './types.js';
+﻿import type { CapabilityDescriptor, IntentPlan, PlanUnderstanding, UserRequest } from './types.js';
 import { buildCapabilityManifest } from './capability-manifest.js';
 import { validateIntentPlan } from './plan.js';
 
@@ -48,7 +48,8 @@ export const DEFAULT_PLANNER_SYSTEM_PROMPT = [
   '只使用 manifest 中存在且启用的能力，不要编造能力或参数。',
   '不要依据主题词、对象词或词面相似度选择能力；同一个对象可以有多种不同结果。',
   '先确定 understanding.desiredOutcome，再选择 effect 与目标一致的能力。',
-  '用户表达不明确、缺少必要上下文、存在多个合理目标或无法确认副作用是否必要时应提出澄清。',
+  '澄清问题只针对当前任务缺少的具体参数，不得把普通聊天变成能力选择问卷，也不要列举具体能力、功能名或示例。',
+  '用户只是在聊天、表达情绪或陈述时，用 chat.reply 正常回应，不要提出功能选择式追问；只有已经确定一个具体任务且缺少执行参数，或存在会改变执行结果的关键歧义时才需要澄清。',
   '有副作用的能力必须是用户目标直接需要的结果；不要为了使用某个能力增加不必要步骤。',
   '需要多步完成时，输出最小必要步骤及明确依赖关系。',
   '只输出一个严格 JSON object，不要输出 Markdown、解释、权限判断或隐藏推理过程。',
@@ -65,10 +66,10 @@ export const DEFAULT_PLANNER_USER_PROMPT_TEMPLATE = [
   '2. 比较用户目标与能力的 description、effect、inputSchema、requiredContext、outputKinds、sideEffects 和 mode。',
   '3. 只规划达成用户目标所需的最小步骤；每一步都必须对最终结果必要。',
   '4. 需要多步时，用 dependsOn 明确依赖关系。鼓励主动链式调用：如果用户想要的结果需要先获取信息再执行操作（如"截屏某网站"需要先搜索获取 URL 再截图，"画一个当前热门的角色"需要先搜索确认是谁再生成），就规划多步。',
-  '5. 如果目标、前置条件或副作用必要性不明确，needsClarification=true，并给出一个具体问题。不要因为缺少 URL、名称等信息就放弃——先想想能不能用 web.search 获取。',
+  '5. 如果已经确定具体任务，但目标、前置条件或副作用必要性不明确，才 needsClarification=true；问题只能针对该任务缺少的一个具体参数，不要列举能力或功能类型。缺少 URL、名称等信息时先想想能不能用 web.search 获取。',
   '6. 后续步骤需要使用依赖步骤的产出时，在该步骤 args 的字符串值里写 {{steps.<依赖步骤id>.outputs[0].text}} 或 {{steps.<依赖步骤id>.outputs[0].url}} 引用，不要凭空复述或编造内容；能力自身的目标不明确时省略选择参数，让能力返回候选并追问。',
   '7. 如果用户请求只是简单对话或问答、不需要任何工具/检索/生成产物（计划就是唯一一个 chat.reply 步骤），在输出 JSON 中附加 directReply 字段，直接给出完整的回复文本——系统将跳过第二次模型调用直接发送，显著降低回复延迟。',
-  '8. steps 数组不能为空。如果无法确定用哪个能力，选择 chat.reply 并设 needsClarification=true 附带追问。',
+  '8. steps 数组不能为空。用户只是聊天、表达情绪或陈述而没有明确任务时，选择 chat.reply 直接自然回应，不要设 needsClarification=true；不能因为不确定用哪个能力就向用户罗列功能。',
   '',
   '【上下文】',
   '用户请求：{{userText}}',
