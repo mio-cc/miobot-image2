@@ -90,3 +90,71 @@ test('resume: artifact tool result never becomes visible text fallback', async (
   assert.equal(visibleText.includes('image.generate'), false);
   assert.equal(visibleText.includes('图片数据已省略'), false);
 });
+test('resume only one pending job at a time and keep the other job', async () => {
+  const cfg = createDefaultConfig();
+  cfg.agent.enabled = true;
+  cfg.agent.mode = 'enforce';
+  cfg.agent.mainModel = 'mock';
+  const imageSpec = normalizeToolSpec({
+    name: 'image.generate', title: '图片生成', description: '生成图片',
+    inputSchema: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'], additionalProperties: false },
+    riskLevel: 'medium', sideEffects: ['creates_artifact'], queue: 'image', idempotency: 'turn', exposure: 'core',
+  });
+  const audioSpec = normalizeToolSpec({
+    name: 'audio.music.generate', title: '音乐生成', description: '生成音乐',
+    inputSchema: { type: 'object', properties: { request: { type: 'string' } }, required: ['request'], additionalProperties: false },
+    riskLevel: 'medium', sideEffects: ['creates_artifact'], queue: 'audio', idempotency: 'turn', exposure: 'core',
+  });
+  const jobStates = new Map([
+    ['job-a', 'running'],
+    ['job-b', 'running'],
+  ]);
+  let modelCalls = 0;
+  const client = { async chat() {
+    modelCalls += 1;
+    if (modelCalls === 1) return { text: '', raw: {}, toolCalls: [{ id: 'img-a', name: 'image.generate', arguments: { prompt: '猫' } }], finishReason: 'tool_calls' };
+    if (modelCalls === 2) return { text: '', raw: {}, toolCalls: [{ id: 'audio-b', name: 'audio.music.generate', arguments: { request: '歌' } }], finishReason: 'tool_calls' };
+    if (modelCalls === 3) return { text: '图好了。', raw: {}, finishReason: 'stop' };
+    return { text: '歌好了。', raw: {}, finishReason: 'stop' };
+  } };
+  const host = createAgentHost({
+    getConfig: () => cfg,
+    client,
+    toolBindings: () => [
+      { spec: imageSpec, handler: async (call) => toolPending(call.id, 'job-a', { toolName: call.name }) },
+      { spec: audioSpec, handler: async (call) => toolPending(call.id, 'job-b', { toolName: call.name }) },
+    ],
+    preflightToolCall: () => ({ allowed: true }),
+    resolveJob: (record) => ({
+      jobId: record.jobId,
+      status: jobStates.get(record.jobId) || 'running',
+      ...(jobStates.get(record.jobId) === 'succeeded' ? { result: toolSuccess(
+        record.jobId === 'job-a' ? 'img-a' : 'audio-b',
+        record.toolName,
+        { outputs: record.jobId === 'job-a'
+          ? [{ kind: 'image', url: 'https://example.test/a.png' }]
+          : [{ kind: 'audio', url: 'https://example.test/b.mp3' }] },
+      ) } : {}),
+    }),
+  });
+  const first = await host({ text: '画猫', chatType: 'private', userId: '1', sessionId: 'private:two-jobs' });
+  assert.equal(first.status, 'suspended');
+  const second = await host({ text: '再来首歌', chatType: 'private', userId: '1', sessionId: 'private:two-jobs' });
+  assert.equal(second.status, 'suspended');
+
+  jobStates.set('job-a', 'succeeded');
+  const resumeA = await host({ text: '继续', resumeJob: true, resumeJobId: 'job-a', availableToolNames: [], chatType: 'private', userId: '1', sessionId: 'private:two-jobs' });
+  assert.equal(resumeA.status, 'completed');
+  assert.equal(resumeA.text, '图好了。');
+  const planA = (resumeA.replyPlan?.groups || []).flatMap((group) => group.outputs || []);
+  assert.ok(planA.some((output) => output.kind === 'image' && output.url?.includes('a.png')));
+  assert.equal(planA.some((output) => output.kind === 'audio'), false);
+
+  jobStates.set('job-b', 'succeeded');
+  const resumeB = await host({ text: '继续', resumeJob: true, resumeJobId: 'job-b', availableToolNames: [], chatType: 'private', userId: '1', sessionId: 'private:two-jobs' });
+  assert.equal(resumeB.status, 'completed');
+  assert.equal(resumeB.text, '歌好了。');
+  const planB = (resumeB.replyPlan?.groups || []).flatMap((group) => group.outputs || []);
+  assert.ok(planB.some((output) => output.kind === 'audio' && output.url?.includes('b.mp3')));
+  assert.equal(planB.some((output) => output.kind === 'image'), false, 'resume audio must not carry the old image result');
+});

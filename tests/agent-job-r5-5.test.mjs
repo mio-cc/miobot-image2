@@ -172,3 +172,23 @@ test('tool-job R5.5: timeoutMs=0 waits for the remote job instead of failing loc
   await jobs.run(job.jobId, new Promise((resolve) => setTimeout(() => resolve(result), 25)), 0);
   assert.equal(jobs.get(job.jobId)?.status, 'succeeded');
 });
+
+test('tool-job R5.5: queued job becomes running and completes normally', async () => {
+  const jobs = new ToolJobRuntime();
+  const job = jobs.create({ toolName: 'image.generate', callId: 'queued-1', sessionKey: 'private:queued', status: 'queued' });
+  assert.equal(job.status, 'queued');
+  const result = toolSuccess('queued-1', 'image.generate', { outputs: [{ kind: 'image', url: 'https://example.test/queued.png' }] });
+  await jobs.run(job.jobId, Promise.resolve(result));
+  assert.equal(jobs.get(job.jobId)?.status, 'succeeded');
+});
+test('tool-job R5.5: deliveredAt survives restart and blocks replay', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'miobot-delivered-'));
+  const file = path.join(dir, 'jobs.json');
+  const first = new ToolJobRuntime({ filePath: file });
+  const job = first.create({ toolName: 'image.generate', callId: 'delivered-1', sessionKey: 'group:g:u' });
+  await first.run(job.jobId, Promise.resolve(toolSuccess('delivered-1', 'image.generate', { outputs: [{ kind: 'image', url: 'https://example.test/old.png' }] })));
+  first.markDelivered(job.jobId);
+  const restarted = new ToolJobRuntime({ filePath: file });
+  assert.ok(restarted.get(job.jobId)?.deliveredAt);
+  await fs.rm(dir, { recursive: true, force: true });
+});

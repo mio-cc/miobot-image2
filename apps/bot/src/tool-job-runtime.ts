@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import path from 'node:path';
 import type { ToolResult } from '../../../packages/tool-runtime/src/index.js';
 
-export type ToolJobStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'expired';
+export type ToolJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'expired';
 
 export interface ToolJobRecord {
   jobId: string;
@@ -16,6 +16,8 @@ export interface ToolJobRecord {
   externalTaskIds: string[];
   /** 崩溃恢复时已尝试的远端 probe 次数；跨进程持久化，避免重启后无限重试。 */
   probeAttempts?: number;
+  /** 已成功交给 Agent/发送层的时间；启动恢复不得再次投递。 */
+  deliveredAt?: string;
   result?: ToolResult;
   error?: { code: string; message: string };
 }
@@ -42,7 +44,7 @@ export class ToolJobRuntime {
     this.restore();
   }
 
-  create(input: { toolName: string; callId: string; sessionKey: string; jobId?: string }): ToolJobRecord {
+  create(input: { toolName: string; callId: string; sessionKey: string; jobId?: string; status?: 'queued' | 'running' }): ToolJobRecord {
     const now = this.now();
     const jobId = String(input.jobId || `tooljob_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
     const record: ToolJobRecord = {
@@ -50,7 +52,7 @@ export class ToolJobRuntime {
       toolName: String(input.toolName),
       callId: String(input.callId),
       sessionKey: String(input.sessionKey),
-      status: 'running',
+      status: input.status === 'queued' ? 'queued' : 'running',
       createdAt: now,
       updatedAt: now,
       externalTaskIds: [],
@@ -65,6 +67,15 @@ export class ToolJobRuntime {
   get(jobId: string): ToolJobRecord | undefined {
     const record = this.records.get(String(jobId));
     return record ? structuredClone(record) : undefined;
+  }
+
+  markDelivered(jobId: string): ToolJobRecord | undefined {
+    const record = this.records.get(String(jobId));
+    if (!record) return undefined;
+    record.deliveredAt = record.deliveredAt || this.now();
+    record.updatedAt = this.now();
+    this.flush();
+    return structuredClone(record);
   }
 
   recordProbeAttempt(jobId: string): number {
@@ -90,6 +101,12 @@ export class ToolJobRuntime {
     const controller = new AbortController();
     this.controllers.set(key, controller);
     // timeoutMs=0 表示不设本地任务总超时，等待远端/工作流真实完成或失败。
+    const record = this.records.get(key);
+    if (record?.status === 'queued') {
+      record.status = 'running';
+      record.updatedAt = this.now();
+      this.flush();
+    }
     const requestedTimeout = Number(timeoutMs);
     const noTimeout = requestedTimeout === 0;
     const timeout = noTimeout ? 0 : Math.max(1000, Number.isFinite(requestedTimeout) ? Math.trunc(requestedTimeout) : 15 * 60 * 1000);
@@ -146,7 +163,7 @@ export class ToolJobRuntime {
   cancel(jobId: string, message = 'cancelled'): ToolJobRecord | undefined {
     const record = this.records.get(String(jobId));
     this.controllers.get(String(jobId))?.abort();
-    if (!record || record.status !== 'running') return record ? structuredClone(record) : undefined;
+    if (!record || (record.status !== 'running' && record.status !== 'queued')) return record ? structuredClone(record) : undefined;
     record.status = 'cancelled';
     record.error = { code: 'tool_job_cancelled', message };
     record.updatedAt = this.now();
@@ -194,7 +211,7 @@ export class ToolJobRuntime {
         });
       }
       for (const record of this.records.values()) {
-        if (record.status !== 'running') continue;
+        if (record.status !== 'running' && record.status !== 'queued') continue;
         record.status = 'failed';
         record.error = { code: 'tool_job_interrupted', message: '任务在进程重启时中断，未自动重放。' };
         record.updatedAt = this.now();
@@ -211,9 +228,9 @@ export class ToolJobRuntime {
   }
 
   private prune(): void {
-    const running = [...this.records.values()].filter((record) => record.status === 'running');
+    const running = [...this.records.values()].filter((record) => record.status === 'running' || record.status === 'queued');
     const terminal = [...this.records.values()]
-      .filter((record) => record.status !== 'running')
+      .filter((record) => record.status !== 'running' && record.status !== 'queued')
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
     const keep = [...running, ...terminal].slice(0, this.maxRecords);
     this.records.clear();

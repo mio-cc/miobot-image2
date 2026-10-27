@@ -1,5 +1,6 @@
 import { createBotRouter, extractReplyId, isAllowedByWhitelist, isGroupUserBlacklisted, stripNonTextCqSegments, type BotMessageContext, type BotRouteDecision, type BotRouterConfig } from '../../../packages/bot-router/src/index.js';
 import { promises as fs } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { FEATURE_DEFINITIONS, type FeatureSetting } from '../../../packages/shared/src/features.js';
 import { createSentMessageTracker, createTrackingReplyClient, partitionRecallEntries, sentChatKey, type SentMessageTracker } from './sent-messages.js';
@@ -204,6 +205,7 @@ export interface BotRuntimeOptions {
     memoryContext?: string;
     sessionId?: string;
     requestId?: string;
+    replyPreferenceSessionKey?: string;
   }) => Promise<{ handled: boolean; text?: string; replyPlan?: ReplyPlan; reason?: string; silent?: boolean; problem?: { kind: string; error: string }; meta?: Record<string, unknown> }>;
   progressMessages?: boolean;
   /** 慢任务提醒间隔；默认 60 秒，0 关闭。 */
@@ -1192,6 +1194,23 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     }
     let focusContextForTurn = '';
     let continueChecked = false;
+    // 呈现偏好绑定 autoContinue 窗口：新窗口 = 新 key，旧偏好不会被读取。
+    const autoContinueWindowKey = 'group:' + String(event.group_id ?? '') + ':' + String(userId ?? '');
+    let replyPreferenceWindowId = '';
+    if (chatType === 'group' && cfg.bot.autoContinue?.enabled) {
+      const acWindow = autoContinueStates.get(autoContinueWindowKey);
+      const windowMs = Math.max(10000, Number(cfg.bot.autoContinue.windowMs) || 60000);
+      if (acWindow && Date.now() - acWindow.lastBotReplyAt <= windowMs) {
+        replyPreferenceWindowId = acWindow.windowId || randomUUID();
+        acWindow.windowId = replyPreferenceWindowId;
+      } else {
+        if (acWindow) autoContinueStates.delete(autoContinueWindowKey);
+        replyPreferenceWindowId = randomUUID();
+      }
+    } else {
+      replyPreferenceWindowId = randomUUID();
+    }
+    const replyPreferenceSessionKey = sessionId + '::window:' + replyPreferenceWindowId;
     // ── 对话延续触发（优先级最低）：bot 刚回复过该用户→窗口内下一条消息自动延续 ──
     if (decision.kind === 'ignored' && chatType === 'group' && cfg.bot.autoContinue?.enabled) {
       const acKey = 'group:' + String(event.group_id ?? '') + ':' + String(userId ?? '');
@@ -1421,6 +1440,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           forwardText: forwardText || undefined,
           groupContext: agentGroupContext,
           sessionId,
+          replyPreferenceSessionKey,
           requestId: `agent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         });
         if (agentOutcome.problem) {
@@ -1600,7 +1620,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         if (!cleanText && !enrichedImages.length && !enrichedVideos.length && !referenceText && !forwardText) {
           const cannedText = '我在。直接说需求就行，比如提问、「生图 一只猫」，或发「帮助」看指令。';
           await engine.replyText(replyCtx, cannedText, 'quote');
-          armAutoContinue(chatType, event.group_id, userId, cannedText, true);
+          armAutoContinue(chatType, event.group_id, userId, cannedText, true, '', replyPreferenceWindowId);
           return { handled: true, kind: 'empty-mention' };
         }
         // P0-1（R9 修复，最终语义）：
@@ -1921,7 +1941,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     // 对话延续状态更新：bot 回复后记录该用户/群，窗口内的下一条消息可自动延续。
     if (chatType === 'group' && event.group_id && userId && result.handled) {
       const source = String((decision as any)?.source || decision.kind || '');
-armAutoContinue(chatType, event.group_id, userId, result.text || '', source !== 'auto_continue', stripNonTextCqSegments(rawMessage).trim());
+armAutoContinue(chatType, event.group_id, userId, result.text || '', source !== 'auto_continue', stripNonTextCqSegments(rawMessage).trim(), replyPreferenceWindowId);
     }
     log?.info('回复发送完成', { kind: result.kind });
     logTiming('replied');
@@ -1966,7 +1986,7 @@ armAutoContinue(chatType, event.group_id, userId, result.text || '', source !== 
   /** 关键词触发每用户冷却（防同一人连环触发判断）。 */
   const keywordTriggerCooldowns = new Map<string, number>();
   /** 对话延续状态（groupId:userId → bot 回复时间/轮数/摘要）。 */
-  const autoContinueStates = new Map<string, { lastBotReplyAt: number; rounds: number; lastContinueAt: number; lastBotReplyText: string }>();
+  const autoContinueStates = new Map<string, { lastBotReplyAt: number; rounds: number; lastContinueAt: number; lastBotReplyText: string; windowId?: string }>();
   /** 群级关注窗口：显式触发后观察群消息，按模型判定是否接话；每个用户仍有独立 session。 */
   const groupFocusStates = new Map<string, {
     triggerUserId: string;
@@ -1984,7 +2004,7 @@ armAutoContinue(chatType, event.group_id, userId, result.text || '', source !== 
   const RECENT_IMAGE_WINDOW_MS = 5 * 60 * 1000;
   const RECENT_IMAGE_MAX = 2;
     /** 延续状态登记：bot 回复后记录该用户/群，窗口内下一条消息可自动延续。 */
-    function armAutoContinue(chatType: 'group' | 'private', groupId: unknown, uid: unknown, replyText: string, hardTrigger: boolean, userText = ''): void {
+    function armAutoContinue(chatType: 'group' | 'private', groupId: unknown, uid: unknown, replyText: string, hardTrigger: boolean, userText = '', windowId?: string): void {
       if (chatType !== 'group' || groupId === undefined || groupId === null || uid === undefined || uid === null) return;
       const cfg = options.getConfig();
       const acKey = 'group:' + String(groupId) + ':' + String(uid);
@@ -1992,11 +2012,12 @@ armAutoContinue(chatType, event.group_id, userId, result.text || '', source !== 
       if (existing) {
         existing.lastBotReplyAt = Date.now();
         existing.lastBotReplyText = replyText.slice(0, 500);
+        if (windowId) existing.windowId = windowId;
         if (hardTrigger) existing.rounds = 0;
       } else if (hardTrigger) {
         // 只有显式触发/新的正常回复才创建 per-user 延续状态；group focus 续话不创建，
         // 由群级关注窗口预算统一控制，避免预算耗尽后又被 per-user 状态续上。
-        autoContinueStates.set(acKey, { lastBotReplyAt: Date.now(), rounds: 0, lastContinueAt: 0, lastBotReplyText: replyText.slice(0, 500) });
+        autoContinueStates.set(acKey, { lastBotReplyAt: Date.now(), rounds: 0, lastContinueAt: 0, lastBotReplyText: replyText.slice(0, 500), ...(windowId ? { windowId } : {}) });
       }
       if (autoContinueStates.size > 2000) {
         const oldest = autoContinueStates.keys().next().value;
@@ -2511,7 +2532,29 @@ export function removePrimaryText(plan: any, target: PrimaryTextTarget): any {
   return { ...plan, groups, messageCount: groups.reduce((sum: number, group: any) => sum + Math.max(1, Number(group.messageCount || 1)), 0) };
 }
 
+const outboundSendQueues = new Map<string, Promise<void>>();
+
 export async function sendResult(
+  ...args: Parameters<typeof sendResultUnlocked>
+): Promise<import('../../../packages/reply/src/index.js').ReplyDispatchResult | null> {
+  const ctx = args[1];
+  const chatKey = ctx.chatType === 'group'
+    ? `group:${String(ctx.groupId ?? '')}`
+    : `private:${String(ctx.userId ?? '')}`;
+  const previous = outboundSendQueues.get(chatKey) || Promise.resolve();
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+  const tail = previous.catch(() => {}).then(() => gate);
+  outboundSendQueues.set(chatKey, tail);
+  await previous.catch(() => {});
+  try {
+    return await sendResultUnlocked(...args);
+  } finally {
+    releaseGate();
+    if (outboundSendQueues.get(chatKey) === tail) outboundSendQueues.delete(chatKey);
+  }
+}
+async function sendResultUnlocked(
   engine: ReturnType<typeof createReplyStrategyEngine>,
   ctx: ReplyContext,
   result: BotEngineResult,

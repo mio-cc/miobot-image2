@@ -841,7 +841,28 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     return registerResultArtifacts(invocation, executionFromBotResult(invocation, outcome.result));
   }));
 
+  // R13：Suno 迟到投递——等待超时但远端任务仍在跑时不丢弃，登记后由轮询补投。
+  const sunoLateDeliveries = new Map<string, { invocation: import('../../../packages/orchestration/src/index.js').CapabilityInvocation; composed?: unknown; rawUserText: string; registeredAt: number; delivered: boolean }>();
+  const registerSunoLateDelivery = (taskId: string, input: { invocation: import('../../../packages/orchestration/src/index.js').CapabilityInvocation; composed?: unknown; rawUserText: string }) => {
+    sunoLateDeliveries.set(taskId, { ...input, registeredAt: Date.now(), delivered: false });
+  };
   const orchestrationEnforcer = new OrchestrationEnforcer({
+    registerSunoLateDelivery,
+    onExternalDeliver: async (invocation, result) => {
+      // R13：迟到投递的发送——复用 sendAgentOutcome 的发送队列与 ReplyPlan 处理。
+      const chatType = invocation.request.chat.type === 'group' ? 'group' : 'private';
+      const groupId = invocation.request.chat.type === 'group' ? invocation.request.chat.groupId : undefined;
+      const userId = invocation.request.user.qq;
+      const replyPlan = (result as { replyPlan?: unknown }).replyPlan as import('../../../packages/orchestration/src/index.js').ReplyPlan | undefined;
+      await runtime.sendAgentOutcome({
+        chatType,
+        ...(groupId !== undefined ? { groupId } : {}),
+        userId,
+        ...(result.text ? { text: String(result.text) } : {}),
+        ...(replyPlan ? { replyPlan } : {}),
+        reason: 'suno_late_delivery',
+      });
+    },
     getConfig,
     app,
     client,
@@ -1033,13 +1054,62 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
 
   // R5.1：先只把信息型/只读能力暴露给 Agent Runtime。生成、发送、删除和配置类工具
   // 仍由旧链路独占，直到新发送层能完整承接 ReplyPlan、审批和异步任务。
-  const toolJobRuntime = new ToolJobRuntime({
+  type AgentToolQueueEntry = {
+    job: ToolJobRecord;
+    run: (signal: AbortSignal) => Promise<ToolResult>;
+    timeoutMs: number;
+  };
+  type AgentToolQueueState = { activeJobId?: string; pending: AgentToolQueueEntry[] };
+  const agentToolQueues = new Map<string, AgentToolQueueState>();
+  const agentToolQueueKey = (sessionKey: string, toolName: string) => sessionKey + '\u0000' + toolName;
+  let toolJobRuntime!: ToolJobRuntime;
+  const startQueuedAgentToolJob = (key: string): void => {
+    const state = agentToolQueues.get(key);
+    if (!state || state.activeJobId) return;
+    const next = state.pending.shift();
+    if (!next) {
+      agentToolQueues.delete(key);
+      return;
+    }
+    state.activeJobId = next.job.jobId;
+    logger.info('异步工具任务出队', { toolName: next.job.toolName, jobId: next.job.jobId, queued: state.pending.length });
+    void toolJobRuntime.run(next.job.jobId, next.run, next.timeoutMs);
+  };
+  const agentJobDeadLetterFile = process.env.MIOBOT_AGENT_JOB_DEAD_LETTER_FILE || path.join(dataDir, 'agent-tool-job-dead-letters.json');
+  const recordAgentJobDeadLetter = (job: ToolJobRecord, reason: string): void => {
+    try {
+      let records: unknown[] = [];
+      try {
+        const parsed = JSON.parse(readFileSync(agentJobDeadLetterFile, 'utf8'));
+        if (Array.isArray(parsed?.records)) records = parsed.records;
+      } catch { /* first run */ }
+      records.push({ jobId: job.jobId, toolName: job.toolName, callId: job.callId, sessionKey: job.sessionKey, reason, createdAt: job.createdAt, deadLetteredAt: new Date().toISOString() });
+      mkdirSync(path.dirname(agentJobDeadLetterFile), { recursive: true });
+      const temp = agentJobDeadLetterFile + '.tmp';
+      writeFileSync(temp, JSON.stringify({ version: 1, records: records.slice(-200) }, null, 2), 'utf8');
+      try { renameSync(temp, agentJobDeadLetterFile); } catch { writeFileSync(agentJobDeadLetterFile, JSON.stringify({ version: 1, records: records.slice(-200) }, null, 2), 'utf8'); }
+    } catch (error) {
+      logger.warn('agent job dead-letter write failed', { jobId: job.jobId, error: String((error as Error)?.message || error) });
+    }
+  };
+  toolJobRuntime = new ToolJobRuntime({
     filePath: process.env.MIOBOT_TOOL_JOB_FILE || path.join(dataDir, 'agent-tool-jobs.json'),
     maxRecords: 2000,
     onComplete: (job) => {
-      if (job.status === 'running' || resumedAgentJobs.has(job.jobId)) return;
+      if (job.status === 'queued' || resumedAgentJobs.has(job.jobId)) return;
       resumedAgentJobs.add(job.jobId);
-      void resumeAgentJob?.(job).catch((error) => logger.warn('agent tool job resume failed', { jobId: job.jobId, error: String((error as Error)?.message || error) }));
+      const queueKey = agentToolQueueKey(job.sessionKey, job.toolName);
+      const state = agentToolQueues.get(queueKey);
+      if (state?.activeJobId === job.jobId) state.activeJobId = undefined;
+      void (async () => {
+        try {
+          await resumeAgentJob?.(job);
+        } catch (error) {
+          logger.warn('agent tool job resume failed', { jobId: job.jobId, error: String((error as Error)?.message || error) });
+        } finally {
+          startQueuedAgentToolJob(queueKey);
+        }
+      })();
     },
     onError: (error) => logger.warn('tool job persistence failed', { error: String((error as Error)?.message || error) }),
   });
@@ -1095,9 +1165,20 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       if (descriptor.mode !== 'async_job') return [binding];
       const original = binding.handler;
       binding.handler = async (call, spec, context) => {
-        const job = toolJobRuntime.create({ toolName: call.name, callId: call.id, sessionKey: context.sessionKey });
+        const queueKey = agentToolQueueKey(context.sessionKey, call.name);
+        const existingQueue = agentToolQueues.get(queueKey);
+        const queueState = existingQueue || { pending: [] as AgentToolQueueEntry[] };
+        if (!existingQueue) agentToolQueues.set(queueKey, queueState);
+        // 前一个 job 已完成、resume 尚在投递时，不能让新请求越过已经排队的 entry。
+        if (!queueState.activeJobId && queueState.pending.length) startQueuedAgentToolJob(queueKey);
+        const shouldQueue = Boolean(queueState.activeJobId || queueState.pending.length);
+        const job = toolJobRuntime.create({
+          toolName: call.name,
+          callId: call.id,
+          sessionKey: context.sessionKey,
+          status: shouldQueue ? 'queued' : 'running',
+        });
         const jobTimeoutMs = resolveAsyncJobTimeoutMs(getConfig(), call.name, spec.timeoutMs);
-        logger.info('异步工具任务登记', { toolName: call.name, jobId: job.jobId, timeoutMs: jobTimeoutMs });
         const run = (signal: AbortSignal) => Promise.resolve()
           .then(() => original(call, spec, {
             ...context,
@@ -1113,7 +1194,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
             if (value?.ok === false) {
               return toolFailure(call.id, value.error || makeToolError({
                 code: 'tool_execution_failed',
-                message: `异步工具失败：${call.name}`,
+                message: '异步工具失败：' + call.name,
                 callId: call.id,
                 toolName: call.name,
               }), { toolName: call.name, content: value?.content, meta: value?.meta });
@@ -1124,6 +1205,17 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
               meta: value?.meta,
             });
           });
+        if (shouldQueue) {
+          queueState.pending.push({ job, run, timeoutMs: jobTimeoutMs });
+          logger.info('异步工具任务排队', { toolName: call.name, jobId: job.jobId, position: queueState.pending.length });
+          return toolPending(call.id, job.jobId, {
+            toolName: call.name,
+            content: '任务已排队，等待同一会话的前序任务完成。',
+            meta: { asyncJob: true, queued: true, sessionKey: context.sessionKey, queuePosition: queueState.pending.length },
+          });
+        }
+        queueState.activeJobId = job.jobId;
+        logger.info('异步工具任务登记', { toolName: call.name, jobId: job.jobId, timeoutMs: jobTimeoutMs });
         void toolJobRuntime.run(job.jobId, run, jobTimeoutMs);
         return toolPending(call.id, job.jobId, {
           toolName: call.name,
@@ -1560,7 +1652,12 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         candidate.pendingJobs?.some((item) => item.jobId === job.jobId),
       );
     }
-    if (!session) return;
+    if (!session) {
+      recordAgentJobDeadLetter(job, 'session_not_found');
+      toolJobRuntime.markDelivered(job.jobId);
+      logger.warn('agent tool job orphaned', { jobId: job.jobId, toolName: job.toolName, sessionKey: job.sessionKey });
+      return;
+    }
     let chatType: 'group' | 'private';
     let groupId: string | undefined;
     let userId: string;
@@ -1587,13 +1684,27 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     const pendingRecord = session.pendingJobs?.find((item) => item.jobId === job.jobId);
     const originalUser = userMessages.at(-1);
     const originalText = String(pendingRecord?.meta?.originalUserText || originalUser?.content || '').trim();
-    const originalAttachments = Array.isArray(originalUser?.attachments) ? originalUser.attachments : [];
+    const originalAttachments = Array.isArray(pendingRecord?.meta?.originalAttachments)
+      ? pendingRecord.meta.originalAttachments as any[]
+      : Array.isArray(originalUser?.attachments) ? originalUser.attachments : [];
     const originalImages = originalAttachments.filter((item) => item.kind === 'image').map((item) => item.ref);
     const originalVideos = originalAttachments.filter((item) => item.kind === 'video').map((item) => item.ref);
     const originalAudios = originalAttachments.filter((item) => item.kind === 'audio').map((item) => item.ref);
+    const otherPendingToolNames = new Set((session.pendingJobs || [])
+      .filter((item) => item.jobId !== job.jobId)
+      .map((item) => String(item.toolName || ''))
+      .filter(Boolean));
+    const jobFailed = job.status !== 'succeeded';
+    // 生成任务失败后不要立刻换同族工具无限重试；先让模型向用户说明失败。
+    const failedFamilyPrefix = jobFailed
+      ? (job.toolName.startsWith('audio.music.') ? 'audio.music.'
+        : job.toolName.startsWith('image.') ? 'image.'
+        : job.toolName.startsWith('video.') ? 'video.' : '')
+      : '';
     const availableToolNames = agentToolBindings()
       .map((binding) => binding.spec.name)
-      .filter((name) => name !== job.toolName);
+      .filter((name) => name !== job.toolName && !otherPendingToolNames.has(name))
+      .filter((name) => !failedFamilyPrefix || !name.startsWith(failedFamilyPrefix));
     logger.info('agent tool job resume', {
       jobId: job.jobId,
       toolName: job.toolName,
@@ -1602,8 +1713,13 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       availableToolNames,
     });
     const outcome = await agentHost({
-      text: originalText || '请根据已完成工具结果处理原请求。',
+      text: (originalText || '请根据已完成工具结果处理原请求。') + (jobFailed
+        ? '\n\n【系统状态】上一轮异步任务执行失败。请直接向用户说明本次失败，不要再次调用同类生成工具或自动重试。'
+        : ''),
       resumeJob: true,
+      resumeJobId: job.jobId,
+      ...(pendingRecord?.meta?.originalReplyPreference ? { replyPreference: pendingRecord.meta.originalReplyPreference as any } : {}),
+      ...(typeof pendingRecord?.meta?.originalReplyPreferenceSessionKey === 'string' ? { replyPreferenceSessionKey: pendingRecord.meta.originalReplyPreferenceSessionKey } : {}),
       availableToolNames,
       ...(originalImages.length ? { images: originalImages } : {}),
       ...(originalVideos.length ? { videos: originalVideos } : {}),
@@ -1616,7 +1732,18 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       userRole,
     });
     if (!outcome.handled) {
+      recordAgentJobDeadLetter(job, 'resume_not_handled:' + String(outcome.reason || 'unknown'));
+      toolJobRuntime.markDelivered(job.jobId);
       logger.warn('agent tool job resume not handled', { jobId: job.jobId, reason: outcome.reason });
+      if (jobFailed) {
+        await runtime.sendAgentOutcome({
+          chatType,
+          ...(groupId !== undefined ? { groupId } : {}),
+          userId,
+          text: '这次生成任务没有完成，请稍后再试。',
+          reason: 'agent_job_failed',
+        });
+      }
       return;
     }
     await runtime.sendAgentOutcome({
@@ -1627,6 +1754,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       ...(outcome.replyPlan ? { replyPlan: outcome.replyPlan } : {}),
       ...(outcome.reason ? { reason: outcome.reason } : {}),
     });
+    toolJobRuntime.markDelivered(job.jobId);
   };
   const recoverInterruptedToolJob = async (job: ToolJobRecord, attempt = 0): Promise<void> => {
     attempt = Math.max(attempt, Math.max(0, Math.trunc(Number(job.probeAttempts) || 0)));
@@ -1694,13 +1822,44 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         }
       }
       for (const job of toolJobRuntime.snapshot()) {
-        if (job.status === 'running' || resumedAgentJobs.has(job.jobId)) continue;
+        if (job.deliveredAt || job.status === 'running' || job.status === 'queued' || resumedAgentJobs.has(job.jobId)) continue;
         const hasPendingSession = agentSessions.snapshot().some((session) =>
           session.pendingJobs?.some((pending) => pending.jobId === job.jobId),
         );
         if (!hasPendingSession) continue;
+        // 旧版本没有 deliveredAt。已完成的历史 job 不能因为 session 里还残留 pending 记录就再次发送；
+        // 只允许真正中断、需要远端 probe 的 job 进入恢复链。
+        if (job.status === 'succeeded' || (job.status === 'failed' && job.error?.code !== 'tool_job_interrupted')) {
+          recordAgentJobDeadLetter(job, 'terminal_job_not_replayed_after_restart');
+          toolJobRuntime.markDelivered(job.jobId);
+          logger.warn('terminal agent job not replayed after restart', { jobId: job.jobId, toolName: job.toolName, status: job.status });
+          continue;
+        }
         await recoverInterruptedToolJob(job);
       }
+      // 清理旧版本/已投递 job 留在 session.pendingJobs 里的死记录，防止下一次重启或 resume 再次拾取。
+      const jobRecords = new Map(toolJobRuntime.snapshot().map((job) => [job.jobId, job]));
+      let cleanedSessions = 0;
+      for (const session of agentSessions.snapshot()) {
+        const pendingJobs = session.pendingJobs || [];
+        if (!pendingJobs.length) continue;
+        const stale = pendingJobs.filter((pending) => {
+          const record = jobRecords.get(pending.jobId);
+          return Boolean(record && (record.deliveredAt || record.status === 'succeeded' || record.status === 'failed' || record.status === 'cancelled' || record.status === 'expired'));
+        });
+        if (!stale.length) continue;
+        const staleIds = new Set(stale.map((job) => job.jobId));
+        const staleCallIds = new Set(stale.map((job) => String(job.callId || '')).filter(Boolean));
+        const remainingJobs = pendingJobs.filter((job) => !staleIds.has(job.jobId));
+        const remainingCalls = (session.pendingToolCalls || []).filter((call) => !staleCallIds.has(String(call.id || '')));
+        agentSessions.save({
+          ...session,
+          pendingJobs: remainingJobs.length ? remainingJobs : undefined,
+          pendingToolCalls: remainingCalls.length ? remainingCalls : undefined,
+        });
+        cleanedSessions += 1;
+      }
+      if (cleanedSessions) logger.info('agent stale pending jobs cleaned', { sessions: cleanedSessions });
     } catch (error) {
       logger.warn('persisted agent recovery failed', { error: String((error as Error)?.message || error) });
     }

@@ -150,6 +150,10 @@ export class OrchestrationEnforcer {
      * success 返回输出（补投递走正常 buildReplyPlan 链）；running/failed 维持 interrupted 防双计费。
      */
     externalTaskProbe?: (info: { capability: string; taskId: string }) => Promise<ExternalTaskProbeResult | undefined>;
+    /** R13：Suno 等待超时但任务在途时登记迟到投递——由 start.ts 轮询补投，enforcer 只透传。 */
+    registerSunoLateDelivery?: (taskId: string, input: { invocation: import('../../../packages/orchestration/src/index.js').CapabilityInvocation; composed?: unknown; rawUserText: string }) => void;
+    /** R13：迟到投递钩子——enforcer 组好 result 后由装配方发送（enforcer 无发送通道）。 */
+    onExternalDeliver?: (invocation: import('../../../packages/orchestration/src/index.js').CapabilityInvocation, result: import('./runtime-types.js').RuntimeResult) => Promise<void> | void;
   }) {
     this.dispatcher = new CapabilityDispatcher(this.registry, createPermissionPolicyFromDefaults({
       low: 'allow', medium: 'allow', high: 'ask_admin', critical: 'ask_admin',
@@ -160,7 +164,7 @@ export class OrchestrationEnforcer {
       this.dispatcher.registerHandler(kind, handler);
     }
     const sunoComposer = new SunoPromptComposer(this.options.client, this.options.getConfig, this.options.logger);
-    const suno = this.options.handlers?.get('audio.music.generate') || new SunoCapabilityHandler({ getConfig: this.options.getConfig, logger: this.options.logger, history: this.options.sunoHistory, compose: (args, request) => sunoComposer.compose(args, request), composeSafeFallback: (args, request) => sunoComposer.composeSafeFallback(args, request) });
+    const suno = this.options.handlers?.get('audio.music.generate') || new SunoCapabilityHandler({ getConfig: this.options.getConfig, logger: this.options.logger, history: this.options.sunoHistory, compose: (args, request) => sunoComposer.compose(args, request), composeSafeFallback: (args, request) => sunoComposer.composeSafeFallback(args, request), registerLateDelivery: this.options.registerSunoLateDelivery });
     this.dispatcher.registerHandler('audio.music.generate', suno);
     if (this.options.sunoHistory) {
       const historyHandler = this.options.handlers?.get('audio.music.history') || new SunoHistoryCapabilityHandler(this.options.sunoHistory);
@@ -390,6 +394,18 @@ export class OrchestrationEnforcer {
 
   async probeExternalTask(capability: string, taskId: string): Promise<ExternalTaskProbeResult | undefined> {
     return this.options.externalTaskProbe?.({ capability, taskId });
+  }
+
+  /**
+   * R13：迟到投递——把外部探查拿到的输出按正常 replyPlan 链投递给原会话。
+   * 用于 Suno 等待超时但远端任务后来完成的补投；不走模型、不重放工具，只做送达。
+   */
+  async deliverExternalOutputs(invocation: import('../../../packages/orchestration/src/index.js').CapabilityInvocation, outputs: import('../../../packages/orchestration/src/index.js').ExecutionOutput[], _meta: { source: string } = { source: 'late_delivery' }): Promise<void> {
+    const replyPlan = this.makeReplyPlan(outputs);
+    const visibleOutputs = replyPlan.groups.flatMap((group) => group.outputs);
+    const result = this.toEngineResult(visibleOutputs) || this.emptyEngineResult();
+    result.replyPlan = replyPlan;
+    await this.options.onExternalDeliver?.(invocation, result);
   }
 
   /** 该会话是否有等待回答的澄清追问（runtime 据此把无触发消息转入追问合并，含纯图答案）。 */

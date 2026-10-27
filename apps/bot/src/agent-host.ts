@@ -32,6 +32,10 @@ export interface AgentHostInput {
   availableToolNames?: string[];
   /** 标记本轮是异步任务完成后的续跑，不重复注入用户新消息。 */
   resumeJob?: boolean;
+  /** 指定本次 resume 要结算的 jobId；其他 pendingJobs 保留。 */
+  resumeJobId?: string;
+  /** autoContinue 窗口级偏好 key；用于让呈现偏好只在该延续窗口生效。 */
+  replyPreferenceSessionKey?: string;
   images?: string[];
     videos?: string[];
     audios?: string[];
@@ -200,20 +204,26 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
     const requestedScope = input.replyPreference?.scope || 'session';
     const effectiveScope = requestedScope === 'user' && !input.userId ? 'session' : requestedScope;
     const userPreferenceKey = String(input.userId ?? '');
+    const preferenceSessionKey = String(input.replyPreferenceSessionKey || sessionKey);
+    const windowScopedPreference = Boolean(input.replyPreferenceSessionKey);
     if (input.replyPreference && options.replyPreferenceStore) {
-      if (effectiveScope === 'session' && cfg.replyPolicy.allowSessionPreferences) {
-        options.replyPreferenceStore.set('session', sessionKey, input.replyPreference, cfg.replyPolicy.sessionPreferenceTtlMs);
+      // 用户在当前 autoContinue 窗口表达的偏好，即使模型标成 user/session，也只能写入窗口 key，
+      // 新窗口自动回到后台配置。
+      if (windowScopedPreference) {
+        options.replyPreferenceStore.set('session', preferenceSessionKey, input.replyPreference, cfg.replyPolicy.sessionPreferenceTtlMs);
+      } else if (effectiveScope === 'session' && cfg.replyPolicy.allowSessionPreferences) {
+        options.replyPreferenceStore.set('session', preferenceSessionKey, input.replyPreference, cfg.replyPolicy.sessionPreferenceTtlMs);
       } else if (effectiveScope === 'user' && userPreferenceKey && cfg.replyPolicy.allowUserPreferences) {
         options.replyPreferenceStore.set('user', userPreferenceKey, input.replyPreference, cfg.replyPolicy.userPreferenceTtlMs);
       }
     }
-    const storedSessionPreference = options.replyPreferenceStore?.get('session', sessionKey);
+    const storedSessionPreference = options.replyPreferenceStore?.get('session', preferenceSessionKey);
     const storedUserPreference = options.replyPreferenceStore && userPreferenceKey
       ? options.replyPreferenceStore.get('user', userPreferenceKey)
       : undefined;
     // P1-A（R10 修复）：上一轮写进 session 的 replyPreference 只有 scope=session/user（持久语义）
     // 才能当 sessionPreference 读取；scope=turn 的残留一律丢弃，防止跨轮泄漏。
-    const priorSessionPreference = priorSession?.replyPreference && priorSession.replyPreference.scope !== 'turn'
+    const priorSessionPreference = !input.replyPreferenceSessionKey && priorSession?.replyPreference && priorSession.replyPreference.scope !== 'turn'
       ? priorSession.replyPreference
       : undefined;
     const effectiveSessionPreference = storedSessionPreference
@@ -273,6 +283,8 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
         ...(input.userRole ? { userRole: input.userRole } : {}),
         userText: input.text,
         ...(input.resumeJob ? { resumeJob: true } : {}),
+        ...(input.resumeJobId ? { resumeJobId: input.resumeJobId } : {}),
+        ...(input.replyPreferenceSessionKey ? { replyPreferenceSessionKey: input.replyPreferenceSessionKey } : {}),
         attachments,
       },
     };
@@ -303,9 +315,10 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
     // session/user —— 写 ReplyPreferenceStore，与后台偏好 API 同一存储。
     const turnPreference = turn.replyPreference;
     if (turnPreference && options.replyPreferenceStore) {
-      const scope = turnPreference.scope || 'turn';
+      const requestedScope = turnPreference.scope || 'turn';
+      const scope = windowScopedPreference ? 'session' : requestedScope;
       if (scope === 'session' && cfg.replyPolicy.allowSessionPreferences) {
-        options.replyPreferenceStore.set('session', sessionKey, turnPreference, cfg.replyPolicy.sessionPreferenceTtlMs);
+        options.replyPreferenceStore.set('session', preferenceSessionKey, { ...turnPreference, scope: 'session' as const }, cfg.replyPolicy.sessionPreferenceTtlMs);
       } else if (scope === 'user' && userPreferenceKey && cfg.replyPolicy.allowUserPreferences) {
         options.replyPreferenceStore.set('user', userPreferenceKey, turnPreference, cfg.replyPolicy.userPreferenceTtlMs);
       }

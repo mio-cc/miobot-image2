@@ -360,9 +360,11 @@ export class AgentRuntime implements AgentLoop {
     // 只有 ToolJobRuntime 完成回调带来的 resumeJob turn 才允许结算 pendingJobs。
     const existingPendingJobs = session.pendingJobs || [];
     // 普通新消息可以正常回答，但绝不能结算旧 pending job；旧产物只在
-    // resumeJob=true 的完成回调里注入。正在运行的同一工具暂时从本轮工具集中移除，
-    // 防止模型重复提交图片/音频任务。
-    const pendingJobs = input.metadata?.resumeJob === true ? [...existingPendingJobs] : [];
+    // resumeJob=true 的完成回调里注入。同工具重复请求由工具层 per-session FIFO 队列承接。
+    const resumeJobId = typeof input.metadata?.resumeJobId === 'string' ? input.metadata.resumeJobId : '';
+    const pendingJobs = input.metadata?.resumeJob === true
+      ? existingPendingJobs.filter((job) => !resumeJobId || job.jobId === resumeJobId).slice(0, 1)
+      : [];
     if (pendingJobs.length) {
       if (!this.deps.resolveJob) {
         return {
@@ -375,61 +377,67 @@ export class AgentRuntime implements AgentLoop {
           meta: { reason: 'async_job_pending_resume' },
         };
       }
-      let remainingJobs = [...pendingJobs];
-      let remainingCalls = [...(session.pendingToolCalls || [])];
-      for (const pendingJob of pendingJobs) {
-        const callIndex = remainingCalls.findIndex((call) => call.id === pendingJob.callId);
-        if (callIndex < 0) {
-          remainingJobs = remainingJobs.filter((item) => item.jobId !== pendingJob.jobId);
-          continue;
-        }
-        const pendingCall = remainingCalls[callIndex];
-        const resolved = await this.deps.resolveJob(pendingJob);
-        if (resolved.status === 'queued' || resolved.status === 'running' || resolved.result?.pending) {
-          session.pendingJobs = remainingJobs.length ? remainingJobs : undefined;
-          session.pendingToolCalls = remainingCalls.length ? remainingCalls : undefined;
-          return {
-            sessionKey: input.sessionKey,
-            turnId: input.turnId,
-            status: 'suspended',
-            messages: structuredClone(session.messages),
-            usage: { modelRounds: 0, toolRounds: 0 },
-            pendingJob: { ...pendingJob, status: 'running' },
-            meta: { reason: 'async_job_pending_resume' },
-          };
-        }
-        let result: AgentToolResult;
-        if (resolved.result && !resolved.result.pending) {
-          result = resolved.result;
-        } else if (resolved.status === 'succeeded') {
-          result = resolved.result || toolSuccess(pendingCall.id, pendingCall.name, {
-            content: '任务已完成。',
-            meta: { jobId: pendingJob.jobId },
-          });
-        } else {
-          result = toolFailure(pendingCall.id, resolved.error || makeToolError({
-            code: 'tool_execution_failed',
-            message: `异步任务状态：${resolved.status}`,
-            callId: pendingCall.id,
-            toolName: pendingCall.name,
-            retryable: resolved.status === 'cancelled',
-            details: { jobId: pendingJob.jobId, jobStatus: resolved.status },
-          }), { toolName: pendingCall.name });
-        }
-        const toolMessage: AgentMessage = {
-          role: 'tool',
-          toolCallId: pendingCall.id,
-          name: pendingCall.name,
-          content: JSON.stringify(result),
-          isError: !result.ok,
+      const pendingJob = pendingJobs[0];
+      const pendingCalls = [...(session.pendingToolCalls || [])];
+      const callIndex = pendingCalls.findIndex((call) => call.id === pendingJob.callId);
+      if (callIndex < 0) {
+        session.pendingJobs = existingPendingJobs.filter((item) => item.jobId !== pendingJob.jobId);
+        if (!session.pendingJobs.length) session.pendingJobs = undefined;
+        return {
+          sessionKey: input.sessionKey,
+          turnId: input.turnId,
+          status: 'suspended',
+          messages: structuredClone(session.messages),
+          usage: { modelRounds: 0, toolRounds: 0 },
+          meta: { reason: 'async_job_pending_missing_call' },
         };
-        session.messages = [ ...(session.messages || []).filter((message) => !(message.role === 'tool' && message.toolCallId === pendingCall.id)), toolMessage ];
-        resumedToolResults.push(result);
-        remainingJobs = remainingJobs.filter((item) => item.jobId !== pendingJob.jobId);
-        remainingCalls = remainingCalls.filter((call) => call.id !== pendingCall.id);
-        session.pendingJobs = remainingJobs.length ? remainingJobs : undefined;
-        session.pendingToolCalls = remainingCalls.length ? remainingCalls : undefined;
       }
+      const pendingCall = pendingCalls[callIndex];
+      const resolved = await this.deps.resolveJob(pendingJob);
+      if (resolved.status === 'queued' || resolved.status === 'running' || resolved.result?.pending) {
+        session.pendingJobs = existingPendingJobs;
+        session.pendingToolCalls = pendingCalls;
+        return {
+          sessionKey: input.sessionKey,
+          turnId: input.turnId,
+          status: 'suspended',
+          messages: structuredClone(session.messages),
+          usage: { modelRounds: 0, toolRounds: 0 },
+          pendingJob: { ...pendingJob, status: resolved.status === 'queued' ? 'queued' : 'running' },
+          meta: { reason: 'async_job_pending_resume' },
+        };
+      }
+      let result: AgentToolResult;
+      if (resolved.result && !resolved.result.pending) {
+        result = resolved.result;
+      } else if (resolved.status === 'succeeded') {
+        result = resolved.result || toolSuccess(pendingCall.id, pendingCall.name, {
+          content: '任务已完成。',
+          meta: { jobId: pendingJob.jobId },
+        });
+      } else {
+        result = toolFailure(pendingCall.id, resolved.error || makeToolError({
+          code: 'tool_execution_failed',
+          message: '异步任务状态：' + String(resolved.status),
+          callId: pendingCall.id,
+          toolName: pendingCall.name,
+          retryable: resolved.status === 'cancelled',
+          details: { jobId: pendingJob.jobId, jobStatus: resolved.status },
+        }), { toolName: pendingCall.name });
+      }
+      const toolMessage: AgentMessage = {
+        role: 'tool',
+        toolCallId: pendingCall.id,
+        name: pendingCall.name,
+        content: JSON.stringify(result),
+        isError: !result.ok,
+      };
+      const remainingCalls = pendingCalls.filter((call) => call.id !== pendingCall.id);
+      session.messages = [ ...(session.messages || []).filter((message) => !(message.role === 'tool' && message.toolCallId === pendingCall.id)), toolMessage ];
+      resumedToolResults.push(result);
+      session.pendingJobs = existingPendingJobs.filter((item) => item.jobId !== pendingJob.jobId);
+      if (!session.pendingJobs.length) session.pendingJobs = undefined;
+      session.pendingToolCalls = remainingCalls.length ? remainingCalls : undefined;
     }
     let contextUserText = input.userText;
     // 异步任务续跑时原用户消息已经在 session.messages；不要把续跑通知伪装成新用户请求。
@@ -461,8 +469,9 @@ export class AgentRuntime implements AgentLoop {
       session.pendingQuestion = undefined;
       session.pendingToolCalls = undefined;
     }
-    const pendingToolNames = new Set(existingPendingJobs.map((job) => String(job.toolName || '')).filter(Boolean));
-    const tools = this.resolveTools(input).filter((tool) => input.metadata?.resumeJob === true || !pendingToolNames.has(tool.name));
+    // pending 工具仍然对模型可见：同工具重复请求由 ToolJobRuntime 的 per-session FIFO 队列承接，
+    // 不能靠隐藏工具来防止重复提交，否则用户会无工具可用、turn 失败或无回复。
+    const tools = this.resolveTools(input);
     const availableToolNames = tools.map((tool) => tool.name);
     const prompt = this.deps.promptRegistry?.build();
     const contextBuilder = this.deps.contextBuilder || new DefaultAgentContextBuilder();
@@ -670,6 +679,7 @@ export class AgentRuntime implements AgentLoop {
               status: 'suspended',
               messages: saved.messages,
               usage: this.finalUsage(budget),
+              ...(turnReplyPreference ? { replyPreference: turnReplyPreference } : {}),
               ...(decision.pendingApproval ? { pendingApproval: decision.pendingApproval } : {}),
               ...(decision.pendingJob ? { pendingJob: decision.pendingJob } : {}),
               ...(decision.error ? { error: toolErrorToTurnError(decision.error) } : {}),
@@ -745,6 +755,7 @@ export class AgentRuntime implements AgentLoop {
             messages: saved.messages,
             toolResults: normalizedResults,
             pendingJob: pendingJobs[0],
+            ...(turnReplyPreference ? { replyPreference: turnReplyPreference } : {}),
             usage: this.finalUsage(budget),
             meta: { reason: 'async_job_pending', pendingJobs },
           };
@@ -968,7 +979,7 @@ export class AgentRuntime implements AgentLoop {
       .filter((result) => result.pending && result.jobId)
       .map((result) => ({
         jobId: String(result.jobId),
-        status: 'running' as const,
+        status: result.meta?.queued === true ? 'queued' as const : 'running' as const,
         toolName: result.toolName || 'unknown',
         callId: result.callId,
         configRevision: input.configRevision,
@@ -977,6 +988,9 @@ export class AgentRuntime implements AgentLoop {
         meta: {
           ...(result.meta || {}),
           ...(String(input.userText || '').trim() ? { originalUserText: String(input.userText).slice(0, 6000) } : {}),
+          ...(input.attachments?.length ? { originalAttachments: input.attachments } : {}),
+          ...(input.replyPreference ? { originalReplyPreference: input.replyPreference } : {}),
+          ...(typeof input.metadata?.replyPreferenceSessionKey === 'string' ? { originalReplyPreferenceSessionKey: input.metadata.replyPreferenceSessionKey } : {}),
           ...(typeof input.metadata?.requestId === 'string' ? { requestId: input.metadata.requestId } : {}),
         },
       }));

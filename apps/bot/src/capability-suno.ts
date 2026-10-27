@@ -8,10 +8,12 @@ import type { SunoSongHistoryStore } from './suno-song-history.js';
 export interface SunoCapabilityOptions {
   getConfig: () => AppConfig;
   logger?: StructuredLogger;
-  createClient?: (config: AppConfig['orchestration']['suno']) => Pick<SunoClient, 'create' | 'wait'>;
+  createClient?: (config: AppConfig['orchestration']['suno']) => Pick<SunoClient, 'create' | 'wait' | 'get'>;
   compose?: (args: Record<string, unknown>, request: any) => Promise<SunoComposedSpec>;
   composeSafeFallback?: (args: Record<string, unknown>, request: any) => SunoComposedSpec;
   history?: SunoSongHistoryStore;
+  /** R13：等待超时但远端仍在跑时登记“迟到投递”——由装配方补投，不再丢弃任务。 */
+  registerLateDelivery?: (taskId: string, input: { invocation: CapabilityInvocation; composed?: SunoComposedSpec; rawUserText: string }) => void;
 }
 
 function appendLanguageHint(value: string | undefined, language: string | undefined, maxLength = 1000): string | undefined {
@@ -29,7 +31,7 @@ function stringArg(args: Record<string, unknown>, key: string): string | undefin
 
 export class SunoCapabilityHandler implements CapabilityHandler {
   private active = 0;
-  private readonly queue: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+  private readonly queue: Array<{ resolve: () => void; reject: (error: Error) => void; cleanup?: () => void }> = [];
   private readonly usage = new Map<string, { day: string; count: number }>();
 
   constructor(private readonly options: SunoCapabilityOptions) {}
@@ -52,7 +54,7 @@ export class SunoCapabilityHandler implements CapabilityHandler {
     this.usage.set(key, { day, count: count + 1 });
   }
 
-  private async acquireSlot(config: AppConfig['orchestration']['suno'], userQq: string): Promise<void> {
+  private async acquireSlot(config: AppConfig['orchestration']['suno'], userQq: string, signal?: AbortSignal): Promise<void> {
     const maxConcurrent = Math.max(1, Math.trunc(Number(config.maxConcurrent) || 1));
     const maxQueue = Math.max(0, Math.trunc(Number(config.maxQueue) || 0));
     if (this.active >= maxConcurrent && this.queue.length >= maxQueue) {
@@ -64,13 +66,27 @@ export class SunoCapabilityHandler implements CapabilityHandler {
       return;
     }
     await new Promise<void>((resolve, reject) => {
-      this.queue.push({ resolve, reject });
+      if (signal?.aborted) {
+        reject(new Error('suno_queue_cancelled'));
+        return;
+      }
+      const entry = { resolve, reject } as { resolve: () => void; reject: (error: Error) => void; cleanup?: () => void };
+      const onAbort = () => {
+        const index = this.queue.indexOf(entry);
+        if (index >= 0) this.queue.splice(index, 1);
+        entry.cleanup?.();
+        reject(new Error('suno_queue_cancelled'));
+      };
+      entry.cleanup = () => signal?.removeEventListener('abort', onAbort);
+      this.queue.push(entry);
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
 
   private releaseSlot(): void {
     const next = this.queue.shift();
     if (next) {
+      next.cleanup?.();
       next.resolve();
       return;
     }
@@ -171,14 +187,46 @@ export class SunoCapabilityHandler implements CapabilityHandler {
     };
     let acquired = false;
     try {
-      await this.acquireSlot(cfg, invocation.request.user.qq);
+      await this.acquireSlot(cfg, invocation.request.user.qq, invocation.signal);
       acquired = true;
       const created = await this.withRetry(() => client.create(generationInput), cfg.maxRetries);
       // T2.8：提交成功即上报 taskId——崩溃恢复时才有对账依据（不重放、防双计费）。
       invocation.reportExternalTask?.(created.id);
-      // 任务级等待使用较长下限；请求级失败仍由 SunoClient 的 HTTP timeout 控制。
-      const waitTimeoutMs = Math.max(600000, Math.trunc(Number(cfg.timeoutMs) || 0));
-      const task = await this.withRetry(() => client.wait(created.id, { timeoutMs: waitTimeoutMs, signal: invocation.signal }), cfg.maxRetries);
+      // R13：任务级等待跟随后台配置 orchestration.suno.timeoutMs（默认 600s）；仅设 3 分钟防呆下限，
+      // 不再强制抬到 10 分钟——线上实测正常任务约 1 分钟完成，10 分钟硬下限让卡住的任务白白等满才报错。
+      const waitTimeoutMs = Math.max(180000, Math.trunc(Number(cfg.timeoutMs) || 600000));
+      // R13：等待超时不直接判死——Suno 远端任务大概率仍在跑（实测正常约 1 分钟完成）。
+      // 探一次远端状态：仍在跑→登记“迟到投递”并告知用户；远端已失败才真正失败。
+      let task: Awaited<ReturnType<typeof client.wait>>;
+      try {
+        task = await this.withRetry(() => client.wait(created.id, { timeoutMs: waitTimeoutMs, signal: invocation.signal }), cfg.maxRetries);
+      } catch (error) {
+        const message = String((error as Error)?.message || error);
+        if (message !== 'suno_wait_timeout' && message !== 'suno_wait_aborted') throw error;
+        let probed: Awaited<ReturnType<typeof client.get>>;
+        try {
+          probed = await client.get(created.id);
+        } catch (probeError) {
+          this.options.logger?.warn('Suno 超时探查失败，按失败处理', { taskId: created.id, error: String((probeError as Error)?.message || probeError) });
+          return {
+            jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'failed',
+            outputs: [], error: 'suno_wait_timeout', diagnostics: { taskId: created.id, probed: false }, retryable: false,
+          };
+        }
+        if (probed.status === 'failed') {
+          return {
+            jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'failed',
+            outputs: [], error: 'suno_task_failed', diagnostics: { taskId: created.id, raw: probed.raw }, retryable: false,
+          };
+        }
+        this.options.registerLateDelivery?.(created.id, { invocation, composed, rawUserText });
+        this.options.logger?.warn('Suno 等待超时，任务在途，已登记迟到投递', { taskId: created.id, status: probed.status });
+        return {
+          jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'partial',
+          outputs: [{ kind: 'text' as const, text: '歌曲还在生成中，完成后会自动发出来，先不用重新点。' }],
+          diagnostics: { taskId: created.id, lateDelivery: true }, retryable: false,
+        };
+      }
       if (task.status !== 'success') {
         return {
           jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'failed',

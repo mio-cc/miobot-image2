@@ -37,7 +37,7 @@ export interface ReplyPolicyConfigLike {
       textFallback: 'always' | 'on_forward_fail' | 'off';
     };
   };
-  bot: { textReply: { maxChars: number } };
+  bot: { textReply: { maxChars: number }; replyStrategies: { text: 'forward' | 'at' | 'quote' | 'plain' | 'text-image' } };
 }
 
 export interface ReplyPolicyResolveInput {
@@ -59,7 +59,13 @@ export function resolveReplyPolicy(input: ReplyPolicyResolveInput): ResolvedRepl
   const turn = enabled && cfg.replyPolicy.allowModelOverride ? input.turnPreference : undefined;
   const session = enabled && cfg.replyPolicy.allowSessionPreferences ? input.sessionPreference : undefined;
   const user = enabled && cfg.replyPolicy.allowUserPreferences ? input.userPreference : undefined;
-  const mode = turn?.mode ?? session?.mode ?? user?.mode ?? 'auto';
+  // P0-3 根因A（R12 修复）：后台默认 bot.replyStrategies.text 必须进入 Agent 的回复策略。
+  // 无任何显式偏好（turn/session/user）时，mode 兜底到后台文本策略：
+  // forward→forward（合并转发），quote→quote，direct/plain→direct；auto 保持自动。
+  // 优先级：协议硬约束 > turn 请求 > session/user 偏好 > 后台默认（不变）。
+  const backendTextMode = String(cfg.bot?.replyStrategies?.text || 'plain').trim() as 'forward' | 'at' | 'quote' | 'plain' | 'text-image';
+  const backendMode: ReplyModePreference = backendTextMode === 'forward' ? 'forward' : backendTextMode === 'quote' ? 'quote' : backendTextMode === 'at' ? 'quote' : backendTextMode === 'plain' ? 'direct' : 'auto';
+  const mode = turn?.mode ?? session?.mode ?? user?.mode ?? backendMode;
   const forwardStyle = turn?.forwardStyle ?? session?.forwardStyle ?? user?.forwardStyle ?? 'auto';
   const voice = turn?.voice ?? session?.voice ?? user?.voice ?? (enabled ? cfg.replyPolicy.defaultVoice : 'auto');
   const reference = turn?.reference ?? session?.reference ?? user?.reference ?? 'auto';
