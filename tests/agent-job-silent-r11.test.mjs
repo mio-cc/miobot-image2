@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createDefaultConfig } from '../dist/packages/config/src/index.js';
@@ -115,7 +115,7 @@ test('agent-job R11: async suspension is silent — no fixed status text, no pla
     finalCalls += 1;
     return { text: '猫画好了，看看这张。', raw: {}, finishReason: 'stop' };
   };
-  const final = await host({ text: '异步任务结果已就绪，请根据工具结果继续完成原操作。', chatType: 'private', userId: '2000', sessionId: 'private:2000', userRole: 'user' });
+  const final = await host({ text: '异步任务结果已就绪，请根据工具结果继续完成原操作。', resumeJob: true, chatType: 'private', userId: '2000', sessionId: 'private:2000', userRole: 'user' });
   assert.equal(final.status, 'completed');
   assert.equal(final.silent, undefined);
   assert.equal(final.text, '猫画好了，看看这张。');

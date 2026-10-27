@@ -355,7 +355,22 @@ export class AgentRuntime implements AgentLoop {
         session.pendingToolCalls = remainingCalls.length ? remainingCalls : undefined;
       }
     }
-    const pendingJobs = [...(session.pendingJobs || [])];
+    // 普通新消息不能消费上一轮尚未完成的异步任务；否则会把旧图片/旧音频
+    // 当成本轮 tool result 注入 ReplyPlan，造成旧产物被再次发送。
+    // 只有 ToolJobRuntime 完成回调带来的 resumeJob turn 才允许结算 pendingJobs。
+    const existingPendingJobs = session.pendingJobs || [];
+    if (existingPendingJobs.length && input.metadata?.resumeJob !== true) {
+      return {
+        sessionKey: input.sessionKey,
+        turnId: input.turnId,
+        status: 'suspended',
+        messages: structuredClone(session.messages),
+        usage: { modelRounds: 0, toolRounds: 0 },
+        pendingJob: existingPendingJobs[0],
+        meta: { reason: 'async_job_pending_resume' },
+      };
+    }
+    const pendingJobs = input.metadata?.resumeJob === true ? [...existingPendingJobs] : [];
     if (pendingJobs.length) {
       if (!this.deps.resolveJob) {
         return {
@@ -458,11 +473,15 @@ export class AgentRuntime implements AgentLoop {
     const availableToolNames = tools.map((tool) => tool.name);
     const prompt = this.deps.promptRegistry?.build();
     const contextBuilder = this.deps.contextBuilder || new DefaultAgentContextBuilder();
+    const preferenceSection = input.replyPreference
+      ? `【当前会话回复呈现偏好】\n${JSON.stringify(input.replyPreference)}\n当前用户消息如果提出不同的呈现方式，必须以当前消息为准，并先调用 reply.presentation 更新偏好。`
+      : '';
+    const systemSections = [prompt?.content, preferenceSection].filter((value): value is string => Boolean(String(value || '').trim()));
     const context = contextBuilder.build({
       session,
       userText: contextUserText,
       attachments: input.attachments,
-      ...(prompt?.content ? { systemSections: [prompt.content] } : {}),
+      ...(systemSections.length ? { systemSections } : {}),
       ...(typeof input.metadata?.memoryContext === 'string' ? { memoryContext: input.metadata.memoryContext } : {}),
       ...(typeof input.metadata?.groupContext === 'string' ? { groupContext: input.metadata.groupContext } : {}),
       ...(typeof input.metadata?.currentTask === 'string' ? { currentTask: input.metadata.currentTask } : {}),
@@ -720,9 +739,11 @@ export class AgentRuntime implements AgentLoop {
         this.appendToolRound(workingMessages, persistedMessages, response, validation.calls, normalizedResults);
         const pendingJobs = this.pendingJobsFromResults(normalizedResults, input);
         if (pendingJobs.length) {
+          const mergedCalls = [...(session.pendingToolCalls || []), ...validation.calls];
+          const mergedJobs = [...(session.pendingJobs || []), ...pendingJobs];
           const saved = this.saveSession(session, input, persistedMessages, {
-            pendingToolCalls: validation.calls,
-            pendingJobs,
+            pendingToolCalls: mergedCalls,
+            pendingJobs: mergedJobs,
           });
           return {
             sessionKey: input.sessionKey,
@@ -960,7 +981,11 @@ export class AgentRuntime implements AgentLoop {
         configRevision: input.configRevision,
         createdAt: this.now(),
         updatedAt: this.now(),
-        meta: result.meta,
+        meta: {
+          ...(result.meta || {}),
+          ...(String(input.userText || '').trim() ? { originalUserText: String(input.userText).slice(0, 6000) } : {}),
+          ...(typeof input.metadata?.requestId === 'string' ? { requestId: input.metadata.requestId } : {}),
+        },
       }));
   }
 
@@ -1083,10 +1108,10 @@ export class AgentRuntime implements AgentLoop {
       configRevision: input.configRevision,
       runtimeVersion: input.runtimeVersion,
       ...(input.replyPreference ? { replyPreference: input.replyPreference } : {}),
-      pendingToolCalls: undefined,
-      pendingApprovals: undefined,
-      pendingJobs: undefined,
-      pendingQuestion: undefined,
+      pendingToolCalls: 'pendingToolCalls' in overrides ? overrides.pendingToolCalls : session.pendingToolCalls,
+      pendingApprovals: 'pendingApprovals' in overrides ? overrides.pendingApprovals : session.pendingApprovals,
+      pendingJobs: 'pendingJobs' in overrides ? overrides.pendingJobs : session.pendingJobs,
+      pendingQuestion: 'pendingQuestion' in overrides ? overrides.pendingQuestion : session.pendingQuestion,
       updatedAt: this.now(),
       ...overrides,
     };

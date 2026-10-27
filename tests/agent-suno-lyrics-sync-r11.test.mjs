@@ -87,3 +87,22 @@ test('agent suno: lyrics text and audio dispatch together without auto-TTS', asy
   assert.ok(sent.some(([kind, value]) => kind === 'text' && /第一句真实歌词/.test(value)));
   assert.ok(sent.some(([kind]) => kind === 'record'));
 });
+
+
+test('agent suno: lyrics text is forwarded even when it is the only text output', async () => {
+  const outcome = await hostFor(true)({ text: '写一首测试歌', chatType: 'private', userId: '4', sessionId: 'private:suno-lyrics-forward', userRole: 'user' });
+  const sent = [];
+  const reply = {
+    sendPrivateText: async (_u, text) => { sent.push(['text', text]); return { success: true, messageId: 1 }; },
+    sendPrivateTextForward: async (_u, nodes) => { sent.push(['forward', nodes]); return { success: true, messageId: 1 }; },
+    sendPrivateRecord: async (_u, file) => { sent.push(['record', file]); return { success: true, messageId: 2 }; },
+  };
+  const runtime = createBotMessageRuntime({
+    reply, getConfig: () => { const c = createDefaultConfig(); c.orchestration.suno.sendLyricsWithMusic = true; return c; },
+    botName: 'Mio',
+  });
+  await runtime.sendAgentOutcome({ chatType: 'private', userId: '4', replyPlan: outcome.replyPlan });
+  assert.equal(sent.some(([kind]) => kind === 'forward'), true, JSON.stringify(sent));
+  assert.equal(sent.some(([kind, value]) => kind === 'text' && /第一句真实歌词/.test(value)), false, JSON.stringify(sent));
+  assert.equal(sent.some(([kind]) => kind === 'record'), true, JSON.stringify(sent));
+});

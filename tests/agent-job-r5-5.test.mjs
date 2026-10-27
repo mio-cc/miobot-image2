@@ -108,6 +108,10 @@ test('agent-job R5.5: pending job suspends, then resumes with the completed arti
   assert.equal(first.silent, true);
   assert.equal(first.text, undefined);
 
+  const interrupted = await host({ text: '先聊别的', chatType: 'private', userId: '1', sessionId: 'private:async-job' });
+  assert.equal(interrupted.status, 'suspended');
+  assert.equal(interrupted.reason, 'agent_job_pending');
+  assert.equal(modelCalls, 1, '普通新消息不得结算旧 pending job');
   jobState = {
     status: 'succeeded',
     result: toolSuccess('img_call', 'image.generate', {
@@ -115,7 +119,7 @@ test('agent-job R5.5: pending job suspends, then resumes with the completed arti
       outputs: [{ kind: 'image', url: 'https://example.test/async-cat.png', priority: 20 }],
     }),
   };
-  const second = await host({ text: '任务好了吗？', chatType: 'private', userId: '1', sessionId: 'private:async-job' });
+  const second = await host({ text: '任务好了吗？', resumeJob: true, chatType: 'private', userId: '1', sessionId: 'private:async-job' });
   assert.equal(handlerCalls, 1);
   assert.equal(second.status, 'completed');
   assert.equal(second.text, '图片已生成。');

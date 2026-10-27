@@ -21,6 +21,7 @@ test('presentation R11: system prompt defines a semantic delivery-preference con
   assert.match(prompt, /语义|上下文/);
   assert.match(prompt, /不要依赖固定关键词|不要按词面匹配/);
   assert.match(prompt, /## 意图与工具选择/);
+  assert.match(prompt, /信息目标|不要为了展示文字、歌词、事实或搜索结果/);
   assert.match(prompt, /## 事实、产物与验证/);
   assert.match(prompt, /## 上下文与数据边界/);
   assert.match(prompt, /工具被拒绝或失败|不要原样重试/);

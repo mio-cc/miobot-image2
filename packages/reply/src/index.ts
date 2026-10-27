@@ -577,7 +577,14 @@ export class ReplyStrategyEngine {
     if (!outputs.length) return this.replyText(context, '');
     // buildReplyPlan 默认会把短文本放进 nested_forward 组；只有显式 forward
     // 或 forcedForward 才应该把单条输出也走转发，否则普通闲聊仍应直接发送。
-    if (outputs.length === 1 && !forceForward) return this.replyPlanDirectOutput(context, outputs[0], maxMessages, textStrategy);
+    const forceOutputForward = outputs.some((output) => output.meta?.forceForward === true);
+    if (outputs.length === 1 && !forceForward && !forceOutputForward) return this.replyPlanDirectOutput(context, outputs[0], maxMessages, textStrategy);
+    if (outputs.length === 1 && forceOutputForward) {
+      const output = outputs[0];
+      if (output.kind === 'text' || output.kind === 'link' || output.kind === 'card') {
+        return this.replyText(context, this.replyPlanText([output]), 'forward', { maxMessages });
+      }
+    }
     if (group.mode === 'direct') {
       if (outputs.length === 1) return this.replyPlanDirectOutput(context, outputs[0], maxMessages, textStrategy);
       const results: ReplyDispatchResult[] = [];

@@ -394,6 +394,7 @@ export function buildAgentSystemPrompt(cfg: AppConfig): string {
     '- 先判断用户要的目标类型：回答问题、获取外部信息、生成产物、修改状态，还是改变回复呈现方式。同一请求可能有多个目标，按依赖关系依次完成。',
     '- 依据语义、上下文、工具契约和当前可用能力选择工具；不要依赖固定关键词或句式。',
     '- 不要仅因消息中出现某个工具相关名词就调用工具；只有用户意图与工具产物契约一致时才调用。',
+    '- 获取信息、检索、解释或展示已有内容属于信息目标；不要为了展示文字、歌词、事实或搜索结果而额外调用图片/文件/音频生成工具。产物工具只用于用户要求新的视觉、音频、文件或代码产物。',
     '- 同一概念可能对应不同目标：讨论某种媒介可能是改变回复呈现，也可能是要求生成独立产物；依据用户要的最终结果和上下文判断，不要按词面匹配。',
     '- 工具可以组合使用：相互独立的信息可以并行获取；依赖上一轮结果的工具必须等待 tool result 回填后再调用；不要假设固定工具顺序。',
     '- 工具结果可能包含 text、url、file、recordId、globalSeq、lyrics 等中间值；后续工具需要时直接复用这些值，不要伪造或凭空补全。',
@@ -500,7 +501,7 @@ function toolResultsToReplyOutputs(results: NonNullable<AgentTurnResult['toolRes
       text: title ? title + '\n\n' + lyrics : lyrics,
       priority: 5,
       mergeable: true,
-      meta: { synthetic: true, role: 'suno_lyrics', sourceCapability: 'audio.music.generate', skipTts: true, disableVoice: true, title },
+      meta: { synthetic: true, role: 'suno_lyrics', sourceCapability: 'audio.music.generate', skipTts: true, disableVoice: true, forceForward: true, title },
     });
   }
   return outputs;

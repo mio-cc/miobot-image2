@@ -1584,8 +1584,9 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     const userMessages = (session.messages || [])
       .filter((message): message is Extract<(typeof session.messages)[number], { role: 'user' }> => message.role === 'user')
       .filter((message) => String(message.content || '').trim() && message.meta?.internal !== true && String(message.content || '').trim() !== resumeNotice);
+    const pendingRecord = session.pendingJobs?.find((item) => item.jobId === job.jobId);
     const originalUser = userMessages.at(-1);
-    const originalText = String(originalUser?.content || '').trim();
+    const originalText = String(pendingRecord?.meta?.originalUserText || originalUser?.content || '').trim();
     const originalAttachments = Array.isArray(originalUser?.attachments) ? originalUser.attachments : [];
     const originalImages = originalAttachments.filter((item) => item.kind === 'image').map((item) => item.ref);
     const originalVideos = originalAttachments.filter((item) => item.kind === 'video').map((item) => item.ref);
