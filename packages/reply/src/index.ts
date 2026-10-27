@@ -910,7 +910,7 @@ export function splitLongText(text: string, maxChars: number): string[] {
 }
 
 export function normalizeStrategy(value: unknown, fallback: ReplyStrategy = 'plain'): ReplyStrategy {
-  return value === 'forward' || value === 'at' || value === 'quote' || value === 'plain' || value === 'text-image' ? value : fallback;
+  return value === 'forward' || value === 'at' || value === 'quote' || value === 'plain' || value === 'text-image' || value === 'voice' ? value : fallback;
 }
 
 export function resolveReplyStrategy(config: ReplyStrategyConfig, kind: ReplyKind): ReplyStrategy {

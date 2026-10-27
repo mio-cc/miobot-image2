@@ -734,7 +734,7 @@ function normTtsVoiceIds(v: unknown, active: string): string[] { const source = 
  * \u9700\u540C\u6B65\u6539\u4E0A\u9762\u90A3\u6761\u56DE\u5F52\u6D4B\u8BD5\u3002
  */
 function aliases(v: unknown, fb: string): string { const raw = Array.isArray(v) ? v : String(v ?? fb).split(/[,\uFF0C\u3001\uFF1B;\n]+/); const def = String(fb).split(/[,\uFF0C\u3001\uFF1B;\n]+/); const seen = new Set<string>(); const out: string[] = []; for (const x of [...raw, ...def]) { const s = String(x ?? '').replace(/\s+/g, ' ').trim(); const key = s.toLowerCase(); if (s && !seen.has(key)) { seen.add(key); out.push(s); } } return out.join(', '); }
-function strategy(v: unknown, fb: ReplyStrategy): ReplyStrategy { return pick(v, ['at', 'forward', 'quote', 'plain', 'text-image'] as const, fb); }
+function strategy(v: unknown, fb: ReplyStrategy): ReplyStrategy { return pick(v, ['at', 'forward', 'quote', 'plain', 'text-image', 'voice'] as const, fb); }
 function imageQuality(v: unknown, fb: CanvasImageQuality): CanvasImageQuality { const s = String(v ?? '').trim().toLowerCase(); return pick(s === 'hd' ? 'high' : s, ['auto', 'low', 'medium', 'high'] as const, fb); }
 function normalizeHfSort(v: unknown): string {
   const raw = String(v ?? '').trim();

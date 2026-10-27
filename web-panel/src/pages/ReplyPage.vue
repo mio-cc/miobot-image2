@@ -18,12 +18,15 @@ const orch = computed(() => config.value?.orchestration);
 const replyPolicy = computed(() => config.value?.replyPolicy);
 
 const strategyOptions = [
+    { value: 'voice', label: '语音回复', textOnly: true },
     { value: 'forward', label: '合并转发' },
     { value: 'quote', label: '引用原消息' },
     { value: 'at', label: '@ 提问者' },
     { value: 'plain', label: '普通消息' },
     { value: 'text-image', label: '文本转图片' },
 ];
+const textOptions = strategyOptions;
+const nonTextOptions = strategyOptions.filter((opt) => !opt.textOnly);
 </script>
 
 <template>
@@ -37,44 +40,44 @@ const strategyOptions = [
 
     <SectionCard title="回复方式（v2 直发链路）" hint="按内容类型选择回复方式；编排链路（enforce）走下方消息预算" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4">
-        <FormField label="纯文本回复" hint="长文本建议用合并转发">
+        <FormField label="纯文本回复" hint="语音回复 = 文本合成 TTS 后以语音消息发送（需在「语音」页启用 TTS），TTS 不可用自动回退文本">
           <select v-model="config.bot.replyStrategies.text" class="input-field">
-            <option v-for="opt in strategyOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+            <option v-for="opt in textOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
           </select>
         </FormField>
         <FormField label="单图回复">
           <select v-model="config.bot.replyStrategies.image" class="input-field">
-            <option v-for="opt in strategyOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+            <option v-for="opt in nonTextOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
           </select>
         </FormField>
         <FormField label="多图回复" hint="推荐合并转发，避免刷屏">
           <select v-model="config.bot.replyStrategies.multiImage" class="input-field">
-            <option v-for="opt in strategyOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+            <option v-for="opt in nonTextOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
           </select>
         </FormField>
         <FormField label="单视频">
           <select v-model="config.bot.replyStrategies.video" class="input-field">
-            <option v-for="opt in strategyOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+            <option v-for="opt in nonTextOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
           </select>
         </FormField>
         <FormField label="多视频" hint="推荐合并转发">
           <select v-model="config.bot.replyStrategies.multiVideo" class="input-field">
-            <option v-for="opt in strategyOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+            <option v-for="opt in nonTextOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
           </select>
         </FormField>
         <FormField label="单文件">
           <select v-model="config.bot.replyStrategies.file" class="input-field">
-            <option v-for="opt in strategyOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+            <option v-for="opt in nonTextOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
           </select>
         </FormField>
         <FormField label="多文件" hint="推荐合并转发">
           <select v-model="config.bot.replyStrategies.multiFile" class="input-field">
-            <option v-for="opt in strategyOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+            <option v-for="opt in nonTextOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
           </select>
         </FormField>
         <FormField label="图文视频混排" hint="推荐合并转发">
           <select v-model="config.bot.replyStrategies.mixed" class="input-field">
-            <option v-for="opt in strategyOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+            <option v-for="opt in nonTextOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
           </select>
         </FormField>
       </div>
