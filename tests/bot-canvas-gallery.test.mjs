@@ -153,29 +153,27 @@ test('canvas gallery sync: 明确关闭时完全不请求 Canvas', async () => {
   assert.deepEqual(images, original);
 });
 
-test('canvas gallery sync: absolute internal asset URLs are stored relative for HTTPS canvas', async () => {
+test('canvas gallery sync: existing canvas asset URLs are never re-imported', async () => {
   const config = baseConfig();
-  const calls = [];
+  let calls = 0;
   const sync = createCanvasGallerySync({
     getConfig: () => config,
     env: { MIOBOT_PORT: '3018', MIOBOT_PUBLIC_BASE_URL: 'https://i.mioku.cn' },
-    fetchImpl: async (url, init) => {
-      calls.push({ url, init });
+    fetchImpl: async () => {
+      calls += 1;
       return galleryResponse(['/canvas-api/assets/b1/download']);
     },
   });
+  const original = ['http://host.docker.internal:3018/canvas-api/assets/file_x/download'];
   const images = await sync.syncImages({
     mode: 'generate',
     prompt: 'cat',
-    images: ['http://host.docker.internal:3018/canvas-api/assets/file_x/download'],
+    images: original,
     context: { chatType: 'group', groupId: 9, userId: 5 },
   });
-  assert.equal(calls.length, 1);
-  const payload = JSON.parse(calls[0].init.body);
-  assert.equal(payload.artifacts[0].data, '/canvas-api/assets/file_x/download');
-  assert.deepEqual(images, ['https://i.mioku.cn/canvas-api/assets/b1/download']);
+  assert.equal(calls, 0);
+  assert.deepEqual(images, original);
 });
-
 test('canvas gallery sync: private public base stores gallery but sends original images', async () => {
   const config = baseConfig();
   let called = false;
@@ -196,4 +194,30 @@ test('canvas gallery sync: private public base stores gallery but sends original
   });
   assert.equal(called, true);
   assert.deepEqual(images, original);
+});
+
+test('canvas gallery sync: external image URL is fetched and submitted as base64 for preview-safe storage', async () => {
+  const config = baseConfig();
+  const calls = [];
+  const sync = createCanvasGallerySync({
+    getConfig: () => config,
+    env: { MIOBOT_PORT: '3018', MIOBOT_PUBLIC_BASE_URL: 'https://i.mioku.cn' },
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      if (url === 'https://cdn.example/generated.png') {
+        return new Response(Buffer.from('PNG_BYTES'), { status: 200, headers: { 'content-type': 'image/png' } });
+      }
+      return galleryResponse(['/canvas-api/assets/ext1/download']);
+    },
+  });
+  const images = await sync.syncImages({
+    mode: 'generate', prompt: 'external cat', images: ['https://cdn.example/generated.png'],
+    context: { chatType: 'private', userId: '1' },
+  });
+  assert.equal(calls.length, 2);
+  const payload = JSON.parse(calls[1].init.body);
+  assert.equal(payload.artifacts[0].kind, 'base64');
+  assert.equal(payload.artifacts[0].mimeType, 'image/png');
+  assert.equal(Buffer.from(payload.artifacts[0].data, 'base64').toString('utf8'), 'PNG_BYTES');
+  assert.deepEqual(images, ['https://i.mioku.cn/canvas-api/assets/ext1/download']);
 });

@@ -81,9 +81,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../pages/CapabilityDetailPage.vue'),
     },
     {
-        // P1-E（R10 收口）：能力分工并入 Agent 与工具页。
+        // 能力分工：每项能力节点/模型的可视化入口，不要再隐藏成 redirect。
         path: '/routing',
-        redirect: '/agent',
+        name: 'routing',
+        component: () => import('../pages/RoutingPage.vue'),
+        meta: { title: '能力分工', group: '模型', icon: 'route' },
     },
     {
         path: '/nodes',

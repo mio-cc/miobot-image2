@@ -160,3 +160,10 @@ test('agent-job R5.5: deep capability handlers can report external task ids thro
   assert.equal(result.ok, true);
   assert.deepEqual(reported, ['remote-video-1']);
 });
+test('tool-job R5.5: timeoutMs=0 waits for the remote job instead of failing locally', async () => {
+  const jobs = new ToolJobRuntime();
+  const job = jobs.create({ toolName: 'image.generate', callId: 'call-0', sessionKey: 'private:0' });
+  const result = toolSuccess('call-0', 'image.generate', { outputs: [{ kind: 'image', url: 'https://example.test/late.png' }] });
+  await jobs.run(job.jobId, new Promise((resolve) => setTimeout(() => resolve(result), 25)), 0);
+  assert.equal(jobs.get(job.jobId)?.status, 'succeeded');
+});

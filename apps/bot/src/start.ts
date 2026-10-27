@@ -10,6 +10,7 @@ import { createCapabilityToolBinding, STATEFUL_CAPABILITY_TOOLS } from './capabi
 import { createAgentToolPreflight } from './agent-tool-policy.js';
 import { FileToolIdempotencyStore, makeToolError, toolFailure, toolPending, toolSuccess, type ToolResult } from '../../../packages/tool-runtime/src/index.js';
 import { ToolJobRuntime, type ToolJobRecord } from './tool-job-runtime.js';
+import { resolveAsyncJobTimeoutMs } from './async-job-timeout.js';
 import { ReplyPreferenceStore } from './reply-preference-store.js';
 import { hasPendingAgentClarification } from './pending-clarification.js';
 import { InMemoryAgentSessionManager, type AgentJobRecord, type AgentToolPreflightDecision, type AgentToolPreflightInput } from '../../../packages/agent-runtime/src/index.js';
@@ -109,6 +110,40 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // 这样面板保存后，bot 进程下一条消息就用上新配置，不需要重动——
   // 否则 web 和 bot 是两个进程，面板那句「无需重动」对机器人是假的。
   const getConfig = (): AppConfig => (store ? store.loadIfChanged() : config);
+
+  const logImageRoutingSnapshot = (cfg: AppConfig) => {
+    const imageNode = cfg.llm.apiKeys?.[cfg.llm.imageNodeIndex];
+    const imageOverrideDisabled = cfg.orchestration.capabilityOverrides?.['image.generate']?.enabled === false;
+    const imageFeatureDisabled = cfg.bot.features?.['image.generate']?.enabled === false;
+    const imageMasterDisabled = cfg.llm.imageEnabled !== true;
+    const warnings = [
+      ...(imageMasterDisabled ? ['llm.imageEnabled=false'] : []),
+      ...(imageFeatureDisabled ? ['bot.features.image.generate.enabled=false'] : []),
+      ...(imageOverrideDisabled ? ['orchestration.capabilityOverrides.image.generate.enabled=false'] : []),
+      ...(cfg.codeRender?.enabled !== false && (imageMasterDisabled || imageFeatureDisabled || imageOverrideDisabled)
+        ? ['image.generate 当前不可见/可能回退，普通画图请求可能由 code.render 处理']
+        : []),
+    ];
+    logger.info('image routing snapshot', {
+      imageGenerate: {
+        available: !imageMasterDisabled && !imageFeatureDisabled && !imageOverrideDisabled,
+        llmImageEnabled: cfg.llm.imageEnabled === true,
+        featureEnabled: !imageFeatureDisabled,
+        capabilityOverrideEnabled: !imageOverrideDisabled,
+        nodeIndex: cfg.llm.imageNodeIndex,
+        nodeKind: imageNode?.kind || '',
+        nodeName: imageNode?.name || '',
+        model: cfg.llm.imageModel,
+        provider: imageNode?.kind === 'comfyui' || imageNode?.comfyui ? 'comfyui' : 'model',
+      },
+      imageEdit: { nodeIndex: cfg.llm.editNodeIndex, model: cfg.llm.editModel },
+      imageInterrogate: { nodeIndex: cfg.llm.interrogateNodeIndex, model: cfg.llm.interrogateModel },
+      codeRender: { enabled: cfg.codeRender?.enabled !== false, nodeIndex: cfg.codeRender?.nodeIndex, model: cfg.codeRender?.model },
+      canvasImage: { nodeIndex: cfg.canvas.imageNodeIndex, model: cfg.canvas.imageModel },
+      warnings,
+    });
+  };
+  logImageRoutingSnapshot(getConfig());
   const dataDir = options.dataDir || (options.configFilePath ? path.dirname(options.configFilePath) : path.resolve('.runtime'));
     const sunoSongHistory = new SunoSongHistoryStore({ filePath: path.join(dataDir, "suno-song-history.json"), maxRecords: () => getConfig().orchestration.suno.historyMaxRecords || 100, logger });
   const auditService = new AuditService({
@@ -1052,6 +1087,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       const original = binding.handler;
       binding.handler = async (call, spec, context) => {
         const job = toolJobRuntime.create({ toolName: call.name, callId: call.id, sessionKey: context.sessionKey });
+        const jobTimeoutMs = resolveAsyncJobTimeoutMs(getConfig(), call.name, spec.timeoutMs);
+        logger.info('异步工具任务登记', { toolName: call.name, jobId: job.jobId, timeoutMs: jobTimeoutMs });
         const run = (signal: AbortSignal) => Promise.resolve()
           .then(() => original(call, spec, {
             ...context,
@@ -1078,7 +1115,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
               meta: value?.meta,
             });
           });
-        void toolJobRuntime.run(job.jobId, run, spec.timeoutMs);
+        void toolJobRuntime.run(job.jobId, run, jobTimeoutMs);
         return toolPending(call.id, job.jobId, {
           toolName: call.name,
           meta: { asyncJob: true, sessionKey: context.sessionKey },
@@ -1250,6 +1287,23 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       }
       const userRole = agentUserRole(cfg, input.userId);
       const outcome = await agentHost({ ...input, userRole });
+      const toolNames = Array.from(new Set((outcome.turn?.toolResults || []).map((item) => String(item.toolName || '')).filter(Boolean)));
+      const imageToolNames = toolNames.filter((name) => ['image.generate', 'image.edit', 'image.interrogate', 'image.stitch', 'code.render', 'browser.render'].includes(name));
+      if (imageToolNames.length) {
+        const imageNode = cfg.llm.apiKeys?.[cfg.llm.imageNodeIndex];
+        logger.info('agent image route', {
+          tools: imageToolNames,
+          llmImageEnabled: cfg.llm.imageEnabled === true,
+          imageGenerateFeature: cfg.bot.features?.['image.generate']?.enabled !== false,
+          imageGenerateCapability: cfg.orchestration.capabilityOverrides?.['image.generate']?.enabled !== false,
+          imageNodeIndex: cfg.llm.imageNodeIndex,
+          imageNodeKind: imageNode?.kind || '',
+          imageModel: cfg.llm.imageModel,
+          codeRenderEnabled: cfg.codeRender?.enabled !== false,
+          codeRenderNodeIndex: cfg.codeRender?.nodeIndex,
+          codeRenderModel: cfg.codeRender?.model,
+        });
+      }
       logger.info('agent runtime turn', {
         mode: outcome.mode,
         status: outcome.status,
@@ -1258,6 +1312,12 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         modelRounds: outcome.turn?.usage?.modelRounds,
         toolRounds: outcome.turn?.usage?.toolRounds,
         safeTextFallback: outcome.turn?.meta?.safeTextFallback === true,
+        partial: outcome.turn?.meta?.partial === true,
+        timedOut: outcome.turn?.meta?.timedOut === true,
+        errorCode: outcome.turn?.error?.code,
+        errorMessage: outcome.turn?.error?.message,
+        toolResultCount: outcome.turn?.toolResults?.length,
+        toolNames,
         terminal: outcome.terminal === true,
         replyPlanMessages: outcome.replyPlan?.messageCount,
       });
@@ -1267,10 +1327,15 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         ...(outcome.replyPlan ? { replyPlan: outcome.replyPlan } : {}),
         ...(outcome.reason ? { reason: outcome.reason } : {}),
         ...(outcome.silent ? { silent: true } : {}),
+        ...(outcome.problem ? { problem: outcome.problem } : {}),
         meta: {
           status: outcome.status,
           mode: outcome.mode,
           ...(outcome.turn?.usage ? { usage: outcome.turn.usage } : {}),
+          ...(outcome.turn?.error ? { error: outcome.turn.error } : {}),
+          ...(outcome.turn?.meta?.partial ? { partial: true, timedOut: true } : {}),
+          ...(outcome.turn?.toolResults ? { toolResultCount: outcome.turn.toolResults.length } : {}),
+          ...(toolNames.length ? { toolNames } : {}),
         },
       };
     },
@@ -1506,8 +1571,33 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     if (!userId) return;
     const cfg = getConfig();
     const userRole = agentUserRole(cfg, userId);
+    const resumeNotice = '异步任务结果已就绪，请根据工具结果继续完成原操作。';
+    const userMessages = (session.messages || [])
+      .filter((message): message is Extract<(typeof session.messages)[number], { role: 'user' }> => message.role === 'user')
+      .filter((message) => String(message.content || '').trim() && message.meta?.internal !== true && String(message.content || '').trim() !== resumeNotice);
+    const originalUser = userMessages.at(-1);
+    const originalText = String(originalUser?.content || '').trim();
+    const originalAttachments = Array.isArray(originalUser?.attachments) ? originalUser.attachments : [];
+    const originalImages = originalAttachments.filter((item) => item.kind === 'image').map((item) => item.ref);
+    const originalVideos = originalAttachments.filter((item) => item.kind === 'video').map((item) => item.ref);
+    const originalAudios = originalAttachments.filter((item) => item.kind === 'audio').map((item) => item.ref);
+    const availableToolNames = agentToolBindings()
+      .map((binding) => binding.spec.name)
+      .filter((name) => name !== job.toolName);
+    logger.info('agent tool job resume', {
+      jobId: job.jobId,
+      toolName: job.toolName,
+      originalTextLength: originalText.length,
+      originalTextPreview: originalText.slice(0, 160),
+      availableToolNames,
+    });
     const outcome = await agentHost({
-      text: '异步任务结果已就绪，请根据工具结果继续完成原操作。',
+      text: originalText || '请根据已完成工具结果处理原请求。',
+      resumeJob: true,
+      availableToolNames,
+      ...(originalImages.length ? { images: originalImages } : {}),
+      ...(originalVideos.length ? { videos: originalVideos } : {}),
+      ...(originalAudios.length ? { audios: originalAudios } : {}),
       chatType,
       ...(groupId !== undefined ? { groupId } : {}),
       userId,

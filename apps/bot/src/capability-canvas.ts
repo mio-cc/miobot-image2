@@ -12,7 +12,8 @@ export class CanvasGalleryCapabilityHandler implements CapabilityHandler {
     const imageUrl = (url: string) => url.startsWith('/') && publicBase ? publicBase.replace(/\/$/, '') + url : url;
     const outputs: ExecutionOutput[] = items.map((item) => ({
       kind: 'image', url: imageUrl(item.asset.url), priority: 9, mergeable: true,
-      meta: { prompt: item.prompt, createdAt: item.createdAt },
+      // 这是历史图库读取，不是新生成产物；不能被 postProcessReplyPlanOutputs 再回灌一次。
+      meta: { prompt: item.prompt, createdAt: item.createdAt, sourceCapability: 'canvas.gallery', readOnlyArtifact: true },
     }));
     if (!outputs.length) outputs.push({ kind: 'text', text: '图库暂时为空。', priority: 10, mergeable: true });
     return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success', outputs };

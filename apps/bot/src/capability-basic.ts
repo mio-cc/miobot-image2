@@ -23,11 +23,30 @@ function baseResult(invocation: CapabilityInvocation, outputs: ExecutionOutput[]
   return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success', outputs, diagnostics };
 }
 
+const SEARCH_BATCH_MAX_QUERIES = 8;
+const SEARCH_BATCH_CONCURRENCY = 4;
+const SEARCH_BATCH_MAX_CHARS = 12_000;
+
+function searchQueries(args: Record<string, unknown>, fallback: string): string[] {
+  const raw = Array.isArray(args.queries) ? args.queries : [];
+  const values = [
+    ...(typeof args.query === 'string' ? [args.query] : []),
+    ...raw,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+  return Array.from(new Set(values)).slice(0, SEARCH_BATCH_MAX_QUERIES);
+}
+
+function capSearchText(value: string): string {
+  const text = String(value || '').trim();
+  if (text.length <= SEARCH_BATCH_MAX_CHARS) return text;
+  return text.slice(0, SEARCH_BATCH_MAX_CHARS) + '\n\n[批量搜索内容已截断]';
+}
+
 export class SearchCapabilityHandler implements CapabilityHandler {
   constructor(private readonly app: BotApp) {}
-  async execute(invocation: CapabilityInvocation): Promise<ExecutionResult> {
-    const query = stringArg(invocation.step.args, ['query', 'q', 'prompt']) || invocation.request.text;
-    const result = await this.app.engine.handleExplicit('chat', {
+
+  private async runEngineQuery(invocation: CapabilityInvocation, query: string) {
+    return this.app.engine.handleExplicit('chat', {
       text: query,
       chatType: invocation.request.chat.type,
       sessionId: invocation.request.chat.type === 'group'
@@ -41,6 +60,50 @@ export class SearchCapabilityHandler implements CapabilityHandler {
         promptChars: query.length,
       },
     }, { prompt: query });
+  }
+
+  private async batchSearch(invocation: CapabilityInvocation, queries: string[]): Promise<ExecutionResult> {
+    const service = this.app.search!;
+    const results: Array<{ query: string; text: string }> = [];
+    const failures: Array<{ query: string; error: string }> = [];
+    let cursor = 0;
+    const worker = async () => {
+      for (;;) {
+        const index = cursor;
+        cursor += 1;
+        if (index >= queries.length) return;
+        const query = queries[index];
+        try {
+          const response = await service.search({ query, signal: invocation.signal });
+          results[index] = { query, text: service.formatContext(response) };
+        } catch (error) {
+          results[index] = { query, text: '' };
+          failures[index] = { query, error: String((error as Error)?.message || error).slice(0, 300) };
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(SEARCH_BATCH_CONCURRENCY, queries.length) }, () => worker()));
+    const blocks = results.map((item, index) => {
+      const failure = failures[index];
+      if (failure) return `【${failure.query}】搜索失败：${failure.error}`;
+      return `【${item.query}】\n${item.text || '（没有搜索结果）'}`;
+    });
+    const text = capSearchText(blocks.join('\n\n'));
+    return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success', outputs: text ? [{ kind: 'text', text, priority: 10, mergeable: true, meta: { batch: true, queryCount: queries.length } }] : [], diagnostics: { batch: true, queryCount: queries.length, failures: failures.filter(Boolean) } };
+  }
+
+  async execute(invocation: CapabilityInvocation): Promise<ExecutionResult> {
+    const fallback = invocation.request.text;
+    const queries = searchQueries(invocation.step.args || {}, fallback);
+    if (queries.length > 1 && this.app.search) return this.batchSearch(invocation, queries);
+    if (queries.length > 1) {
+      // 兼容没有注入 search service 的测试/旧装配：并发走现有引擎，不改变单查询语义。
+      const settled = await Promise.all(queries.map((query) => this.runEngineQuery(invocation, query).then((result) => ({ query, result }), (error) => ({ query, error }))));
+      const text = capSearchText(settled.map((item: any) => item.error ? `【${item.query}】搜索失败：${String(item.error?.message || item.error)}` : `【${item.query}】\n${String(item.result?.text || '')}`).join('\n\n'));
+      return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success', outputs: text ? [{ kind: 'text', text, priority: 10, mergeable: true, meta: { batch: true, queryCount: queries.length } }] : [], diagnostics: { batch: true, queryCount: queries.length, fallbackEngine: true } };
+    }
+    const query = queries[0] || fallback;
+    const result = await this.runEngineQuery(invocation, query);
     return baseResult(invocation, result.text ? [{ kind: 'text', text: result.text, priority: 10, mergeable: true }] : []);
   }
 }

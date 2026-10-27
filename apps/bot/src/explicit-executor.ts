@@ -8,6 +8,7 @@ export interface ExplicitExecutorOptions {
   getConfig: () => AppConfig;
   registry: () => CapabilityRegistry;
   beforeDispatch?: (decision: RuntimeDecision, input: RuntimeInput) => Promise<(() => void) | void>;
+  log?: { info(message: string, data?: Record<string, unknown>): void; warn(message: string, data?: Record<string, unknown>): void; error(message: string, data?: Record<string, unknown>): void };
 }
 
 /**
@@ -45,6 +46,13 @@ export class ExplicitExecutor implements RuntimeExplicitEngine {
 
       if (kind === 'image.generate') {
         if (!cfg.llm.imageEnabled || !this.options.registry().can(cfg.llm.imageModel, 'image.generate')) {
+          this.options.log?.warn('image.generate 未执行，回退到 chat', {
+            reason: !cfg.llm.imageEnabled ? 'llm.imageEnabled=false' : 'model_capability_unsupported',
+            imageEnabled: cfg.llm.imageEnabled === true,
+            imageNodeIndex: cfg.llm.imageNodeIndex,
+            imageModel: cfg.llm.imageModel,
+            canGenerate: this.options.registry().can(cfg.llm.imageModel, 'image.generate'),
+          });
           const fallback = await this.options.deps.chat({
             model: cfg.llm.chatModel,
             text: prompt,

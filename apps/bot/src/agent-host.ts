@@ -1,4 +1,4 @@
-﻿import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   AgentRuntime,
   InMemoryAgentSessionManager,
@@ -27,6 +27,10 @@ export interface AgentHostInput {
   chatType: 'group' | 'private';
   groupId?: string | number;
   userId?: string | number;
+  /** 续跑异步任务时只暴露仍需可用的工具，避免重复调用刚完成的同一工具。 */
+  availableToolNames?: string[];
+  /** 标记本轮是异步任务完成后的续跑，不重复注入用户新消息。 */
+  resumeJob?: boolean;
   images?: string[];
     videos?: string[];
     audios?: string[];
@@ -53,6 +57,7 @@ export interface AgentHostOutcome {
   terminal?: boolean;
   /** R11：异步挂起静默吸收——runtime 不发送任何内容（也不算失败），结果由 resume 通道送达。 */
   silent?: boolean;
+  problem?: { kind: string; error: string };
 }
 
 export interface AgentHostOptions {
@@ -172,6 +177,7 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
         maxToolCallsPerRound: Math.max(1, cfg.toolRegistry.maxToolsPerTurn),
         maxTokens: cfg.agent.maxTokens,
         turnTimeoutMs: cfg.agent.turnTimeoutMs,
+        finalizeTimeoutMs: cfg.agent.finalizeTimeoutMs,
         maxToolsPerTurn: cfg.toolRegistry.maxToolsPerTurn,
         maxToolSchemaBytes: cfg.toolRegistry.maxToolSchemaBytes,
       },
@@ -252,6 +258,7 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
       runtimeVersion: 'r5-agent-loop',
       availableContext,
       toolChoice: cfg.agent.toolChoice,
+      ...(input.availableToolNames?.length ? { availableToolNames: input.availableToolNames } : {}),
       ...(runtimeSessionPreference ? { replyPreference: runtimeSessionPreference } : {}),
       metadata: {
         ...(input.groupContext ? { groupContext: input.groupContext } : {}),
@@ -264,6 +271,7 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
         ...(input.userId !== undefined ? { userId: input.userId } : {}),
         ...(input.userRole ? { userRole: input.userRole } : {}),
         userText: input.text,
+        ...(input.resumeJob ? { resumeJob: true } : {}),
         attachments,
       },
     };
@@ -312,10 +320,11 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
     const turnText = String(turn.text || '').trim();
     const approvalHandoff = mode === 'enforce' && turn.status === 'suspended' && Boolean(turn.pendingApproval);
     const jobHandoff = mode === 'enforce' && turn.status === 'suspended' && Boolean(turn.pendingJob);
+    const partialFromTools = !turnText && turn.status === 'failed' ? partialToolResultsText(collectedResults) : '';
     // R11（生产问题修复）：异步挂起不再向用户发送任何固定状态文案——多步异步任务每挂起
     // 一次就回填一次「任务已提交…」并被 auto-TTS 成语音，用户连收几条重复语音。挂起一律
     // 静默吸收（silent），结果由 job 完成时的 resume 通道统一送达。审批提示保留（可感知）。
-    const finalText = turnText || (approvalHandoff ? '该操作需要管理员审批，已提交审批，请等待结果。' : '');
+    const finalText = turnText || (approvalHandoff ? '该操作需要管理员审批，已提交审批，请等待结果。' : '') || partialFromTools;
     const artifactOutputs = toolResultsToReplyOutputs(collectedResults, cfg);
     const effectiveReplyPreferences: { turnPreference?: AgentReplyPreference; sessionPreference?: AgentReplyPreference; userPreference?: AgentReplyPreference } = {
       ...replyPreferences,
@@ -323,11 +332,26 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
     };
     const replyPlan = buildAgentReplyPlan(cfg, [
       ...artifactOutputs,
-      ...(finalText ? [{ kind: 'text' as const, text: finalText, priority: 10, mergeable: true } as ExecutionOutput] : []),
+      ...(finalText ? [{
+        kind: 'text' as const,
+        text: finalText,
+        priority: 10,
+        mergeable: true,
+        ...(turn.meta?.partial || partialFromTools ? { meta: { skipTts: true, disableVoice: true, partial: true, timedOut: true } } : {}),
+      } as ExecutionOutput] : []),
     ], effectiveReplyPreferences);
-    const normalHandoff = mode === 'enforce'
+    // 异步任务续跑时模型可能只返回产物、不返回额外文本；只要产物来自已迁移工具，
+    // 仍应把它交付给 ReplyPlan，不能因为没有 finalText 把图片丢掉。
+    const artifactOnlyHandoff = mode === 'enforce'
       && turn.status === 'completed'
-      && Boolean(finalText)
+      && !finalText
+      && artifactOutputs.length > 0
+      && onlyMigratedTools
+      && turn.meta?.safeTextFallback !== true
+      && turn.meta?.shadow !== true;
+    const normalHandoff = mode === 'enforce'
+      && (turn.status === 'completed' || Boolean(partialFromTools))
+      && (Boolean(finalText) || artifactOnlyHandoff)
       && onlyMigratedTools
       && turn.meta?.safeTextFallback !== true
       && turn.meta?.shadow !== true;
@@ -342,6 +366,9 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
       ...(finalText && handled ? { text: finalText } : {}),
       ...(handled ? { replyPlan } : {}),
       turn,
+      ...(turn.status === 'failed'
+        ? { problem: { kind: 'agent_turn_failed', error: `${turn.error?.code || 'unknown'}: ${turn.error?.message || 'Agent turn failed'}` } }
+        : {}),
     };
   };
 }
@@ -393,6 +420,20 @@ function buildAgentReplyPlan(cfg: AppConfig, outputs: ExecutionOutput[], prefere
   });
   const plan = buildReplyPlan(outputs, resolved.options);
   return { ...plan, policy: resolved.policy };
+}
+
+function partialToolResultsText(results: NonNullable<AgentTurnResult['toolResults']>): string {
+  const parts: string[] = [];
+  for (const result of results || []) {
+    if (result.ok === false) continue;
+    const text = [
+      String(result.content || '').trim(),
+      ...(result.outputs || []).flatMap((output) => [String(output.text || '').trim(), output.url ? String(output.url) : '']),
+    ].filter(Boolean).join('\n');
+    if (!text) continue;
+    parts.push('[' + String(result.toolName || result.callId || 'tool') + ']\n' + text);
+  }
+  return parts.join('\n\n').slice(0, 12_000);
 }
 
 function toolResultsToReplyOutputs(results: NonNullable<AgentTurnResult['toolResults']>, cfg: AppConfig): ExecutionOutput[] {

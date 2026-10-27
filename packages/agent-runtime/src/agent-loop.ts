@@ -62,6 +62,8 @@ export interface AgentModelRequest {
   temperature?: number;
   signal?: AbortSignal;
   purpose?: 'turn' | 'repair' | 'safe-text';
+  /** 本请求的预算上限；上层 turn deadline 会把它进一步 clamp。 */
+  timeoutMs?: number;
 }
 
 export interface AgentModelResponse {
@@ -84,6 +86,7 @@ export interface AgentLoopLimits {
   maxToolCallsPerRound: number;
   maxTokens: number;
   turnTimeoutMs: number;
+  finalizeTimeoutMs: number;
   maxToolsPerTurn: number;
   maxToolSchemaBytes: number;
 }
@@ -95,6 +98,7 @@ export const DEFAULT_AGENT_LOOP_LIMITS: Readonly<AgentLoopLimits> = Object.freez
   maxToolCallsPerRound: 16,
   maxTokens: 8192,
   turnTimeoutMs: 180_000,
+  finalizeTimeoutMs: 15_000,
   maxToolsPerTurn: 24,
   maxToolSchemaBytes: 48_000,
 });
@@ -181,6 +185,12 @@ interface TurnBudget {
   usage: AgentUsage;
 }
 
+interface TurnExecutionState {
+  budget: TurnBudget;
+  toolResults: AgentToolResult[];
+  deadlineAt: number;
+}
+
 class AgentAbortError extends Error {
   constructor() { super('agent_turn_aborted'); }
 }
@@ -215,27 +225,35 @@ export class AgentRuntime implements AgentLoop {
     const onExternalAbort = () => controller.abort();
     if (input.signal?.aborted) return this.cancelledResult(input, 'turn_cancelled_before_start');
     input.signal?.addEventListener('abort', onExternalAbort, { once: true });
+    const executionState: TurnExecutionState = {
+      budget: { modelRounds: 0, toolRounds: 0, remainingTokens: this.limits.maxTokens, usage: {} },
+      toolResults: [],
+      deadlineAt: Date.now() + this.limits.turnTimeoutMs,
+    };
     const timer = setTimeout(() => {
       timedOut = true;
       controller.abort();
     }, this.limits.turnTimeoutMs);
-    const task = this.runTurnInner(input, mode, controller.signal);
+    const task = this.runTurnInner(input, mode, controller.signal, executionState);
     const abortRace = new Promise<never>((_, reject) => {
       controller.signal.addEventListener('abort', () => reject(new AgentAbortError()), { once: true });
     });
     try {
       return await Promise.race([task, abortRace]);
     } catch (error) {
-      if (timedOut) return this.failedResult(input, 'turn_timeout', `Turn exceeded ${this.limits.turnTimeoutMs}ms.`);
+      if (timedOut) return await this.finalizeTimedOut(input, executionState, 'turn_timeout');
       if (error instanceof AgentAbortError || controller.signal.aborted || input.signal?.aborted) return this.cancelledResult(input, 'turn_cancelled');
-      return this.failedResult(input, 'agent_runtime_error', error instanceof Error ? error.message : String(error));
+      return this.failedResult(input, 'agent_runtime_error', error instanceof Error ? error.message : String(error), {
+        usage: this.finalUsage(executionState.budget),
+        toolResults: executionState.toolResults,
+      });
     } finally {
       clearTimeout(timer);
       input.signal?.removeEventListener('abort', onExternalAbort);
     }
   }
 
-  private async runTurnInner(input: AgentTurnInput, mode: Exclude<AgentRuntimeMode, 'off'>, signal: AbortSignal): Promise<AgentTurnResult> {
+  private async runTurnInner(input: AgentTurnInput, mode: Exclude<AgentRuntimeMode, 'off'>, signal: AbortSignal, executionState: TurnExecutionState): Promise<AgentTurnResult> {
     const created = this.deps.sessions.loadOrCreate?.({
       sessionKey: input.sessionKey,
       turnId: input.turnId,
@@ -406,6 +424,8 @@ export class AgentRuntime implements AgentLoop {
       }
     }
     let contextUserText = input.userText;
+    // 异步任务续跑时原用户消息已经在 session.messages；不要把续跑通知伪装成新用户请求。
+    if (input.metadata?.resumeJob === true && resumedToolResults.length > 0) contextUserText = '';
     const pendingQuestion = session.pendingQuestion;
     if (pendingQuestion) {
       const pendingCall = (session.pendingToolCalls || []).find((call) => call.name === ASK_USER_TOOL_NAME);
@@ -453,14 +473,10 @@ export class AgentRuntime implements AgentLoop {
     const persistedMessages: AgentMessage[] = workingMessages
       .filter((message) => message.role !== 'system')
       .map((message) => structuredClone(message));
-    const budget: TurnBudget = {
-      modelRounds: 0,
-      toolRounds: 0,
-      remainingTokens: this.limits.maxTokens,
-      usage: {},
-    };
+    const budget: TurnBudget = executionState.budget;
     const repairTracker = new OutputRepairBudgetTracker(this.repairLimits);
-    const executedResults: AgentToolResult[] = [...resumedToolResults];
+    executionState.toolResults = [...resumedToolResults];
+    const executedResults: AgentToolResult[] = executionState.toolResults;
     let temperatureOverride: number | undefined;
     let lastRepairReason: string | undefined;
     // P0-2：reply.presentation 按当前 turn 暂存，最终随 AgentTurnResult 交给 AgentHost。
@@ -473,7 +489,7 @@ export class AgentRuntime implements AgentLoop {
       if (budget.remainingTokens <= 0) {
         return this.safeTextOrFailure({
           input, mode, signal, budget, workingMessages, persistedMessages, session, availableToolNames, toolResults: executedResults,
-          reason: 'token_budget_exhausted', repairLimits: this.repairLimits,
+          reason: 'token_budget_exhausted', repairLimits: this.repairLimits, deadlineAt: executionState.deadlineAt,
         });
       }
       const response = await this.deps.model.chat({
@@ -486,6 +502,7 @@ export class AgentRuntime implements AgentLoop {
         temperature: temperatureOverride ?? this.deps.temperature,
         signal,
         purpose: 'turn',
+        timeoutMs: Math.max(1, executionState.deadlineAt - Date.now()),
       });
       temperatureOverride = undefined;
       this.consumeModelUsage(response, budget);
@@ -513,7 +530,7 @@ export class AgentRuntime implements AgentLoop {
           lastRepairReason = decision.reason || 'repair_budget_exhausted';
           return this.safeTextOrFailure({
             input, mode, signal, budget, workingMessages, persistedMessages, session, availableToolNames, toolResults: executedResults,
-            reason: lastRepairReason, repairLimits: this.repairLimits,
+            reason: lastRepairReason, repairLimits: this.repairLimits, deadlineAt: executionState.deadlineAt,
           });
         }
         this.appendRepairMessages(workingMessages, response, validation);
@@ -536,7 +553,7 @@ export class AgentRuntime implements AgentLoop {
         if (budget.toolRounds + validation.calls.length > this.limits.maxToolRounds) {
           return this.safeTextOrFailure({
             input, mode, signal, budget, workingMessages, persistedMessages, session, availableToolNames, toolResults: executedResults,
-            reason: 'max_tool_rounds', repairLimits: this.repairLimits,
+            reason: 'max_tool_rounds', repairLimits: this.repairLimits, deadlineAt: executionState.deadlineAt,
           });
         }
 
@@ -674,6 +691,7 @@ export class AgentRuntime implements AgentLoop {
           sessionKey: input.sessionKey,
           requestId: input.metadata?.requestId ? String(input.metadata.requestId) : `${input.sessionKey}:${input.turnId}`,
           signal,
+          deadlineAt: executionState.deadlineAt,
           metadata: input.metadata,
         };
         const specByName = new Map(tools.map((tool) => [tool.name, tool]));
@@ -745,7 +763,7 @@ export class AgentRuntime implements AgentLoop {
 
     return this.safeTextOrFailure({
       input, mode, signal, budget, workingMessages, persistedMessages, session, availableToolNames, toolResults: executedResults,
-      reason: lastRepairReason || 'max_model_rounds', repairLimits: this.repairLimits,
+      reason: lastRepairReason || 'max_model_rounds', repairLimits: this.repairLimits, deadlineAt: executionState.deadlineAt,
     });
   }
 
@@ -957,6 +975,7 @@ export class AgentRuntime implements AgentLoop {
     toolResults?: AgentToolResult[];
     reason: string;
     repairLimits: OutputRepairLimits;
+    deadlineAt?: number;
   }): Promise<AgentTurnResult> {
     const { input, signal, budget, workingMessages, persistedMessages, session, reason } = options;
     if (!options.repairLimits.allowTextFallback || budget.modelRounds >= this.limits.maxModelRounds || budget.remainingTokens <= 0) {
@@ -984,6 +1003,7 @@ export class AgentRuntime implements AgentLoop {
         temperature: 0,
         signal,
         purpose: 'safe-text',
+        timeoutMs: Math.max(1, (options.deadlineAt || Date.now() + this.limits.turnTimeoutMs) - Date.now()),
       });
     } catch (error) {
       return {
@@ -1124,12 +1144,96 @@ export class AgentRuntime implements AgentLoop {
     };
   }
 
-  private failedResult(input: AgentTurnInput, code: string, message: string): AgentTurnResult {
+  private partialToolText(toolResults: AgentToolResult[]): string {
+    const parts: string[] = [];
+    for (const result of toolResults || []) {
+      if (result.ok === false) continue;
+      const text = [
+        String(result.content || '').trim(),
+        ...(result.outputs || []).flatMap((output) => [
+          String(output.text || '').trim(),
+          output.url ? String(output.url) : '',
+        ]),
+      ].filter(Boolean).join('\n');
+      if (!text) continue;
+      parts.push('[' + String(result.toolName || result.callId || 'tool') + ']\n' + text);
+    }
+    return parts.join('\n\n').slice(0, 12_000);
+  }
+
+  private async finalizeTimedOut(input: AgentTurnInput, state: TurnExecutionState, reason: string): Promise<AgentTurnResult> {
+    const usage = this.finalUsage(state.budget);
+    const toolResults = state.toolResults || [];
+    const context = this.partialToolText(toolResults);
+    if (!context) {
+      return this.failedResult(input, reason, 'Agent turn timed out before any usable tool result was produced.', { usage, toolResults });
+    }
+    const finalizeTimeoutMs = Math.max(500, Math.min(this.limits.finalizeTimeoutMs, Math.floor(this.limits.turnTimeoutMs / 4)));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), finalizeTimeoutMs);
+    try {
+      const response = await this.deps.model.chat({
+        model: this.deps.mainModel,
+        ...(this.deps.nodeIndex !== undefined ? { nodeIndex: this.deps.nodeIndex } : {}),
+        messages: [
+          { role: 'user', content: [
+            '本轮执行超过了时间预算。不要调用工具，不要继续搜索。',
+            '请只根据下面已经完成的工具结果，用用户使用的语言给出简洁、诚实的部分回答。',
+            '如果结果不足以回答，明确说明还缺什么；不要编造。',
+            '',
+            '用户请求：' + String(input.userText || '').slice(0, 2_000),
+            '',
+            '已完成工具结果：',
+            context,
+          ].join('\n') },
+        ],
+        tools: [],
+        toolChoice: 'none',
+        maxTokens: 1_200,
+        temperature: 0,
+        signal: controller.signal,
+        purpose: 'safe-text',
+        timeoutMs: finalizeTimeoutMs,
+      });
+      const text = String(response.assistant.text || '').trim();
+      if (text && !response.truncated && !response.assistant.toolCalls?.length) {
+        const session = this.deps.sessions.load(input.sessionKey);
+        const messages = session?.messages ? [...session.messages, { role: 'assistant' as const, content: text }] : undefined;
+        if (session && messages) this.saveSession(session, input, messages, {});
+        return {
+          sessionKey: input.sessionKey,
+          turnId: input.turnId,
+          status: 'completed',
+          text,
+          toolResults,
+          usage,
+          meta: { reason: 'timeout_partial', timedOut: true, partial: true, safeTextFallback: false },
+        };
+      }
+    } catch {
+      // fall through to the deterministic partial result below
+    } finally {
+      clearTimeout(timer);
+    }
+    const fallback = '时间限制前没能整理成完整回答。已经查到的内容：\n\n' + context;
+    return {
+      sessionKey: input.sessionKey,
+      turnId: input.turnId,
+      status: 'completed',
+      text: fallback.slice(0, 12_000),
+      toolResults,
+      usage,
+      meta: { reason: 'timeout_partial_deterministic', timedOut: true, partial: true, safeTextFallback: false },
+    };
+  }
+
+  private failedResult(input: AgentTurnInput, code: string, message: string, extra: Partial<AgentTurnResult> = {}): AgentTurnResult {
     return {
       sessionKey: input.sessionKey,
       turnId: input.turnId,
       status: 'failed',
-      error: { code, message },
+      error: { code, message, retryable: false },
+      ...extra,
     };
   }
 
@@ -1169,6 +1273,7 @@ function normalizeLoopLimits(input: Partial<AgentLoopLimits> = {}): AgentLoopLim
     maxToolCallsPerRound: intIn(input.maxToolCallsPerRound, DEFAULT_AGENT_LOOP_LIMITS.maxToolCallsPerRound, 1, 100),
     maxTokens: intIn(input.maxTokens, DEFAULT_AGENT_LOOP_LIMITS.maxTokens, 1, 1_000_000),
     turnTimeoutMs: intIn(input.turnTimeoutMs, DEFAULT_AGENT_LOOP_LIMITS.turnTimeoutMs, 100, 3_600_000),
+      finalizeTimeoutMs: intIn(input.finalizeTimeoutMs, DEFAULT_AGENT_LOOP_LIMITS.finalizeTimeoutMs, 500, 120_000),
     maxToolsPerTurn: intIn(input.maxToolsPerTurn, DEFAULT_AGENT_LOOP_LIMITS.maxToolsPerTurn, 1, 128),
     maxToolSchemaBytes: intIn(input.maxToolSchemaBytes, DEFAULT_AGENT_LOOP_LIMITS.maxToolSchemaBytes, 1_024, 1_000_000),
   };

@@ -7,14 +7,12 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const routerSource = fs.readFileSync(path.join(root, 'web-panel/src/router/index.ts'), 'utf8');
 
-test('panel R10 IA: legacy planner/routing routes redirect to /agent', () => {
-  // P1-E：旧页重定向，不再注册可导航组件路由。
+test('panel R11 IA: routing page is visible while planner remains a redirect', () => {
+  // 规划器仍然留给 Agent；能力分工必须保留可导航入口，否则每项能力的节点/模型配置无处可找。
   assert.match(routerSource, /path:\s*'\/planner',\s*\n\s*redirect:\s*'\/agent',/);
-  assert.match(routerSource, /path:\s*'\/routing',\s*\n\s*redirect:\s*'\/agent',/);
+  assert.match(routerSource, /path:\s*'\/routing',[\s\S]*?name:\s*'routing',[\s\S]*?RoutingPage\.vue/);
   assert.match(routerSource, /path:\s*'\/orchestration',\s*redirect:\s*'\/agent'/);
-  // 不再有指向旧组件的可导航路由
   assert.equal(/component:\s*\(\)\s*=>\s*import\('\.\.\/pages\/PlannerPage\.vue'\)/.test(routerSource), false);
-  assert.equal(/component:\s*\(\)\s*=>\s*import\('\.\.\/pages\/RoutingPage\.vue'\)/.test(routerSource), false);
 });
 
 test('panel R10 IA: new tools/jobs/prompts pages registered', () => {

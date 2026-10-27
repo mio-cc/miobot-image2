@@ -32,12 +32,17 @@ export function createAgentModelPort(client: Pick<ModelClient, 'chat'>, options:
     async chat(request: AgentModelRequest): Promise<AgentModelResponse> {
       const messages: ChatMessage[] = request.messages.map(toModelMessage);
       const tools = request.tools || [];
+      const requestedTimeout = Number(request.timeoutMs);
+      const timeoutMs = requestedTimeout > 0
+        ? (options.timeoutMs ? Math.min(requestedTimeout, options.timeoutMs) : requestedTimeout)
+        : options.timeoutMs;
       const chatRequest: ChatRequest = {
         model: request.model,
         messages,
         maxTokens: request.maxTokens,
         temperature: request.temperature,
-        ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+        ...(timeoutMs ? { timeoutMs } : {}),
+        ...(request.signal ? { signal: request.signal } : {}),
         ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
         ...(tools.length ? {
           toolSpecs: tools,
@@ -49,16 +54,32 @@ export function createAgentModelPort(client: Pick<ModelClient, 'chat'>, options:
       };
       const primaryNode = request.nodeIndex ?? options.defaultNodeIndex ?? 0;
       try {
-        return toAgentResponse(await client.chat(primaryNode, chatRequest));
+        return toAgentResponse(await chatWithAbort(client, primaryNode, chatRequest, request.signal));
       } catch (error) {
         if (request.signal?.aborted) throw error;
         const fallbackModel = String(options.fallbackModel || '').trim();
         const fallbackNode = options.fallbackNodeIndex;
         if (!fallbackModel || (fallbackNode === primaryNode && fallbackModel === request.model)) throw error;
-        return toAgentResponse(await client.chat(fallbackNode ?? primaryNode, { ...chatRequest, model: fallbackModel }));
+        return toAgentResponse(await chatWithAbort(client, fallbackNode ?? primaryNode, { ...chatRequest, model: fallbackModel }, request.signal));
       }
     },
+
   };
+}
+
+async function chatWithAbort(client: Pick<ModelClient, 'chat'>, nodeIndex: number, request: ChatRequest, signal?: AbortSignal) {
+  if (!signal) return client.chat(nodeIndex, request);
+  let abort: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    abort = () => reject(new Error('agent_model_aborted'));
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    return await Promise.race([client.chat(nodeIndex, request), aborted]);
+  } finally {
+    if (abort) signal.removeEventListener('abort', abort);
+  }
 }
 
 function toModelMessage(message: AgentModelRequest['messages'][number]): ChatMessage {

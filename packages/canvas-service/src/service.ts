@@ -345,7 +345,26 @@ export class CanvasService {
     if (method === 'GET' && assetMatch) {
       const id = decodeURIComponent(assetMatch[1]);
       const mode = assetMatch[2];
-      const asset = this.assets.get(id);
+      let asset = this.assets.get(id);
+      if (!asset) {
+        // 旧 bot/画布记录可能保存外链而未写入 AssetStore；前端仍按 asset.id 请求预览。
+        // 按 asset.id 找回记录并代理外链，兼容旧数据，避免整排 preview 404。
+        const externalUrl = this.findKnownAssetUrl(id);
+        if (externalUrl) {
+          const nestedId = externalUrl.match(/^\/canvas-api\/assets\/([^/]+)\/(?:download|preview)(?:\?.*)?$/)?.[1];
+          if (nestedId) asset = this.assets.get(decodeURIComponent(nestedId));
+          if (!asset && /^https?:\/\//i.test(externalUrl)) {
+            try {
+              const response = await fetch(externalUrl, { signal: AbortSignal.timeout(15000) });
+              if (response.ok) {
+                const contentType = String(response.headers.get('content-type') || 'image/png').split(';')[0];
+                const buffer = Buffer.from(await response.arrayBuffer());
+                if (buffer.length) return { status: 200, body: null, binary: { contentType, base64: buffer.toString('base64') } };
+              }
+            } catch { /* fall through to 404 */ }
+          }
+        }
+      }
       if (!asset) return notFound('Asset not found');
 
       // preview 真的按 width 缩。以前这里直接吐原图，画廊一屏十几张全尺寸，
@@ -579,6 +598,27 @@ export class CanvasService {
   });
   private publicInterrogationItem = (item: InterrogationItem): InterrogationItem => ({ ...item, asset: this.publicAsset(item.asset) });
   /** publicAsset：data URL/存储资产改写为下载链接，剥离内部存储字段(对齐 monolith)。 */
+  /** 旧记录可能只有外链 asset，没有 AssetStore 条目；按 asset.id 从画廊/历史/反推中找回。 */
+  private findKnownAssetUrl(id: string): string | undefined {
+    const take = (asset: CanvasAsset | undefined): string | undefined =>
+      asset && asset.id === id && String(asset.url || '').trim() ? String(asset.url) : undefined;
+    for (const item of this.store.gallery()) {
+      const found = take(item.asset);
+      if (found) return found;
+    }
+    for (const item of this.store.interrogations()) {
+      const found = take(item.asset);
+      if (found) return found;
+    }
+    for (const record of this.store.project().history) {
+      for (const output of record.outputs || []) {
+        const found = take(output.asset);
+        if (found) return found;
+      }
+    }
+    return undefined;
+  }
+
   private publicAsset(asset: CanvasAsset): CanvasAsset {
     if (!asset || typeof asset !== 'object') return asset;
     const out = { ...asset };

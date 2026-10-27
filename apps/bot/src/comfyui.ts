@@ -237,6 +237,11 @@ interface PromptEnhancementResult {
 function normalizePromptOutput(value: unknown): string {
   let text = String(value ?? '').trim();
   if (!text) return '';
+  // 有些模型会返回 {"prompt":"..."} 外壳。
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && typeof parsed.prompt === 'string') text = parsed.prompt.trim();
+  } catch { /* plain text */ }
   const fence = String.fromCharCode(96).repeat(3);
   if (text.startsWith(fence)) {
     text = text.slice(fence.length).trim();
@@ -283,22 +288,38 @@ async function enhancePrompt(options: ComfyUiGenerateOptions, profile: ComfyUiPr
   const raw = sanitizePromptText(prompt, promptPolicyFor(profile));
   if (!raw) return { prompt: '', source: 'fallback' };
   if (!transform.enabled || !transform.model) return { prompt: raw, source: 'fallback' };
-  try {
-    const renderedPrompt = renderPromptTemplate(transform.promptTemplate, profile, raw);
-    const result = await options.client.chat(transform.nodeIndex, {
-      model: transform.model,
-      messages: [{ role: 'user', content: renderedPrompt }],
-      timeoutMs: transform.timeoutMs,
-      maxTokens: transform.maxTokens,
-    });
-    const enhanced = sanitizePromptText(normalizePromptOutput(result.text), promptPolicyFor(profile));
-    if (!enhanced) throw new Error('ComfyUI prompt enhancement returned empty text');
-    return { prompt: enhanced, source: 'model' };
-  } catch (error) {
-    options.logger?.warn('ComfyUI prompt enhancement failed; using raw prompt', { error: String((error as Error)?.message || error) });
-    return { prompt: raw, source: 'fallback' };
+  const renderedPrompt = renderPromptTemplate(transform.promptTemplate, profile, raw);
+  let lastError = '';
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const result = await options.client.chat(transform.nodeIndex, {
+        model: transform.model,
+        messages: [{ role: 'user', content: renderedPrompt }],
+        timeoutMs: transform.timeoutMs,
+        maxTokens: transform.maxTokens,
+      });
+      const enhanced = sanitizePromptText(normalizePromptOutput(result.text), promptPolicyFor(profile));
+      if (!enhanced) throw new Error('ComfyUI prompt enhancement returned empty text');
+      return { prompt: enhanced, source: 'model' };
+    } catch (error) {
+      lastError = String((error as Error)?.message || error);
+      options.logger?.warn('ComfyUI prompt enhancement attempt failed', {
+        attempt,
+        error: lastError,
+        rawPromptPreview: raw.slice(0, 180),
+        nodeIndex: transform.nodeIndex,
+        model: transform.model,
+      });
+    }
   }
+  options.logger?.warn('ComfyUI prompt enhancement failed; using raw prompt', {
+    error: lastError,
+    attempts: 2,
+    rawPromptPreview: raw.slice(0, 240),
+  });
+  return { prompt: raw, source: 'fallback' };
 }
+
 function comfyQueueKey(baseUrl: string): string {
   try {
     const parsed = new URL(String(baseUrl || '').trim());

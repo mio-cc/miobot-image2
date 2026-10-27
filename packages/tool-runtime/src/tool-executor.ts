@@ -15,6 +15,8 @@ export interface ToolExecutionContext {
   /** Set when the provider stopped for length/token limit. Truncated calls are never executed. */
   truncatedOutput?: boolean;
   signal?: AbortSignal;
+  /** 上层 turn 的绝对截止时间；工具超时不得超过它。 */
+  deadlineAt?: number;
   metadata?: Record<string, unknown>;
   reportExternalTask?: (taskId: string) => void;
 }
@@ -181,7 +183,22 @@ export class ToolExecutor {
         reportExternalTask: (taskId: string) => this.onExternalTask?.(call, taskId, context),
       }),
     };
-    const timeoutMs = Math.max(0, Math.trunc(Number(spec.timeoutMs ?? this.defaultTimeoutMs) || 0));
+    const requestedTimeoutMs = Math.max(0, Math.trunc(Number(spec.timeoutMs ?? this.defaultTimeoutMs) || 0));
+    const remainingDeadlineMs = context.deadlineAt !== undefined
+      ? Math.max(0, context.deadlineAt - Date.now())
+      : undefined;
+    if (remainingDeadlineMs !== undefined && remainingDeadlineMs <= 0) {
+      return toolFailure(call.id, makeToolError({
+        code: 'timeout',
+        message: 'Turn deadline expired before tool execution.',
+        callId: call.id,
+        toolName: call.name,
+        retryable: false,
+      }), { toolName: call.name, meta: { deadlineExpired: true } });
+    }
+    const timeoutMs = remainingDeadlineMs !== undefined
+      ? (requestedTimeoutMs > 0 ? Math.min(requestedTimeoutMs, remainingDeadlineMs) : remainingDeadlineMs)
+      : requestedTimeoutMs;
     const maxRetries = Math.max(0, Math.trunc(Number(spec.maxRetries ?? this.defaultMaxRetries) || 0));
     const retrySafe = !spec.sideEffects?.length || spec.idempotency === 'payload' || spec.idempotency === 'turn';
     let attempt = 0;

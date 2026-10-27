@@ -470,3 +470,35 @@ test('agent-loop R9 BUG-9: permission deny is refilled to the model instead of t
   assert.ok(toolMessage);
   assert.match(toolMessage.content, /permission_denied/);
 });
+test('agent-loop R3: turn timeout preserves completed tool results and runs a short finalizer', async () => {
+  const h = harness({
+    responses: [
+      toolResponse([{ id: 'c1', name: 'echo', arguments: { value: '已完成的搜索结果' } }]),
+      () => new Promise(() => {}),
+      { assistant: { text: '时间限制前已查到部分结果，先说结论。' } },
+    ],
+    limits: { turnTimeoutMs: 100, maxModelRounds: 4 },
+  });
+  const result = await h.runtime.runTurn(turnInput());
+  assert.equal(result.status, 'completed');
+  assert.match(String(result.text), /部分结果/);
+  assert.equal(result.meta?.partial, true);
+  assert.equal(result.meta?.timedOut, true);
+  assert.equal(result.toolResults?.length, 1);
+  assert.match(String(result.toolResults?.[0]?.content), /已完成的搜索结果/);
+  assert.equal(h.model.requests.length, 3);
+});
+
+test('tool executor: parent deadline clamps and rejects expired tool execution', async () => {
+  const registry = new ToolRegistry();
+  registry.register(echoSpec);
+  const executor = new ToolExecutor({ registry });
+  let called = false;
+  executor.registerHandler('echo', async () => { called = true; return { ok: true, content: 'should not run' }; });
+  const result = await executor.execute({ id: 'deadline-call', name: 'echo', arguments: { value: 'x' } }, {
+    turnId: 'turn-deadline', sessionKey: 'private:1', deadlineAt: Date.now() - 1,
+  });
+  assert.equal(called, false);
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, 'timeout');
+});

@@ -140,7 +140,7 @@ export class ModelClient {
 
   async chat(nodeIndex: number, req: ChatRequest): Promise<TextResult> {
     const parseContext = parseContextForRequest(req);
-    return this.run('chat', nodeIndex, req.model, req.timeoutMs, (d, n) => d.buildChat(n, req), ModelClient.withUsage((d, data) => d.parseChat(data, parseContext)));
+    return this.run('chat', nodeIndex, req.model, req.timeoutMs, (d, n) => d.buildChat(n, req), ModelClient.withUsage((d, data) => d.parseChat(data, parseContext)), req.signal);
   }
   /** T3.6：文本类调用统一在解析后补挂 usage（方言未提取时从原始响应兜底抓取）。 */
   private static withUsage(parse: (dialect: Dialect, data: unknown) => TextResult): (dialect: Dialect, data: unknown) => TextResult {
@@ -382,6 +382,7 @@ export class ModelClient {
     timeoutMs: number | undefined,
     build: (dialect: Dialect, node: ModelNode) => RequestPlan,
     parse: (dialect: Dialect, data: unknown) => T,
+    signal?: AbortSignal,
   ): Promise<T> {
     // 能力校验：模型档案不支持该操作直接报错（不盲发）。
     if (!this.registry.can(model, op)) {
@@ -389,7 +390,7 @@ export class ModelClient {
     }
     const primary = this.resolveIndex(nodeIndex);
     try {
-      return await this.execute(op, primary, model, timeoutMs, build, parse);
+      return await this.execute(op, primary, model, timeoutMs, build, parse, signal);
     } catch (error) {
       if (!this.failover || !shouldFailover(error)) throw error;
       if (isGenerationTimeout(op, error)) throw error;
@@ -397,7 +398,7 @@ export class ModelClient {
       let lastError = error;
       for (const idx of candidates) {
         try {
-          const result = await this.execute(op, idx, model, timeoutMs, build, parse);
+          const result = await this.execute(op, idx, model, timeoutMs, build, parse, signal);
           this.onFailover?.({ op, model, fromIndex: primary, toIndex: idx, error });
           this.logger?.warn?.('model failover succeeded', { op, model, fromIndex: primary, toIndex: idx });
           return result;
@@ -416,6 +417,7 @@ export class ModelClient {
     timeoutMs: number | undefined,
     build: (dialect: Dialect, node: ModelNode) => RequestPlan,
     parse: (dialect: Dialect, data: unknown) => T,
+    signal?: AbortSignal,
   ): Promise<T> {
     const node = this.nodes[nodeIndex];
     if (!node) throw new ModelError(`节点索引 ${nodeIndex} 不存在`, { category: 'validation', retryable: false });
@@ -435,7 +437,7 @@ export class ModelClient {
 
     for (;;) {
       try {
-        const response = await this.gated(nodeIndex, () => this.transport({ ...plan, body, timeoutMs: resolvedTimeout }));
+        const response = await this.gated(nodeIndex, () => this.transport({ ...plan, body, timeoutMs: resolvedTimeout, ...(signal ? { signal } : {}) }));
         if (response.status >= 400) {
           // 参数问题：剔除或按上游提示改名后重试，并记住结论，之后不再犯同样的错。
           const fix = plan.multipart ? undefined : diagnose(response.status, response.data, body);

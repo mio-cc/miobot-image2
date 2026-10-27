@@ -48,11 +48,14 @@ export class DefaultAgentContextBuilder implements AgentContextBuilder {
       .filter((attachment) => attachment.kind === 'image' && String(attachment.ref || '').trim())
       .map((attachment) => String(attachment.ref).trim());
     const nonImageSuffix = formatAttachments(attachments.filter((attachment) => attachment.kind !== 'image'));
-    messages.push({
-      role: 'user',
-      content: `${String(input.userText || '')}${nonImageSuffix}`,
-      ...(imageRefs.length ? { imageRefs } : {}),
-    });
+    const normalizedUserText = String(input.userText || '').trim();
+    if (normalizedUserText || attachments.length) {
+      messages.push({
+        role: 'user',
+        content: `${normalizedUserText}${nonImageSuffix}`,
+        ...(imageRefs.length ? { imageRefs } : {}),
+      });
+    }
     const maxChars = input.maxChars && input.maxChars > 0 ? Math.trunc(input.maxChars) : 0;
     if (maxChars && estimateChars(messages) > maxChars) trimToBudget(messages, maxChars, Boolean(input.compactionEnabled));
     return {

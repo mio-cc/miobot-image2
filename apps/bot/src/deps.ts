@@ -206,6 +206,12 @@ export function createModelBackedDeps(options: ModelDepsOptions): RuntimeDeps {
       const routing = getRouting();
       const cfg = getConfig?.();
       const editNode = cfg?.llm.apiKeys?.[routing.editNodeIndex];
+      logger?.info('改图节点路由', {
+        nodeIndex: routing.editNodeIndex,
+        nodeName: editNode?.name || '',
+        kind: editNode?.kind || '',
+        model: req.model,
+      });
       if (editNode?.kind === 'comfyui') throw new Error('ComfyUI 图生图/改图暂未开放，第一版只支持文生图。');
       const res = await client.editImage(routing.editNodeIndex, {
         model: req.model, prompt: req.prompt, images: req.images, size: req.size, quality: req.quality,
@@ -216,6 +222,14 @@ export function createModelBackedDeps(options: ModelDepsOptions): RuntimeDeps {
     },
     async interrogate(req) {
       const routing = getRouting();
+      const cfg = getConfig?.();
+      const interrogateNode = cfg?.llm.apiKeys?.[routing.interrogateNodeIndex];
+      logger?.info('图片反推节点路由', {
+        nodeIndex: routing.interrogateNodeIndex,
+        nodeName: interrogateNode?.name || '',
+        kind: interrogateNode?.kind || '',
+        model: req.model,
+      });
       const res = await client.interrogate(routing.interrogateNodeIndex, {
         model: req.model, imageUrls: req.images, prompt: req.prompt,
         ...(routing.interrogateTimeoutMs ? { timeoutMs: routing.interrogateTimeoutMs } : {}),

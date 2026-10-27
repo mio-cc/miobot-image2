@@ -40,6 +40,8 @@ export interface BotApp {
   engine: RuntimeExplicitEngine;
   client: ModelClient;
   sessions: SessionStore;
+  /** 搜索服务；web.search 批量查询直接复用，避免每个 query 重新走一遍模型意图链。 */
+  search?: WebSearchService;
   /** 现读的能力注册表。每次调用返回当前配置对应的实例——能力覆盖改了不必重启。 */
   registry: () => CapabilityRegistry;
   /** 处理一条入站消息（自动意图路由 + 能力门控分发）。 */
@@ -99,11 +101,13 @@ export function createBotApp(options: BotAppOptions): BotApp {
     getConfig: options.getConfig,
     registry: getRegistry,
     beforeDispatch: options.beforeDispatch,
+    log: options.log,
   });
   return {
     engine,
     client,
     sessions,
+    ...(options.search ? { search: options.search } : {}),
     registry: getRegistry,
     handle: (input) => engine.handleExplicit('chat', input, { prompt: input.text }),
   };

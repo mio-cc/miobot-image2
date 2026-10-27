@@ -2,6 +2,9 @@ import { ModelError, type HttpRequest, type HttpResponse, type Transport } from 
 
 export const defaultFetchTransport: Transport = async (request: HttpRequest): Promise<HttpResponse> => {
   const controller = new AbortController();
+  const onExternalAbort = () => controller.abort();
+  if (request.signal?.aborted) controller.abort();
+  else request.signal?.addEventListener('abort', onExternalAbort, { once: true });
   const timer = setTimeout(() => controller.abort(), Math.max(1, request.timeoutMs));
   try {
     const method = (request.method || 'POST').toUpperCase();
@@ -19,5 +22,6 @@ export const defaultFetchTransport: Transport = async (request: HttpRequest): Pr
     throw new ModelError(`fetch failed: ${(error as Error)?.message || error}`, { category: 'network', retryable: true });
   } finally {
     clearTimeout(timer);
+    request.signal?.removeEventListener('abort', onExternalAbort);
   }
 };

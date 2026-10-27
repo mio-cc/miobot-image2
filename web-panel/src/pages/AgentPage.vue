@@ -123,6 +123,7 @@ function removeExposure(id: string) {
         <FormField label="Max Tokens"><input v-model.number="agent.maxTokens" type="number" min="1" max="200000" class="input-field" /></FormField>
         <FormField label="调用超时 (ms)"><input v-model.number="agent.timeoutMs" type="number" min="1000" class="input-field" /></FormField>
         <FormField label="整轮超时 (ms)"><input v-model.number="agent.turnTimeoutMs" type="number" min="1000" class="input-field" /></FormField>
+          <FormField label="超时后收口预算 (ms)"><input v-model.number="agent.finalizeTimeoutMs" type="number" min="500" class="input-field" /></FormField>
       </div>
 
       <div class="mt-4 pt-4 border-t border-[color:var(--hairline-2)]">

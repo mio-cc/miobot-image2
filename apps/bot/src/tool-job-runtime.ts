@@ -89,10 +89,13 @@ export class ToolJobRuntime {
     if (this.active.has(key)) return this.active.get(key)!;
     const controller = new AbortController();
     this.controllers.set(key, controller);
-    const timeout = Math.max(1000, Math.trunc(Number(timeoutMs) || 15 * 60 * 1000));
+    // timeoutMs=0 表示不设本地任务总超时，等待远端/工作流真实完成或失败。
+    const requestedTimeout = Number(timeoutMs);
+    const noTimeout = requestedTimeout === 0;
+    const timeout = noTimeout ? 0 : Math.max(1000, Number.isFinite(requestedTimeout) ? Math.trunc(requestedTimeout) : 15 * 60 * 1000);
     let timedOut = false;
     const taskPromise = typeof task === 'function' ? Promise.resolve().then(() => task(controller.signal)) : task;
-    const guarded = Promise.race([
+    const guarded = noTimeout ? taskPromise : Promise.race([
       taskPromise,
       new Promise<ToolResult>((_, reject) => {
         const timer = setTimeout(() => {

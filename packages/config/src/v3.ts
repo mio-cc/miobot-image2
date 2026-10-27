@@ -1,4 +1,4 @@
-﻿export type AgentRuntimeConfigMode = 'off' | 'shadow' | 'enforce';
+export type AgentRuntimeConfigMode = 'off' | 'shadow' | 'enforce';
 export type AgentToolChoice = 'auto' | 'required' | 'none';
 
 export interface AgentRepairConfigV3 {
@@ -26,6 +26,7 @@ export interface AgentConfigV3 {
   reasoningEffort: string;
   timeoutMs: number;
   turnTimeoutMs: number;
+  finalizeTimeoutMs: number;
   streaming: boolean;
   repair: AgentRepairConfigV3;
 }
@@ -121,6 +122,7 @@ export function defaultAgentConfigV3(): AgentConfigV3 {
     reasoningEffort: 'high',
     timeoutMs: 120_000,
     turnTimeoutMs: 180_000,
+    finalizeTimeoutMs: 15_000,
     streaming: false,
     repair: {
       maxProtocolRepairs: 2,
@@ -221,6 +223,7 @@ export function normalizeAgentConfigV3(input: unknown): AgentConfigV3 {
     reasoningEffort: str(raw.reasoningEffort, d.reasoningEffort).trim().slice(0, 50) || d.reasoningEffort,
     timeoutMs: intIn(raw.timeoutMs, d.timeoutMs, 1_000, 3_600_000),
     turnTimeoutMs: intIn(raw.turnTimeoutMs, d.turnTimeoutMs, 1_000, 3_600_000),
+    finalizeTimeoutMs: intIn(raw.finalizeTimeoutMs, d.finalizeTimeoutMs, 500, 120_000),
     streaming: bool(raw.streaming, d.streaming),
     repair: {
       maxProtocolRepairs: intIn(repair.maxProtocolRepairs, d.repair.maxProtocolRepairs, 0, 20),
@@ -314,6 +317,7 @@ export const CONFIG_V3_FIELD_METADATA: readonly ConfigFieldMetadata[] = [
   field('agent.reasoningEffort', '推理强度', 'string', 'high', global, nextTurn),
   field('agent.timeoutMs', '模型请求超时', 'number', 120_000, global, nextTurn, { min: 1_000, max: 3_600_000, unit: 'ms' }),
   field('agent.turnTimeoutMs', '单轮总超时', 'number', 180_000, global, nextTurn, { min: 1_000, max: 3_600_000, unit: 'ms' }),
+    field('agent.finalizeTimeoutMs', '超时后收口预算', 'number', 15_000, global, nextTurn, { min: 500, max: 120_000, unit: 'ms' }),
   field('agent.repair.maxProtocolRepairs', '协议修复上限', 'number', 2, global, nextTurn, { min: 0, max: 20 }),
   field('agent.repair.maxSchemaRepairsPerCall', '单调用参数修复上限', 'number', 2, global, nextTurn, { min: 0, max: 20 }),
   field('agent.repair.maxTotalOutputRepairs', '总输出修复上限', 'number', 4, global, nextTurn, { min: 0, max: 40 }),

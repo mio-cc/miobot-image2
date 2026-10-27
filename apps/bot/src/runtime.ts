@@ -423,11 +423,38 @@ interface RenderCommandOutcome {
 }
 
 function parseRenderArtifact(text: string): unknown {
-  const value = String(text || '').trim();
-  const start = value.indexOf('{');
-  const end = value.lastIndexOf('}');
-  if (start < 0 || end <= start) throw new Error('代码模型没有返回 JSON 结构');
-  return JSON.parse(value.slice(start, end + 1));
+  const raw = String(text || '').trim();
+  if (!raw) throw new Error('代码模型返回空文本');
+  const candidates = [raw];
+  const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence?.[1]) candidates.push(fence[1].trim());
+  for (const candidate of candidates) {
+    const start = candidate.indexOf('{');
+    const end = candidate.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try {
+        const parsed = JSON.parse(candidate.slice(start, end + 1));
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+      } catch { /* try next candidate */ }
+    }
+  }
+  // 模型偶尔不按 JSON 协议返回，但直接给出了可渲染的 HTML/SVG；仍然接受，
+  // 避免把已经生成好的代码丢掉。
+  const markup = fence?.[1]?.trim() || raw;
+  if (/<svg[\s>]/i.test(markup)) {
+    return { format: 'svg', title: '代码画图', width: 1080, height: 1080, svg: markup, sendSource: false };
+  }
+  if (/<!doctype\s+html|<html[\s>]/i.test(markup)) {
+    return { format: 'html', title: '代码画图', width: 1080, height: 1080, html: markup, sendSource: false };
+  }
+  throw new Error('代码模型没有返回可解析的 JSON/HTML/SVG；输出预览：' + raw.slice(0, 180));
+}
+
+function resolveConfiguredModelNode(cfg: AppConfig, configuredIndex: number, model: string): number {
+  const configured = cfg.llm.apiKeys?.[configuredIndex];
+  if (!model || !configured?.models?.length || configured.models.includes(model)) return configuredIndex;
+  const match = cfg.llm.apiKeys.findIndex((node) => node.models?.includes(model));
+  return match >= 0 ? match : configuredIndex;
 }
 
 function renderImageResult(images: string[], prompt: string): BotEngineResult {
@@ -455,22 +482,77 @@ export async function handleCodeRenderRequest(
   sessionId: string,
 ): Promise<RenderCommandOutcome> {
   const cfg = options.getConfig();
+  const configuredNodeIndex = cfg.codeRender?.nodeIndex;
+  const codeNodeIndex = resolveConfiguredModelNode(cfg, configuredNodeIndex, cfg.codeRender?.model);
+  const codeNode = cfg.llm.apiKeys?.[codeNodeIndex];
+  options.logger?.info('代码画图路由', {
+    configuredNodeIndex,
+    nodeIndex: codeNodeIndex,
+    model: cfg.codeRender?.model,
+    enabled: cfg.codeRender?.enabled !== false,
+    browserRenderer: Boolean(options.browserRenderer),
+    nodeKind: codeNode?.kind || '',
+    nodeModels: codeNode?.models || [],
+  });
   if (!cfg.codeRender?.enabled) return { message: '代码画图功能未启用。' };
   if (!options.browserRenderer) return { message: '代码画图缺少浏览器渲染服务。' };
   if (!options.generatedFileDir || !options.uploadFile) return { message: '代码画图缺少临时目录或上传器。' };
   const release = await options.featureGate?.acquire({ featureId: 'code.render', chatType, groupId, userId, promptChars: request.length });
+  let stage = 'model';
+  let lastText = '';
   try {
     const prompt = String(cfg.codeRender.promptTemplate || '').replaceAll('{{userContent}}', request.slice(0, 10000));
-    const result = await options.app.client.chat(cfg.codeRender.nodeIndex, {
+    const chat = async (content: string) => options.app.client.chat(codeNodeIndex, {
       model: cfg.codeRender.model,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [{ role: 'user', content }],
       timeoutMs: cfg.codeRender.timeoutMs,
       maxTokens: cfg.codeRender.maxTokens,
     });
-    const artifact = parseRenderArtifact(String(result.text || ''));
+    const first = await chat(prompt);
+    lastText = String(first.text || '').trim();
+    if (!lastText) {
+      options.logger?.warn('代码画图模型返回空文本，重试一次', {
+        nodeIndex: codeNodeIndex,
+        model: cfg.codeRender.model,
+      });
+      const retry = await chat(prompt);
+      lastText = String(retry.text || '').trim();
+    }
+    let artifact: unknown;
+    stage = 'parse';
+    try {
+      artifact = parseRenderArtifact(lastText);
+    } catch (parseError) {
+      options.logger?.warn('代码画图输出不是可解析结构，发起一次修复', {
+        error: String((parseError as Error)?.message || parseError),
+        outputPreview: lastText.slice(0, 240),
+        nodeIndex: codeNodeIndex,
+        model: cfg.codeRender.model,
+      });
+      const repairPrompt = [
+        '你上一次输出不符合代码画图协议。现在只输出一个合法 JSON 对象，不要 Markdown、不要解释。',
+        '格式：{"format":"html|svg|canvas|three","title":"作品标题","width":1080,"height":1080,"html":"可选","css":"可选","js":"可选","svg":"当format=svg时","sendSource":false}',
+        '用户要求：' + request.slice(0, 6000),
+        lastText ? ('上一次输出：' + lastText.slice(0, 6000)) : '上一次输出为空。',
+      ].join('\n\n');
+      const repaired = await chat(repairPrompt);
+      lastText = String(repaired.text || '').trim();
+      artifact = parseRenderArtifact(lastText);
+    }
+    stage = 'browser';
     const rendered = await options.browserRenderer.renderCode(artifact, options.generatedFileDir);
+    stage = 'upload';
     const url = await options.uploadFile(rendered.path, `code-art-${Date.now()}.png`, 'image/png');
     return { result: renderImageResult([url], request) };
+  } catch (error) {
+    options.logger?.error('代码画图失败', {
+      stage,
+      nodeIndex: codeNodeIndex,
+      model: cfg.codeRender?.model,
+      error: String((error as Error)?.message || error),
+      outputPreview: lastText.slice(0, 300),
+    });
+    throw error;
   } finally {
     release?.();
   }
@@ -2235,6 +2317,17 @@ export function allReplyPlanOutputs(plan: any): any[] {
   return (plan?.groups || []).flatMap((group: any) => group.outputs || []);
 }
 
+/** 只有新生成/新变换的图片才允许写入 Canvas 图库；历史图库、读图、网页截图不得回灌。 */
+const GALLERY_SYNC_CAPABILITIES = new Set(['image.generate', 'image.edit', 'image.stitch', 'code.render', 'template.use']);
+
+export function isGallerySyncEligibleImageOutput(output: any): boolean {
+  if (!output || output.kind !== 'image' || !String(output.url || '').trim()) return false;
+  const sourceCapability = String(output.meta?.sourceCapability || output.meta?.capabilityId || '').trim();
+  if (output.meta?.readOnlyArtifact === true) return false;
+  if (sourceCapability) return GALLERY_SYNC_CAPABILITIES.has(sourceCapability);
+  return true;
+}
+
 /**
  * P0-5（R9 修复）：ReplyPlan 内的媒体产物与旧链路 result.images 走同一后处理链：
  * 图片 → Canvas 图库同步 → 压缩 → Napcat 物化；音频 → 物化。
@@ -2249,13 +2342,14 @@ async function postProcessReplyPlanOutputs(plan: any, options: {
 }, ctx: ReplyContext): Promise<any> {
   const outputs = allReplyPlanOutputs(plan);
   const imageOutputs = outputs.filter((output) => output?.kind === 'image' && String(output?.url || '').trim());
+  const gallerySyncOutputs = imageOutputs.filter(isGallerySyncEligibleImageOutput);
   const audioOutputs = outputs.filter((output) => output?.kind === 'audio' && String(output?.url || '').trim());
   if (!imageOutputs.length && !audioOutputs.length) return plan;
 
   // 图片：图库同步（仅生图/改图语义；prompt 取产物 meta）
-  if (options.syncImagesToGallery && imageOutputs.length) {
-    const imageUrls = imageOutputs.map((output) => String(output.url));
-    const prompt = String(imageOutputs[0]?.meta?.sourcePrompt || imageOutputs[0]?.meta?.prompt || '').trim();
+  if (options.syncImagesToGallery && gallerySyncOutputs.length) {
+    const imageUrls = gallerySyncOutputs.map((output) => String(output.url));
+    const prompt = String(gallerySyncOutputs[0]?.meta?.sourcePrompt || gallerySyncOutputs[0]?.meta?.prompt || '').trim();
     try {
       const synced = await options.syncImagesToGallery({
         mode: 'generate',
@@ -2264,7 +2358,7 @@ async function postProcessReplyPlanOutputs(plan: any, options: {
         context: { chatType: ctx.chatType, groupId: ctx.groupId, userId: ctx.userId },
       });
       if (Array.isArray(synced) && synced.length === imageUrls.length) {
-        imageOutputs.forEach((output, index) => { output.url = synced[index]; });
+        gallerySyncOutputs.forEach((output, index) => { output.url = synced[index]; });
       }
     } catch { /* 图库失败不阻塞发送：保留原引用 */ }
   }

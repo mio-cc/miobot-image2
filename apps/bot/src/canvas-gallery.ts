@@ -75,9 +75,17 @@ export function createCanvasGallerySync(options: CanvasGallerySyncOptions): Canv
       if (config.canvas.enabled === false) return input.images;
 
       const publicBaseUrl = resolvePublicImageBaseUrl(env);
-      const artifacts = originals.map((image) => toGalleryArtifact(toGalleryRelativeUrl(image, publicBaseUrl)));
+      // 已经是 Canvas 图库资产时绝不能再入库一次：历史回放/图库读取/引用图库图都会走到这里。
+      if (originals.every((image) => isCanvasAssetReference(image, publicBaseUrl))) {
+        options.logger?.info('Bot image gallery sync skipped: image already belongs to canvas gallery', { imageCount: originals.length });
+        return input.images;
+      }
+      const timeoutMs = readPositiveInt(env.MIOBOT_CANVAS_SYNC_TIMEOUT_MS, DEFAULT_SYNC_TIMEOUT_MS);
+      const artifacts = await Promise.all(originals.map((image) =>
+        toGalleryArtifact(toGalleryRelativeUrl(image, publicBaseUrl), publicBaseUrl, fetchImpl, timeoutMs),
+      ));
       if (artifacts.some((artifact) => !artifact)) {
-        options.logger?.warn('Bot image gallery sync skipped: unsupported image reference', {
+        options.logger?.warn('Bot image gallery sync skipped: unsupported or unfetchable image reference', {
           imageCount: originals.length,
         });
         return input.images;
@@ -86,7 +94,6 @@ export function createCanvasGallerySync(options: CanvasGallerySyncOptions): Canv
       const endpoint = resolveCanvasSyncEndpoint(config, env);
       const payload = buildGalleryPayload(input, originals, artifacts as GalleryArtifact[]);
       const token = derivePanelToken(String(config.panel.passwordSeed || ''));
-      const timeoutMs = readPositiveInt(env.MIOBOT_CANVAS_SYNC_TIMEOUT_MS, DEFAULT_SYNC_TIMEOUT_MS);
 
       if (typeof fetchImpl !== 'function') {
         options.logger?.warn('Bot image gallery sync skipped: fetch is unavailable');
@@ -207,11 +214,42 @@ function buildGalleryPayload(input: CanvasGallerySyncInput, images: string[], ar
   };
 }
 
-function toGalleryArtifact(value: string): GalleryArtifact | undefined {
+async function toGalleryArtifact(
+  value: string,
+  publicBaseUrl: string | undefined,
+  fetchImpl: typeof fetch | undefined,
+  timeoutMs: number,
+): Promise<GalleryArtifact | undefined> {
   const text = String(value || '').trim();
   if (!text) return undefined;
   if (/^data:image\//i.test(text)) return { kind: 'url', data: text, mimeType: imageMimeFromDataUrl(text) };
-  if (/^https?:\/\//i.test(text) || text.startsWith('/canvas-api/')) return { kind: 'url', data: text };
+  if (/^https?:\/\//i.test(text) || text.startsWith('/canvas-api/')) {
+    // 已经是 Canvas 相对资产：保留现有行为，避免把内部资产 URL 改写成外部链接。
+    if (text.startsWith('/canvas-api/')) return { kind: 'url', data: text };
+    try {
+      const parsed = new URL(text);
+      if (parsed.pathname.startsWith('/canvas-api/')) {
+        return { kind: 'url', data: `${parsed.pathname}${parsed.search}${parsed.hash}` };
+      }
+    } catch { /* not a valid absolute URL */ }
+    if (typeof fetchImpl !== 'function') return undefined;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    timer.unref?.();
+    try {
+      const response = await fetchImpl(text, { signal: controller.signal, headers: { accept: 'image/*' } });
+      if (!response.ok) return undefined;
+      const contentType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      if (!contentType.startsWith('image/')) return undefined;
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (!buffer.length) return undefined;
+      return { kind: 'base64', data: buffer.toString('base64'), mimeType: contentType };
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   if (/^base64:\/\//i.test(text)) {
     return {
       kind: 'base64',
@@ -220,6 +258,10 @@ function toGalleryArtifact(value: string): GalleryArtifact | undefined {
     };
   }
   return undefined;
+}
+function isCanvasAssetReference(value: string, publicBaseUrl: string | undefined): boolean {
+  const relative = toGalleryRelativeUrl(value, publicBaseUrl);
+  return relative.startsWith('/canvas-api/assets/');
 }
 
 /** Canvas 图库内部保存相对 URL，避免 HTTPS 画布页面加载 http://host.docker.internal 触发混合内容。 */

@@ -995,14 +995,18 @@ function normComfyui(v: unknown, warnings: string[]): ComfyUiNodeConfig | undefi
     warnings.push('ComfyUI 节点没有 profiles，已补入空 profile。');
     profiles = [{ id: 'default', name: '默认工作流', workflow: {}, parameterMap: {}, promptNodeIds: [], negativePromptNodeIds: [], defaults: {}, constraints: {}, outputNodeId: undefined, stitch: undefined, promptPolicy: defaultComfyUiPromptPolicy(), transform: undefined, lora: undefined, fallbackProfileId: undefined, fallbackEnabled: false, builtinRevision: undefined, customized: false }];
   }
+  const pollTimeoutRaw = Number(raw.pollTimeoutMs);
+  const queueTimeoutRaw = Number(raw.queueTimeoutMs);
   return {
     profiles,
-    pollTimeoutMs: clamp(raw.pollTimeoutMs, 600000, 10000, 1800000, true),
+    // 0 = 不设生成总上限：ComfyUI 完成/失败后由轮询或后续事件回调收口。
+    pollTimeoutMs: pollTimeoutRaw === 0 ? 0 : clamp(raw.pollTimeoutMs, 600000, 10000, 1800000, true),
     pollIntervalMs: clamp(raw.pollIntervalMs, 2000, 250, 30000, true),
     maxBatchSize: clamp(raw.maxBatchSize, 4, 1, 16, true),
     maxConcurrent: clamp(raw.maxConcurrent, 1, 1, 8, true),
     maxQueue: clamp(raw.maxQueue, 10, 0, 100, true),
-    queueTimeoutMs: clamp(raw.queueTimeoutMs, 900000, 10000, 3600000, true),
+    // 0 = 排队不设本地上限；仍受 ComfyUI 自身队列状态约束。
+    queueTimeoutMs: queueTimeoutRaw === 0 ? 0 : clamp(raw.queueTimeoutMs, 900000, 10000, 3600000, true),
   };
 }
 

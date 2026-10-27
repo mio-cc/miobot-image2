@@ -43,12 +43,21 @@ interface Row {
     detailLink?: { to: string; text: string };
 }
 
-// 生图类（文生图/改图/反推/画布三件套）已迁到 /cap-image 单入口（§2.6.4 动作5）。
+// 图片类仍以 /cap-image 为详细配置页；能力分工总表保留入口，避免配置分散后找不到。
 // TR.5 开关单源：有 capabilityId 的行启停写 orch.capabilityOverrides；
 // freeMode / intentRecognition / promptsChat / enhance 是管线开关，保留原字段。
 const rows: Row[] = [
     { key: 'chat', label: '日常对话', trigger: '@bot / 私聊', capability: 'chat',
       node: 'llm.chatNodeIndex', model: 'llm.chatModel', capabilityId: 'chat.reply' },
+    { key: 'imageGenerate', label: '图片生成', trigger: '画 / 生图 / draw', capability: 'image.generate',
+      node: 'llm.imageNodeIndex', model: 'llm.imageModel', capabilityId: 'image.generate',
+      detailLink: { to: '/cap-image', text: '图片生成页' } },
+    { key: 'imageEdit', label: '改图 / 图生图', trigger: '改图 / i2i', capability: 'image.edit',
+      node: 'llm.editNodeIndex', model: 'llm.editModel', capabilityId: 'image.edit',
+      detailLink: { to: '/cap-image', text: '图片生成页' } },
+    { key: 'imageInterrogate', label: '图片反推', trigger: '反推 / 看图 / prompt', capability: 'interrogate',
+      node: 'llm.interrogateNodeIndex', model: 'llm.interrogateModel',
+      detailLink: { to: '/cap-image', text: '图片生成页' } },
     { key: 'video', label: '视频生成', trigger: '视频 / video', capability: 'video.generate',
       node: 'llm.videoNodeIndex', model: 'llm.videoModel', toggle: 'llm.videoEnabled', capabilityId: 'video.generate' },
     { key: 'enhance', label: '提示词润色', trigger: '画 润色 …', capability: 'chat',

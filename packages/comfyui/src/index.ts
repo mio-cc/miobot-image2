@@ -12,6 +12,8 @@ export interface ComfyUiRunOptions {
   maxImageBytes?: number;
   /** T2.8：prompt_id 一到手立即回调（崩溃恢复对账依据）；抛错不影响生成。 */
   onSubmitted?: (promptId: string) => void;
+  /** 可选的取消信号；轮询等待期间应响应取消。 */
+  signal?: AbortSignal;
 }
 
 export interface ComfyUiGeneratedImage {
@@ -453,11 +455,12 @@ export async function runComfyUiWorkflow(options: ComfyUiRunOptions): Promise<Co
   headers['Content-Type'] = 'application/json';
   const built = buildComfyUiWorkflow(options.profile, options.params, options.node.maxBatchSize);
   const clientId = `miobot-${randomUUID()}`;
+  const submitTimeoutMs = options.node.pollTimeoutMs > 0 ? Math.min(60000, options.node.pollTimeoutMs) : 60000;
   const submitted = await fetchJson(`${baseUrl}/prompt`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ prompt: built.workflow, client_id: clientId }),
-  }, Math.min(60000, options.node.pollTimeoutMs));
+  }, submitTimeoutMs);
   const nodeErrors = asRecord(submitted).node_errors;
   if (nodeErrors && Object.keys(nodeErrors).length) {
     throw new ComfyUiError('ComfyUI workflow 节点参数错误', { code: 'node_errors' });
@@ -466,9 +469,10 @@ export async function runComfyUiWorkflow(options: ComfyUiRunOptions): Promise<Co
   if (!promptId) throw new ComfyUiError('ComfyUI 没有返回 prompt_id', { code: 'node_errors' });
   try { options.onSubmitted?.(promptId); } catch { /* 上报失败不影响生成 */ }
 
-  const deadline = Date.now() + options.node.pollTimeoutMs;
+    // pollTimeoutMs=0 表示由 ComfyUI 完成驱动，不设本地生成总上限；仍保留有限值 watchdog。
+    const deadline = options.node.pollTimeoutMs > 0 ? Date.now() + options.node.pollTimeoutMs : 0;
   let history: Record<string, any> = {};
-  while (Date.now() < deadline) {
+    while (!options.signal?.aborted && (deadline <= 0 || Date.now() < deadline)) {
     const data = asRecord(await fetchJson(`${baseUrl}/history/${encodeURIComponent(promptId)}`, { headers }, 30000));
     const entry = asRecord(data[promptId]);
     if (entry.outputs && Object.keys(asRecord(entry.outputs)).length) { history = entry; break; }
@@ -479,8 +483,12 @@ export async function runComfyUiWorkflow(options: ComfyUiRunOptions): Promise<Co
     await sleep(options.node.pollIntervalMs);
   }
     if (!history.outputs) {
-      await cancelQueuedComfyPrompt(baseUrl, headers, promptId);
-      throw new ComfyUiError('ComfyUI 任务轮询超时', { code: 'poll_timeout' });
+      if (options.signal?.aborted) throw new ComfyUiError('ComfyUI 任务已取消', { code: 'cancelled' });
+      if (options.node.pollTimeoutMs > 0) {
+        await cancelQueuedComfyPrompt(baseUrl, headers, promptId);
+        throw new ComfyUiError('ComfyUI 任务轮询超时', { code: 'poll_timeout' });
+      }
+      throw new ComfyUiError('ComfyUI 任务结束但没有返回结果', { code: 'no_images' });
     }
 
   const outputs = asRecord(history.outputs);
@@ -497,7 +505,8 @@ export async function runComfyUiWorkflow(options: ComfyUiRunOptions): Promise<Co
   if (!imageNodes.length) throw new ComfyUiError('ComfyUI 没有返回图片', { code: 'no_images' });
   const images: ComfyUiGeneratedImage[] = [];
   for (const item of imageNodes.slice(0, options.node.maxBatchSize)) {
-    images.push(await downloadImage(baseUrl, item, headers, Math.min(120000, options.node.pollTimeoutMs), options.maxImageBytes || 20 * 1024 * 1024));
+      const downloadTimeoutMs = options.node.pollTimeoutMs > 0 ? Math.min(120000, options.node.pollTimeoutMs) : 120000;
+    images.push(await downloadImage(baseUrl, item, headers, downloadTimeoutMs, options.maxImageBytes || 20 * 1024 * 1024));
   }
   return { promptId, seed: built.seed, seeds: built.seeds, images, raw: history };
 }

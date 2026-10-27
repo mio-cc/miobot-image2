@@ -68,6 +68,8 @@ export interface ChatRequest {
   messages: ChatMessage[];
   timeoutMs?: number;
   maxTokens?: number;
+  /** 上层 turn 超时信号；provider transport 应尽快 abort。 */
+  signal?: AbortSignal;
   temperature?: number;
   reasoningEffort?: ReasoningEffort;
   /** Legacy raw provider tools. Kept for compatible callers. */
@@ -219,7 +221,7 @@ export interface RequestPlan {
   multipart?: boolean;
 }
 
-export interface HttpRequest extends RequestPlan { timeoutMs: number }
+export interface HttpRequest extends RequestPlan { timeoutMs: number; signal?: AbortSignal }
 export interface HttpResponse<T = unknown> { status: number; data: T; headers?: Record<string, string> }
 export type Transport = (request: HttpRequest) => Promise<HttpResponse>;
 

@@ -73,6 +73,7 @@ const comfySkipFaceDetailer = ref(false);
 const comfyBuiltinRevision = ref('');
 
 const comfyCurrentNode = computed(() => comfyWorkflowNodes.value.find((item) => Number(item.nodeIndex) === Number(comfyNodeIndex.value)));
+const comfyNodeConfig = computed(() => (config.value?.llm?.apiKeys?.[Number(comfyNodeIndex.value)] as any)?.comfyui);
 const comfyCurrentProfiles = computed(() => comfyCurrentNode.value?.profiles || []);
 const comfyParameterRows = computed(() => {
     try {
@@ -215,6 +216,12 @@ onMounted(loadComfyWorkflows);
     subtitle="生图模型单入口：机器人生图与画布默认值同页管理；模型只增强画面提示词，参数由 workflow/defaults 决定">
     <template #models>
       <div v-if="config">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 pb-4 border-b border-[color:var(--hairline-2)]">
+          <ToggleField v-model="config.llm.imageEnabled" label="启用机器人生图总开关"
+            hint="llm.imageEnabled；关闭后显式/Agent 生图会回退，不会调用 ComfyUI 或图像模型" />
+          <ToggleField v-model="config.bot.features['image.generate'].enabled" label="启用消息入口 / 旧意图生图"
+            hint="bot.features.image.generate；控制画/生图别名与旧意图链；Agent 工具可见性还看页顶启用能力" />
+        </div>
         <div class="text-xs font-medium mb-2">机器人生图（Bot 命令与编排）</div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <FormField label="文生图" hint="画 / 生图 / draw 走这条链路">
@@ -388,6 +395,17 @@ onMounted(loadComfyWorkflows);
         <FormField label="Profile ID"><input v-model="comfyProfileId" class="input-field font-mono" placeholder="moss-image-sft" /></FormField>
         <FormField label="显示名称"><input v-model="comfyProfileName" class="input-field" /></FormField>
         <FormField label="输出节点 ID"><input v-model="comfyOutputNodeId" class="input-field font-mono" placeholder="16" /></FormField>
+        <template v-if="comfyNodeConfig">
+          <FormField label="生成轮询上限 (ms)" hint="0 = 不设本地生成总上限，等 ComfyUI 完成后回调；非 0 是失联 watchdog">
+            <input v-model.number="comfyNodeConfig.pollTimeoutMs" type="number" min="0" step="30000" class="input-field" />
+          </FormField>
+          <FormField label="排队上限 (ms)" hint="0 = 不设本队列等待上限">
+            <input v-model.number="comfyNodeConfig.queueTimeoutMs" type="number" min="0" step="30000" class="input-field" />
+          </FormField>
+          <FormField label="轮询间隔 (ms)">
+            <input v-model.number="comfyNodeConfig.pollIntervalMs" type="number" min="250" step="250" class="input-field" />
+          </FormField>
+        </template>
         <FormField label="Fallback Profile"><input v-model="comfyFallbackProfileId" class="input-field font-mono" placeholder="同 id 使用内置 baseline" /></FormField>
         <div class="flex items-end"><ToggleField v-model="comfyFallbackEnabled" label="失败自动切 baseline" /></div>
         <div class="flex items-end"><ToggleField v-model="comfySkipFaceDetailer" label="跳过 FaceDetailer 脸修" hint="仍保留放大，直接接 VAEDecode 输出" /></div>

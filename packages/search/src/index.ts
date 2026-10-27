@@ -34,6 +34,8 @@ export interface WebSearchRequestOptions {
   localization?: string;
   needContent?: boolean;
   force?: boolean;
+  /** 上层 turn deadline 的取消信号；搜索请求必须在 turn 超时后尽快停止。 */
+  signal?: AbortSignal;
 }
 
 export interface WebSearchService {
@@ -278,13 +280,14 @@ export function createWebSearchService(options: WebSearchServiceOptions): WebSea
     lastRequestAt = now();
   }
 
-  async function requestJson(url: string, init: RequestInit, config: WebSearchConfig, label: string): Promise<unknown> {
+  async function requestJson(url: string, init: RequestInit, config: WebSearchConfig, label: string, signal?: AbortSignal): Promise<unknown> {
     if (typeof fetchImpl !== 'function') throw new Error('当前 Node 环境没有 fetch');
     let lastError: unknown;
     for (let attempt = 0; attempt <= config.retryCount; attempt += 1) {
       await enforceQps(config);
       try {
-        const response = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(config.timeoutMs) });
+        const timeoutSignal = AbortSignal.timeout(config.timeoutMs);
+          const response = await fetchImpl(url, { ...init, signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal });
         const text = await response.text();
         let body: unknown = null;
         try { body = text ? JSON.parse(text) : null; } catch { body = text; }
@@ -314,7 +317,7 @@ export function createWebSearchService(options: WebSearchServiceOptions): WebSea
         method: 'POST',
         headers: authHeaders(config, deepseekKey || apiKey, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({ query, count, need_content: needContent, ori_question: request.oriQuestion?.slice(0, 128), localization: request.localization || config.localization || undefined }),
-      }, config, 'DeepSeek Search');
+      }, config, 'DeepSeek Search', request.signal);
       return parseDeepseekResults(data, config);
     }
     if (config.provider === 'tavily') {
@@ -322,7 +325,7 @@ export function createWebSearchService(options: WebSearchServiceOptions): WebSea
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ api_key: apiKey, query, max_results: count, search_depth: 'advanced', include_answer: false, include_raw_content: needContent }),
-      }, config, 'Tavily Search');
+      }, config, 'Tavily Search', request.signal);
       return parseTavilyResults(data, config);
     }
     if (config.provider === 'brave') {
@@ -331,7 +334,7 @@ export function createWebSearchService(options: WebSearchServiceOptions): WebSea
       target.searchParams.set('count', String(count));
       target.searchParams.set('text_decorations', 'false');
       target.searchParams.set('safesearch', 'moderate');
-      const data = await requestJson(target.toString(), { method: 'GET', headers: authHeaders(config, apiKey, { Accept: 'application/json' }) }, config, 'Brave Search');
+      const data = await requestJson(target.toString(), { method: 'GET', headers: authHeaders(config, apiKey, { Accept: 'application/json' }) }, config, 'Brave Search', request.signal);
       return parseBraveResults(data, config);
     }
     if (config.provider === 'serper') {
@@ -339,7 +342,7 @@ export function createWebSearchService(options: WebSearchServiceOptions): WebSea
         method: 'POST',
         headers: authHeaders(config, apiKey, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({ q: query, num: count, hl: config.language || 'zh-cn', gl: config.region || 'cn' }),
-      }, config, 'Serper Search');
+      }, config, 'Serper Search', request.signal);
       return parseSerperResults(data, config);
     }
     if (config.provider === 'bing') {
@@ -347,7 +350,7 @@ export function createWebSearchService(options: WebSearchServiceOptions): WebSea
       target.searchParams.set('q', query);
       target.searchParams.set('count', String(count));
       target.searchParams.set('mkt', config.language || 'zh-CN');
-      const data = await requestJson(target.toString(), { method: 'GET', headers: authHeaders(config, apiKey, { Accept: 'application/json' }) }, config, 'Bing Search');
+      const data = await requestJson(target.toString(), { method: 'GET', headers: authHeaders(config, apiKey, { Accept: 'application/json' }) }, config, 'Bing Search', request.signal);
       return parseBingResults(data, config);
     }
     if (config.provider === 'google') {
@@ -357,7 +360,7 @@ export function createWebSearchService(options: WebSearchServiceOptions): WebSea
       target.searchParams.set('q', query);
       target.searchParams.set('num', String(Math.min(10, count)));
       target.searchParams.set('hl', config.language || 'zh-CN');
-      const data = await requestJson(target.toString(), { method: 'GET', headers: { Accept: 'application/json' } }, config, 'Google Search');
+      const data = await requestJson(target.toString(), { method: 'GET', headers: { Accept: 'application/json' } }, config, 'Google Search', request.signal);
       return parseGoogleResults(data, config);
     }
     if (config.provider === 'searxng') {
@@ -366,7 +369,7 @@ export function createWebSearchService(options: WebSearchServiceOptions): WebSea
       target.searchParams.set('format', 'json');
       target.searchParams.set('language', config.language || 'zh-CN');
       target.searchParams.set('safesearch', '1');
-      const data = await requestJson(target.toString(), { method: 'GET', headers: { Accept: 'application/json' } }, config, 'SearXNG Search');
+      const data = await requestJson(target.toString(), { method: 'GET', headers: { Accept: 'application/json' } }, config, 'SearXNG Search', request.signal);
       return parseSearxngResults(data, config);
     }
     if (config.provider === 'exa') {
@@ -374,44 +377,46 @@ export function createWebSearchService(options: WebSearchServiceOptions): WebSea
         method: 'POST',
         headers: authHeaders(config, apiKey, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({ query, numResults: count, contents: needContent ? { text: { maxCharacters: config.maxContentChars } } : undefined }),
-      }, config, 'Exa Search');
+      }, config, 'Exa Search', request.signal);
       return parseExaResults(data, config);
     }
     return [];
   }
 
-  async function fetchDeepseekPage(runtime: RuntimeSearchConfig, url: string): Promise<{ title: string; content: string } | null> {
+  async function fetchDeepseekPage(runtime: RuntimeSearchConfig, url: string, signal?: AbortSignal): Promise<{ title: string; content: string } | null> {
     if (!runtime.deepseekKey || !isSafeFetchUrl(url)) return null;
     const data = await requestJson(fetchEndpoint(runtime.config), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${runtime.deepseekKey}` },
       body: JSON.stringify({ url }),
-    }, runtime.config, 'DeepSeek Fetch');
+    }, runtime.config, 'DeepSeek Fetch', signal);
     const record = asRecord(data);
     return { title: String(record.title || ''), content: String(record.content || '') };
   }
 
-  async function fetchJinaPage(runtime: RuntimeSearchConfig, url: string): Promise<{ title: string; content: string } | null> {
+  async function fetchJinaPage(runtime: RuntimeSearchConfig, url: string, signal?: AbortSignal): Promise<{ title: string; content: string } | null> {
     if (!isSafeFetchUrl(url)) return null;
     const base = trimSlash(runtime.config.jinaBaseUrl || 'https://r.jina.ai');
     const headers: Record<string, string> = { Accept: 'text/plain' };
     if (runtime.config.jinaApiKey) headers.Authorization = `Bearer ${runtime.config.jinaApiKey}`;
-    const response = await fetchImpl(`${base}/${url}`, { headers, signal: AbortSignal.timeout(runtime.config.timeoutMs) });
+    const timeoutSignal = AbortSignal.timeout(runtime.config.timeoutMs);
+    const response = await fetchImpl(`${base}/${url}`, { headers, signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal });
     if (!response.ok) return null;
     const text = await response.text();
     return { title: '', content: text };
   }
 
-  async function enrichContent(runtime: RuntimeSearchConfig, items: WebSearchItem[]): Promise<void> {
+  async function enrichContent(runtime: RuntimeSearchConfig, items: WebSearchItem[], signal?: AbortSignal): Promise<void> {
     if (!runtime.config.fetchContent || runtime.config.fetchProvider === 'none') return;
     const targets = items.filter((item) => !item.content || item.content.length < 200).slice(0, Math.min(3, runtime.config.maxResults));
     for (const item of targets) {
       try {
         let page: { title: string; content: string } | null = null;
-        if (runtime.config.fetchProvider === 'deepseek') page = await fetchDeepseekPage(runtime, item.url);
-        else if (runtime.config.fetchProvider === 'jina') page = await fetchJinaPage(runtime, item.url);
+        if (signal?.aborted) break;
+        if (runtime.config.fetchProvider === 'deepseek') page = await fetchDeepseekPage(runtime, item.url, signal);
+        else if (runtime.config.fetchProvider === 'jina') page = await fetchJinaPage(runtime, item.url, signal);
         else if (runtime.config.fetchProvider === 'provider') {
-          if (runtime.config.provider === 'deepseek') page = await fetchDeepseekPage(runtime, item.url);
+          if (runtime.config.provider === 'deepseek') page = await fetchDeepseekPage(runtime, item.url, signal);
           else if (runtime.config.provider === 'tavily') page = { title: item.title, content: item.content };
         }
         if (page?.content) {
@@ -487,7 +492,7 @@ export function createWebSearchService(options: WebSearchServiceOptions): WebSea
           }
         }
       }
-      await enrichContent(runtime, results);
+      await enrichContent(runtime, results, request.signal);
       const response: WebSearchResponse = { provider: usedProvider, query: finalQuery, results, cached: false, durationMs: now() - startedAt };
       if (config.cacheTtlSeconds > 0) {
         cache.set(cacheKey, { expiresAt: now() + config.cacheTtlSeconds * 1000, response });
