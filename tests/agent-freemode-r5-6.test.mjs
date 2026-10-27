@@ -115,7 +115,7 @@ test('agent-freemode R9: shadow never sends output; enforce terminates without a
   await fallback.rt.handleMessageEvent(privateEvent(4));
   assert.equal(fallback.agentCalls, 1);
   assert.equal(fallback.engineCalls, 0);
-  assert.ok(fallback.reply.sent.some(([, text]) => text.includes('这次没有处理成功')));
+  assert.equal(fallback.reply.sent.length, 0, 'Agent enforce 失败不得发送固定兜底文案');
   assert.ok(!fallback.reply.sent.some(([, text]) => text.includes('OLD_FREE_MODE')));
 });
 

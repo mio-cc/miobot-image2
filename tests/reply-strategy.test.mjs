@@ -302,3 +302,43 @@ test('reply plan: final dispatcher dedupes same text and explicit spoken audio',
   assert.deepEqual(client.calls.map((call) => call.method), ['sendPrivateRecord']);
   assert.equal(client.calls[0].args.fileUrl, 'same.mp3');
 });
+
+test('reply plan: explicit forward keeps a single text output in the forward group', async () => {
+  const client = new FakeReplyClient();
+  client.sendGroupNestedMixedForward = (groupId, groups, botName) => client.record('sendGroupNestedMixedForward', { groupId, groups, botName }, { success: true, forwardId: 'nested-single', forwardIds: ['nested-single'] });
+  const engine = new ReplyStrategyEngine(client, { text: 'plain' });
+  const nestedPlan = {
+    groups: [{ mode: 'nested_forward', messageCount: 1, outputs: [{ kind: 'text', text: '短文本' }] }],
+    messageCount: 1, policy: { mode: 'forward', forwardStyle: 'nested' },
+  };
+  await engine.replyPlan(groupContext, nestedPlan, { maxMessages: 3 });
+  const flatPlan = {
+    groups: [{ mode: 'flat_forward', messageCount: 1, outputs: [{ kind: 'text', text: '平铺文本' }] }],
+    messageCount: 1, policy: { mode: 'forward', forwardStyle: 'flat' },
+  };
+  await engine.replyPlan(groupContext, flatPlan, { maxMessages: 3 });
+  const autoPlan = {
+    groups: [{ mode: 'nested_forward', messageCount: 1, outputs: [{ kind: 'text', text: '普通短闲聊' }] }],
+    messageCount: 1, policy: { mode: 'auto', forwardStyle: 'auto' },
+  };
+  await engine.replyPlan(groupContext, autoPlan, { maxMessages: 3 });
+  assert.deepEqual(client.calls.map((call) => call.method), ['sendGroupNestedMixedForward', 'sendGroupMixedForward', 'sendGroupText']);
+});
+
+test('reply plan: quote and no-reference policies actually change the text strategy', async () => {
+  const client = new FakeReplyClient();
+  const engine = new ReplyStrategyEngine(client, { text: 'forward' });
+  const quotePlan = {
+    groups: [{ mode: 'flat_forward', messageCount: 1, outputs: [{ kind: 'text', text: '引用回复' }] }],
+    messageCount: 1, policy: { mode: 'quote', reference: 'quote' },
+  };
+  await engine.replyPlan(groupContext, quotePlan, { maxMessages: 3 });
+  const noRefPlan = {
+    groups: [{ mode: 'flat_forward', messageCount: 1, outputs: [{ kind: 'text', text: '不引用' }] }],
+    messageCount: 1, policy: { mode: 'direct', reference: 'none' },
+  };
+  await engine.replyPlan(groupContext, noRefPlan, { maxMessages: 3 });
+  assert.deepEqual(client.calls.map((call) => call.method), ['sendGroupText', 'sendGroupText']);
+  assert.equal(client.calls[0].args.replyToMessageId, 3000);
+  assert.equal(client.calls[1].args.replyToMessageId, undefined);
+});

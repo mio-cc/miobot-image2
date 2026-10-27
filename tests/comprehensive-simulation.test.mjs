@@ -83,6 +83,7 @@ test('模拟检测: 人格启用时 chat 模型收到人格 system prompt', asyn
     app, reply: sim.adapter, getConfig: () => cfg,
     selfId: () => '10000', botName: 'Mio',
     reportProblem: async () => true,
+    agentRuntime: async (input) => ({ handled: true, text: '哈哈：' + (input?.text || '') }),
   });
   runtime.attach(sim.adapter);
   try {
@@ -196,6 +197,7 @@ test('模拟检测: 关键词触发命中且模型判 true 时消息不被忽略
   const runtime = createBotMessageRuntime({
     app, reply: sim.adapter, getConfig: () => cfg,
     selfId: () => '10000', botName: 'Mio', reportProblem: async () => true,
+    agentRuntime: async () => ({ handled: true, text: '在的' }),
     fetchGroupHistory: async () => [],
     triggerIntentChecker: {
       checkKeywordIntent: async () => true, // 模型判 true

@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import { resolveReplyPolicy } from '../dist/packages/orchestration/src/index.js';
 import { createDefaultConfig } from '../dist/packages/config/src/index.js';
@@ -32,7 +32,7 @@ test('reply-policy R6: hard caps, forced forward and preference precedence are r
   assert.equal(turnWins.policy.forwardStyle, 'flat');
   assert.equal(turnWins.policy.voice, 'off');
   assert.equal(turnWins.policy.reference, 'none');
-  assert.equal(turnWins.options.preferNestedForward, true);
+  assert.equal(turnWins.options.preferNestedForward, false);
   assert.equal(turnWins.options.textFallback, 'off');
 
   cfg.replyPolicy.allowModelOverride = false;
@@ -127,4 +127,33 @@ test('reply-policy R6: runtime honors plan voice=off and hard maxMessages', asyn
   assert.equal(voiceCalls, 0);
   assert.equal(sent.length, 1);
   assert.equal(sent[0], '第一条');
+});
+
+test('reply-policy R6: forward mode suppresses auto-TTS so the text can actually forward', async () => {
+  const cfg = createDefaultConfig();
+  cfg.bot.replyStrategies.text = 'plain';
+  let voiceCalls = 0;
+  const sent = [];
+  const reply = {
+    sendPrivateText: async (_u, text) => { sent.push(['text', text]); return { success: true, messageId: 1 }; },
+    sendPrivateNestedMixedForward: async (_u, groups) => { sent.push(['nestedForward', groups]); return { success: true, messageId: 1 }; },
+    sendPrivateRecord: async () => { sent.push(['record']); return { success: true, messageId: 1 }; },
+  };
+  const runtime = createBotMessageRuntime({
+    reply, getConfig: () => cfg, botName: 'Mio',
+    voice: async () => { voiceCalls += 1; return 'file:///voice.mp3'; },
+    voiceEligible: async () => true,
+  });
+  const policy = {
+    enabled: true, maxMessages: 3, maxChars: 1800,
+    mode: 'forward', forwardStyle: 'nested', voice: 'on', reference: 'auto', forcedForward: false,
+  };
+  const replyPlan = {
+    groups: [{ mode: 'nested_forward', outputs: [{ kind: 'text', text: '应该转发的文本', priority: 10 }], messageCount: 1 }],
+    messageCount: 1, truncated: [], warnings: [], policy,
+  };
+  const result = await runtime.sendAgentOutcome({ chatType: 'private', userId: '1', replyPlan });
+  assert.equal(result.handled, true);
+  assert.equal(voiceCalls, 0, 'forward 模式不得先触发 auto-TTS');
+  assert.equal(sent.some(([method]) => method === 'nestedForward'), true, '文本必须走嵌套转发');
 });

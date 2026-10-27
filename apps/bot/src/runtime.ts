@@ -1,4 +1,4 @@
-﻿import { createBotRouter, extractReplyId, isAllowedByWhitelist, isGroupUserBlacklisted, stripNonTextCqSegments, type BotMessageContext, type BotRouteDecision, type BotRouterConfig } from '../../../packages/bot-router/src/index.js';
+import { createBotRouter, extractReplyId, isAllowedByWhitelist, isGroupUserBlacklisted, stripNonTextCqSegments, type BotMessageContext, type BotRouteDecision, type BotRouterConfig } from '../../../packages/bot-router/src/index.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { FEATURE_DEFINITIONS, type FeatureSetting } from '../../../packages/shared/src/features.js';
@@ -203,7 +203,7 @@ export interface BotRuntimeOptions {
     memoryContext?: string;
     sessionId?: string;
     requestId?: string;
-  }) => Promise<{ handled: boolean; text?: string; replyPlan?: ReplyPlan; reason?: string; problem?: { kind: string; error: string }; meta?: Record<string, unknown> }>;
+  }) => Promise<{ handled: boolean; text?: string; replyPlan?: ReplyPlan; reason?: string; silent?: boolean; problem?: { kind: string; error: string }; meta?: Record<string, unknown> }>;
   progressMessages?: boolean;
   /** 慢任务提醒间隔；默认 60 秒，0 关闭。 */
   progressReminderMs?: number;
@@ -1242,6 +1242,13 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           await reportProblem(agentOutcome.problem.kind, agentOutcome.problem.error, { intent: decision.kind, agentReason: agentOutcome.reason });
         }
         const agentReplyText = String(agentOutcome.text || '');
+        // R11（生产问题修复）：异步任务挂起静默吸收——不发送任何内容（含状态文案），
+        // 也不落入 enforce 失败分支；结果由 job 完成时的 resume 通道统一送达。
+        if (agentMode === 'enforce' && agentOutcome.silent) {
+          log?.info('Agent 异步挂起静默吸收', { reason: agentOutcome.reason });
+          logTiming('agent-job-pending-silent');
+          return { handled: true, kind: 'agent-job-pending-silent' };
+        }
         if (agentMode === 'enforce' && agentOutcome.handled && (agentReplyText.trim() || agentOutcome.replyPlan)) {
           result = {
             kind: 'chat',
@@ -1398,23 +1405,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
 
     try {
       if (result) { /* 新链路已产出结果，跳过旧意图链 */ } else if (agentEnforceFailed) {
-        const failureResult: BotEngineResult = {
-          kind: 'chat',
-          decision: decision as any,
-          handled: true,
-          text: '这次没有处理成功，请稍后再试。',
-        };
-        try {
-          await sendResult(engine, replyCtx, failureResult, options.voice, options.voiceEligible, trackedReply, reportProblem, cfg.orchestration.reply.maxMessages, options.materializeAudio, {
-          syncImagesToGallery: options.syncImagesToGallery,
-          compressImages: options.compressImages,
-          materializeImages: options.materializeImages,
-          materializeAudio: options.materializeAudio,
-        });
-        } catch (error) {
-          await reportProblem('agent-enforce-reply-failed', error, { intent: decision.kind });
-          return { handled: false, reason: 'agent-enforce-reply-failed' };
-        }
+        // 不允许把固定失败文案发给用户；只做管理员上报和指标记录。
         metrics?.record('agent_failure');
         await reportProblem('agent-enforce-failed', 'Agent Runtime did not produce a handled result', { intent: decision.kind });
         logTiming('agent-enforce-failed');
@@ -2305,7 +2296,8 @@ export async function sendResult(
         Math.max(1, Math.trunc(Number(planPolicy?.maxMessages) || Number(maxMessages) || 12)),
       ));
       const planHasAudio = allReplyPlanOutputs(planToSend).some((output) => output.kind === 'audio');
-      const target = planPolicy?.voice !== 'off' && voice && !planHasAudio ? selectPrimaryTextForTts(planToSend) : null;
+        // forward/forcedForward 时文本必须进入合并转发；auto-TTS 不能先把文本替换成语音。
+        const target = planPolicy?.mode !== 'forward' && planPolicy?.forcedForward !== true && planPolicy?.voice !== 'off' && voice && !planHasAudio ? selectPrimaryTextForTts(planToSend) : null;
       if (voice && target) {
         let eligible = true;
         if (planPolicy?.voice !== 'on' && voiceEligible) {

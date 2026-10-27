@@ -80,7 +80,7 @@ test('agent-retirement R8: enforce failure never calls old orchestration or BotE
   assert.equal(h.agentCalls, 1);
   assert.equal(h.orchestrationCalls, 0);
   assert.equal(h.engineCalls, 0);
-  assert.ok(h.reply.sent.some(([, text]) => text.includes('这次没有处理成功')));
+  assert.equal(h.reply.sent.length, 0, 'Agent enforce 失败不得发送固定兜底文案');
   assert.ok(!h.reply.sent.some(([, text]) => text.includes('OLD_PLANNER_RESULT')));
   assert.ok(!h.reply.sent.some(([, text]) => text.includes('OLD_ORCHESTRATION')));
 });
@@ -117,5 +117,5 @@ test('agent-retirement R8: enforce without an injected AgentRuntime also fails c
   assert.equal(h.agentCalls, 0);
   assert.equal(h.orchestrationCalls, 0);
   assert.equal(h.engineCalls, 0);
-  assert.ok(h.reply.sent.some(([, text]) => text.includes('这次没有处理成功')));
+  assert.equal(h.reply.sent.length, 0, 'Agent enforce 失败不得发送固定兜底文案');
 });

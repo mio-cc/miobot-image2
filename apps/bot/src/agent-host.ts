@@ -51,6 +51,8 @@ export interface AgentHostOutcome {
   turn?: AgentTurnResult;
   replyPlan?: ReplyPlan;
   terminal?: boolean;
+  /** R11：异步挂起静默吸收——runtime 不发送任何内容（也不算失败），结果由 resume 通道送达。 */
+  silent?: boolean;
 }
 
 export interface AgentHostOptions {
@@ -310,9 +312,10 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
     const turnText = String(turn.text || '').trim();
     const approvalHandoff = mode === 'enforce' && turn.status === 'suspended' && Boolean(turn.pendingApproval);
     const jobHandoff = mode === 'enforce' && turn.status === 'suspended' && Boolean(turn.pendingJob);
-    const finalText = turnText || (approvalHandoff
-      ? '该操作需要管理员审批，已提交审批，请等待结果。'
-      : jobHandoff ? '任务已提交，完成后会继续处理。' : '');
+    // R11（生产问题修复）：异步挂起不再向用户发送任何固定状态文案——多步异步任务每挂起
+    // 一次就回填一次「任务已提交…」并被 auto-TTS 成语音，用户连收几条重复语音。挂起一律
+    // 静默吸收（silent），结果由 job 完成时的 resume 通道统一送达。审批提示保留（可感知）。
+    const finalText = turnText || (approvalHandoff ? '该操作需要管理员审批，已提交审批，请等待结果。' : '');
     const artifactOutputs = toolResultsToReplyOutputs(collectedResults);
     const effectiveReplyPreferences: { turnPreference?: AgentReplyPreference; sessionPreference?: AgentReplyPreference; userPreference?: AgentReplyPreference } = {
       ...replyPreferences,
@@ -335,7 +338,7 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
       mode,
       status: turn.status,
       handled,
-      ...(askUserHandoff ? { terminal: true, reason: 'agent_ask_user' } : approvalHandoff ? { terminal: true, reason: 'agent_approval_pending' } : jobHandoff ? { terminal: true, reason: 'agent_job_pending' } : sideEffectTerminal ? { terminal: true, reason: 'agent_side_effect_terminal' } : handled ? {} : { reason: handoffReason(turn, executedToolNames) }),
+      ...(askUserHandoff ? { terminal: true, reason: 'agent_ask_user' } : approvalHandoff ? { terminal: true, reason: 'agent_approval_pending' } : jobHandoff ? { terminal: true, reason: 'agent_job_pending', silent: true } : sideEffectTerminal ? { terminal: true, reason: 'agent_side_effect_terminal' } : handled ? {} : { reason: handoffReason(turn, executedToolNames) }),
       ...(finalText && handled ? { text: finalText } : {}),
       ...(handled ? { replyPlan } : {}),
       turn,
@@ -359,6 +362,10 @@ export function buildAgentSystemPrompt(cfg: AppConfig): string {
     '外部事实（尤其是现有歌曲歌词、网页内容、最新信息）在当前上下文不足时不得凭记忆编造，应先调用 web.search 查证；工具返回的结果再作为后续生成或执行工具的输入。',
     '工具可以组合使用：先识别依赖关系和需要的中间结果；相互独立的信息可以在同一轮并行调用，依赖上一轮结果的工具必须等待 tool result 回填后再调用；不要假设固定工具顺序。',
     '工具结果可能包含 text、url、file、recordId、globalSeq、lyrics 等中间值；后续工具需要时直接复用这些值，不要伪造或凭空补全。',
+    '用户表达发送方式偏好（例如用文字发送、别发语音、语音复制不了或听不了、直接发送）时，必须在同一轮调用 reply.presentation 表达该偏好；不要只在最终文字里答应。',
+    // R11（生产问题修复）：模型此前不知道 reply.presentation 的存在与用法——用户明确说
+    // 「用文字发送/别发语音/语音复制不了」时模型直接文字回答，偏好从未生效，回复仍被 auto-TTS 成语音。
+    '回复方式偏好必须通过 reply.presentation 工具记录：用户要求「用文字发送」「别发语音」「语音我复制不了/保存不了」时，调用 reply.presentation 并设 voice="off"（用户说「这次」→ scope="turn"；「这个会话/一会儿」→ scope="session"；「以后都」→ scope="user"），然后正常给出文字回答。不调用该工具时，回复默认按后台策略处理。',
   ];
   if (cfg.bot.persona?.enabled) {
     if (cfg.bot.persona.name) lines.push(`你的名字：${cfg.bot.persona.name}`);

@@ -104,7 +104,9 @@ test('agent-job R5.5: pending job suspends, then resumes with the completed arti
   assert.equal(first.handled, true);
   assert.equal(first.terminal, true);
   assert.equal(first.reason, 'agent_job_pending');
-  assert.match(first.text, /任务已提交/);
+  // R11 修复：异步挂起不再回填固定状态文案——静默吸收（silent），结果由 resume 通道送达。
+  assert.equal(first.silent, true);
+  assert.equal(first.text, undefined);
 
   jobState = {
     status: 'succeeded',

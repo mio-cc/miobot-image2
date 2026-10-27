@@ -371,7 +371,7 @@ test('voice: 文本结果转语音 -> 发 record(私聊)', async () => {
 
 test('voice: 返回空则回退文本', async () => {
   const client = makeModelClient();
-  const getConfig = () => createDefaultConfig();
+  const getConfig = () => { const c = withAgentOff(createDefaultConfig()); c.bot.botQqId = '10000'; return c; };
   const app = createBotApp({ getConfig, client });
   const sent = [];
   const reply = {

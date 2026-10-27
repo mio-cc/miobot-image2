@@ -85,7 +85,7 @@ export function resolveReplyPolicy(input: ReplyPolicyResolveInput): ResolvedRepl
   let preferNestedForward = cfg.orchestration.reply.preferNestedForward !== false;
   if (forwardStyle === 'nested') preferNestedForward = true;
   else if (forwardStyle === 'flat') preferNestedForward = false;
-  if (mode === 'forward' || forcedForward) preferNestedForward = true;
+  else if (mode === 'forward' || forcedForward) preferNestedForward = true;
   else if (mode === 'direct' || mode === 'plain' || mode === 'quote') preferNestedForward = false;
 
   let textFallback = cfg.orchestration.reply.textFallback || 'always';

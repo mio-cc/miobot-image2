@@ -1,4 +1,4 @@
-﻿import { NapcatAdapter } from '../../../packages/napcat/src/index.js';
+import { NapcatAdapter } from '../../../packages/napcat/src/index.js';
 import { createModelClient, createReloadableRegistry } from '../../../packages/model/src/index.js';
 import { ConfigStore } from '../../../packages/storage/src/index.js';
 import { createFileMetricsStore, createMetrics } from '../../../packages/core/src/metrics.js';
@@ -1081,7 +1081,6 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         void toolJobRuntime.run(job.jobId, run, spec.timeoutMs);
         return toolPending(call.id, job.jobId, {
           toolName: call.name,
-          content: '异步任务已提交，完成后继续处理。',
           meta: { asyncJob: true, sessionKey: context.sessionKey },
         });
       };
@@ -1267,6 +1266,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         ...(outcome.text ? { text: outcome.text } : {}),
         ...(outcome.replyPlan ? { replyPlan: outcome.replyPlan } : {}),
         ...(outcome.reason ? { reason: outcome.reason } : {}),
+        ...(outcome.silent ? { silent: true } : {}),
         meta: {
           status: outcome.status,
           mode: outcome.mode,
@@ -1555,7 +1555,6 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     if (probe?.status === 'success') {
       const result = toolSuccess(job.callId, job.toolName, {
         jobId: job.jobId,
-        content: '异步任务已完成。',
         outputs: (probe.outputs || []) as any,
       });
       await finish(toolJobRuntime.reconcileInterrupted(job.jobId, result));

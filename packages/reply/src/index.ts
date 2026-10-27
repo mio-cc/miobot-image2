@@ -105,6 +105,8 @@ export interface ReplyPlanLike {
   maxMessages?: number;
   noticeIncluded?: boolean;
   noticeSuppressed?: boolean;
+  /** Agent ReplyPolicy 的最终裁决；转发组单条输出需要据此保留显式 forward。 */
+  policy?: { mode?: string; reference?: string; forcedForward?: boolean };
 }
 
 export interface ReplyPlanDispatchResult extends ReplyDispatchResult {
@@ -447,6 +449,12 @@ export class ReplyStrategyEngine {
       return true;
     };
 
+    const forceForward = plan.policy?.mode === 'forward' || plan.policy?.forcedForward === true;
+    const textStrategy = plan.policy?.mode === 'quote' || plan.policy?.reference === 'quote'
+      ? 'quote'
+      : plan.policy?.reference === 'none' || plan.policy?.mode === 'direct' || plan.policy?.mode === 'plain'
+        ? 'plain'
+        : undefined;
     const dedupedGroups = dedupeReplyPlanGroups(plan.groups || []);
     for (const group of dedupedGroups) {
       if (sentCount >= maxMessages) {
@@ -455,7 +463,7 @@ export class ReplyStrategyEngine {
         break;
       }
       if (group.mode !== 'direct') {
-        const result = await this.replyPlanGroup(context, group, maxMessages - sentCount);
+        const result = await this.replyPlanGroup(context, group, maxMessages - sentCount, forceForward, textStrategy);
         remember(result);
         sentCount += usedMessages(result);
         if (failure || uncertain) break;
@@ -467,7 +475,7 @@ export class ReplyStrategyEngine {
           truncatedCount += 1;
           continue;
         }
-        const result = await this.replyPlanDirectOutput(context, output, maxMessages - sentCount);
+        const result = await this.replyPlanDirectOutput(context, output, maxMessages - sentCount, textStrategy);
         remember(result);
         sentCount += usedMessages(result);
         if (failure || uncertain) break;
@@ -564,17 +572,32 @@ export class ReplyStrategyEngine {
       error: all.find((result) => result.error)?.error,
     });
   }
-  private async replyPlanGroup(context: ReplyContext, group: ReplyPlanGroupLike, maxMessages?: number): Promise<ReplyDispatchResult> {
+  private async replyPlanGroup(context: ReplyContext, group: ReplyPlanGroupLike, maxMessages?: number, forceForward = false, textStrategy?: ReplyStrategy): Promise<ReplyDispatchResult> {
     const outputs = group.outputs || [];
     if (!outputs.length) return this.replyText(context, '');
-    if (outputs.length === 1) return this.replyPlanDirectOutput(context, outputs[0], maxMessages);
+    // buildReplyPlan 默认会把短文本放进 nested_forward 组；只有显式 forward
+    // 或 forcedForward 才应该把单条输出也走转发，否则普通闲聊仍应直接发送。
+    if (outputs.length === 1 && !forceForward) return this.replyPlanDirectOutput(context, outputs[0], maxMessages, textStrategy);
+    if (group.mode === 'direct') {
+      if (outputs.length === 1) return this.replyPlanDirectOutput(context, outputs[0], maxMessages, textStrategy);
+      const results: ReplyDispatchResult[] = [];
+      for (const output of outputs) results.push(await this.replyPlanDirectOutput(context, output, maxMessages, textStrategy));
+      const messageIds = uniqueIds(results.flatMap((result) => result.messageIds?.length ? result.messageIds : (result.messageId !== undefined ? [result.messageId] : [])));
+      return this.finish('mixed', 'plain', results.flatMap((result) => result.attempts || []), {
+        success: results.every((result) => result.success),
+        uncertain: results.some((result) => result.uncertain) || undefined,
+        messageId: messageIds[0],
+        messageIds,
+        error: results.find((result) => result.error)?.error,
+      });
+    }
     return this.replyPlanForwardGroup(context, group);
   }
 
-  private async replyPlanDirectOutput(context: ReplyContext, output: ReplyPlanOutputLike, maxMessages?: number): Promise<ReplyDispatchResult> {
+  private async replyPlanDirectOutput(context: ReplyContext, output: ReplyPlanOutputLike, maxMessages?: number, textStrategy?: ReplyStrategy): Promise<ReplyDispatchResult> {
     const url = String(output.url || '').trim();
     if (output.kind === 'text' || output.kind === 'link' || output.kind === 'card') {
-      return this.replyText(context, this.replyPlanText([output]), this.config.text, { maxMessages });
+      return this.replyText(context, this.replyPlanText([output]), textStrategy || this.config.text, { maxMessages });
     }
     if (output.kind === 'image') {
       if (!url) return this.finish('image', this.config.image, [{ kind: 'image', strategy: this.config.image, method: 'validate-image', success: false, error: 'empty_image_url' }], { success: false, error: 'empty_image_url' });
