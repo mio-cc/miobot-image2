@@ -56,7 +56,7 @@ const sunoKeyVisible = ref(false);
             <button class="btn-outline !px-2" type="button" @click="sunoKeyVisible = !sunoKeyVisible">{{ sunoKeyVisible ? '隐藏' : '显示' }}</button>
           </div>
         </FormField>
-        <FormField label="超时 (ms)"><input v-model.number="orch.suno.timeoutMs" type="number" min="1000" class="input-field" /></FormField>
+        <FormField label="任务等待超时 (ms)" hint="Suno 是远程异步生成，通常需要数分钟；最低 10 分钟，不是单次 HTTP 超时"><input v-model.number="orch.suno.timeoutMs" type="number" min="600000" step="30000" class="input-field" /></FormField>
         <FormField label="轮询间隔 (ms)"><input v-model.number="orch.suno.pollIntervalMs" type="number" min="500" class="input-field" /></FormField>
         <FormField label="最大时长 (秒)"><input v-model.number="orch.suno.maxDurationSeconds" type="number" min="5" class="input-field" /></FormField>
         <FormField label="格式"><select v-model="orch.suno.format" class="input-field"><option value="mp3">mp3</option><option value="wav">wav</option><option value="flac">flac</option></select></FormField>

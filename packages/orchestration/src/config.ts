@@ -665,7 +665,9 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
         historyPromptLimit: numberIn(suno.historyPromptLimit, d.suno.historyPromptLimit, 1),
       defaultVocalGender: suno.defaultVocalGender === 'm' || suno.defaultVocalGender === 'f' ? suno.defaultVocalGender : 'auto',
       defaultLanguage: String(suno.defaultLanguage || '').trim().slice(0, 80),
-      timeoutMs: numberIn(suno.timeoutMs, d.suno.timeoutMs, 1000, 3600000),
+      // Suno 是远程异步生成，timeoutMs 是任务级等待上限，不是单次 HTTP 超时。
+      // 20 秒这类配置会把仍在生成的任务误判为失败，导致 Agent 重复提交。
+      timeoutMs: numberIn(suno.timeoutMs, Math.max(600000, d.suno.timeoutMs), 600000, 3600000),
       pollIntervalMs: numberIn(suno.pollIntervalMs, d.suno.pollIntervalMs, 500, 60000),
       maxDurationSeconds: numberIn(suno.maxDurationSeconds, d.suno.maxDurationSeconds, 5, 900),
       format: suno.format === 'wav' || suno.format === 'flac' ? suno.format : 'mp3',

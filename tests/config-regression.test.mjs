@@ -401,3 +401,10 @@ test('config regression 兼容性修复: 显式 overflowPolicy=truncate 不得�
   invalid.orchestration.reply.overflowPolicy = 'nonsense';
   assert.equal(normalizeConfig(invalid).orchestration.reply.overflowPolicy, 'forward', '非法值回退 forward');
 });
+
+test('config regression: Suno timeout 是任务等待上限，至少 10 分钟', () => {
+  const short = normalizeConfig({ orchestration: { suno: { timeoutMs: 20000 } } });
+  assert.equal(short.orchestration.suno.timeoutMs, 600000, '20 秒等待会误杀 Suno 远程任务');
+  const custom = normalizeConfig({ orchestration: { suno: { timeoutMs: 900000 } } });
+  assert.equal(custom.orchestration.suno.timeoutMs, 900000, '合法的更长任务等待应保留');
+});

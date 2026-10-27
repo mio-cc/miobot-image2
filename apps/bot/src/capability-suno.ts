@@ -86,7 +86,7 @@ export class SunoCapabilityHandler implements CapabilityHandler {
       } catch (error) {
         lastError = error;
         const message = String((error as Error)?.message || error);
-        const retryable = !/suno_(?:http_4|quota|queue|base_url_missing|task_id_missing|unauthorized|forbidden)/i.test(message);
+        const retryable = !/suno_(?:http_4|quota|queue|base_url_missing|task_id_missing|unauthorized|forbidden|wait_timeout|wait_aborted)/i.test(message);
         if (!retryable || attempt >= retries) throw error;
         await new Promise((resolve) => setTimeout(resolve, Math.min(2000, 250 * (attempt + 1))));
       }
@@ -176,7 +176,9 @@ export class SunoCapabilityHandler implements CapabilityHandler {
       const created = await this.withRetry(() => client.create(generationInput), cfg.maxRetries);
       // T2.8：提交成功即上报 taskId——崩溃恢复时才有对账依据（不重放、防双计费）。
       invocation.reportExternalTask?.(created.id);
-      const task = await this.withRetry(() => client.wait(created.id, { timeoutMs: cfg.timeoutMs }), cfg.maxRetries);
+      // 任务级等待使用较长下限；请求级失败仍由 SunoClient 的 HTTP timeout 控制。
+      const waitTimeoutMs = Math.max(600000, Math.trunc(Number(cfg.timeoutMs) || 0));
+      const task = await this.withRetry(() => client.wait(created.id, { timeoutMs: waitTimeoutMs, signal: invocation.signal }), cfg.maxRetries);
       if (task.status !== 'success') {
         return {
           jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'failed',

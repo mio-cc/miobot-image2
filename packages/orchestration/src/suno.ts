@@ -271,12 +271,14 @@ export class SunoClient {
     return { id, status, outputs: collectAudio(data), raw: data };
   }
 
-  async wait(id: string, options: { timeoutMs?: number } = {}): Promise<SunoTask> {
+  async wait(id: string, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<SunoTask> {
     const interval = Math.max(500, this.options.pollIntervalMs || 5000);
     let last: SunoTask = { id, status: 'unknown', outputs: [], raw: {} };
     const timeoutMs = Math.max(0, Math.trunc(Number(options.timeoutMs) || 0));
     const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : undefined;
     for (let attempt = 0; attempt < 240; attempt += 1) {
+      // 编排步骤被取消时停止轮询，避免超时后继续消耗 Suno 配额。
+      if (options.signal?.aborted) throw new Error('suno_wait_aborted');
       if (deadline !== undefined && Date.now() >= deadline) throw new Error('suno_wait_timeout');
       last = await this.get(id);
       if (last.status === 'success' || last.status === 'failed') return last;
