@@ -451,6 +451,10 @@ function partialToolResultsText(results: NonNullable<AgentTurnResult['toolResult
   const parts: string[] = [];
   for (const result of results || []) {
     if (result.ok === false) continue;
+    // 图片/音频/视频/文件等产物工具的 content 是内部 JSON，不能当用户可见文本兜底发出。
+    // 它们由 toolResultsToReplyOutputs 转成 ReplyPlan 产物；否则会出现
+    // "先发图片，再转发 [image.generate] + 图片数据已省略"。
+    if (ARTIFACT_CAPABILITY_TOOLS.has(String(result.toolName || ''))) continue;
     const text = [
       String(result.content || '').trim(),
       ...(result.outputs || []).flatMap((output) => [String(output.text || '').trim(), output.url ? String(output.url) : '']),

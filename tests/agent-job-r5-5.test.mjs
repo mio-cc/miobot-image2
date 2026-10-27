@@ -109,9 +109,10 @@ test('agent-job R5.5: pending job suspends, then resumes with the completed arti
   assert.equal(first.text, undefined);
 
   const interrupted = await host({ text: '先聊别的', chatType: 'private', userId: '1', sessionId: 'private:async-job' });
-  assert.equal(interrupted.status, 'suspended');
-  assert.equal(interrupted.reason, 'agent_job_pending');
-  assert.equal(modelCalls, 1, '普通新消息不得结算旧 pending job');
+  assert.equal(interrupted.status, 'completed');
+  assert.equal(modelCalls, 2, '普通新消息应正常调用模型，但不得结算旧 pending job');
+  const interruptedOutputs = (interrupted.replyPlan?.groups || []).flatMap((group) => group.outputs || []);
+  assert.equal(interruptedOutputs.some((output) => output.kind === 'image'), false, '普通新消息不得注入旧图片');
   jobState = {
     status: 'succeeded',
     result: toolSuccess('img_call', 'image.generate', {
@@ -124,7 +125,7 @@ test('agent-job R5.5: pending job suspends, then resumes with the completed arti
   assert.equal(second.status, 'completed');
   assert.equal(second.text, '图片已生成。');
   assert.equal(second.handled, true);
-  const toolMessage = requests[1].messages.find((message) => message.role === 'tool' && message.toolCallId === 'img_call');
+  const toolMessage = requests.at(-1).messages.find((message) => message.role === 'tool' && message.toolCallId === 'img_call');
   assert.ok(toolMessage);
   assert.match(toolMessage.content, /async-cat\.png/);
   const planned = (second.replyPlan?.groups || []).flatMap((group) => group.outputs || []);

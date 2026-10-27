@@ -359,17 +359,9 @@ export class AgentRuntime implements AgentLoop {
     // 当成本轮 tool result 注入 ReplyPlan，造成旧产物被再次发送。
     // 只有 ToolJobRuntime 完成回调带来的 resumeJob turn 才允许结算 pendingJobs。
     const existingPendingJobs = session.pendingJobs || [];
-    if (existingPendingJobs.length && input.metadata?.resumeJob !== true) {
-      return {
-        sessionKey: input.sessionKey,
-        turnId: input.turnId,
-        status: 'suspended',
-        messages: structuredClone(session.messages),
-        usage: { modelRounds: 0, toolRounds: 0 },
-        pendingJob: existingPendingJobs[0],
-        meta: { reason: 'async_job_pending_resume' },
-      };
-    }
+    // 普通新消息可以正常回答，但绝不能结算旧 pending job；旧产物只在
+    // resumeJob=true 的完成回调里注入。正在运行的同一工具暂时从本轮工具集中移除，
+    // 防止模型重复提交图片/音频任务。
     const pendingJobs = input.metadata?.resumeJob === true ? [...existingPendingJobs] : [];
     if (pendingJobs.length) {
       if (!this.deps.resolveJob) {
@@ -469,7 +461,8 @@ export class AgentRuntime implements AgentLoop {
       session.pendingQuestion = undefined;
       session.pendingToolCalls = undefined;
     }
-    const tools = this.resolveTools(input);
+    const pendingToolNames = new Set(existingPendingJobs.map((job) => String(job.toolName || '')).filter(Boolean));
+    const tools = this.resolveTools(input).filter((tool) => input.metadata?.resumeJob === true || !pendingToolNames.has(tool.name));
     const availableToolNames = tools.map((tool) => tool.name);
     const prompt = this.deps.promptRegistry?.build();
     const contextBuilder = this.deps.contextBuilder || new DefaultAgentContextBuilder();

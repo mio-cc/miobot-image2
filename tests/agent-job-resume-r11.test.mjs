@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAgentHost } from '../dist/apps/bot/src/agent-host.js';
 import { createDefaultConfig } from '../dist/packages/config/src/index.js';
@@ -46,4 +46,47 @@ test('async job resume keeps original user text and does not re-inject the resum
   assert.ok(requests[1].messages.some((message) => message.role === 'tool' && /art\.png/.test(message.content)));
   const planned = (second.replyPlan?.groups || []).flatMap((group) => group.outputs || []);
   assert.ok(planned.some((output) => output.kind === 'image' && output.url === 'https://example.test/art.png'));
+});
+
+test('resume: artifact tool result never becomes visible text fallback', async () => {
+  const cfg = createDefaultConfig();
+  cfg.agent.enabled = true;
+  cfg.agent.mode = 'enforce';
+  cfg.agent.mainModel = 'gpt-4o-mini';
+  const spec = normalizeToolSpec({
+    name: 'image.generate', title: '图片生成', description: '生成图片',
+    inputSchema: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'], additionalProperties: false },
+    riskLevel: 'medium', sideEffects: ['creates_artifact'], queue: 'image', idempotency: 'turn', exposure: 'core',
+  });
+  let modelCalls = 0;
+  let jobStatus = 'running';
+  const client = { async chat() {
+    modelCalls += 1;
+    if (modelCalls === 1) return { text: '', raw: {}, toolCalls: [{ id: 'img_call', name: 'image.generate', arguments: { prompt: '猫' } }], finishReason: 'tool_calls' };
+    throw new Error('model unavailable after image');
+  } };
+  const host = createAgentHost({
+    getConfig: () => cfg,
+    client,
+    toolBindings: () => [{ spec, handler: async (call) => toolPending(call.id, 'job-img-text', { toolName: call.name, content: '子任务已提交' }) }],
+    preflightToolCall: () => ({ allowed: true }),
+    resolveJob: (record) => ({
+      jobId: record.jobId,
+      status: jobStatus,
+      ...(jobStatus === 'succeeded' ? { result: toolSuccess('img_call', 'image.generate', {
+        content: '[image.generate] {\"status\":\"success\",\"outputs\":[{\"kind\":\"image\",\"url\":\"data:image/png;base64,AAAA\"}]}',
+        outputs: [{ kind: 'image', url: 'data:image/png;base64,AAAA' }],
+      }) } : {}),
+    }),
+  });
+  await host({ text: '画一只猫', chatType: 'private', userId: '1', sessionId: 'private:artifact-text-fallback' });
+  jobStatus = 'succeeded';
+  const second = await host({ text: '画一只猫', resumeJob: true, availableToolNames: [], chatType: 'private', userId: '1', sessionId: 'private:artifact-text-fallback' });
+  const planned = (second.replyPlan?.groups || []).flatMap((group) => group.outputs || []);
+  assert.equal(second.handled, true);
+  assert.ok(planned.some((output) => output.kind === 'image'));
+  assert.equal(planned.some((output) => output.kind === 'text'), false, JSON.stringify(planned));
+  const visibleText = planned.filter((output) => output.kind === 'text').map((output) => String(output.text || '')).join('\\n');
+  assert.equal(visibleText.includes('image.generate'), false);
+  assert.equal(visibleText.includes('图片数据已省略'), false);
 });

@@ -58,13 +58,18 @@ test('agent-job R11: async suspension is silent — no fixed status text, no pla
       return toolPending(call.id, 'job-1', { toolName: call.name, content: '已提交生成任务' });
     },
   }];
+  let normalChatCalls = 0;
   const client = {
     async chat() {
-      return {
-        text: '', raw: {},
-        toolCalls: [{ id: 'c1', name: 'image.generate', arguments: { prompt: '一只猫' } }],
-        toolCallIssues: [], finishReason: 'tool_calls',
-      };
+      normalChatCalls += 1;
+      if (normalChatCalls === 1) {
+        return {
+          text: '', raw: {},
+          toolCalls: [{ id: 'c1', name: 'image.generate', arguments: { prompt: '一只猫' } }],
+          toolCallIssues: [], finishReason: 'tool_calls',
+        };
+      }
+      return { text: '还在画，先等等。', raw: {}, finishReason: 'stop' };
     },
     can: () => true,
     async vision() { return { text: '', raw: {} }; },
@@ -100,11 +105,13 @@ test('agent-job R11: async suspension is silent — no fixed status text, no pla
   const firstOutputs = (first.replyPlan?.groups || []).flatMap((group) => group.outputs || []);
   assert.equal(firstOutputs.filter((output) => output.kind === 'text').length, 0, 'ReplyPlan 不得含状态文本输出');
 
-  // 第二轮（job 仍 running，用户新消息）：再次挂起同样静默——不产生重复回复
+  // 第二轮（job 仍 running，用户新消息）：正常回复当前消息，但不得注入旧 job 产物
   const again = await host({ text: '写好了吗', chatType: 'private', userId: '2000', sessionId: 'private:2000', userRole: 'user' });
-  assert.equal(again.status, 'suspended');
-  assert.equal(again.silent, true);
-  assert.equal(again.text, undefined);
+  assert.equal(again.status, 'completed');
+  assert.equal(again.silent, undefined);
+  assert.equal(again.text, '还在画，先等等。');
+  const againOutputs = (again.replyPlan?.groups || []).flatMap((group) => group.outputs || []);
+  assert.equal(againOutputs.some((output) => output.kind === 'image'), false, '不得把旧图片注入当前回复');
 
   // job 完成 → resume 通道 → 模型继续 → 最终文本正常 handoff
   jobState = { status: 'succeeded', result: toolSuccess('c1', 'image.generate', {
