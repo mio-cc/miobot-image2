@@ -209,6 +209,9 @@ function commitBlacklist() {
           <FormField label="最大延续轮数" hint="1-10，每轮=用户一条消息+bot一条回复">
             <input v-model="config.bot.autoContinue.maxRounds" type="number" min="1" max="10" class="input-field" />
           </FormField>
+          <FormField label="关注窗口消息数" hint="0=关闭；显式触发后最多观察多少条群消息，只对模型判定为接续当前话题的消息回复">
+            <input v-model="config.bot.autoContinue.focusMaxMessages" type="number" min="0" max="100" class="input-field" />
+          </FormField>
           <FormField label="冷却间隔（毫秒）" hint="两次延续之间的最小间隔">
             <input v-model="config.bot.autoContinue.cooldownMs" type="number" min="5000" max="120000" class="input-field" />
           </FormField>

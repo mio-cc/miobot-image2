@@ -279,7 +279,7 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
             status: 'failed',
             handled: true,
             terminal: true,
-            replyPlan: buildAgentReplyPlan(cfg, toolResultsToReplyOutputs(sideEffectResults), replyPreferences),
+            replyPlan: buildAgentReplyPlan(cfg, toolResultsToReplyOutputs(sideEffectResults, cfg), replyPreferences),
             reason: 'agent_side_effect_terminal',
           };
         }
@@ -316,7 +316,7 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
     // 一次就回填一次「任务已提交…」并被 auto-TTS 成语音，用户连收几条重复语音。挂起一律
     // 静默吸收（silent），结果由 job 完成时的 resume 通道统一送达。审批提示保留（可感知）。
     const finalText = turnText || (approvalHandoff ? '该操作需要管理员审批，已提交审批，请等待结果。' : '');
-    const artifactOutputs = toolResultsToReplyOutputs(collectedResults);
+    const artifactOutputs = toolResultsToReplyOutputs(collectedResults, cfg);
     const effectiveReplyPreferences: { turnPreference?: AgentReplyPreference; sessionPreference?: AgentReplyPreference; userPreference?: AgentReplyPreference } = {
       ...replyPreferences,
       ...(turnPreference ? { turnPreference } : {}),
@@ -395,7 +395,7 @@ function buildAgentReplyPlan(cfg: AppConfig, outputs: ExecutionOutput[], prefere
   return { ...plan, policy: resolved.policy };
 }
 
-function toolResultsToReplyOutputs(results: NonNullable<AgentTurnResult['toolResults']>): ExecutionOutput[] {
+function toolResultsToReplyOutputs(results: NonNullable<AgentTurnResult['toolResults']>, cfg: AppConfig): ExecutionOutput[] {
   const outputs: ExecutionOutput[] = [];
   for (const result of results) {
     for (const output of result.outputs || []) {
@@ -417,6 +417,26 @@ function toolResultsToReplyOutputs(results: NonNullable<AgentTurnResult['toolRes
         },
       });
     }
+  }
+
+  // Agent 的 audio 工具结果不会自动变成歌词文本；与编排链路保持同一契约：
+  // sendLyricsWithMusic 开启且预算允许时，把真实 Suno lyrics 作为独立 text output 放进 ReplyPlan。
+  const musicAudio = outputs.find((output) => output.kind === 'audio'
+    && (output.meta?.sourceCapability === 'audio.music.generate' || output.meta?.provider === 'suno-official'));
+  const lyrics = String(musicAudio?.meta?.lyrics || '').trim();
+  if (musicAudio && lyrics
+    && cfg.orchestration.suno.sendLyricsWithMusic
+    && cfg.orchestration.reply.maxMessages >= 2
+    && cfg.orchestration.reply.maxResultItems >= 2) {
+    const title = String(musicAudio.meta?.title || '').trim();
+    outputs.unshift({
+      id: 'suno-lyrics',
+      kind: 'text',
+      text: title ? title + '\n\n' + lyrics : lyrics,
+      priority: 5,
+      mergeable: true,
+      meta: { synthetic: true, role: 'suno_lyrics', sourceCapability: 'audio.music.generate', skipTts: true, disableVoice: true, title },
+    });
   }
   return outputs;
 }

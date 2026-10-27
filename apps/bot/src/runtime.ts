@@ -151,7 +151,7 @@ export interface BotRuntimeOptions {
   /** 触发意图判断器（关键词触发 + 对话延续共用）；start.ts 注入。 */
   triggerIntentChecker?: {
     checkKeywordIntent(input: { userText: string; userName: string; context: string; triggerWord: string; allTriggerWords?: string[] }): Promise<boolean>;
-    checkContinueIntent(input: { userText: string; userName: string; botLastReply: string }): Promise<boolean>;
+    checkContinueIntent(input: { userText: string; userName: string; botLastReply: string; groupContext?: string; focusMode?: boolean; isOriginalUser?: boolean }): Promise<boolean>;
   };
   /** 该会话是否有等待回答的澄清追问（status=clarifying）；有则用户后续无触发消息（含纯图）转入追问合并。 */
   hasPendingClarification?: (input: { chatType: 'group' | 'private'; groupId?: number | string; userId?: number | string }) => boolean;
@@ -1056,6 +1056,8 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         }
       }
     }
+    let focusContextForTurn = '';
+    let continueChecked = false;
     // ── 对话延续触发（优先级最低）：bot 刚回复过该用户→窗口内下一条消息自动延续 ──
     if (decision.kind === 'ignored' && chatType === 'group' && cfg.bot.autoContinue?.enabled) {
       const acKey = 'group:' + String(event.group_id ?? '') + ':' + String(userId ?? '');
@@ -1072,6 +1074,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           const plainText = stripNonTextCqSegments(rawMessage).trim();
           if (plainText) {
             stageBegin('continue');
+              continueChecked = true;
             const shouldContinue = await options.triggerIntentChecker?.checkContinueIntent({
               userText: plainText,
               userName: String(event.sender?.card || event.sender?.nickname || userId || ''),
@@ -1094,6 +1097,53 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         }
       }
     }
+      // 群级关注窗口：显式 @/回复 bot 后的 x 条群消息内，允许其他用户接话。
+      // 只处理未被路由触发、且模型判断确实在接 bot/当前话题的消息；无关插话只消耗观察预算。
+      if (decision.kind === 'ignored' && !continueChecked && chatType === 'group' && cfg.bot.autoContinue?.enabled) {
+        const focusKey = 'group:' + String(event.group_id ?? '');
+        const focus = groupFocusStates.get(focusKey);
+        const focusNow = Date.now();
+        if (focus && focusNow <= focus.expiresAt && focus.remainingMessages > 0) {
+          focus.remainingMessages -= 1;
+          const plainText = stripNonTextCqSegments(rawMessage).trim();
+          if (plainText) {
+            const userName = String(event.sender?.card || event.sender?.nickname || userId || '');
+            focus.transcript.push('用户(' + userName + '): ' + plainText.slice(0, 300));
+            if (focus.transcript.length > 10) focus.transcript.splice(0, focus.transcript.length - 10);
+            const currentUserReplies = focus.repliesByUser.get(String(userId)) || 0;
+            const maxFocusRounds = Math.max(1, Math.min(10, Number(cfg.bot.autoContinue.maxRounds) || 1));
+            if (currentUserReplies < maxFocusRounds) {
+              stageBegin('continue');
+              const shouldContinue = cfg.bot.autoContinue.requireModelCheck
+                ? Boolean(await options.triggerIntentChecker?.checkContinueIntent({
+                  userText: plainText,
+                  userName,
+                  botLastReply: focus.lastBotReplyText.slice(0, 300),
+                  groupContext: focus.transcript.join('\n'),
+                  focusMode: true,
+                  isOriginalUser: String(userId) === focus.triggerUserId,
+                }))
+                : true;
+              log?.info('群级关注窗口判断', {
+                groupId: event.group_id, userId, triggerUserId: focus.triggerUserId,
+                remainingMessages: focus.remainingMessages, shouldContinue,
+              });
+              if (shouldContinue) {
+                focus.repliesByUser.set(String(userId), currentUserReplies + 1);
+                focusContextForTurn = '【群聊关注窗口】\n' + focus.transcript.join('\n');
+                decision = {
+                  kind: 'chat', source: 'auto_continue', confidence: 0.8,
+                  reason: 'group_focus_continue', commandText: plainText,
+                  params: { prompt: plainText, tokens: [] },
+                } as any;
+              }
+              stageEnd('continue');
+            }
+          }
+          if (focus.remainingMessages <= 0 || focusNow >= focus.expiresAt) groupFocusStates.delete(focusKey);
+        }
+      }
+
     if (decision.kind === 'ignored') {
       // 无触发但带图的群消息：暂存图片引用（短窗），供后续 @bot 提问时并入模型输入。
       if (chatType === 'group' && baseImages.length && event.group_id) {
@@ -1221,7 +1271,8 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     if (!result && agentShouldRun && agentHasInput) {
       stageBegin('agent');
       try {
-        const agentGroupContext = agentMode === 'enforce' ? (await buildChatContext()).context : undefined;
+        const baseAgentContext = agentMode === 'enforce' ? (await buildChatContext()).context : undefined;
+        const agentGroupContext = [baseAgentContext, focusContextForTurn].filter(Boolean).join('\n\n') || undefined;
         const agentOutcome = await options.agentRuntime!({
           text: agentPromptText,
           chatType,
@@ -1736,7 +1787,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     // 对话延续状态更新：bot 回复后记录该用户/群，窗口内的下一条消息可自动延续。
     if (chatType === 'group' && event.group_id && userId && result.handled) {
       const source = String((decision as any)?.source || decision.kind || '');
-      armAutoContinue(chatType, event.group_id, userId, result.text || '', source !== 'auto_continue');
+armAutoContinue(chatType, event.group_id, userId, result.text || '', source !== 'auto_continue', stripNonTextCqSegments(rawMessage).trim());
     }
     log?.info('回复发送完成', { kind: result.kind });
     logTiming('replied');
@@ -1782,30 +1833,79 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
   const keywordTriggerCooldowns = new Map<string, number>();
   /** 对话延续状态（groupId:userId → bot 回复时间/轮数/摘要）。 */
   const autoContinueStates = new Map<string, { lastBotReplyAt: number; rounds: number; lastContinueAt: number; lastBotReplyText: string }>();
+  /** 群级关注窗口：显式触发后观察群消息，按模型判定是否接话；每个用户仍有独立 session。 */
+  const groupFocusStates = new Map<string, {
+    triggerUserId: string;
+    lastBotReplyAt: number;
+    lastBotReplyText: string;
+    expiresAt: number;
+    remainingMessages: number;
+    repliesByUser: Map<string, number>;
+    transcript: string[];
+  }>();
   /** 最近未处理图片记忆：无触发被忽略的群图片短窗暂存，支撑"先发图 → 再 @bot 提问"的常见用法。 */
   const recentImageMemory = new Map<string, Array<{ ref: string; at: number }>>();
   /** P0-1（R9 修复）：Agent off/shadow 下自然语言消息的员通知冷却（会话粒度，60s 一条）。 */
   const agentUnavailableNotifyAt = new Map<string, number>();
   const RECENT_IMAGE_WINDOW_MS = 5 * 60 * 1000;
   const RECENT_IMAGE_MAX = 2;
-  /** 延续状态登记：bot 回复后记录该用户/群，窗口内下一条消息可自动延续。 */
-  function armAutoContinue(chatType: 'group' | 'private', groupId: unknown, uid: unknown, replyText: string, hardTrigger: boolean): void {
-    if (chatType !== 'group' || groupId === undefined || groupId === null || uid === undefined || uid === null) return;
-    const acKey = 'group:' + String(groupId) + ':' + String(uid);
-    const existing = autoContinueStates.get(acKey);
-    if (existing) {
-      existing.lastBotReplyAt = Date.now();
-      existing.lastBotReplyText = replyText.slice(0, 500);
-      // 硬触发（@/关键词/命令）重置轮数——视为新一轮对话开始。
-      if (hardTrigger) existing.rounds = 0;
-    } else {
-      autoContinueStates.set(acKey, { lastBotReplyAt: Date.now(), rounds: 0, lastContinueAt: 0, lastBotReplyText: replyText.slice(0, 500) });
+    /** 延续状态登记：bot 回复后记录该用户/群，窗口内下一条消息可自动延续。 */
+    function armAutoContinue(chatType: 'group' | 'private', groupId: unknown, uid: unknown, replyText: string, hardTrigger: boolean, userText = ''): void {
+      if (chatType !== 'group' || groupId === undefined || groupId === null || uid === undefined || uid === null) return;
+      const cfg = options.getConfig();
+      const acKey = 'group:' + String(groupId) + ':' + String(uid);
+      const existing = autoContinueStates.get(acKey);
+      if (existing) {
+        existing.lastBotReplyAt = Date.now();
+        existing.lastBotReplyText = replyText.slice(0, 500);
+        if (hardTrigger) existing.rounds = 0;
+      } else if (hardTrigger) {
+        // 只有显式触发/新的正常回复才创建 per-user 延续状态；group focus 续话不创建，
+        // 由群级关注窗口预算统一控制，避免预算耗尽后又被 per-user 状态续上。
+        autoContinueStates.set(acKey, { lastBotReplyAt: Date.now(), rounds: 0, lastContinueAt: 0, lastBotReplyText: replyText.slice(0, 500) });
+      }
+      if (autoContinueStates.size > 2000) {
+        const oldest = autoContinueStates.keys().next().value;
+        if (oldest !== undefined) autoContinueStates.delete(oldest);
+      }
+      const focusKey = 'group:' + String(groupId);
+      if (!cfg.bot.autoContinue?.enabled) {
+        groupFocusStates.delete(focusKey);
+        return;
+      }
+      const focusMaxMessages = Math.max(0, Math.min(100, Math.trunc(Number(cfg.bot.autoContinue?.focusMaxMessages) || 0)));
+      if (focusMaxMessages <= 0) {
+        groupFocusStates.delete(focusKey);
+        return;
+      }
+      const windowMs = Math.max(10000, Number(cfg.bot.autoContinue.windowMs) || 60000);
+      const now = Date.now();
+      const cleanUser = String(userText || '').trim().slice(0, 300);
+      const cleanReply = String(replyText || '').trim().slice(0, 500);
+      const existingFocus = groupFocusStates.get(focusKey);
+      if (hardTrigger) {
+        groupFocusStates.set(focusKey, {
+          triggerUserId: String(uid),
+          lastBotReplyAt: now,
+          lastBotReplyText: cleanReply,
+          expiresAt: now + windowMs,
+          remainingMessages: focusMaxMessages,
+          repliesByUser: new Map(),
+          transcript: [cleanUser ? '用户(' + String(uid) + '): ' + cleanUser : '', cleanReply ? '机器人: ' + cleanReply : ''].filter(Boolean),
+        });
+      } else if (existingFocus && now <= existingFocus.expiresAt) {
+        existingFocus.lastBotReplyAt = now;
+        existingFocus.lastBotReplyText = cleanReply;
+        existingFocus.expiresAt = now + windowMs;
+        if (cleanUser) existingFocus.transcript.push('用户(' + String(uid) + '): ' + cleanUser);
+        if (cleanReply) existingFocus.transcript.push('机器人: ' + cleanReply);
+        if (existingFocus.transcript.length > 10) existingFocus.transcript.splice(0, existingFocus.transcript.length - 10);
+      }
+      if (groupFocusStates.size > 2000) {
+        const oldest = groupFocusStates.keys().next().value;
+        if (oldest !== undefined) groupFocusStates.delete(oldest);
+      }
     }
-    if (autoContinueStates.size > 2000) {
-      const oldest = autoContinueStates.keys().next().value;
-      if (oldest !== undefined) autoContinueStates.delete(oldest);
-    }
-  }
   /** 戳一戳响应：只回应"戳 bot 本人"的事件，按用户冷却防刷，回复文案随机取自配置。 */
   const pokeCooldowns = new Map<string, number>();
   /** 戳一戳防连续重复：记录每个会话上一条已发文案。 */

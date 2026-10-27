@@ -116,6 +116,9 @@ export class TriggerIntentChecker {
     userText: string;
     userName: string;
     botLastReply: string;
+    groupContext?: string;
+    focusMode?: boolean;
+    isOriginalUser?: boolean;
   }): Promise<boolean> {
     const { nodeIndex, model } = this.chatNode();
     const cfg = this.options.getConfig();
@@ -123,6 +126,12 @@ export class TriggerIntentChecker {
     const prompt = [
       '你是群聊消息判定器。机器人刚回复过这个用户，用户紧接着又发了一条消息（没有@机器人）。',
       '背景事实：这个用户刚跟机器人有过一轮交互，机器人回复了他。现在他发了新消息。',
+      ...(input.focusMode ? [
+        '这是显式触发 bot 后的群级关注窗口。发送者不一定是刚才被回复的人；可能是群里的另一个用户。',
+        '只有在消息明显是在接机器人/当前话题时返回 true；对群里其他人的闲聊、玩梗或独立话题返回 false。',
+        '群聊上下文：' + String(input.groupContext || '（无）').slice(0, 1200),
+        '发送者是否为刚才的触发者：' + String(input.isOriginalUser === true),
+      ] : []),
       '',
       '由你根据消息语义和上下文判断：用户这条消息是否是在跟机器人说话？',
       '',
