@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import client from '../api/client';
 import { useCapabilityStore } from '../stores/capabilities';
 
@@ -159,6 +159,14 @@ const healthCards = computed<Card[]>(() => {
 
 const cards = computed<Card[]>(() => (view.value === 'registry' ? registryCards.value : healthCards.value));
 
+/** 卡片分页：默认每页 12 张，避免所有能力在一页纵向挤成一条长列表。 */
+const PAGE_SIZE = 12;
+const page = ref(1);
+const totalPages = computed(() => Math.max(1, Math.ceil(cards.value.length / PAGE_SIZE)));
+const pagedCards = computed(() => cards.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE));
+watch([keyword, category, view], () => { page.value = 1; });
+watch(cards, () => { if (page.value > totalPages.value) page.value = totalPages.value; });
+
 // 按分类计数（当前视图）
 const countByCat = (cat: string) => {
   const source = view.value === 'registry' ? registry.value.map((r) => ({ key: r.id })) : store.bindings.map((b) => ({ key: b.key }));
@@ -208,7 +216,7 @@ onMounted(() => {
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-3.5">
-      <router-link v-for="card in cards" :key="view + ':' + card.id" :to="card.href" class="block group">
+      <router-link v-for="card in pagedCards" :key="view + ':' + card.id" :to="card.href" class="block group">
         <div class="relative bg-[color:var(--surface)] border border-[color:var(--hairline-2)] rounded-[14px] p-4 shadow-[var(--sh-1)] transition-all duration-200 group-hover:-translate-y-[3px] group-hover:shadow-[var(--sh-2)] group-hover:border-[color:var(--accent-line)] cursor-pointer">
           <!-- 健康状态点（C2 光晕） -->
           <span class="absolute top-4 right-4 w-2 h-2 rounded-full"
@@ -245,6 +253,15 @@ onMounted(() => {
           <span class="absolute right-3.5 bottom-3.5 text-[color:var(--accent)] opacity-0 -translate-x-1 transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0">→</span>
         </div>
       </router-link>
+    </div>
+
+    <div v-if="totalPages > 1" class="flex flex-wrap items-center justify-between gap-3 mt-5 px-1">
+      <span class="text-xs text-[color:var(--ink-3)]">共 {{ cards.length }} 项 · 每页 {{ PAGE_SIZE }} 项</span>
+      <div class="flex items-center gap-1.5">
+        <button type="button" class="btn-outline text-xs !px-3 !py-1.5" :disabled="page <= 1" @click="page -= 1">上一页</button>
+        <span class="text-xs text-[color:var(--ink-2)] px-2">第 {{ page }} / {{ totalPages }} 页</span>
+        <button type="button" class="btn-outline text-xs !px-3 !py-1.5" :disabled="page >= totalPages" @click="page += 1">下一页</button>
+      </div>
     </div>
 
     <p v-if="!registryLoading && !store.loading && !cards.length" class="text-sm text-[color:var(--ink-3)] mt-8 text-center">

@@ -120,7 +120,7 @@ const ROLES: RoleDef[] = [
     { key: 'codeRender', title: '代码渲染', desc: 'code.render · HTML/SVG/Canvas/Three', section: 'codeRender', nodeField: 'nodeIndex', modelField: 'model', capability: 'chat', inheritable: true },
     { key: 'comfyui', title: 'ComfyUI 参数转化', desc: '自然语言 → workflow JSON', section: 'comfyuiTransform', nodeField: 'nodeIndex', modelField: 'model', capability: 'chat', inheritable: true },
     { key: 'tts', title: 'TTS 前处理', desc: '朗读前改写', section: 'bot.tts.preprocess', nodeField: 'nodeIndex', modelField: 'model', capability: 'chat', inheritable: true },
-    { key: 'trigger', title: '触发 / 续话判定', desc: '轻量判定 · 建议选快模型', section: null, nodeField: null, modelField: null, capability: 'chat', inheritable: true },
+    { key: 'trigger', title: '触发 / 续话判定', desc: '轻量判定 · 建议选快模型；触发与续话共用', section: 'bot.keywordTrigger', nodeField: 'intentNodeIndex', modelField: 'intentModel', capability: 'chat', inheritable: true },
     { key: 'memory', title: '记忆摘要 / 评分', desc: 'memory.* 二级任务', section: 'orchestration.memory', nodeField: 'embeddingNodeIndex', modelField: 'embeddingModel', capability: 'chat', inheritable: true },
 ];
 

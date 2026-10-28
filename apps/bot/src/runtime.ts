@@ -1647,8 +1647,9 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         const cleanText = stripNonTextCqSegments(decision.commandText);
         if (!cleanText && !enrichedImages.length && !enrichedVideos.length && !referenceText && !forwardText) {
           const cannedText = '我在。直接说需求就行，比如提问、「生图 一只猫」，或发「帮助」看指令。';
-          await engine.replyText(replyCtx, cannedText, 'quote');
+          // 先登记延续状态再发送：发送完成的瞬间用户就可能补充消息，登记晚一步会丢延续。
           armAutoContinue(chatType, event.group_id, userId, cannedText, true, '', replyPreferenceWindowId);
+          await engine.replyText(replyCtx, cannedText, 'quote');
           return { handled: true, kind: 'empty-mention' };
         }
         // P0-1（R9 修复，最终语义）：
