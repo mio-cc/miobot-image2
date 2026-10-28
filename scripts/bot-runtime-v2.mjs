@@ -21,10 +21,12 @@ fs.mkdirSync(path.dirname(systemLogPath), { recursive: true });
 
 const logger = createLogger({
   scope: 'bot-v2',
-  level: 'info',
+  level: (process.env.MIOBOT_LOG_LEVEL || 'info'),
   sinks: [
     new ConsoleLogSink(),
     new JsonFileLogSink(systemLogPath),
+    // R18：面板日志通道——admin 进程 readBotLogFile 读这个文件展示 bot 日志。
+    new JsonFileLogSink(path.join(runtimeDir, 'bot-logs.jsonl'), 5 * 1024 * 1024),
   ],
 });
 

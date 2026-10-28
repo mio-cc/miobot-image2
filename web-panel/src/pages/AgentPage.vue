@@ -1,5 +1,5 @@
-﻿<script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+<script setup lang="ts">
+import { computed, onMounted, ref, watch } from 'vue';
 import client, { errorMessage } from '../api/client';
 import { useConfigStore } from '../stores/config';
 import SectionCard from '../components/SectionCard.vue';
@@ -12,6 +12,35 @@ const config = computed(() => configStore.config);
 const agent = computed(() => config.value?.agent);
 const tools = computed(() => config.value?.toolRegistry);
 const context = computed(() => config.value?.contextPolicy);
+// R21 审计补缺：PlannerPage redirect 后这些 orchestration 子段失去页面，全部归 AgentPage。
+const orchestration = computed(() => (config.value as any)?.orchestration);
+const huggingFace = computed(() => (config.value as any)?.huggingFace);
+
+/* adminQqIds / allowlist 都是 string[]：必须用「文本 ref + 失焦写回」，
+ * 不能 v-model 直绑数组（输入框会把整个字段替换成字符串，保存时被归一化丢弃）。 */
+const adminQqIdsText = ref('');
+watch(() => orchestration.value?.approval?.adminQqIds, (ids) => {
+    adminQqIdsText.value = (ids || []).join(', ');
+}, { immediate: true });
+function commitAdminQqIds() {
+    const approval = orchestration.value?.approval;
+    if (!approval) return;
+    const ids = adminQqIdsText.value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
+    approval.adminQqIds = ids;
+    adminQqIdsText.value = ids.join(', ');
+}
+
+const allowlistText = ref('');
+watch(() => orchestration.value?.externalProviders?.allowlist, (list) => {
+    allowlistText.value = (list || []).join(', ');
+}, { immediate: true });
+function commitAllowlist() {
+    const providers = orchestration.value?.externalProviders;
+    if (!providers) return;
+    const items = allowlistText.value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean);
+    providers.allowlist = items;
+    allowlistText.value = items.join(', ');
+}
 
 const exposureEntries = computed(() => Object.entries(tools.value?.exposure || {}) as Array<[string, string]>);
 const newExposureId = ref('');
@@ -120,6 +149,7 @@ function removeExposure(id: string) {
         <FormField label="最大模型轮次"><input v-model.number="agent.maxModelRounds" type="number" min="1" max="100" class="input-field" /></FormField>
         <FormField label="最大工具轮次"><input v-model.number="agent.maxToolRounds" type="number" min="0" max="200" class="input-field" /></FormField>
         <FormField label="并行工具数"><input v-model.number="agent.maxParallelTools" type="number" min="1" max="32" class="input-field" /></FormField>
+        <FormField label="全局并发 Turn 上限" hint="跨群共享的同时执行 Agent turn 上限（0=不限）；1c2g 建议 4"><input v-model.number="agent.maxConcurrentTurns" type="number" min="0" max="256" class="input-field" /></FormField>
         <FormField label="Max Tokens"><input v-model.number="agent.maxTokens" type="number" min="1" max="200000" class="input-field" /></FormField>
         <FormField label="调用超时 (ms)"><input v-model.number="agent.timeoutMs" type="number" min="1000" class="input-field" /></FormField>
         <FormField label="整轮超时 (ms)"><input v-model.number="agent.turnTimeoutMs" type="number" min="1000" class="input-field" /></FormField>
@@ -219,6 +249,79 @@ function removeExposure(id: string) {
           </div>
           <button class="btn-outline !px-2" title="删除这条偏好" @click="deletePreference(record)">×</button>
         </div>
+      </div>
+    </SectionCard>
+
+    <!-- ═══ R21 审计补缺：PlannerPage redirect 后的孤儿 orchestration 设置 ═══ -->
+    <SectionCard v-if="orchestration?.execution" title="编排执行限制" hint="orchestration.execution · 原 PlannerPage 归入" class="mb-4">
+      <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4">
+        <FormField label="最大步数"><input v-model.number="orchestration.execution.maxSteps" type="number" min="1" class="input-field" /></FormField>
+        <FormField label="最大并行步"><input v-model.number="orchestration.execution.maxParallelSteps" type="number" min="1" class="input-field" /></FormField>
+        <FormField label="最大深度"><input v-model.number="orchestration.execution.maxDepth" type="number" min="1" class="input-field" /></FormField>
+        <FormField label="最大时长 (ms)"><input v-model.number="orchestration.execution.maxDurationMs" type="number" min="1000" class="input-field" /></FormField>
+        <FormField label="最大开销"><input v-model.number="orchestration.execution.maxCost" type="number" min="0" step="0.1" class="input-field" /></FormField>
+        <FormField label="最大模型轮次"><input v-model.number="orchestration.execution.maxModelRounds" type="number" min="1" class="input-field" /></FormField>
+      </div>
+    </SectionCard>
+
+    <SectionCard v-if="orchestration?.approval" title="审批流" hint="orchestration.approval · owner 在 QQ 回复审批" class="mb-4">
+      <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4">
+        <ToggleField v-model="orchestration.approval.enabled" label="启用审批" />
+        <FormField label="审批人 QQ" hint="多个用逗号分隔；失焦写回"><input v-model="adminQqIdsText" @blur="commitAdminQqIds" class="input-field font-mono" placeholder="123456, 654321" /></FormField>
+        <FormField label="法定人数"><input v-model.number="orchestration.approval.quorum" type="number" min="1" class="input-field" /></FormField>
+        <FormField label="审批超时 (ms)"><input v-model.number="orchestration.approval.timeoutMs" type="number" min="5000" class="input-field" /></FormField>
+        <FormField label="超时策略">
+          <select v-model="orchestration.approval.fallback" class="input-field">
+            <option value="reject">拒绝（安全）</option><option value="allow">放行</option>
+          </select>
+        </FormField>
+        <ToggleField v-model="orchestration.approval.allowGroupReply" label="允许群内审批" />
+        <FormField label="每用户待审上限"><input v-model.number="orchestration.approval.maxPendingPerUser" type="number" min="1" class="input-field" /></FormField>
+        <ToggleField v-model="orchestration.approval.maskArgs" label="审批时参数打码" />
+      </div>
+    </SectionCard>
+
+    <SectionCard v-if="orchestration?.externalProviders" title="外部 Provider" hint="orchestration.externalProviders · 允许的外部能力提供方白名单" class="mb-4">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <ToggleField v-model="orchestration.externalProviders.enabled" label="启用外部 Provider" />
+        <FormField label="白名单" hint="多个用逗号分隔，如 suno-official；失焦写回">
+          <input v-model="allowlistText" @blur="commitAllowlist" class="input-field font-mono" />
+        </FormField>
+      </div>
+    </SectionCard>
+
+    <!-- ═══ R21: MCP 服务器配置（此前无页面）═══ -->
+    <SectionCard title="MCP 服务器" hint="orchestration.mcpServers · Model Context Protocol 外部工具接入" class="mb-4">
+      <div v-if="!(orchestration?.mcpServers as any)?.length" class="text-xs text-[color:var(--ink-3)]">
+        暂未配置 MCP 服务器。在 config.json 的 orchestration.mcpServers 中添加：
+        <pre class="mt-2 p-2 rounded-lg bg-[color:var(--surface-2)] font-mono text-[11px] whitespace-pre-wrap">[{ "id": "server-name", "enabled": true, "url": "https://...", "allowlist": ["tool1"] }]</pre>
+      </div>
+      <div v-else class="space-y-2">
+        <div v-for="(server, idx) in (orchestration as any).mcpServers" :key="idx" class="field-box">
+          <div class="min-w-0">
+            <span class="font-semibold text-sm">{{ server.id }}</span>
+            <span class="ml-2 tag">{{ server.enabled ? '已启用' : '已停用' }}</span>
+            <div class="font-mono text-xs text-[color:var(--ink-3)] mt-0.5 truncate">{{ server.url }}</div>
+          </div>
+          <button class="btn-outline !px-2" @click="(server as any).enabled = !(server as any).enabled">{{ server.enabled ? '停用' : '启用' }}</button>
+        </div>
+      </div>
+    </SectionCard>
+
+    <!-- ═══ R21: HuggingFace 模型接入（此前无页面）═══ -->
+    <SectionCard v-if="huggingFace" title="HuggingFace 接入" hint="huggingFace · 免费推理 API 接入" class="mb-4">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <ToggleField v-model="huggingFace.enabled" label="启用 HuggingFace" />
+        <FormField label="Token"><input v-model="huggingFace.token" type="password" class="input-field font-mono" placeholder="hf_…" /></FormField>
+        <FormField label="Base URL"><input v-model="huggingFace.baseUrl" class="input-field font-mono" /></FormField>
+        <FormField label="请求模式">
+          <select v-model="huggingFace.requestMode" class="input-field">
+            <option value="openai-chat">openai-chat</option>
+            <option value="router-chat">router-chat</option>
+            <option value="legacy-inference">legacy-inference</option>
+          </select>
+        </FormField>
+        <FormField label="超时 (ms)"><input v-model.number="huggingFace.timeoutMs" type="number" min="5000" class="input-field" /></FormField>
       </div>
     </SectionCard>
   </div>

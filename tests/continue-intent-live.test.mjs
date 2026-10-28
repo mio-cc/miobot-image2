@@ -75,7 +75,8 @@ function makeCfg(node) {
   cfg.bot.ownerQQs = ['1'];
   cfg.llm.chatEnabled = true;
   cfg.bot.replyStrategies.text = 'plain';
-  cfg.bot.autoContinue = { enabled: true, windowMs: 60000, maxRounds: 3, cooldownMs: 5000, requireModelCheck: true };
+  // R15/#8：模板/超时来自默认配置；这里只覆盖行为开关，不整体替换对象。
+  cfg.bot.autoContinue = { ...cfg.bot.autoContinue, enabled: true, windowMs: 60000, maxRounds: 3, cooldownMs: 5000, requireModelCheck: true };
   if (node) {
     cfg.llm.apiKeys = [{ name: node.name, baseUrl: node.baseUrl, key: node.key, enabled: true, models: node.models, modelsFetchedAt: '', concurrency: 0 }];
     cfg.llm.chatNodeIndex = 0;
@@ -408,7 +409,8 @@ test('L2E-轮数上限: maxRounds=1，第二次延续请求被拒且不再调模
 
 test('L2E-冷却: cooldown(5s) 内的第二条消息被静默跳过，冷却过后恢复', async () => {
   const cfg = makeCfg(null);
-  cfg.bot.autoContinue = { enabled: true, windowMs: 60000, maxRounds: 3, cooldownMs: 5000, requireModelCheck: true };
+  // R15/#8：模板/超时来自默认配置；这里只覆盖行为开关，不整体替换对象。
+  cfg.bot.autoContinue = { ...cfg.bot.autoContinue, enabled: true, windowMs: 60000, maxRounds: 3, cooldownMs: 5000, requireModelCheck: true };
   const checker = scriptedChecker({ contVerdict: true });
   const e2e = await setupE2E({ cfg, checker });
   try {

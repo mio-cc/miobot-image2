@@ -7,10 +7,11 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const routerSource = fs.readFileSync(path.join(root, 'web-panel/src/router/index.ts'), 'utf8');
 
-test('panel R11 IA: routing page is visible while planner remains a redirect', () => {
-  // 规划器仍然留给 Agent；能力分工必须保留可导航入口，否则每项能力的节点/模型配置无处可找。
-  assert.match(routerSource, /path:\s*'\/planner',\s*\n\s*redirect:\s*'\/agent',/);
-  assert.match(routerSource, /path:\s*'\/routing',[\s\S]*?name:\s*'routing',[\s\S]*?RoutingPage\.vue/);
+test('panel R11 IA: routing redirects to models, planner remains a redirect', () => {
+  // R19：RoutingPage 的模型分工职责被 ModelsPage 用途分配取代——旧路由 redirect 到 /models。
+  assert.match(routerSource, /path:\s*'\/planner',[\s\S]*?redirect:\s*'\/agent'/);
+  assert.match(routerSource, /path:\s*'\/routing',[\s\S]*?redirect:\s*'\/models'/);
+  assert.match(routerSource, /path:\s*'\/models',[\s\S]*?name:\s*'models',[\s\S]*?ModelsPage\.vue/);
   assert.match(routerSource, /path:\s*'\/orchestration',\s*redirect:\s*'\/agent'/);
   assert.equal(/component:\s*\(\)\s*=>\s*import\('\.\.\/pages\/PlannerPage\.vue'\)/.test(routerSource), false);
 });

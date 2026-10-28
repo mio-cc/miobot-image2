@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import nodePath from 'node:path';
 import {
   builtinComfyUiProfile,
@@ -17,6 +17,7 @@ import {
 } from '../../config/src/index.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
 import { findUnresolvedSecrets, maskConfigSecrets, unmaskConfigSecrets } from './secrets.js';
+import { PROMPT_REGISTRY, getPromptValue, setPromptValue } from './prompt-registry.js';
 import { applyCapabilityOverrides, applyRuntimeCapabilityGates, builtinCapabilityDescriptors, buildCapabilityManifest, createPermissionPolicyFromDefaults, resolvePermission, evaluatePromptPromotion, diffPromptText, type CapabilityDescriptor } from '../../orchestration/src/index.js';
 import { detectComfyUiPromptNodeIds, inspectComfyUiWorkflow, validateComfyUiProfile } from '../../comfyui/src/index.js';
 
@@ -27,7 +28,7 @@ export const WEB_API_PACKAGE: PackageDescriptor = {
 
 export type WebApiMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 export type WebApiHeaders = Record<string, string | undefined>;
-export type WebApiStatus = 200 | 201 | 400 | 401 | 404 | 405 | 500;
+export type WebApiStatus = 200 | 201 | 400 | 401 | 404 | 405 | 429 | 500; // R15/N-20: 429 登录限速
 
 export interface PanelAuthSnapshot {
   token: string;
@@ -103,6 +104,8 @@ export interface WebApiRequest {
   path: string;
   headers?: WebApiHeaders;
   body?: unknown;
+  /** R18：GET 请求的查询参数（由 HTTP 适配层从 URL search params 解析）。 */
+  query?: Record<string, string>;
 }
 
 export interface WebApiResponse<T = unknown> {
@@ -184,7 +187,52 @@ function pluginCapabilityDescriptors(): CapabilityDescriptor[] {
 
 /** 内置 + 插件描述符合集（面板进程的能力目录/测试/预览统一用它）。 */
 function allCapabilityDescriptors(): CapabilityDescriptor[] {
-  return [...builtinCapabilityDescriptors(), ...pluginCapabilityDescriptors()];
+  return [...builtinCapabilityDescriptors(), ...pluginCapabilityDescriptors(), ...httpCapabilityDescriptors()];
+}
+
+/**
+ * R21：读取 capabilities-http.json 里的三方 HTTP API 描述符，让面板能力中心也能看到。
+ * bot 进程在 start.ts 注册 handler；面板进程只展示，不执行。
+ */
+function httpCapabilityDescriptors(): CapabilityDescriptor[] {
+  try {
+    const jsonPath = process.env.MIOBOT_HTTP_CAPABILITIES_FILE
+      || nodePath.join(nodePath.resolve(process.env.MIOBOT_DATA_DIR || process.env.MIOBOT_RUNTIME_DIR || '.runtime'), 'capabilities-http.json');
+    // 先试 dataDir，再试源码目录（开发时）
+    let raw: string;
+    try {
+      raw = readFileSync(jsonPath, 'utf8');
+    } catch {
+      const srcPath = nodePath.join(nodePath.resolve('.'), 'apps', 'bot', 'capabilities-http.json');
+      raw = readFileSync(srcPath, 'utf8');
+    }
+    const parsed = JSON.parse(raw) as { descriptors?: Array<Record<string, unknown>> };
+    return (parsed.descriptors || []).map((d) => {
+      const desc = d as Record<string, any>;
+      const params = Array.isArray(desc.params) ? desc.params : [];
+      const properties: Record<string, unknown> = {};
+      const required: string[] = [];
+      for (const param of params) {
+        const pn = String(param?.name || '').trim();
+        if (!pn) continue;
+        properties[pn] = { type: String(param?.type || 'string'), description: String(param?.description || '') };
+        if (param?.required) required.push(pn);
+      }
+      return {
+        id: String(desc.id || ''),
+        name: String(desc.name || desc.id || ''),
+        description: String(desc.description || ''),
+        provider: 'http-generic',
+        mode: 'sync',
+        riskLevel: 'low',
+        mergeable: true,
+        outputKinds: [String(desc.outputKind || 'text')],
+        inputSchema: params.length ? { type: 'object', properties, required, additionalProperties: true } : { type: 'object', additionalProperties: true },
+      } as unknown as CapabilityDescriptor;
+    });
+  } catch {
+    return [];
+  }
 }
 
 export interface WebApiOptions extends ConfigRepositoryOptions {
@@ -316,10 +364,21 @@ export class ConfigRepository {
     };
   }
 
+  // R15/N-20：登录限速——1 分钟滑窗 5 次失败即拒（内存即可，个人项目不上持久层）。
+  private loginFailures: Array<number> = [];
   login(password: string): LoginResult {
+    const now = Date.now();
+    const windowMs = 60_000;
+    const maxFails = 5;
+    this.loginFailures = this.loginFailures.filter((at) => now - at < windowMs);
+    if (this.loginFailures.length >= maxFails) {
+      throw new WebApiError(429, '尝试过于频繁，请稍后再试');
+    }
     if (!safeEqual(String(password ?? ''), this.config.panel.passwordSeed)) {
+      this.loginFailures.push(now);
       throw new WebApiError(401, '密码错误');
     }
+    this.loginFailures = [];
     return { success: true, auth: this.getAuthSnapshot(false), config: this.getMaskedConfig(), revision: this.revisionValue };
   }
 
@@ -468,6 +527,33 @@ export class WebApi {
 
   constructor(options: WebApiOptions = {}) {
     this.repository = options.repository || new ConfigRepository(options);
+  }
+
+  /** R18/日志：bot-logs.jsonl 所在的数据目录（与 bot 进程共享同一 dataDir）。 */
+  dataDir(): string {
+    return process.env.MIOBOT_DATA_DIR || process.env.MIOBOT_RUNTIME_DIR || nodePath.resolve('.runtime');
+  }
+
+  /** 日志接口只允许 dataDir 下的 .jsonl/.log 文件，禁止任意路径和软链逃逸。 */
+  private resolveLogPath(file: unknown): string {
+    const dataDir = nodePath.resolve(this.dataDir());
+    const requested = String(file || '').trim();
+    const fallback = nodePath.join(dataDir, 'bot-logs.jsonl');
+    if (!requested) return fallback;
+    if (requested.includes('\0') || nodePath.isAbsolute(requested) || nodePath.basename(requested) !== requested) {
+      throw new WebApiError(400, '日志文件名必须是 dataDir 下的 basename');
+    }
+    if (!/.(jsonl|log)$/i.test(requested)) throw new WebApiError(400, '只允许读取 .jsonl 或 .log 日志');
+    const resolved = nodePath.resolve(dataDir, requested);
+    if (nodePath.dirname(resolved) !== dataDir) throw new WebApiError(400, '日志路径越界');
+    try {
+      const real = realpathSync(resolved);
+      if (nodePath.dirname(real) !== dataDir) throw new WebApiError(400, '日志路径越界');
+    } catch (error) {
+      if (error instanceof WebApiError) throw error;
+      // 文件尚不存在时允许返回空日志；存在时的软链由上面 realpath 拦截。
+    }
+    return resolved;
   }
 
   async handle(request: WebApiRequest): Promise<WebApiResponse> {
@@ -1007,6 +1093,101 @@ export class WebApi {
           await auditReplyPreferenceAction('reply_preference.cleared', { scope: scope || 'all', removed });
         }
         return ok({ success: true, removed });
+      }
+      // ── R18/提示词注册表：GET 列表 + POST 修改（保存 config → bot loadIfChanged → 下一轮热重载）──
+      if (method === 'GET' && path === '/api/prompts') {
+        const cfg = this.repository.getConfig() as unknown as Record<string, unknown>;
+        const entries = PROMPT_REGISTRY.map((entry) => ({
+          id: entry.id,
+          title: entry.title,
+          description: entry.description,
+          category: entry.category,
+          hotReload: entry.hotReload,
+          variables: entry.variables || '',
+          editable: Boolean(entry.configPath),
+          builtin: Boolean(entry.builtin),
+          content: entry.configPath ? getPromptValue(cfg, entry.configPath) : '',
+          configPath: entry.configPath,
+        }));
+        return ok({ success: true, prompts: entries });
+      }
+      if (method === 'POST' && path === '/api/prompts/update') {
+        const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
+        const id = String(body.id || '').trim();
+        const content = String(body.content ?? '');
+        const entry = PROMPT_REGISTRY.find((item) => item.id === id);
+        if (!entry) throw new WebApiError(404, `未知提示词 ID: ${id}`);
+        if (!entry.configPath) throw new WebApiError(400, `提示词 ${id} 当前为代码内置，暂不支持面板编辑`);
+        if (content.length > 100_000) throw new WebApiError(400, '提示词内容过长（上限 100,000 字符）');
+        // 读取当前配置 → 写入指定路径 → 保存（saveConfig 内含归一化 + 版本记录 + mtime 热重载通知）
+        const cfg = this.repository.getConfig() as unknown as Record<string, unknown>;
+        setPromptValue(cfg, entry.configPath, content);
+        const saved = this.repository.saveConfig(cfg);
+        return ok({ success: true, saved: true, id, revision: saved.revision, hotReload: entry.hotReload });
+      }
+      if (method === 'POST' && path === '/api/prompts/reset') {
+        const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
+        const id = String(body.id || '').trim();
+        const entry = PROMPT_REGISTRY.find((item) => item.id === id);
+        if (!entry) throw new WebApiError(404, `未知提示词 ID: ${id}`);
+        if (!entry.configPath) throw new WebApiError(400, `提示词 ${id} 当前为代码内置`);
+        const cfg = this.repository.getConfig() as unknown as Record<string, unknown>;
+        setPromptValue(cfg, entry.configPath, '');
+        const saved = this.repository.saveConfig(cfg);
+        return ok({ success: true, reset: true, id, note: '已重置为出厂默认（空值触发 normalize 填充内置模板）', revision: saved.revision });
+      }
+      // ── R18/日志：GET /api/logs?level=&contains=&limit= （读 bot-logs.jsonl）──
+      if (method === 'GET' && path === '/api/logs') {
+        const query = request.query || {};
+        const level = String(query.level || '').trim().toLowerCase() || undefined;
+        const contains = String(query.contains || '').trim() || undefined;
+        const limit = Math.min(500, Math.max(1, Number(query.limit) || 100));
+        const logPath = this.resolveLogPath(query.file);
+        const entries: unknown[] = [];
+        try {
+          const raw = readFileSync(logPath, 'utf8');
+          const lines = raw.split('\n').filter(Boolean);
+          const start = Math.max(0, lines.length - limit * 4);
+          for (const line of lines.slice(start)) {
+            try {
+              const record = JSON.parse(line);
+              if (level && record.level !== level) continue;
+              if (contains && !JSON.stringify(record).toLowerCase().includes(contains.toLowerCase())) continue;
+              entries.push(record);
+              if (entries.length >= limit) break;
+            } catch { /* skip malformed */ }
+          }
+        } catch { /* file may not exist yet */ }
+        return ok({ success: true, logs: entries, total: entries.length, file: logPath });
+      }
+      // ── R18/日志原始文本：GET /api/logs/raw（面板"复制"按钮用，返回可复制的纯文本）──
+      if (method === 'GET' && path === '/api/logs/raw') {
+        const query = request.query || {};
+        const level = String(query.level || '').trim().toLowerCase() || undefined;
+        const contains = String(query.contains || '').trim() || undefined;
+        const limit = Math.min(2000, Math.max(1, Number(query.limit) || 200));
+        const logPath = this.resolveLogPath(query.file);
+        const lines: string[] = [];
+        try {
+          const raw = readFileSync(logPath, 'utf8');
+          const all = raw.split('\n').filter(Boolean);
+          for (const line of all.slice(-limit * 4)) {
+            try {
+              const record = JSON.parse(line);
+              if (level && record.level !== level) continue;
+              if (contains && !JSON.stringify(record).toLowerCase().includes(contains.toLowerCase())) continue;
+              const ts = String(record.timestamp || '');
+              const lv = String(record.level || '').toUpperCase().padEnd(5);
+              const scope = String(record.scope || '');
+              const msg = String(record.message || '');
+              const data = record.data ? ' ' + JSON.stringify(record.data) : '';
+              const err = record.error ? ' ERROR=' + JSON.stringify(record.error) : '';
+              lines.push(`${ts} [${lv}] ${scope}: ${msg}${data}${err}`);
+              if (lines.length >= limit) break;
+            } catch { /* skip */ }
+          }
+        } catch { /* empty */ }
+        return { status: 200, body: { success: true, raw: lines.join('\n'), count: lines.length } };
       }
       if (method === 'GET' && path === '/api/config/schema') {
         return ok({

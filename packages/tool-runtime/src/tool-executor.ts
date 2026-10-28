@@ -1,4 +1,4 @@
-﻿import { createHash } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { makeToolError, type ToolError } from './tool-errors.js';
 import { toolFailure, toolSuccess } from './tool-result.js';
 import { validateToolArguments, validateToolCallBatch, isRecord, isToolCallEnvelope } from './tool-schema.js';
@@ -47,6 +47,8 @@ export type ToolHandler = (
 export interface ToolExecutorOptions {
   registry: ToolRegistry;
   maxCallsPerBatch?: number;
+  /** R15/N-19：单个工具调用参数序列化后的字节上限，超限直接拒给模型自修。 */
+  maxCallArgBytes?: number;
   idempotencyStore?: ToolIdempotencyStore;
   onExternalTask?: (call: ToolCall, taskId: string, context: ToolExecutionContext) => void;
   defaultTimeoutMs?: number;
@@ -66,6 +68,7 @@ export interface ToolBatchExecutionOptions {
 export class ToolExecutor {
   private readonly registry: ToolRegistry;
   private readonly maxCallsPerBatch: number;
+  private readonly maxCallArgBytes: number;
   private readonly handlers = new Map<string, ToolHandler>();
   private readonly onExternalTask?: (call: ToolCall, taskId: string, context: ToolExecutionContext) => void;
   private readonly defaultTimeoutMs: number;
@@ -76,6 +79,7 @@ export class ToolExecutor {
   constructor(options: ToolExecutorOptions) {
     this.registry = options.registry;
     this.maxCallsPerBatch = Math.max(1, Math.trunc(options.maxCallsPerBatch || 16));
+    this.maxCallArgBytes = Math.max(1024, Math.trunc(Number(options.maxCallArgBytes) || 24_000));
     this.idempotencyStore = options.idempotencyStore || new InMemoryToolIdempotencyStore();
     this.onExternalTask = options.onExternalTask;
     this.defaultTimeoutMs = Math.max(0, Math.trunc(Number(options.defaultTimeoutMs) || 0));
@@ -152,6 +156,17 @@ export class ToolExecutor {
         expected: first.expected,
         received: first.received,
         details: { issues: argumentIssues },
+      }), { toolName: call.name });
+    }
+    // R15/N-19：参数大小上限——超限直接拒调，可重试错误交回模型自修（repair 链既有语义）。
+    const argBytes = Buffer.byteLength(stableJson(call.arguments) || '', 'utf8');
+    if (argBytes > this.maxCallArgBytes) {
+      return toolFailure(call.id, makeToolError({
+        code: 'tool_call_not_executable',
+        message: `工具参数过大（${argBytes} 字节，上限 ${this.maxCallArgBytes}）。请精简参数内容后重试。`,
+        callId: call.id,
+        toolName: call.name,
+        retryable: true,
       }), { toolName: call.name });
     }
     const idempotencyKey = this.idempotencyKeyFor(call, spec, context);
@@ -334,6 +349,22 @@ export class ToolExecutor {
     }
     const runnable = calls.filter(isToolCallEnvelope);
     if (!runnable.length) return [];
+    // R15/C-3：同批副作用工具强制串行——凡声明 sideEffects 的工具共享单个执行槽位
+    // 顺序执行；只读工具照常并行。幂等（payload/turn）只影响重试与去重语义，
+    // 不豁免并发隔离：副作用调用交错执行的次序问题与是否幂等无关。
+    const hasSideEffects = (call: ToolCall): boolean => {
+      const spec = this.registry.get(call.name);
+      return Boolean(spec?.sideEffects?.length);
+    };
+    const sideEffectCalls = runnable.filter(hasSideEffects);
+    // 只要同批存在副作用工具，就按模型给出的原始顺序整批串行。
+    // 不能把只读工具和副作用工具分成两组并行：副作用可能依赖同一批只读工具的结果，
+    // 且副作用工具单独成批时也必须串行，不能落入通用并发池。
+    if (sideEffectCalls.length) {
+      const results: ToolResult[] = [];
+      for (const call of runnable) results.push(await this.execute(call, context));
+      return results;
+    }
     const concurrency = Math.max(1, Math.min(runnable.length, Math.trunc(options.maxConcurrency || this.defaultMaxConcurrency || 1)));
     if (concurrency === 1) {
       const results: ToolResult[] = [];

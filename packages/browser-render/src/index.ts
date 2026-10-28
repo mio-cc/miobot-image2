@@ -1,4 +1,4 @@
-﻿import { promises as fs, existsSync } from 'node:fs';
+import { promises as fs, existsSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
@@ -31,6 +31,9 @@ export interface RenderedImage {
   height: number;
   size: number;
   source?: CodeArtifact;
+  /** R15/S-1+S-4：降级标记——goto 超时仍截已载入部分 / 近空白页告警，供上游转告模型换路。 */
+  degraded?: boolean;
+  note?: string;
 }
 
 export interface UrlScreenshotOptions {
@@ -103,7 +106,7 @@ export async function assertSafePublicUrl(raw: string, allowPrivate = false): Pr
   if (!url.hostname) throw new Error('URL 缺少主机名');
   if (!allowPrivate) {
     const host = url.hostname.toLowerCase();
-    if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.localhost') || host === '::1' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd') || isPrivateIpv4(host)) {
+    if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.localhost') || host === '::1' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('::ffff:') || isPrivateIpv4(host)) {
       throw new Error('禁止访问本机、内网或保留地址');
     }
     try {
@@ -369,6 +372,7 @@ export function createBrowserRenderer(options: BrowserRendererOptions): BrowserR
     const width = clampInt(input.width, cfg.defaultWidth, 128, cfg.maxWidth);
     const height = clampInt(input.height, cfg.defaultHeight, 128, cfg.maxHeight);
     const { context, page } = await newPage(width, height);
+    let gotoDegraded = false;
     try {
       await page.route('**/*', (route) => {
         const requestUrl = route.request().url();
@@ -378,18 +382,49 @@ export function createBrowserRenderer(options: BrowserRendererOptions): BrowserR
           if (!/^https?:$/.test(parsed.protocol)) return route.abort();
           if (!cfg.allowPrivateHosts) {
             const host = parsed.hostname.toLowerCase();
-            if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal') || isPrivateIpv4(host)) return route.abort();
+            const privateHost = host === 'localhost'
+              || host.endsWith('.local')
+              || host.endsWith('.internal')
+              || host === '::1'
+              || host.startsWith('fe80:')
+              || host.startsWith('fc')
+              || host.startsWith('fd')
+              || host.startsWith('::ffff:')
+              || isPrivateIpv4(host);
+            if (privateHost) return route.abort();
+          }
+          // R15/S-3：重 JS 站点（如 B 站）一页上百请求会把 1c2g 打满——
+          // 截图只需要布局与字体，媒体/埋点请求一律裁掉。
+          const pathname = parsed.pathname.toLowerCase();
+          if (/\.(png|jpe?g|gif|webp|avif|svg|mp4|webm|mp3|wav|ogg|flac|woff2?|ttf|eot)(\?|$)/.test(pathname)
+            || parsed.hostname.endsWith('.google-analytics.com')
+            || parsed.hostname.endsWith('.doubleclick.net')
+            || parsed.hostname.endsWith('.googletagmanager.com')) {
+            return route.abort();
           }
           return route.continue();
         } catch { return route.abort(); }
       });
-      await page.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout: cfg.timeoutMs });
+      // R15/S-1：goto 超时不再整单失败——try/catch 后截"已载入部分"。
+      // B 站等重 SPA 在 timeoutMs 内常到不了 domcontentloaded，但视觉骨架已可截。
+      try {
+        await page.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout: cfg.timeoutMs });
+      } catch {
+        gotoDegraded = true;
+      }
       await page.evaluate(async () => {
         await (document as any).fonts?.ready?.catch?.(() => undefined);
         await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
       }).catch(() => undefined);
       if (input.waitMs) await sleep(input.waitMs);
-      return await saveScreenshot(page, outputDir, width, height, input.fullPage === true);
+      // R15/S-4：空内容检测——白屏不返回"成功"，返回带事实的告警结果让模型换路。
+      const bodyText = await page.evaluate(() => String((document.body?.innerText || '')).length).catch(() => '0');
+      const shot = await saveScreenshot(page, outputDir, width, height, input.fullPage === true);
+      const bodyTextLength = Number(bodyText) || 0;
+      if (gotoDegraded || bodyTextLength < 20) {
+        return { ...shot, degraded: true, note: gotoDegraded ? 'page_load_timeout_partial_capture' : 'near_blank_page' };
+      }
+      return shot;
     } finally {
       await page.close().catch(() => undefined);
       await context.close().catch(() => undefined);

@@ -1,8 +1,36 @@
-﻿import type { BotApp } from './app.js';
+import type { BotApp } from './app.js';
 import type { RuntimeInput as BotEngineInput, RuntimeResult as BotEngineResult } from './runtime-types.js';
 import type { CapabilityHandler, CapabilityInvocation, ExecutionOutput, ExecutionResult } from '../../../packages/orchestration/src/index.js';
 
 export type ModelCapabilityKind = 'image.generate' | 'image.edit' | 'image.interrogate' | 'video.generate' | 'chat.reply';
+
+/** 图片 size 预设 -> 真实宽高；执行层统一收口。 */
+const IMAGE_SIZE_PRESETS: Record<string, { width: number; height: number }> = {
+  square: { width: 1024, height: 1024 },
+  portrait: { width: 1024, height: 1536 },
+  'portrait-3-4': { width: 1152, height: 1536 },
+  portrait34: { width: 1152, height: 1536 },
+  landscape: { width: 1536, height: 1024 },
+  'landscape-4-5': { width: 1280, height: 1024 },
+  landscape45: { width: 1280, height: 1024 },
+};
+
+export function resolveImageSize(value: unknown): { size?: string; width?: number; height?: number } {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw || raw === 'auto') return {};
+  const preset = IMAGE_SIZE_PRESETS[raw];
+  if (preset) return { size: `${preset.width}x${preset.height}`, width: preset.width, height: preset.height };
+  if (/^\d{2,5}x\d{2,5}$/.test(raw)) {
+    const [width, height] = raw.split('x').map((item) => Math.max(1, Math.trunc(Number(item))));
+    return { size: `${width}x${height}`, width, height };
+  }
+  return { size: raw };
+}
+
+export function mergeImageUrls(primary: string[], extra: unknown): string[] {
+  const value = typeof extra === 'string' ? extra.trim() : '';
+  return Array.from(new Set([...primary, ...(value ? [value] : [])].filter(Boolean)));
+}
 
 export class ModelCapabilityHandler implements CapabilityHandler {
   constructor(
@@ -39,14 +67,27 @@ export class ModelCapabilityHandler implements CapabilityHandler {
       result = await this.app.engine.handleExplicit('chat', input, { prompt: input.text });
     } else {
       const args = invocation.step.args || {};
+      if (this.kind === 'image.edit') input.images = mergeImageUrls(input.images || [], args.imageUrl);
+      if (this.kind === 'image.edit' && !(input.images?.length)) {
+        return {
+          jobId: invocation.plan.planId,
+          stepId: invocation.step.id,
+          status: 'needs_input',
+          outputs: [{ kind: 'text', text: '请先发送一张图片，或引用一条带图片的消息，再进行图片编辑。', priority: 10, mergeable: true }],
+          diagnostics: { missingInformation: ['参考图'] },
+        };
+      }
+      const size = resolveImageSize(args.size);
       result = await this.app.engine.handleExplicit(this.kind as any, input, {
         prompt: String(args.prompt || input.text || ''),
-        size: typeof args.size === 'string' ? args.size : undefined,
-        width: Number.isFinite(Number(args.width)) ? Number(args.width) : undefined,
-        height: Number.isFinite(Number(args.height)) ? Number(args.height) : undefined,
-        count: Number.isFinite(Number(args.count)) ? Number(args.count) : undefined,
-        quality: typeof args.quality === 'string' ? args.quality : undefined,
-        templateId: typeof args.templateId === 'string' ? args.templateId : undefined,
+        ...(size.size !== undefined ? { size: size.size } : {}),
+        ...(size.width !== undefined ? { width: size.width } : {}),
+        ...(size.height !== undefined ? { height: size.height } : {}),
+        ...(Number.isFinite(Number(args.width)) && size.width === undefined ? { width: Number(args.width) } : {}),
+        ...(Number.isFinite(Number(args.height)) && size.height === undefined ? { height: Number(args.height) } : {}),
+        ...(Number.isFinite(Number(args.count)) ? { count: Number(args.count) } : {}),
+        ...(typeof args.quality === 'string' ? { quality: args.quality } : {}),
+        ...(typeof args.templateId === 'string' ? { templateId: args.templateId } : {}),
         tokens: Array.isArray(args.tokens) ? args.tokens.map(String) : [],
       });
     }

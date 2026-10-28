@@ -59,6 +59,9 @@ const ownersText = ref('');
 const whitelistGroupsText = ref('');
 const whitelistPrivateText = ref('');
 const blacklistText = ref('');
+// 戳一戳回复池是 string[]：文案本身常含逗号，用「每行一句」文本框 + 失焦写回，
+// 不能 v-model 直接绑数组（输入框会把整个字段替换成字符串，保存时被归一化丢弃回落默认）。
+const pokeRepliesText = ref('');
 
 function syncFromConfig() {
     const bot = config.value?.bot;
@@ -70,6 +73,7 @@ function syncFromConfig() {
     whitelistGroupsText.value = (bot.whitelistGroups || []).join(', ');
     whitelistPrivateText.value = (bot.whitelistPrivate || []).join(', ');
     blacklistText.value = (bot.blacklistGroupUsers || []).join('\n');
+    pokeRepliesText.value = (bot.poke?.replies || []).join('\n');
 }
 watch(() => [config.value?.bot, config.value?.orchestration?.approval], syncFromConfig, { immediate: true });
 
@@ -99,6 +103,14 @@ function commitBlacklist() {
     config.value.bot.blacklistGroupUsers = splitList(blacklistText.value, /[\n,，]+/);
     blacklistText.value = config.value.bot.blacklistGroupUsers.join('\n');
 }
+function commitPokeReplies() {
+    const replies = splitList(pokeRepliesText.value, /\n/)
+        .slice(0, 20); // 与归一化上限一致：回复池最多 20 条。
+    config.value.bot.poke.replies = replies.length ? replies : [...DEFAULT_POKE_REPLIES];
+    pokeRepliesText.value = config.value.bot.poke.replies.join('\n');
+}
+/** 清空回复池等于「随机回一句」失效，回落出厂三条而不是空数组。 */
+const DEFAULT_POKE_REPLIES = ['戳我干嘛呀', '别戳啦，在的呢', '收到收到，有事直接说~'];
 </script>
 
 <template>
@@ -254,8 +266,9 @@ function commitBlacklist() {
         <FormField label="戳一戳冷却 (秒)" hint="每用户冷却，防连戳刷屏">
           <input v-model.number="config.bot.poke.cooldownSec" type="number" min="0" max="3600" class="input-field" :disabled="!config.bot.poke.enabled" />
         </FormField>
-        <FormField label="戳一戳回复池" hint="逗号分隔，随机挑一句">
-          <input v-model="config.bot.poke.replies" class="input-field" placeholder="戳我干嘛呀, 别戳啦" :disabled="!config.bot.poke.enabled" />
+        <FormField label="戳一戳回复池" hint="每行一句，被戳时随机挑一条（最多 20 条；清空则回落出厂默认）">
+          <textarea v-model="pokeRepliesText" @blur="commitPokeReplies" rows="4" class="input-field resize-y"
+            placeholder="戳我干嘛呀&#10;别戳啦，在的呢" :disabled="!config.bot.poke.enabled" />
         </FormField>
         <div class="flex items-end"><ToggleField v-model="config.bot.welcome.enabled" label="入群欢迎" hint="新成员入群时发一条（默认关，防打扰）" /></div>
         <FormField label="欢迎语" hint="占位符 {user}">

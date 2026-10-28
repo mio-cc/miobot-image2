@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "start": "node scripts/miobot-service.mjs",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node -e \"const fs=require('fs');fs.mkdirSync('dist/apps/bot/src',{recursive:true});fs.copyFileSync('apps/bot/capabilities-http.json','dist/apps/bot/src/capabilities-http.json');console.log('JSON assets copied')\"",
     "test": "npm run build && node --test tests/*.test.mjs",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "start:verify": "node scripts/local-verify-server.mjs",

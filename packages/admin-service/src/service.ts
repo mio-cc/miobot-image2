@@ -1,4 +1,6 @@
 import { createWebApi, type ConfigRepository, type WebApi, type WebApiRequest } from '../../web-api/src/index.js';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { getDefaultPrompts } from '../../config/src/index.js';
 import type { LogQuery } from '../../logger/src/index.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
@@ -161,9 +163,59 @@ export class AdminService {
   }
 
   private readLogs(channel: 'system' | 'canvas', rawPath: string): { success: true; items: unknown[]; total: number } {
-    const items = this.logs[channel].query(parseLogQuery(rawPath));
+    const query = parseLogQuery(rawPath);
+    // R18：system 频道合并 bot 进程的 bot-logs.jsonl（跨进程文件交换）——
+    // 面板此前只看到 admin 自己的 MemoryLogSink，bot 的运行日志完全不可见。
+    if (channel === 'system') {
+      const adminItems = this.logs.system.query(query);
+      const botItems = readBotLogFile(query);
+      // R21-f 去重：bot 启动器把同一条日志同时写进 logs/system.ndjson（admin 侧
+      // FileLogStore 读它）和 bot-logs.jsonl（readBotLogFile 读它），合并时会得到
+      // 两份完全相同的记录（timestamp+level+scope+message 全等）。按该四元组去重，
+      // 只保留一份；不同毫秒的同文本日志（如秒级重连循环）不受影响。
+      const seen = new Set<string>();
+      const dedupe = (item: unknown): boolean => {
+        const it = item as Record<string, unknown>;
+        const key = `${it.timestamp}|${it.level}|${it.scope}|${typeof it.message === 'string' ? it.message : JSON.stringify(it.message)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      };
+      const merged = [...adminItems, ...botItems]
+        .filter(dedupe)
+        .sort((a, b) => String((a as any).timestamp || '').localeCompare(String((b as any).timestamp || '')));
+      const limited = query.limit !== undefined ? merged.slice(-query.limit) : merged.slice(-300);
+      return { success: true, items: limited, total: limited.length };
+    }
+    const items = this.logs[channel].query(query);
     return { success: true, items, total: items.length };
   }
+}
+
+/**
+ * R18：读 bot 进程写的 bot-logs.jsonl（JsonFileLogSink 追加、5MB 轮转）。
+ * bot 与面板是两个进程——日志只能靠文件交换，这是面板看到 bot 日志的唯一通道。
+ */
+function readBotLogFile(query: LogQuery): unknown[] {
+  const dataDir = process.env.MIOBOT_DATA_DIR || process.env.MIOBOT_RUNTIME_DIR || path.resolve('.runtime');
+  const logPath = process.env.MIOBOT_LOG_FILE || path.join(dataDir, 'bot-logs.jsonl');
+  try {
+    const raw = readFileSync(logPath, 'utf8');
+    const lines = raw.split('\n').filter(Boolean);
+    const records: unknown[] = [];
+    const maxLines = Math.min(2000, (query.limit || 300) * 3);
+    for (const line of lines.slice(-maxLines)) {
+      try { records.push(JSON.parse(line)); } catch { /* skip malformed */ }
+    }
+    let items = records;
+    if (query.level) items = items.filter((item) => (item as any).level === query.level);
+    if (query.scope) items = items.filter((item) => String((item as any).scope || '').startsWith(query.scope!));
+    if (query.contains) {
+      const needle = query.contains.toLowerCase();
+      items = items.filter((item) => JSON.stringify(item).toLowerCase().includes(needle));
+    }
+    return query.limit !== undefined ? items.slice(-query.limit) : items;
+  } catch { return []; }
 }
 
 export function createAdminService(options: AdminServiceOptions = {}): AdminService {

@@ -1,4 +1,4 @@
-import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router';
+﻿import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router';
 
 /**
  * 用 hash 路由：面板挂在 /admin/ 下由静态文件服务器托管，
@@ -30,7 +30,7 @@ const routes: RouteRecordRaw[] = [
         path: '/access',
         name: 'access',
         component: () => import('../pages/AccessPage.vue'),
-        meta: { title: '接入与准入', group: '接入', icon: 'chat' },
+        meta: { title: '输入与触发', group: '配置', icon: 'chat' },
     },
     {
         // P1-E（R10 收口）：旧规划器页重定向到 Agent 与工具；旧组件保留在仓库供回滚，
@@ -42,37 +42,14 @@ const routes: RouteRecordRaw[] = [
         path: '/permissions',
         name: 'permissions',
         component: () => import('../pages/PermissionsPage.vue'),
-        meta: { title: '权限与审批', group: '编排', icon: 'check' },
+        meta: { title: '权限与审批', group: '配置', icon: 'check' },
     },
     {
-        path: '/cap-image',
-        name: 'cap-image',
-        component: () => import('../pages/CapImagePage.vue'),
-        meta: { title: '图片生成', group: '能力中心', icon: 'canvas' },
-    },
-    {
-        path: '/cap-music',
-        name: 'cap-music',
-        component: () => import('../pages/CapMusicPage.vue'),
-        meta: { title: '音乐（Suno）', group: '能力中心', icon: 'voice' },
-    },
-    {
-        path: '/cap-voice',
-        name: 'cap-voice',
-        component: () => import('../pages/CapVoicePage.vue'),
-        meta: { title: '语音', group: '能力中心', icon: 'voice' },
-    },
-    {
-        path: '/cap-file',
-        name: 'cap-file',
-        component: () => import('../pages/CapFilePage.vue'),
-        meta: { title: '文件', group: '能力中心', icon: 'template' },
-    },
-    {
-        path: '/cap-memory',
-        name: 'cap-memory',
-        component: () => import('../pages/CapMemoryPage.vue'),
-        meta: { title: '记忆', group: '能力中心', icon: 'grid' },
+        // R16/4.1 能力中心：全部能力卡片网格（搜索+分类）；点击卡片进独立完整配置页。
+        path: '/capabilities',
+        name: 'capabilities',
+        component: () => import('../pages/CapabilitiesPage.vue'),
+        meta: { title: '能力中心', group: '运行', icon: 'grid' },
     },
     {
         // 通用能力详情页：注册表里任何 id 都能自动成页（fake capability 验收项）。
@@ -81,30 +58,68 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../pages/CapabilityDetailPage.vue'),
     },
     {
-        // 能力分工：每项能力节点/模型的可视化入口，不要再隐藏成 redirect。
-        path: '/routing',
-        name: 'routing',
-        component: () => import('../pages/RoutingPage.vue'),
-        meta: { title: '能力分工', group: '模型', icon: 'route' },
+        // R16/4.1：五个能力专页保留为「能力中心 → 卡片 → 完整配置页」的目标页，
+        // 从侧边栏导航移除（meta.group 空）但路由可达（能力中心卡片跳进来）。
+        path: '/cap-image',
+        name: 'cap-image',
+        component: () => import('../pages/CapImagePage.vue'),
+
     },
     {
+        path: '/cap-music',
+        name: 'cap-music',
+        component: () => import('../pages/CapMusicPage.vue'),
+
+    },
+    {
+        path: '/cap-voice',
+        name: 'cap-voice',
+        component: () => import('../pages/CapVoicePage.vue'),
+
+    },
+    {
+        path: '/cap-file',
+        name: 'cap-file',
+        component: () => import('../pages/CapFilePage.vue'),
+
+    },
+    {
+        path: '/cap-memory',
+        name: 'cap-memory',
+        component: () => import('../pages/CapMemoryPage.vue'),
+
+    },
+
+
+    {
+        // R19：模型与节点统一页（节点池 + 用途分配 + 继承链），替换旧 NodesPage。
+        path: '/models',
+        name: 'models',
+        component: () => import('../pages/ModelsPage.vue'),
+        meta: { title: '模型与节点', group: '配置', icon: 'server' },
+    },
+    {
+        // 旧路由重定向到新统一页
         path: '/nodes',
-        name: 'nodes',
-        component: () => import('../pages/NodesPage.vue'),
-        meta: { title: 'API 节点', group: '模型', icon: 'server' },
+        redirect: '/models',
+    },
+    {
+        // R16/4.1：RoutingPage 也重定向到模型页（用途分配替代了 Routing 的模型分工）
+        path: '/routing',
+        redirect: '/models',
     },
     {
         path: '/agent',
         name: 'agent',
         component: () => import('../pages/AgentPage.vue'),
-        meta: { title: 'Agent 与工具', group: 'Agent', icon: 'route' },
+        meta: { title: 'Agent', group: '配置', icon: 'route' },
     },
     {
         // P2（R10 收口）：Tools 目录与详情页（动态 ToolSpec 只读视图 + exposure 覆盖）。
         path: '/tools',
         name: 'tools',
         component: () => import('../pages/ToolsPage.vue'),
-        meta: { title: '工具目录', group: 'Agent', icon: 'grid' },
+        meta: { title: '工具与权限', group: '配置', icon: 'grid' },
     },
     {
         path: '/tools/:id',
@@ -115,43 +130,43 @@ const routes: RouteRecordRaw[] = [
         path: '/jobs',
         name: 'jobs',
         component: () => import('../pages/JobsPage.vue'),
-        meta: { title: '异步任务', group: 'Agent', icon: 'check' },
+        meta: { title: '异步任务', group: '运行', icon: 'check' },
     },
     {
         path: '/prompts',
         name: 'prompts',
         component: () => import('../pages/PromptRegistryPage.vue'),
-        meta: { title: '提示词注册表', group: 'Agent', icon: 'template' },
+        meta: { title: '提示词注册表', group: '配置', icon: 'template' },
     },
     {
         path: '/reply',
         name: 'reply',
         component: () => import('../pages/ReplyPage.vue'),
-        meta: { title: '回复与发送', group: '对话体验', icon: 'chat' },
+        meta: { title: '回复与呈现', group: '配置', icon: 'chat' },
     },
     {
         path: '/features',
         name: 'features',
         component: () => import('../pages/FeaturesPage.vue'),
-        meta: { title: '命令与意图', group: '对话体验', icon: 'template' },
+        meta: { title: '输入与触发', group: '配置', icon: 'template' },
     },
     {
         path: '/templates',
         name: 'templates',
         component: () => import('../pages/TemplatesPage.vue'),
-        meta: { title: '提示词模板', group: '对话体验', icon: 'template' },
+        meta: { title: '模板', group: '配置', icon: 'template' },
     },
     {
         path: '/search',
         name: 'search',
         component: () => import('../pages/WebSearchPage.vue'),
-        meta: { title: '联网搜索', group: '能力中心', icon: 'search' },
+        // meta 不写：不入侧栏，从能力中心卡片进入。
     },
     {
         path: '/render',
         name: 'render',
         component: () => import('../pages/RenderPage.vue'),
-        meta: { title: '代码与网页渲染', group: '能力中心', icon: 'canvas' },
+        // meta 不写：不入侧栏，从能力中心卡片进入。
     },
     {
         path: '/voice',
@@ -161,19 +176,19 @@ const routes: RouteRecordRaw[] = [
         path: '/canvas',
         name: 'canvas',
         component: () => import('../pages/CanvasPage.vue'),
-        meta: { title: '画布 / 图库', group: '媒体', icon: 'canvas' },
+        meta: { title: '画布 / 图库', group: '系统', icon: 'canvas' },
     },
     {
         path: '/observability',
         name: 'observability',
         component: () => import('../pages/ObservabilityPage.vue'),
-        meta: { title: '观测中心', group: '观测', icon: 'logs' },
+        meta: { title: '观测中心', group: '运行', icon: 'logs' },
     },
     {
         path: '/settings',
         name: 'settings',
         component: () => import('../pages/SettingsPage.vue'),
-        meta: { title: '系统设置', group: '系统', icon: 'settings' },
+        meta: { title: '连接与系统', group: '系统', icon: 'settings' },
     },
     // 旧链接重定向：TR.1 拆页后 /orchestration 的内容分到了 /planner 等页；
     // TR.4 组页后 /bot 并入 /access、/logs 并入 /observability。

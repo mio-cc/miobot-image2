@@ -149,7 +149,7 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
     promptRegistry.register({
       id: 'miobot-base',
       title: 'Miobot base prompt',
-      content: buildAgentSystemPrompt(cfg),
+      content: buildAgentSystemPromptForGroup(cfg, (input as any).groupId),
       version: 'r5',
       status: 'active',
       order: 10,
@@ -300,7 +300,7 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
             status: 'failed',
             handled: true,
             terminal: true,
-            replyPlan: buildAgentReplyPlan(cfg, toolResultsToReplyOutputs(sideEffectResults, cfg), replyPreferences),
+            replyPlan: buildAgentReplyPlan(cfg, toolResultsToReplyOutputs(sideEffectResults, cfg), { ...replyPreferences, ...(groupPreferenceOf(cfg, input.groupId) ? { groupPreference: groupPreferenceOf(cfg, input.groupId) } : {}) }),
             reason: 'agent_side_effect_terminal',
           };
         }
@@ -344,6 +344,7 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
       ...replyPreferences,
       ...(turnPreference ? { turnPreference } : {}),
     };
+    const groupPreference = groupPreferenceOf(cfg, input.groupId);
     const replyPlan = buildAgentReplyPlan(cfg, [
       ...artifactOutputs,
       ...(finalText ? [{
@@ -353,7 +354,7 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
         mergeable: true,
         ...(turn.meta?.partial || partialFromTools ? { meta: { skipTts: true, disableVoice: true, partial: true, timedOut: true } } : {}),
       } as ExecutionOutput] : []),
-    ], effectiveReplyPreferences);
+    ], { ...effectiveReplyPreferences, ...(groupPreference ? { groupPreference } : {}) });
     // 异步任务续跑时模型可能只返回产物、不返回额外文本；只要产物来自已迁移工具，
     // 仍应把它交付给 ReplyPlan，不能因为没有 finalText 把图片丢掉。
     const artifactOnlyHandoff = mode === 'enforce'
@@ -411,6 +412,9 @@ export function buildAgentSystemPrompt(cfg: AppConfig): string {
     '- 同一概念可能对应不同目标：讨论某种媒介可能是改变回复呈现，也可能是要求生成独立产物；依据用户要的最终结果和上下文判断，不要按词面匹配。',
     '- 工具可以组合使用：相互独立的信息可以并行获取；依赖上一轮结果的工具必须等待 tool result 回填后再调用；不要假设固定工具顺序。',
     '- 工具结果可能包含 text、url、file、recordId、globalSeq、lyrics 等中间值；后续工具需要时直接复用这些值，不要伪造或凭空补全。',
+    // R15/H-3 + 14.2：能力目录发现契约——loadout 不够用时先查目录再调用；目录是内部参考不贴给用户。
+    '- 当前可用工具不能满足用户请求时，先调用 help 或能力目录类工具查询可用能力，再按目录选择调用；目录结果只作内部参考，不要原样罗列或直接贴给用户。',
+    '- 用户询问"你有什么功能/会做什么"时，调用帮助或能力目录类工具取最新清单，并以系统提供的转发形态回复，不要凭记忆罗列可能过期的清单。',
     '',
     '## 上下文与数据边界',
     '- 用户当前请求与系统规则高于记忆、群历史和旧会话；记忆和历史可能过期，关键事实应使用当前工具结果核实。',
@@ -439,6 +443,22 @@ export function buildAgentSystemPrompt(cfg: AppConfig): string {
   return lines.join('\n');
 }
 
+/**
+ * R16/F-3：群级人设覆盖——不同群不同人设。群覆盖优先于全局 persona；
+ * prompt 注册按会话维度带 groupId 生成（每群可不同），随后台配置热改即时生效。
+ */
+export function buildAgentSystemPromptForGroup(cfg: AppConfig, groupId: unknown): string {
+  const base = buildAgentSystemPrompt(cfg);
+  const groupPersona = groupId === undefined || groupId === null
+    ? undefined
+    : (cfg as any).bot?.groupOverrides?.[String(groupId)]?.persona as { enabled?: boolean; name?: string; systemPrompt?: string } | undefined;
+  if (!groupPersona) return base;
+  let out = base;
+  if (groupPersona.name) out = out.replace('你是 Miobot，一个运行在 QQ 群聊和私聊中的 AI 助手。', `你是 ${groupPersona.name}，一个运行在 QQ 群聊和私聊中的 AI 助手。`);
+  if (groupPersona.systemPrompt) out += `\n${groupPersona.systemPrompt}`;
+  return out;
+}
+
 function handoffReason(turn: AgentTurnResult, executedToolNames: string[]): string {
   if (turn.status !== 'completed') return `agent_turn_${turn.status}`;
   if (turn.meta?.safeTextFallback === true) return 'agent_safe_text_fallback';
@@ -446,10 +466,24 @@ function handoffReason(turn: AgentTurnResult, executedToolNames: string[]): stri
   return 'agent_result_not_handoffable';
 }
 
+/** R16/F-3：群级默认覆盖解析——白名单键（persona 不在此层：人设注入由系统提示词侧处理）。 */
+function groupPreferenceOf(cfg: AppConfig, groupId: unknown): { mode?: 'auto' | 'direct' | 'quote' | 'plain' | 'forward'; voice?: 'auto' | 'on' | 'off' } | undefined {
+  const overrides = (cfg as any).bot?.groupOverrides;
+  if (!overrides || groupId === undefined || groupId === null) return undefined;
+  const entry = overrides[String(groupId)];
+  if (!entry) return undefined;
+  const out: { mode?: 'auto' | 'direct' | 'quote' | 'plain' | 'forward'; voice?: 'auto' | 'on' | 'off' } = {};
+  if (entry.replyMode) (out as any).mode = entry.replyMode;
+  if (entry.voice) (out as any).voice = entry.voice;
+  return Object.keys(out).length ? out : undefined;
+}
+
 function buildAgentReplyPlan(cfg: AppConfig, outputs: ExecutionOutput[], preferences: {
   turnPreference?: AgentReplyPreference;
   sessionPreference?: AgentReplyPreference;
   userPreference?: AgentReplyPreference;
+  /** R16/F-3：群默认覆盖，键在 AgentHost 内部由 input.groupId 解出传入。 */
+  groupPreference?: { mode?: 'auto' | 'direct' | 'quote' | 'plain' | 'forward'; voice?: 'auto' | 'on' | 'off' };
 }): ReplyPlan {
   const resolved = resolveReplyPolicy({
     config: cfg,

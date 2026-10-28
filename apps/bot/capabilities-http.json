@@ -1,0 +1,227 @@
+{
+  "version": 3,
+  "descriptors": [
+    {
+      "id": "http.hitokoto",
+      "name": "每日一言",
+      "description": "随机一条有哲理的短句或诗词（hitokoto.cn）。用户想要签名、说说、文案素材、随机一句话时使用。",
+      "category": "信息",
+      "endpoint": "https://v1.hitokoto.cn/",
+      "method": "GET",
+      "outputKind": "text",
+      "outputJsonPath": "hitokoto",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "http.poem",
+      "name": "随机诗词",
+      "description": "随机一首中国古典诗词（jinrishici.com）。用户想要诗词、诗句引用、文学素材时使用。返回含标题/朝代/作者/全文。",
+      "category": "信息",
+      "endpoint": "https://v2.jinrishici.com/one.json",
+      "method": "GET",
+      "outputKind": "text",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "http.dailynews",
+      "name": "每日新闻60s",
+      "description": "每天60秒读懂世界——当天的重要新闻摘要（约10条）。用户问'今天有什么新闻'、'最近发生了什么'时使用。",
+      "category": "信息",
+      "endpoint": "https://60s.viki.moe/v2/60s",
+      "method": "GET",
+      "outputKind": "text",
+      "outputJsonPath": "data.news",
+      "timeoutMs": 12000
+    },
+    {
+      "id": "http.bing",
+      "name": "Bing 每日壁纸",
+      "description": "获取 Bing 每日精选壁纸图片直链和标题。用户想要每日美图、壁纸、配图素材时使用。",
+      "category": "信息",
+      "endpoint": "https://60s.viki.moe/v2/bing",
+      "method": "GET",
+      "outputKind": "image",
+      "imageUrlJsonPath": "data.cover",
+      "timeoutMs": 15000,
+      "fallbackEndpoint": "https://api.vvhan.com/api/bing?type=json"
+    },
+    {
+      "id": "http.hotnews",
+      "name": "热搜聚合",
+      "description": "聚合各大平台实时热搜榜单。用户问今天有什么热搜、热点、瓜、大家都在聊什么时使用；可用 source 参数只看单站。",
+      "category": "信息",
+      "endpoint": "https://api.vvhan.com/api/hotlist/all",
+      "method": "GET",
+      "outputKind": "text",
+      "params": [
+        { "name": "source", "type": "string", "description": "平台过滤（可选）：baidu|weibo|zhihu|douyin|bilibili|toutiao 等", "enumValues": ["baidu", "weibo", "zhihu", "douyin", "bilibili", "toutiao"] }
+      ],
+      "timeoutMs": 15000
+    },
+    {
+      "id": "http.weibo_hot",
+      "name": "微博热搜",
+      "description": "微博实时热搜榜。用户问微博热搜、微博在聊什么时使用。",
+      "category": "信息",
+      "endpoint": "https://api.vvhan.com/api/hotlist/wbHot",
+      "method": "GET",
+      "outputKind": "text",
+      "timeoutMs": 12000
+    },
+    {
+      "id": "http.weather",
+      "name": "天气查询",
+      "description": "按城市查询实时天气与生活指数、未来数日预报。用户问某地天气、气温、要不要带伞时使用；city 传城市名。",
+      "category": "信息",
+      "endpoint": "https://api.vvhan.com/api/weather?city={city}",
+      "method": "GET",
+      "outputKind": "text",
+      "params": [
+        { "name": "city", "type": "string", "description": "城市名（如：上海、北京）", "required": true }
+      ],
+      "timeoutMs": 15000
+    },
+    {
+      "id": "http.history",
+      "name": "历史上的今天",
+      "description": "获取历史上今天发生的重要事件。用户问'历史上的今天发生了什么'、'今天是什么纪念日'时使用。",
+      "category": "信息",
+      "endpoint": "https://api.vvhan.com/api/history",
+      "method": "GET",
+      "outputKind": "text",
+      "timeoutMs": 12000
+    },
+    {
+      "id": "http.quote",
+      "name": "随机一言",
+      "description": "随机一条有哲理的短句（与 hitokoto 同类，数据源不同）。用户想要随机一句话、名言、签名时使用。",
+      "category": "其他",
+      "endpoint": "https://api.vvhan.com/api/text/quote",
+      "method": "GET",
+      "outputKind": "text",
+      "timeoutMs": 10000,
+      "fallbackEndpoint": "https://v1.hitokoto.cn/"
+    },
+    {
+      "id": "http.biaoqing",
+      "name": "随机表情包",
+      "description": "随机返回一张热门表情包/斗图图片。用户想斗图、要表情包、要搞笑图片时使用。",
+      "category": "信息",
+      "endpoint": "https://api.vvhan.com/api/biaoqing",
+      "method": "GET",
+      "outputKind": "image",
+      "imageUrlJsonPath": "url",
+      "timeoutMs": 12000
+    },
+    {
+      "id": "http.horoscope",
+      "name": "星座运势",
+      "description": "查询星座今日运势（爱情/工作/财运/健康）。用户问星座运势、今天运气怎么样时使用；cons 传英文名。",
+      "category": "信息",
+      "endpoint": "https://api.vvhan.com/api/horoscope?type=today&cons={cons}",
+      "method": "GET",
+      "outputKind": "text",
+      "params": [
+        { "name": "cons", "type": "string", "description": "星座英文名（如：aries, taurus, gemini, cancer, leo, virgo, libra, scorpio, sagittarius, capricorn, aquarius, pisces）", "required": true, "enumValues": ["aries", "taurus", "gemini", "cancer", "leo", "virgo", "libra", "scorpio", "sagittarius", "capricorn", "aquarius", "pisces"] }
+      ],
+      "timeoutMs": 12000
+    },
+    {
+      "id": "http.exchange",
+      "name": "汇率查询",
+      "description": "查询货币汇率。用户问美元/欧元/日元对人民币汇率时使用。",
+      "category": "信息",
+      "endpoint": "https://api.vvhan.com/api/exchange",
+      "method": "GET",
+      "outputKind": "text",
+      "timeoutMs": 12000
+    },
+    {
+      "id": "http.shorturl",
+      "name": "短链接生成",
+      "description": "把长链接转换为短链接。用户想缩短链接、生成短链时使用；url 传完整链接。",
+      "category": "信息",
+      "endpoint": "https://api.vvhan.com/api/shorturl?url={url}",
+      "method": "GET",
+      "outputKind": "text",
+      "params": [
+        { "name": "url", "type": "string", "description": "要缩短的完整 http/https 链接", "required": true }
+      ],
+      "timeoutMs": 12000
+    },
+    {
+      "id": "http.qrcode",
+      "name": "二维码生成",
+      "description": "生成二维码图片。用户想生成二维码、扫码链接时使用；text 传要编码的内容。",
+      "category": "信息",
+      "endpoint": "https://api.vvhan.com/api/qr?text={text}",
+      "method": "GET",
+      "outputKind": "image",
+      "imageUrlJsonPath": "url",
+      "params": [
+        { "name": "text", "type": "string", "description": "要编码的内容（链接或文本）", "required": true }
+      ],
+      "timeoutMs": 12000
+    },
+    {
+      "id": "http.lunar",
+      "name": "农历查询",
+      "description": "公历转农历，返回农历日期、二十四节气、传统节日。用户问今天农历几号、什么节气时使用。",
+      "category": "信息",
+      "endpoint": "https://api.vvhan.com/api/lunar",
+      "method": "GET",
+      "outputKind": "text",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "http.ip",
+      "name": "IP查询",
+      "description": "查询 IP 地址或域名的归属地（省市、运营商）。用户问某个IP是哪的、某个域名解析到哪时使用。",
+      "category": "信息",
+      "endpoint": "https://api.vvhan.com/api/ip",
+      "method": "GET",
+      "outputKind": "text",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "http.moYu",
+      "name": "摸鱼日历",
+      "description": "获取今天距离周末/节假日还有多少天（摸鱼人日历）。用户问还有几天放假、距离周末还有多久时使用。",
+      "category": "信息",
+      "endpoint": "https://api.vvhan.com/api/moyu",
+      "method": "GET",
+      "outputKind": "text",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "http.dujitang",
+      "name": "毒鸡汤",
+      "description": "随机一条毒鸡汤文案。用户想要毒鸡汤、扎心语录、调侃文案时使用。",
+      "category": "其他",
+      "endpoint": "https://api.vvhan.com/api/text/djt",
+      "method": "GET",
+      "outputKind": "text",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "http.lovelive",
+      "name": "土味情话",
+      "description": "随机一条土味情话/撩人语录。用户想要土味情话、撩人金句、恋爱文案时使用。",
+      "category": "其他",
+      "endpoint": "https://api.vvhan.com/api/text/love",
+      "method": "GET",
+      "outputKind": "text",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "http.song",
+      "name": "随机歌曲",
+      "description": "随机推荐一首歌曲（含歌名、歌手）。用户想要听歌推荐、随机来首歌时使用。",
+      "category": "信息",
+      "endpoint": "https://api.vvhan.com/api/song",
+      "method": "GET",
+      "outputKind": "text",
+      "timeoutMs": 10000
+    }
+  ]
+}

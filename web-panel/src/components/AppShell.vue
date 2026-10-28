@@ -43,6 +43,40 @@ const groupedNav = computed(() => {
 
 const themeLabel = computed(() => (theme.value === 'auto' ? '跟随系统' : theme.value === 'light' ? '浅色' : '深色'));
 
+/**
+ * R21-g 面包屑导航：多层页面（详情/专属配页）带可点击父级，最后一项（当前页）加粗。
+ * 浅层页只有「控制台 / 页名」，与原来的静态文字一致。
+ */
+interface Crumb { label: string; to: string }
+
+// 五个能力专页路由没有 meta.title（刻意不入侧栏），用页面原标题兜底。
+const CAP_TITLES: Record<string, string> = {
+    'cap-image': '图片生成',
+    'cap-music': '音乐（Suno）',
+    'cap-voice': '语音',
+    'cap-file': '文件',
+    'cap-memory': '向量记忆',
+};
+
+const crumbs = computed<Crumb[]>(() => {
+    const path = route.path;
+    const current = (label: string): Crumb[] => [{ label, to: path }];
+    const label = String(route.meta?.title || '');
+    // 详情页：/capabilities/<id>、/tools/<id>——父级分别是能力中心、工具与权限
+    if (path.startsWith('/capabilities/')) {
+        return [{ label: '能力中心', to: '/capabilities' }, ...current(String(route.params.id || label))];
+    }
+    if (path.startsWith('/tools/')) {
+        return [{ label: '工具与权限', to: '/tools' }, ...current(String(route.params.id || label))];
+    }
+    // 能力中心卡片进入的专属配置页：面包屑挂回能力中心
+    if (CAP_TITLES[path.slice(1)]) {
+        return [{ label: '能力中心', to: '/capabilities' }, ...current(CAP_TITLES[path.slice(1)])];
+    }
+    // 无标题路由（重定向跳转瞬间等）不渲染空屑，避免「控制台 / 」尾巴
+    return label ? current(label) : [];
+});
+
 async function handleSave() {
     const result = await configStore.save();
     if (result.ok) capabilities.refresh();
@@ -94,11 +128,17 @@ function handleLogout() {
 <template>
   <div class="grid grid-cols-[224px_1fr] max-[860px]:grid-cols-[62px_1fr] h-screen">
     <aside class="sidebar overflow-y-auto">
-      <div class="px-4 py-4 border-b border-[color:var(--hairline-2)]">
-        <div class="mono font-bold text-[15px] tracking-wide">
-          MIOBOT<span class="text-[color:var(--ink-3)] font-normal max-[860px]:hidden">·console</span>
+      <div class="px-4 py-4 border-b border-[color:var(--hairline-2)] flex items-center gap-3">
+        <div class="flex-none w-[30px] h-[30px] rounded-[9px] grid place-items-center text-white shadow-sm"
+          style="background: var(--accent); box-shadow: 0 2px 6px rgba(79,70,229,.28);">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 12h4M13 5h6a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-6z"/><path d="M4 18h3a3 3 0 0 0 3-3V9a3 3 0 0 0-3-3H4z"/>
+          </svg>
         </div>
-        <div class="text-[color:var(--ink-3)] text-[11px] mt-0.5 max-[860px]:hidden">NapCat 多模型机器人控制台</div>
+        <div class="min-w-0 max-[860px]:hidden">
+          <div class="font-bold text-[14px] tracking-wide text-[color:var(--ink)]">Miobot</div>
+          <div class="text-[color:var(--ink-3)] text-[10.5px] mt-0.5">管理控制台 v2</div>
+        </div>
       </div>
 
       <nav class="flex-1 p-2.5">
@@ -112,7 +152,7 @@ function handleLogout() {
               <AppIcon :name="item.meta.icon" />
             </span>
             <span class="max-[860px]:hidden">{{ item.meta.title }}</span>
-            <span v-if="item.path === '/routing' && capabilities.brokenCount"
+            <span v-if="item.path === '/models' && capabilities.brokenCount"
               class="ml-auto dot dot-crit max-[860px]:ml-0" :title="`${capabilities.brokenCount} 项能力配置有问题`"></span>
           </RouterLink>
         </template>
@@ -128,9 +168,16 @@ function handleLogout() {
 
     <div class="flex flex-col overflow-hidden">
       <header class="flex items-center gap-3 px-5 h-[52px] flex-none border-b border-[color:var(--hairline-2)] bg-[color:var(--surface)]">
-        <span class="text-[13px] text-[color:var(--ink-3)] max-sm:hidden">
-          控制台 / <b class="text-[color:var(--ink)] font-semibold">{{ route.meta?.title || '' }}</b>
-        </span>
+        <!-- R21-g 面包屑：父级可点击返回上层，当前页加粗不可点 -->
+        <nav class="text-[13px] flex items-center gap-1.5 max-sm:hidden min-w-0" aria-label="面包屑">
+          <RouterLink to="/overview" class="text-[color:var(--ink-3)] hover:text-[color:var(--accent)] transition-colors">控制台</RouterLink>
+          <template v-for="(crumb, i) in crumbs" :key="crumb.to">
+            <span class="text-[color:var(--hairline-3)]">/</span>
+            <RouterLink v-if="i < crumbs.length - 1" :to="crumb.to"
+              class="text-[color:var(--ink-3)] hover:text-[color:var(--accent)] transition-colors truncate max-w-[220px]">{{ crumb.label }}</RouterLink>
+            <b v-else class="text-[color:var(--ink)] font-semibold truncate max-w-[260px]">{{ crumb.label }}</b>
+          </template>
+        </nav>
         <span class="flex-1"></span>
 
         <span v-if="configStore.saveStatus" class="text-xs"

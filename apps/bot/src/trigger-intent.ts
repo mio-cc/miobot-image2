@@ -15,6 +15,10 @@ export interface TriggerIntentOptions {
   getRequestId?: () => string;
 }
 
+function renderTriggerTemplate(template: string, vars: Record<string, string>): string {
+  return String(template || '').replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? '');
+}
+
 function extractBoolean(text: string, key: string): boolean | undefined {
   const json = text.replace(/\s+/g, ' ').match(new RegExp('"' + key + '"\\s*:\\s*(true|false)', 'i'));
   if (json) return json[1].toLowerCase() === 'true';
@@ -52,21 +56,15 @@ export class TriggerIntentChecker {
   }): Promise<boolean> {
     const { nodeIndex, model } = this.chatNode();
     const words = (input.allTriggerWords && input.allTriggerWords.length ? input.allTriggerWords : [input.triggerWord]).join('、');
-    const prompt = [
-      '你是群聊消息意图判定器。判断下面这条消息的用户是否有在跟机器人沟通的意图。',
-      '',
-      '以下触发词都是用户给机器人起的昵称或称呼：' + words,
-      '用户在消息中使用这些词就是在叫机器人。由你根据上下文语义判断用户是否真的在跟机器人说话。',
-      '',
-      '只输出 JSON：{"intent": true} 或 {"intent": false}',
-      '',
-      '群聊上下文（最近几条）：',
-      input.context || '（无上下文）',
-      '',
-      '要判断的消息：' + input.userText.slice(0, 500),
-      '发送者：' + input.userName,
-      '命中的触发词：' + input.triggerWord,
-    ].join('\n');
+    // R15/#8：触发判定提示词收编——模板与超时来自后台配置（原为代码硬编码）。
+    const kt = this.options.getConfig().bot.keywordTrigger;
+    const prompt = renderTriggerTemplate(kt.triggerIntentPromptTemplate, {
+      words,
+      context: input.context || '（无上下文）',
+      userText: input.userText.slice(0, 500),
+      userName: input.userName,
+      triggerWord: input.triggerWord,
+    });
     const t0 = Date.now();
     try {
       const result = await this.options.client.chat(nodeIndex, {
@@ -74,7 +72,7 @@ export class TriggerIntentChecker {
         messages: [{ role: 'user', content: prompt }],
         maxTokens: 400,
         temperature: 0,
-        timeoutMs: 5000,
+        timeoutMs: Math.max(1000, Math.trunc(Number(kt.triggerTimeoutMs) || 5000)),
       });
       const raw = String(result.text || '');
       const intent = extractBoolean(raw, 'intent');
@@ -123,24 +121,21 @@ export class TriggerIntentChecker {
     const { nodeIndex, model } = this.chatNode();
     const cfg = this.options.getConfig();
     if (!cfg.bot.autoContinue?.requireModelCheck) return true;
-    const prompt = [
-      '你是群聊消息判定器。机器人刚回复过这个用户，用户紧接着又发了一条消息（没有@机器人）。',
-      '背景事实：这个用户刚跟机器人有过一轮交互，机器人回复了他。现在他发了新消息。',
-      ...(input.focusMode ? [
-        '这是显式触发 bot 后的群级关注窗口。发送者不一定是刚才被回复的人；可能是群里的另一个用户。',
-        '只有在消息明显是在接机器人/当前话题时返回 true；对群里其他人的闲聊、玩梗或独立话题返回 false。',
-        '群聊上下文：' + String(input.groupContext || '（无）').slice(0, 1200),
-        '发送者是否为刚才的触发者：' + String(input.isOriginalUser === true),
-      ] : []),
-      '',
-      '由你根据消息语义和上下文判断：用户这条消息是否是在跟机器人说话？',
-      '',
-      '只输出 JSON：{"continue": true} 或 {"continue": false}',
-      '',
-      '机器人的回复（摘要）：' + input.botLastReply.slice(0, 300),
-      '用户新消息：' + input.userText.slice(0, 500),
-      '发送者：' + input.userName,
-    ].join('\n');
+    // R15/#8：延续判定提示词收编——模板与超时来自后台配置（原为代码硬编码）。
+    // focusMode 的窗口语义说明作为 {{focusNote}} 注入模板；非 focus 模式为空。
+    const ac = cfg.bot.autoContinue;
+    const focusNote = input.focusMode ? [
+      '这是显式触发 bot 后的群级关注窗口。发送者不一定是刚才被回复的人；可能是群里的另一个用户。',
+      '只有在消息明显是在接机器人/当前话题时返回 true；对群里其他人的闲聊、玩梗或独立话题返回 false。',
+      '群聊上下文：' + String(input.groupContext || '（无）').slice(0, 1200),
+      '发送者是否为刚才的触发者：' + String(input.isOriginalUser === true),
+    ].join('\n') : '';
+    const prompt = renderTriggerTemplate(ac.continueIntentPromptTemplate, {
+      focusNote,
+      botLastReply: input.botLastReply.slice(0, 300),
+      userText: input.userText.slice(0, 500),
+      userName: input.userName,
+    });
     const t0 = Date.now();
     try {
       const result = await this.options.client.chat(nodeIndex, {
@@ -148,8 +143,8 @@ export class TriggerIntentChecker {
         messages: [{ role: 'user', content: prompt }],
         maxTokens: 400,
         temperature: 0,
-        // 400 token 思维链 + JSON 输出，5s 边缘场景会超时误杀，放宽到 8s。
-        timeoutMs: 8000,
+        // 400 token 思维链 + JSON 输出，超时跟后台配置（默认 8s，原为硬编码）。
+        timeoutMs: Math.max(1000, Math.trunc(Number(ac.continueTimeoutMs) || 8000)),
       });
       const cont = extractBoolean(String(result.text || ''), 'continue');
       this.options.trace?.({

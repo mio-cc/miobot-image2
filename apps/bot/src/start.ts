@@ -3,7 +3,7 @@ import { createModelClient, createReloadableRegistry } from '../../../packages/m
 import { ConfigStore } from '../../../packages/storage/src/index.js';
 import { createFileMetricsStore, createMetrics } from '../../../packages/core/src/metrics.js';
 import { createDefaultConfig, normalizeConfig, type AppConfig } from '../../../packages/config/src/index.js';
-import { ConsoleLogSink, createLogger, type StructuredLogger } from '../../../packages/logger/src/index.js';
+import { ConsoleLogSink, JsonFileLogSink, createLogger, type StructuredLogger } from '../../../packages/logger/src/index.js';
 import { createBotApp } from './app.js';
 import { createAgentHost } from './agent-host.js';
 import { createCapabilityToolBinding, STATEFUL_CAPABILITY_TOOLS } from './capability-tool-adapter.js';
@@ -40,6 +40,10 @@ import { createSentMessageTracker } from './sent-messages.js';
 import { OrchestrationEnforcer } from './orchestration-enforce.js';
 import { OrchestrationTraceWriter } from './orchestration-trace.js';
 import { SchedulerService, buildDailyReport, withinQuietWindow } from './scheduler.js';
+import { WebFetchCapabilityHandler } from './capability-web-fetch.js';
+import { HttpCapabilityRegistry } from './capability-http-generic.js';
+import { fileURLToPath } from 'node:url';
+import { assertSafePublicUrl } from '../../../packages/browser-render/src/index.js';
 import { TriggerIntentChecker } from './trigger-intent.js';
 import { ScheduleCapabilityHandler } from './capability-schedule.js';
 import { loadCapabilityPlugins, pluginManifestPath } from './capability-plugins.js';
@@ -91,7 +95,14 @@ export interface RunningBot {
  * 与旧 scripts/bot-runtime.mjs 并行,互不影响;验证通过后再让 miobot-service 指向它。
  */
 export function startBot(options: StartBotOptions = {}): RunningBot {
-  const logger = options.logger || createLogger({ scope: 'bot-v2', level: 'info', sinks: [new ConsoleLogSink()] });
+  // R18/日志：dataDir 先于 logger 计算——bot 与面板跨进程，日志必须走文件（bot-logs.jsonl）。
+  const dataDir = options.dataDir || (options.configFilePath ? path.dirname(options.configFilePath) : path.resolve('.runtime'));
+  const logFilePath = process.env.MIOBOT_LOG_FILE || path.join(dataDir, 'bot-logs.jsonl');
+  const logger = options.logger || createLogger({
+    scope: 'bot-v2',
+    level: (process.env.MIOBOT_LOG_LEVEL as any) || 'info',
+    sinks: [new ConsoleLogSink(), new JsonFileLogSink(logFilePath, 5 * 1024 * 1024)],
+  });
   const store = options.configFilePath
     ? new ConfigStore<AppConfig>(options.configFilePath, {
         defaultValue: createDefaultConfig(),
@@ -151,7 +162,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       examplesAtRisk: ['code.render', 'browser.render', 'canvas.gallery', 'file.generate'],
     });
   }
-  const dataDir = options.dataDir || (options.configFilePath ? path.dirname(options.configFilePath) : path.resolve('.runtime'));
+// (dataDir 已在上方提前计算)
     const sunoSongHistory = new SunoSongHistoryStore({ filePath: path.join(dataDir, "suno-song-history.json"), maxRecords: () => getConfig().orchestration.suno.historyMaxRecords || 100, logger });
   const auditService = new AuditService({
     filePath: process.env.MIOBOT_AUDIT_FILE || path.join(dataDir, 'audit.jsonl'),
@@ -809,6 +820,112 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     deleteMessage: (id) => adapter.deleteMessage(id),
   }));
   orchestrationHandlers.set('canvas.gallery', new CanvasGalleryCapabilityHandler(canvasStore));
+  // R15/V-2①：job.cancel——模型可调用的异步任务取消工具。幂等语义（F-6）：
+  // pending/running 才真取消；已完成/已取消返回当前状态不报错。
+  // R16/14.2：能力目录——模型侧发现工具（结果回填模型，不直达用户）。
+  orchestrationHandlers.set('web.fetch', new WebFetchCapabilityHandler({
+    logger,
+    allowPrivateHosts: () => Boolean(getConfig().browserRender?.allowPrivateHosts),
+    timeoutMs: () => Math.max(5000, Math.trunc(Number(getConfig().browserRender?.timeoutMs) || 20000)),
+    maxChars: () => 12000,
+  }) as any);
+  // R17/4.3：通用 HTTP 三方 API 注册器——描述符驱动，新接入零代码（改 capabilities-http.json 即可）。
+  const httpRegistry = new HttpCapabilityRegistry({
+    getConfig: () => getConfig(),
+    logger,
+    assertSafeUrl: assertSafePublicUrl,
+  });
+  let loadedHttpCapabilities = 0;
+  try {
+    const httpJsonPath = fileURLToPath(new URL('./capabilities-http.json', import.meta.url));
+    const raw = JSON.parse(readFileSync(httpJsonPath, 'utf8')) as { descriptors?: unknown[] };
+    loadedHttpCapabilities = httpRegistry.load((raw.descriptors || []) as any);
+  } catch (error) {
+    logger?.warn('capabilities-http.json load failed; no http capabilities registered', { error: String((error as Error)?.message || error) });
+  }
+  for (const descriptor of httpRegistry.list()) {
+    orchestrationHandlers.set(descriptor.id, new RuntimeAdapterCapabilityHandler(async (invocation) => {
+      const result = await httpRegistry.execute(
+        descriptor.id,
+        (invocation.step.args || {}) as Record<string, unknown>,
+        invocation.signal,
+      );
+      return {
+        jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success',
+        outputs: result.outputs as any,
+      };
+    }));
+  }
+  if (loadedHttpCapabilities) logger.info('http capabilities registered', { count: loadedHttpCapabilities });
+
+  orchestrationHandlers.set('capability.catalog', new RuntimeAdapterCapabilityHandler(async (invocation) => {
+    const args = (invocation.step.args || {}) as Record<string, unknown>;
+    const keyword = String(args.keyword || '').trim().toLowerCase();
+    const category = String(args.category || '').trim();
+    const CATEGORY_PATTERNS: Array<[string, RegExp]> = [
+      ['生成', /^(image|video|audio|code)/],
+      ['解析', /^(file|memory|ocr|interrogate)/],
+      ['信息', /^(web|search|render|browser)/],
+      ['输入', /^(session|reply|tts)/],
+    ];
+    const categoryOf = (key: string) => CATEGORY_PATTERNS.find(([, re]) => re.test(key))?.[0] || '其他';
+    let descriptors = orchestrationEnforcer.listCapabilities();
+    if (category) descriptors = descriptors.filter((d) => categoryOf(String(d.id)) === category);
+    if (keyword) {
+      descriptors = descriptors.filter((d) =>
+        `${d.id} ${d.name} ${d.description || ''}`.toLowerCase().includes(keyword));
+    }
+    const lines = descriptors.slice(0, 40).map((d) => {
+      const enabled = getConfig().orchestration.capabilityOverrides?.[d.id]?.enabled !== false;
+      const known = DEDICATED_CAP_PAGES.has(String(d.id));
+      return `- ${d.id}（${d.name}）：${String(d.description || '').slice(0, 80)}${known ? '［有专属配置页］' : ''}${enabled ? '' : '［已停用］'}`;
+    });
+    const text = lines.length
+      ? `可用能力目录（${descriptors.length} 项）：\n${lines.join('\n')}`
+      : '没有匹配的能力。';
+    return {
+      jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success',
+      outputs: [{ kind: 'text', text, priority: 10, mergeable: true }],
+    };
+  }));
+  orchestrationHandlers.set('job.cancel', new RuntimeAdapterCapabilityHandler(async (invocation) => {
+    const args = (invocation.step.args || {}) as Record<string, unknown>;
+    const jobIdArg = String(args.jobId || '').trim();
+    let pendingIds = jobIdArg ? [jobIdArg] : toolJobRuntime.snapshot()
+      .filter((job) => job.status === 'queued' || job.status === 'running')
+      .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+      .map((job) => job.jobId);
+    if (!jobIdArg) {
+      // 无 jobId 时按会话范围过滤（同 session 的未完成任务）
+      const sessionKey = invocation.request.chat.type === 'group'
+        ? `group:${invocation.request.chat.groupId}:${invocation.request.user.qq}`
+        : `private:${invocation.request.user.qq}`;
+      const session = agentSessions.load(sessionKey);
+      const sessionPending = (session?.pendingJobs || []).map((p) => p.jobId);
+      pendingIds = pendingIds.filter((id) => !sessionPending.length || sessionPending.includes(id));
+    }
+    if (!pendingIds.length) {
+      return {
+        jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success',
+        outputs: [{ kind: 'text', text: '当前没有进行中的异步任务，无需取消。', priority: 10, mergeable: true }],
+      };
+    }
+    const lines = [];
+    for (const id of pendingIds.slice(0, 5)) {
+      const record = toolJobRuntime.cancel(id, String(args.reason || '用户要求取消'));
+      const status = record?.status || 'unknown';
+      const friendly = status === 'cancelled'
+        ? `已取消任务 ${id}`
+        : status === 'queued' || status === 'running'
+          ? `任务 ${id} 已请求取消（${status}）`
+          : `任务 ${id} 当前状态为 ${status}，无需取消`;
+      lines.push(friendly);
+    }
+    return {
+      jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success',
+      outputs: [{ kind: 'text', text: lines.join('\n'), priority: 10, mergeable: true }],
+    };
+  }));
   orchestrationHandlers.set('image.stitch', new ImageStitchCapabilityHandler({
     getConfig,
     generatedFileDir,
@@ -841,11 +958,49 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     return registerResultArtifacts(invocation, executionFromBotResult(invocation, outcome.result));
   }));
 
+  // R16：有专属后台配置页的能力（能力目录里标注用）。
+  const DEDICATED_CAP_PAGES = new Set(['image.generate', 'image.edit', 'image.interrogate', 'audio.music.generate', 'tts.speak', 'file.read', 'file.list', 'memory.search', 'web.search', 'browser.render', 'code.render']);
   // R13：Suno 迟到投递——等待超时但远端任务仍在跑时不丢弃，登记后由轮询补投。
-  const sunoLateDeliveries = new Map<string, { invocation: import('../../../packages/orchestration/src/index.js').CapabilityInvocation; composed?: unknown; rawUserText: string; registeredAt: number; delivered: boolean }>();
+  const sunoLateDeliveries = new Map<string, { invocation: import('../../../packages/orchestration/src/index.js').CapabilityInvocation; composed?: unknown; rawUserText: string; registeredAt: number; delivered: boolean; jobId?: string }>();
   const registerSunoLateDelivery = (taskId: string, input: { invocation: import('../../../packages/orchestration/src/index.js').CapabilityInvocation; composed?: unknown; rawUserText: string }) => {
-    sunoLateDeliveries.set(taskId, { ...input, registeredAt: Date.now(), delivered: false });
+    // 把 tool job 绑定到迟到投递，发送成功后 markDelivered，和恢复通道共享同一幂等账本。
+    const job = toolJobRuntime?.snapshot().find((record) => record.externalTaskIds.includes(taskId));
+    sunoLateDeliveries.set(taskId, { ...input, registeredAt: Date.now(), delivered: false, ...(job?.jobId ? { jobId: job.jobId } : {}) });
   };
+  // R15/C-4+V-2②：迟到投递轮询器——每 60s 探测已登记任务；幂等与取消前置：
+  // 已投递/超龄(>1h)登记直接清掉；投递走 deliverExternalOutputs→onExternalDeliver
+  // →sendAgentOutcome（复用出站队列）。与 resume 恢复通道按 jobId 幂等互斥。
+  const SUNO_LATE_DELIVERY_MAX_AGE_MS = 60 * 60 * 1000;
+  const pollSunoLateDeliveries = async (): Promise<void> => {
+    for (const [taskId, entry] of [...sunoLateDeliveries.entries()]) {
+      if (entry.delivered) { sunoLateDeliveries.delete(taskId); continue; }
+      if (Date.now() - entry.registeredAt > SUNO_LATE_DELIVERY_MAX_AGE_MS) {
+        sunoLateDeliveries.delete(taskId);
+        logger.warn('suno late delivery expired', { taskId, ageMs: Date.now() - entry.registeredAt });
+        continue;
+      }
+      try {
+        if (entry.jobId) {
+          const currentJob = toolJobRuntime.get(entry.jobId);
+          if (currentJob?.deliveredAt || currentJob?.status === 'cancelled') {
+            sunoLateDeliveries.delete(taskId);
+            continue;
+          }
+        }
+        const probe = await orchestrationEnforcer.probeExternalTask('audio.music.generate', taskId);
+        if (probe?.status !== 'success') continue;
+        await orchestrationEnforcer.deliverExternalOutputs(entry.invocation, (probe.outputs || []) as any, { source: 'suno_late_delivery' });
+        if (entry.jobId) toolJobRuntime.markDelivered(entry.jobId);
+        entry.delivered = true;
+        sunoLateDeliveries.delete(taskId);
+        logger.info('suno late delivery completed', { taskId, userId: entry.invocation.request.user.qq });
+      } catch (error) {
+        logger.warn('suno late delivery poll failed', { taskId, error: String((error as Error)?.message || error) });
+      }
+    }
+  };
+  const sunoLateDeliveryTimer = setInterval(() => { void pollSunoLateDeliveries(); }, 60_000);
+  sunoLateDeliveryTimer.unref?.();
   const orchestrationEnforcer = new OrchestrationEnforcer({
     registerSunoLateDelivery,
     onExternalDeliver: async (invocation, result) => {
@@ -1758,6 +1913,13 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   };
   const recoverInterruptedToolJob = async (job: ToolJobRecord, attempt = 0): Promise<void> => {
     attempt = Math.max(attempt, Math.max(0, Math.trunc(Number(job.probeAttempts) || 0)));
+    // R15/V-2②：恢复通道投递幂等与取消前置——已投递/已取消的 job 不再进入恢复投递
+    //（与 suno 迟到投递轮询器通过 deliveredAt 互斥，防双投递）。
+    const currentJob = toolJobRuntime.snapshot().find((record) => record.jobId === job.jobId);
+    if (currentJob?.deliveredAt || currentJob?.status === 'cancelled') {
+      logger.info('agent tool job resume skipped (delivered or cancelled)', { jobId: job.jobId, status: currentJob?.status, delivered: Boolean(currentJob?.deliveredAt) });
+      return;
+    }
     const finish = async (record: ToolJobRecord | undefined) => {
       if (!record || resumedAgentJobs.has(record.jobId)) return;
       resumedAgentJobs.add(record.jobId);
@@ -1827,12 +1989,18 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
           session.pendingJobs?.some((pending) => pending.jobId === job.jobId),
         );
         if (!hasPendingSession) continue;
-        // 旧版本没有 deliveredAt。已完成的历史 job 不能因为 session 里还残留 pending 记录就再次发送；
-        // 只允许真正中断、需要远端 probe 的 job 进入恢复链。
-        if (job.status === 'succeeded' || (job.status === 'failed' && job.error?.code !== 'tool_job_interrupted')) {
+        // 旧版本没有 deliveredAt。已成功的 job 不能因为 session 里还残留 pending 记录就再次发送；
+        // failed job 需要一次用户说明，交给 resumeAgentJob 的 jobFailed 分支处理，避免静默消失。
+        if (job.status === 'succeeded') {
           recordAgentJobDeadLetter(job, 'terminal_job_not_replayed_after_restart');
           toolJobRuntime.markDelivered(job.jobId);
           logger.warn('terminal agent job not replayed after restart', { jobId: job.jobId, toolName: job.toolName, status: job.status });
+          continue;
+        }
+        if (job.status === 'failed' && job.error?.code !== 'tool_job_interrupted') {
+          recordAgentJobDeadLetter(job, 'terminal_failed_job_notify_after_restart');
+          logger.warn('terminal failed agent job notify after restart', { jobId: job.jobId, toolName: job.toolName, status: job.status });
+          await resumeAgentJob?.(job);
           continue;
         }
         await recoverInterruptedToolJob(job);

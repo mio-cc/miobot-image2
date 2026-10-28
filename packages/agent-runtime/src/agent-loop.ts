@@ -494,7 +494,19 @@ export class AgentRuntime implements AgentLoop {
     const workingMessages: AgentMessage[] = context.messages.map((message) => structuredClone(message));
     const persistedMessages: AgentMessage[] = workingMessages
       .filter((message) => message.role !== 'system')
-      .map((message) => structuredClone(message));
+      .map((message) => structuredClone(message))
+      // R15/V-1（F-1 修正版）：会话历史里的旧轮 user 消息剥离 imageRefs（vision 重传），
+      // 但保留 URL 文本占位——下轮 image.edit 等工具仍可引用历史图的 URL，只是不再
+      // 每轮把历史图片重新上传给模型（叠加 autoContinue 多轮时的 vision 流量/误读）。
+      .map((message) => {
+        if (message.role !== 'user' || !Array.isArray(message.imageRefs) || !message.imageRefs.length) return message;
+        const placeholder = (message.imageRefs as string[]).map((ref) => `[历史图片: ${String(ref || '').trim()}]`).join('\n');
+        return {
+          ...message,
+          content: String(message.content || '').trim() + (placeholder ? '\n' + placeholder : ''),
+          imageRefs: undefined,
+        };
+      });
     const budget: TurnBudget = executionState.budget;
     const repairTracker = new OutputRepairBudgetTracker(this.repairLimits);
     executionState.toolResults = [...resumedToolResults];

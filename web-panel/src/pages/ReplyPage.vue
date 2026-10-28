@@ -16,6 +16,24 @@ const configStore = useConfigStore();
 const config = computed(() => configStore.config);
 const orch = computed(() => config.value?.orchestration);
 const replyPolicy = computed(() => config.value?.replyPolicy);
+// R21 审计补缺：bot.groupOverrides（R16 F-3 群级覆盖）——此前无页面。
+const groupOverrides = computed(() => (config.value as any)?.bot?.groupOverrides || {});
+
+const overrideEntries = computed(() => Object.entries(groupOverrides.value) as Array<[string, any]>);
+
+function addGroupOverride() {
+    const bot = (config.value as any)?.bot;
+    if (!bot) return;
+    if (!bot.groupOverrides) bot.groupOverrides = {};
+    const gid = prompt('输入群号：');
+    if (!gid || !gid.trim()) return;
+    bot.groupOverrides[gid.trim()] = { replyMode: 'auto', voice: 'auto' };
+}
+function removeGroupOverride(gid: string) {
+    const bot = (config.value as any)?.bot;
+    if (!bot?.groupOverrides) return;
+    delete bot.groupOverrides[gid];
+}
 
 const strategyOptions = [
     { value: 'voice', label: '语音回复', textOnly: true },
@@ -218,6 +236,47 @@ const nonTextOptions = strategyOptions.filter((opt) => !opt.textOnly);
           <input type="number" min="1" step="1" v-model.number="config.bot.autoRecallDelaySeconds"
             :disabled="!config.bot.autoRecallImages" class="input-field" placeholder="60" />
         </FormField>
+      </div>
+    </SectionCard>
+
+    <!-- ═══ R21 审计补缺：群级覆盖（R16 F-3）——此前无页面 ═══ -->
+    <SectionCard title="群级覆盖" hint="bot.groupOverrides · 不同群不同人设/回复默认；覆盖链：协议 > turn > 窗口 > user > 群 > 后台默认" class="mb-4">
+      <div class="flex items-center gap-2 mb-3">
+        <button class="btn-primary text-xs" @click="addGroupOverride">＋ 添加群覆盖</button>
+        <span class="text-xs text-[color:var(--ink-3)]">
+          用户明说的个人偏好永远高于群默认；不设置的群走后台全局默认。
+        </span>
+      </div>
+      <div v-if="!overrideEntries.length" class="text-xs text-[color:var(--ink-3)] py-4 text-center">
+        暂无群覆盖。所有群使用全局默认（回复方式：{{ config.bot.replyStrategies.text }}）。
+      </div>
+      <div v-else class="space-y-2">
+        <div v-for="[gid, entry] in overrideEntries" :key="gid" class="field-box items-start">
+          <div class="min-w-0 flex-1 grid grid-cols-1 md:grid-cols-4 gap-2">
+            <FormField label="群号">
+              <span class="font-mono text-sm">{{ gid }}</span>
+            </FormField>
+            <FormField label="回复方式">
+              <select v-model="entry.replyMode" class="input-field">
+                <option value="auto">auto（跟随全局）</option>
+                <option value="forward">合并转发</option>
+                <option value="quote">引用原消息</option>
+                <option value="plain">普通消息</option>
+              </select>
+            </FormField>
+            <FormField label="语音">
+              <select v-model="entry.voice" class="input-field">
+                <option value="auto">auto（跟随全局）</option>
+                <option value="on">on（该群默认语音）</option>
+                <option value="off">off（该群默认文字）</option>
+              </select>
+            </FormField>
+            <FormField label="群人设名" hint="留空=用全局人设">
+              <input v-model="entry.personaName" class="input-field" placeholder="如：群A专属" />
+            </FormField>
+          </div>
+          <button class="btn-outline !px-2 text-red-600" title="删除此群覆盖" @click="removeGroupOverride(gid)">×</button>
+        </div>
       </div>
     </SectionCard>
   </div>

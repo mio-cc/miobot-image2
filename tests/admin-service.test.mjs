@@ -1,5 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+// R18 合并日志（admin 内存 + bot-logs.jsonl 文件）后，/api/logs 测试不能读真实
+// .runtime/bot-logs.jsonl——bot 真跑时那些 napcat 日志会污染本文件的断言。
+// 把 MIOBOT_DATA_DIR 指到独立临时目录，readBotLogFile 读不到文件时自然返回空。
+process.env.MIOBOT_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'miobot-test-'));
 
 import { createAdminService } from '../dist/packages/admin-service/src/index.js';
 

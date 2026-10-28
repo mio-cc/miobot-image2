@@ -1,4 +1,5 @@
 import type { AppConfig } from '../../../packages/config/src/index.js';
+import { toMainModelSelection } from './config-bridge.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 import type { UserRequest } from '../../../packages/orchestration/src/index.js';
 import { extractJsonObject } from '../../../packages/orchestration/src/index.js';
@@ -71,6 +72,55 @@ function normalizeSpec(raw: Record<string, unknown>, cfg: AppConfig): SunoCompos
     model,
   };
 }
+/**
+ * R17+（用户裁定）：歌名原创强制。从用户请求里提取可能的原歌名（《歌名》、以XX为曲/词、
+ * "用XX的歌词"等引用形态），检测模型输出的 title 是否沿用了原歌名；命中时强制改为
+ * 基于新歌词核心意象生成的原创名（新写副歌短句），绝不等于原歌名。
+ */
+function extractReferencedSongTitle(args: Record<string, unknown>, requestText: string): string {
+  const texts = [
+    String(args.request || args.prompt || '').trim(),
+    String(requestText || '').trim(),
+  ];
+  const patterns = [
+    /《([^《》]{1,50})》/,
+    /「([^「」]{1,50})」/,
+    /\b(?:歌名|曲名)\s*(?:叫|是|为)\s*([^，。\n]{1,40})/,
+    /(?:基于|按照|用)\s*([^，。\n]{1,40})\s*(?:的)?\s*(?:歌词|曲|旋律|伴奏)/,
+  ];
+  for (const text of texts) {
+    if (!text) continue;
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match?.[1]) return clip(match[1], 80);
+    }
+  }
+  return '';
+}
+
+/** 歌名原创强制：模型沿用原歌名（或近似变体）时，从新歌词里取意象重写原创名。 */
+function enforceOriginalTitle(spec: SunoComposedSpec, args: Record<string, unknown>, requestText: string): string | undefined {
+  const referenced = extractReferencedSongTitle(args, requestText);
+  if (!referenced || !spec.title) return spec.title;
+  const normalize = (value: string) => String(value).replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+  const referencedNorm = normalize(referenced);
+  if (referencedNorm && normalize(spec.title) === referencedNorm) {
+    return deriveOriginalTitle(spec.lyrics) ?? spec.title;
+  }
+  return spec.title;
+}
+
+/** 从新歌词提取原创歌名：优先副歌行，其次最长意象行，去结构标记后 2-24 字。 */
+function deriveOriginalTitle(lyrics?: string): string | undefined {
+  if (!lyrics) return undefined;
+  // 注意：normalizeSpec 的 clip 已把换行拍扁为空格，因此这里按 [Chorus] 标记后
+  // 任意空白分隔取行，不依赖 \n。
+  const chorusMatch = lyrics.match(/\[Chorus\]\s*([^\[\n]+)/);
+  const candidate = clip((chorusMatch?.[1] || ''), 24);
+  const title = candidate.replace(/[，。,.;；!?！？\s]+$/g, '').slice(0, 24);
+  return title.length >= 2 ? title : undefined;
+}
+
 export function buildSunoComposerPrompt(args: Record<string, unknown>, request: UserRequest, cfg: AppConfig, customTemplate?: string): string {
   const supplied = {
     request: args.request || args.prompt || request.text,
@@ -134,7 +184,7 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     '【输出约束】',
     '1. 只输出 JSON，不要 Markdown、代码块、解释、创作过程或前后缀。',
     '2. 不要照抄用户整句。把用户描述提炼成音乐 brief、style 标签和必要的歌词。',
-    '3. 用户明确给出的角色、故事、语言、歌名、歌词和禁止项是硬约束，不得改写含义。',
+    '3. 用户明确给出的角色、故事、语言、歌词和禁止项是硬约束，不得改写含义。歌名除外——歌名永远由你原创（见 41）。',
     '4. 用户提供的歌词必须逐字保留到 lyrics，不要润色、翻译、补写或改变段落顺序。',
     '5. 默认 model 为 ' + String(cfg.orchestration.suno.model || 'V6') + '，只能选择 V6、V6_WILD、V6_MINI。',
     '',
@@ -189,7 +239,7 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     '38. audioWeight 仅在 custom 模式、有人声且存在音频参考时输出 0 到 1；否则 null。',
     '39. variety 仅在 custom 模式输出整数 0 到 4。用户要固定风格用 0 到 1；普通生成用 1；主动探索用 2 到 3；最大发散才用 4。',
     '40. negativeTags 只写用户明确不想要的音乐特征，英文逗号分隔，最多 1000 字符；不要填写 bad quality 等泛化负面词。',
-    '41. title 仅 custom 模式且最多 80 字符；优先使用副歌 hook 或核心意象，不要使用文件名式长标题。',
+    '41. title 必须是你为这首歌新拟的原创歌名（80 字内，取副歌 hook 或核心意象）。当请求里出现已有歌曲（用户给出现有歌词、或点明基于某首歌重做/换词）时，title 绝对不得使用原歌名、也不得是原歌名的微小变体；必须从新歌词的核心意象另拟一个全新的名字。只有用户明确要求保留原歌名时才可例外。',
     '',
     '【自检】',
     '42. 提交前检查：歌词是否能唱、副歌是否记得住、语言是否统一、段落是否有推进、style 是否与歌词情绪一致、是否误用了 custom 模式禁止字段。',
@@ -205,10 +255,11 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
   ].join('\n');
 }
 
-/** 追加在所有 composer 提示词（默认+自定义）末尾的硬约束：歌词作者职责 + 人设隔离。 */
+/** 追加在所有 composer 提示词（默认+自定义）末尾的硬约束：歌词作者职责 + 人设隔离 + 歌名原创。 */
 const SUNO_COMPOSER_OVERRIDE = [
   '【最高优先级覆盖】无论上文规则如何：非纯音乐（instrumental=false）的请求必须 customMode=true，且由你写出完整可唱的 lyrics（用户提供的歌词逐字保留）；禁止输出 customMode=false，禁止让 Suno 代写歌词。instrumental=true 时不要输出 lyrics。',
   '【人设隔离】忽略任何聊天人设、语气设定（如傲娇、嘴毒、角色扮演人设）对歌词内容的暗示——歌词的题材、语言与情绪只由用户的点歌需求和本方案的音乐设计决定；lyrics 中不得出现对人设的呼应或打破第四面墙的语句，除非用户在点歌需求中明确要求该风格。',
+  '【歌名原创（最高优先级）】title 必须是你为本次生成新拟的原创歌名，永远不得照搬、复用或近似引用已有歌曲的歌名。特别是用户拿已有歌曲的歌词来填词、翻唱、重做时（消息里出现《原歌名》、"用XX的词"等情况），title 绝不能等于或套用原歌名——必须从你写的新歌词里另取核心意象重新命名。用户明确要求沿用原歌名是唯一例外。',
 ].join('\n');export class SunoPromptComposer {
   constructor(
     private readonly client: Pick<ModelClient, 'chat'>,
@@ -219,8 +270,11 @@ const SUNO_COMPOSER_OVERRIDE = [
   async compose(args: Record<string, unknown>, request: UserRequest): Promise<SunoComposedSpec> {
     const cfg = this.getConfig();
     const suno = cfg.orchestration.suno;
-    const nodeIndex = Number(suno.composerNodeIndex ?? cfg.orchestration.planner.nodeIndex ?? cfg.llm.chatNodeIndex ?? 0);
-    const model = String(suno.composerModel || cfg.orchestration.planner.model || cfg.llm.chatModel || '');
+    // R15/M-4：四级 fallback（composer ?? planner ?? chat ?? 0）收 bridge 单点。
+    // toMainModelSelection 语义：显式专用位优先，无专用配置退主聊天模型。
+    const mainModel = toMainModelSelection(cfg);
+    const nodeIndex = Number(suno.composerNodeIndex ?? mainModel.nodeIndex);
+    const model = String(suno.composerModel || mainModel.model || '');
     // 免费档模型对复杂 JSON 输出不稳定——重试一次（带纠错提示），失败才走 safe fallback。
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
       { role: 'system', content: 'You are a strict JSON Suno prompt planner. Never output markdown.' },
@@ -261,6 +315,12 @@ const SUNO_COMPOSER_OVERRIDE = [
         }
         if (normalized.customMode && !normalized.style && !normalized.lyrics && !normalized.negativeTags && !normalized.musicBrief) {
           throw new Error('suno_composer_custom_content_missing');
+        }
+        // 用户裁定（R17+）：歌名必须模型原创。模型仍抄了原歌名时，从新歌词重取核心意象兜底改名。
+        const forcedTitle = enforceOriginalTitle(normalized, args, request.text);
+        if (forcedTitle !== normalized.title) {
+          this.logger?.warn('Suno composer 沿用了原歌名，已强制改为原创名', { original: normalized.title, forced: forcedTitle });
+          normalized.title = forcedTitle;
         }
         return normalized;
       } catch (error) {

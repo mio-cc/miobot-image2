@@ -29,6 +29,40 @@ export interface BotRouting {
 
 const KNOWN_DIALECTS: ProviderDialect[] = ['openai', 'anthropic', 'gemini', 'huggingface', 'custom'];
 
+// ── R15/M-1+M-4：多源配置收口（bridge 是唯一读取点）────────────────────────
+// 业务层禁止再写 `a ?? b ?? c` 多源链；凡是有历史双源/多源的字段，统一在
+// bridge 里读一次、给定唯一优先级，业务侧只取 bridge 输出。
+
+/**
+ * 群历史上下文的单一读取点（M-1）。历史上有两套字段：v3 contextPolicy.*
+ * 与旧 bot.groupContext.*——两页 UI 都能改、运行时 `?? ` 链取值导致"配置失灵"。
+ * R15 裁定：contextPolicy 为唯一真源；bot.groupContext 仅作老配置迁移来源，
+ * 只有 contextPolicy 未设置（undefined，而非 false）时才回退旧值。
+ */
+export function toGroupContextConfig(cfg: AppConfig): { enabled: boolean; messageCount: number; skipForward: boolean; includeImages: boolean; maxChars: number } {
+  const cp = cfg.contextPolicy;
+  const gc = cfg.bot?.groupContext;
+  return {
+    enabled: cp?.groupContextEnabled ?? gc?.enabled ?? true,
+    messageCount: cp?.groupContextMessages ?? gc?.messageCount ?? 30,
+    skipForward: gc?.skipForward ?? true,
+    includeImages: gc?.includeImages ?? true,
+    maxChars: cp?.groupContextMaxChars ?? gc?.maxChars ?? 4000,
+  };
+}
+
+/**
+ * 主聊天模型（节点+模型名）的单一读取点（M-4 前半）。历史四级 fallback：
+ * 专用位 ?? planner ?? llm.chat* —— 收进 bridge 一处，语义与旧链路一致：
+ * 显式专用位优先，没有专用配置时退到 chat 主模型。
+ */
+export function toMainModelSelection(cfg: AppConfig): { nodeIndex: number; model: string } {
+  return {
+    nodeIndex: Number(cfg.agent?.mainNodeIndex ?? cfg.llm?.chatNodeIndex ?? 0),
+    model: String(cfg.agent?.mainModel || cfg.llm?.chatModel || '').trim(),
+  };
+}
+
 /**
  * 推断节点方言：优先节点显式 dialect 字段（向后兼容，老配置没有则继续），
  * 其次看 provider 是否恰好是已知方言名，最后兜底 openai（= 现状行为）。

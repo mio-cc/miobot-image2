@@ -6,6 +6,7 @@ import { FEATURE_DEFINITIONS, type FeatureSetting } from '../../../packages/shar
 import { createSentMessageTracker, createTrackingReplyClient, partitionRecallEntries, sentChatKey, type SentMessageTracker } from './sent-messages.js';
 import { createReplyStrategyEngine, type ReplyClient, type ReplyContext, type ReplyStrategyConfig } from '../../../packages/reply/src/index.js';
 import { dedupeImageUrls, dedupeVideoUrls } from '../../../packages/napcat/src/index.js';
+import { toGroupContextConfig } from './config-bridge.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { RuntimeResult as BotEngineResult } from './runtime-types.js';
 import type { BotApp } from './app.js';
@@ -885,31 +886,32 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     }
   };
   const loadGroupContext = async (): Promise<string | undefined> => {
-      if (groupContextLoaded) return cachedGroupContext;
-      groupContextLoaded = true;
-      const gc = cfg.bot.groupContext;
-      const cp = cfg.contextPolicy;
-      if (chatType !== 'group' || !(cp?.groupContextEnabled ?? gc?.enabled) || !options.fetchGroupHistory || !event.message_id || !event.group_id) return undefined;
-      const ctxOptions: GroupContextOptions = {
-        messageCount: cp?.groupContextMessages ?? gc.messageCount,
-        skipForward: gc.skipForward,
-        includeImages: gc.includeImages,
-        maxChars: cp?.groupContextMaxChars ?? gc.maxChars,
-      };
-      const rawContext = await fetchGroupContext({
-        fetchHistory: options.fetchGroupHistory,
-        groupId: event.group_id,
-        anchorMessageId: event.message_id,
-        selfId: options.selfId?.() ?? cfg.bot.botQqId,
-        options: ctxOptions,
-      });
-      if (!rawContext) {
-        // 拉取为空不再静默：可能是 get_group_msg_history 失败、skipForward/图片占位过滤光、或群里本来就没人说话。
-        if (chatType === 'group' && gc?.enabled && event.message_id && event.group_id) {
-          log?.warn('群历史上下文为空', { groupId: event.group_id, messageCount: cp?.groupContextMessages ?? gc.messageCount, skipForward: gc.skipForward, maxChars: cp?.groupContextMaxChars ?? gc.maxChars });
-        }
-        return undefined;
+    if (groupContextLoaded) return cachedGroupContext;
+    groupContextLoaded = true;
+    // R15/M-1：群历史上下文双源收口——contextPolicy 为唯一真源，旧 bot.groupContext
+    // 仅在 contextPolicy 未设置时兜底（读取统一走 config-bridge，不再各处写 ?? 链）。
+    const gcConfig = toGroupContextConfig(cfg);
+    if (chatType !== 'group' || !gcConfig.enabled || !options.fetchGroupHistory || !event.message_id || !event.group_id) return undefined;
+    const ctxOptions: GroupContextOptions = {
+      messageCount: gcConfig.messageCount,
+      skipForward: gcConfig.skipForward,
+      includeImages: gcConfig.includeImages,
+      maxChars: gcConfig.maxChars,
+    };
+    const rawContext = await fetchGroupContext({
+      fetchHistory: options.fetchGroupHistory,
+      groupId: event.group_id,
+      anchorMessageId: event.message_id,
+      selfId: options.selfId?.() ?? cfg.bot.botQqId,
+      options: ctxOptions,
+    });
+    if (!rawContext) {
+      // 拉取为空不再静默：可能是 get_group_msg_history 失败、skipForward/图片占位过滤光、或群里本来就没人说话。
+      if (chatType === 'group' && gcConfig.enabled && event.message_id && event.group_id) {
+        log?.warn('群历史上下文为空', { groupId: event.group_id, messageCount: gcConfig.messageCount, skipForward: gcConfig.skipForward, maxChars: gcConfig.maxChars });
       }
+      return undefined;
+    }
       const currentName = event.sender?.card?.trim() || event.sender?.nickname?.trim() || '用户';
       cachedGroupContext = `【群聊上下文；格式：昵称 [QQ号]: 内容；不同 QQ 号代表不同用户，不能合并成同一人】\n【当前提问用户】${currentName} [QQ:${userId ?? '未知'}]\n${rawContext}`;
       return cachedGroupContext;
@@ -1423,9 +1425,30 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     }
     if (!result && agentShouldRun && agentHasInput) {
       stageBegin('agent');
+      // R15/C-2：全局 turn 并发上限（跨群共享，超出排队先来先得；0=不限制）。
+      // 信号量在 buildChatContext 之前获取——上下文构造也在占用模型预算的窗口内。
+      const releaseTurnSlot = await acquireAgentTurnSlot(() => Math.trunc(Number((cfg.agent as any)?.maxConcurrentTurns ?? 4)) || 4);
+      // R15/C-1：会话串行链——同一 session 的 turn 串行执行，防止并发读写同一
+      // AgentSessionState（历史/pendingJobs/偏好）。与出站队列 R11 同构。
+      const sessionChainPrev = agentTurnQueues.get(sessionId) || Promise.resolve();
+      let releaseSessionGate!: () => void;
+      const sessionGate = new Promise<void>((resolve) => { releaseSessionGate = resolve; });
+      const sessionChainTail = sessionChainPrev.catch(() => {}).then(() => sessionGate);
+      agentTurnQueues.set(sessionId, sessionChainTail);
+      await sessionChainPrev.catch(() => {});
       try {
         const baseAgentContext = agentMode === 'enforce' ? (await buildChatContext()).context : undefined;
-        const agentGroupContext = [baseAgentContext, focusContextForTurn].filter(Boolean).join('\n\n') || undefined;
+        // R15/F-2：排队后复验群级 focus 窗口新鲜度——排队等待期间窗口过期/耗尽时
+        // 不再注入续话上下文（该消息按独立新消息处理，避免拿过期窗口当续话）。
+        let focusContextForAgent = focusContextForTurn;
+        if (focusContextForAgent && event.group_id !== undefined) {
+          const focusState = groupFocusStates.get('group:' + String(event.group_id));
+          if (!focusState || Date.now() > focusState.expiresAt || focusState.remainingMessages <= 0) {
+            focusContextForAgent = '';
+            log?.info('排队后关注窗口已过期，改为独立消息处理', { groupId: event.group_id });
+          }
+        }
+        const agentGroupContext = [baseAgentContext, focusContextForAgent].filter(Boolean).join('\n\n') || undefined;
         const agentOutcome = await options.agentRuntime!({
           text: agentPromptText,
           chatType,
@@ -1473,6 +1496,11 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         if (agentMode === 'enforce') agentEnforceFailed = true;
         await reportProblem('agent-runtime-error', error, { intent: decision.kind });
       } finally {
+        // R15/C-1+C-2：无论成败都释放会话链与全局信号量；先放信号量再放会话链，
+        // 排队的同 session 消息取出时能看到最新窗口状态（F-2 复验读的是此处释放后的链尾）。
+        releaseSessionGate();
+        if (agentTurnQueues.get(sessionId) === sessionChainTail) agentTurnQueues.delete(sessionId);
+        releaseTurnSlot();
         stageEnd('agent');
       }
     }
@@ -1578,7 +1606,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         return { handled: true, kind: 'clear' };
       }
       if (decision.command === 'help') {
-        await engine.replyText(replyCtx, buildHelpText(cfg));
+        await engine.replyText(replyCtx, buildHelpText(cfg), 'forward'); // R15/H-2：能力/帮助列表固定合并转发
         return { handled: true, kind: 'help' };
       }
       if (decision.command === 'templateLibrary') {
@@ -1730,7 +1758,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
               }
               if (outcome.result) result = outcome.result;
             } else if (legacyIntent.intent === 'help') {
-              await engine.replyText(replyCtx, buildHelpText(cfg));
+              await engine.replyText(replyCtx, buildHelpText(cfg), 'forward'); // R15/H-2：能力/帮助列表固定合并转发
               return { handled: true, kind: 'help' };
             } else if (legacyIntent.intent === 'clear') {
               options.app.sessions.clear(sessionId);
@@ -2534,6 +2562,23 @@ export function removePrimaryText(plan: any, target: PrimaryTextTarget): any {
 
 const outboundSendQueues = new Map<string, Promise<void>>();
 
+// ── R15/C-1 + C-2：Agent turn 并发控制（会话串行链 + 全局并发上限）──────────
+// C-1 会话串行链：同 sessionId 的 turn 串行（Map<sessionId, Promise> 链，与出站队列同构）。
+// C-2 全局信号量：跨群共享的同时执行 turn 上限，cfg.agent.maxConcurrentTurns（0=不限）。
+const agentTurnQueues = new Map<string, Promise<void>>();
+let agentActiveTurns = 0;
+const agentTurnWaiters: Array<() => void> = [];
+async function acquireAgentTurnSlot(getMaxConcurrent: () => number): Promise<() => void> {
+  const max = Math.max(0, Math.trunc(Number(getMaxConcurrent()) || 0));
+  if (max <= 0 || agentActiveTurns < max) {
+    agentActiveTurns += 1;
+    return () => { agentActiveTurns = Math.max(0, agentActiveTurns - 1); const next = agentTurnWaiters.shift(); if (next) next(); };
+  }
+  await new Promise<void>((resolve) => { agentTurnWaiters.push(resolve); });
+  agentActiveTurns += 1;
+  return () => { agentActiveTurns = Math.max(0, agentActiveTurns - 1); const next = agentTurnWaiters.shift(); if (next) next(); };
+}
+
 export async function sendResult(
   ...args: Parameters<typeof sendResultUnlocked>
 ): Promise<import('../../../packages/reply/src/index.js').ReplyDispatchResult | null> {
@@ -2548,10 +2593,42 @@ export async function sendResult(
   outboundSendQueues.set(chatKey, tail);
   await previous.catch(() => {});
   try {
+    // R15/P-1 fix：TTS 预合成必须在同群 ticket 内执行。之前放在入队前会让
+    // 合成更快的后发消息先入队，造成同群发送顺序反转；现在按到达顺序串行，
+    // 牺牲少量并发换确定性。
+    await presynthPlanTtsOutsideQueue(args);
     return await sendResultUnlocked(...args);
   } finally {
     releaseGate();
     if (outboundSendQueues.get(chatKey) === tail) outboundSendQueues.delete(chatKey);
+  }
+}
+/**
+ * R15/P-1：锁外预合成——把 plan 文本→语音的替换提前到队列锁之前完成。
+ * 与 sendResultUnlocked 内部逻辑保持同一判定（policy/voice/planHasAudio/selectPrimaryTextForTts），
+ * 合成失败保持原文本（不发语音、不报错打断发送），成功则文本输出替换为 audio 输出，
+ * 锁内 voice() 会因 planHasAudio=true 自然跳过，临界区不再等待合成。
+ */
+async function presynthPlanTtsOutsideQueue(args: Parameters<typeof sendResultUnlocked>): Promise<void> {
+  const [, ctx, result, voice, voiceEligible, , , , ] = args;
+  if (!result.replyPlan || !voice) return;
+  const plan = result.replyPlan as any;
+  const policy = plan.policy;
+  if (!policy || policy.mode === 'forward' || policy.forcedForward === true || policy.voice === 'off') return;
+  if (allReplyPlanOutputs(plan).some((output) => output.kind === 'audio')) return;
+  const target = selectPrimaryTextForTts(plan);
+  if (!target) return;
+  let eligible = true;
+  if (policy.voice !== 'on' && voiceEligible) {
+    try { eligible = await voiceEligible(target.text, { chatType: ctx.chatType, groupId: ctx.groupId, userId: ctx.userId }); }
+    catch { eligible = false; }
+  }
+  if (!eligible) return;
+  try {
+    const file = await voice(target.text, { chatType: ctx.chatType, groupId: ctx.groupId, userId: ctx.userId });
+    if (file) result.replyPlan = replacePrimaryTextWithAudio(plan, target, file) as typeof plan;
+  } catch {
+    /* 合成失败保持文本回复——锁内路径会再次尝试或按原文本发送 */
   }
 }
 async function sendResultUnlocked(

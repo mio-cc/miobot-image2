@@ -462,7 +462,10 @@ test('local simulation: ReplyPlan enforces QQ maxMessages while keeping files/au
   cfg.orchestration.planner.enabled = true;
   cfg.orchestration.planner.minConfidence = 0;
   cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
+  // R15/#9：预算唯一真源改为 replyPolicy.hardMaxMessages（orchestration.reply 不再参与合并）。
   cfg.orchestration.reply.maxMessages = 3;
+  cfg.replyPolicy.enabled = true;
+  cfg.replyPolicy.hardMaxMessages = 3;
   cfg.orchestration.reply.includeTruncationNotice = true;
   let fallbackAppCalls = 0;
   const app = makeApp(async () => {

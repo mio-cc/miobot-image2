@@ -46,6 +46,8 @@ export interface ReplyPolicyResolveInput {
   turnPreference?: ReplyPreferenceLike;
   sessionPreference?: ReplyPreferenceLike;
   userPreference?: ReplyPreferenceLike;
+  /** R16/F-3：群级默认偏好（群覆盖链位置：turn > 窗口 session > user > 群 group > 后台默认）。 */
+  groupPreference?: ReplyPreferenceLike;
 }
 
 export interface ResolvedReplyPolicy {
@@ -59,23 +61,22 @@ export function resolveReplyPolicy(input: ReplyPolicyResolveInput): ResolvedRepl
   const turn = enabled && cfg.replyPolicy.allowModelOverride ? input.turnPreference : undefined;
   const session = enabled && cfg.replyPolicy.allowSessionPreferences ? input.sessionPreference : undefined;
   const user = enabled && cfg.replyPolicy.allowUserPreferences ? input.userPreference : undefined;
-  // P0-3 根因A（R12 修复）：后台默认 bot.replyStrategies.text 必须进入 Agent 的回复策略。
-  // 无任何显式偏好（turn/session/user）时，mode 兜底到后台文本策略：
-  // forward→forward（合并转发），quote→quote，direct/plain→direct；auto 保持自动。
-  // R13：新增 voice（语音回复，旧默认）——文本以 TTS 语音消息发送，TTS 不可用回退 direct 文本；
-  // voice 属文本表现策略，不与协议硬约束冲突（超长强制 forward 仍生效，音频/文件 direct 不变）。
-  // 优先级：协议硬约束 > turn 请求 > session/user 偏好 > 后台默认（不变）。
+  // R16/F-3：群级覆盖——"不同群不同人设/默认回复" 的群默认层。覆盖链（用户裁定）：
+  // turn > 窗口 session > user > 群 group > 后台默认——用户明说的选择永远高于群默认，
+  // 群默认只在与该群无显式交互偏好时替代全局后台默认。
+  const group = enabled ? input.groupPreference : undefined;
   const backendTextMode = String(cfg.bot?.replyStrategies?.text || 'plain').trim() as 'forward' | 'at' | 'quote' | 'plain' | 'text-image' | 'voice';
   const backendMode: ReplyModePreference = backendTextMode === 'forward' ? 'forward' : backendTextMode === 'quote' || backendTextMode === 'at' ? 'quote' : backendTextMode === 'plain' || backendTextMode === 'voice' ? 'direct' : 'auto';
-  const mode = turn?.mode ?? session?.mode ?? user?.mode ?? backendMode;
-  const forwardStyle = turn?.forwardStyle ?? session?.forwardStyle ?? user?.forwardStyle ?? 'auto';
+  const mode = turn?.mode ?? session?.mode ?? user?.mode ?? group?.mode ?? backendMode;
+  const forwardStyle = turn?.forwardStyle ?? session?.forwardStyle ?? user?.forwardStyle ?? group?.forwardStyle ?? 'auto';
   // R13：后台 text=voice（语音回复）时默认语音=on；但 replyPolicy.defaultVoice 显式
   // on/off 是更具体的后台决策，优先于 text 策略推导（auto 才回退 text=voice→on）。
   const backendVoice: ReplyVoicePreference = backendTextMode === 'voice'
     ? (cfg.replyPolicy.defaultVoice !== 'auto' ? cfg.replyPolicy.defaultVoice : 'on')
     : cfg.replyPolicy.defaultVoice;
-  const voice = turn?.voice ?? session?.voice ?? user?.voice ?? (enabled ? backendVoice : 'auto');
-  const reference = turn?.reference ?? session?.reference ?? user?.reference ?? 'auto';
+  const groupVoice = group?.voice ?? backendVoice;
+  const voice = turn?.voice ?? session?.voice ?? user?.voice ?? (enabled ? groupVoice : 'auto');
+  const reference = turn?.reference ?? session?.reference ?? user?.reference ?? group?.reference ?? 'auto';
   const textChars = Math.max(0, Math.trunc(Number(input.textChars) || 0));
   // P0-3（R9 修复）：文本超过阈值一律强制合并转发——mode=direct/plain 也不能绕过。
   // 只有显式 forward 或超阈值才进转发；无转发能力时的降级由发送层既有逻辑处理（分条 direct，
@@ -84,16 +85,17 @@ export function resolveReplyPolicy(input: ReplyPolicyResolveInput): ResolvedRepl
     && (mode === 'auto' || mode === 'direct' || mode === 'plain' || mode === 'forward')
     && textChars >= Math.max(1, Math.trunc(Number(cfg.replyPolicy.forcedForwardThreshold) || 1800));
 
-  const legacyMaxMessages = Math.max(1, Math.trunc(Number(cfg.orchestration.reply.maxMessages) || 3));
+  // R15/#9：三套预算合一——唯一真源是 replyPolicy.*（hardMaxMessages/hardMaxChars）。
+  // 旧的 orchestration.reply.maxMessages 与 bot.textReply.maxChars 不再参与 min 合并
+  //（双源取 min 曾导致"后台改哪个都只生效一半"）；它们由 config-bridge 层的归一化
+  // 直接映射进 replyPolicy，运行时只读一份。
   const maxMessages = enabled
-    ? Math.min(legacyMaxMessages, Math.max(1, Math.trunc(Number(cfg.replyPolicy.hardMaxMessages) || legacyMaxMessages)))
-    : legacyMaxMessages;
+    ? Math.max(1, Math.trunc(Number(cfg.replyPolicy.hardMaxMessages) || 3))
+    : Math.max(1, Math.trunc(Number(cfg.orchestration.reply.maxMessages) || 3));
   const legacyTextMaxChars = Math.max(0, Math.trunc(Number(cfg.bot.textReply.maxChars) || 0));
   const maxChars = enabled
-    ? legacyTextMaxChars > 0
-      ? Math.min(legacyTextMaxChars, Math.max(1, Math.trunc(cfg.replyPolicy.hardMaxChars)))
-      : Math.max(1, Math.trunc(cfg.replyPolicy.hardMaxChars))
-    : legacyTextMaxChars;
+    ? Math.max(1, Math.trunc(Number(cfg.replyPolicy.hardMaxChars) || (legacyTextMaxChars > 0 ? legacyTextMaxChars : 20_000)))
+    : (legacyTextMaxChars > 0 ? legacyTextMaxChars : 20_000);
 
   let preferNestedForward = cfg.orchestration.reply.preferNestedForward !== false;
   if (forwardStyle === 'nested') preferNestedForward = true;

@@ -46,6 +46,21 @@ const capability = ref<any>(null);
 
 const pageTitle = computed(() => props.title || capability.value?.name || props.capabilityId);
 
+/** HTTP 通用能力的运行配置；有独立卡片时才创建，避免污染其他能力配置。 */
+const httpConfig = computed<Record<string, any>>(() => {
+    const root = config.value as any;
+    return root?.capabilitiesHttp?.[props.capabilityId] || { enabled: true, apiKey: '', fallbackEndpoint: '' };
+});
+
+function ensureHttpConfig(): void {
+    const root = config.value as any;
+    if (!root) return;
+    root.capabilitiesHttp ||= {};
+    if (!root.capabilitiesHttp[props.capabilityId]) {
+        root.capabilitiesHttp[props.capabilityId] = { enabled: true, apiKey: '', fallbackEndpoint: '' };
+    }
+}
+
 /* ── 状态头：总开关（orch.capabilityOverrides） ─────────────── */
 
 const healthClass = computed(() => {
@@ -129,6 +144,24 @@ const quotaSummary = computed(() => {
     return parts.join(' · ');
 });
 
+/* ── 输入参数卡：inputSchema 参数表（R21-h，通用详情页核心内容） ── */
+
+const schemaRows = computed(() => {
+    const schema = (capability.value as any)?.inputSchema;
+    if (!schema || typeof schema !== 'object') return [];
+    const props = schema.properties || {};
+    const required = new Set(schema.required || []);
+    return Object.entries(props).map(([name, def]) => {
+        const d = def as Record<string, any>;
+        return {
+            name,
+            type: String(d?.type || 'string'),
+            required: required.has(name),
+            desc: String(d?.description || '').trim(),
+        };
+    });
+});
+
 /* ── 卡5：能力测试三档 ──────────────────────────────────────── */
 
 const testResult = ref<{ status: string; detail: string } | null>(null);
@@ -172,6 +205,7 @@ async function loadCapability() {
     try {
         const res = await client.get('/orchestration/capabilities');
         capability.value = (res.data?.capabilities || []).find((item: any) => item.id === props.capabilityId) || null;
+        if (capability.value?.provider === 'http-generic') ensureHttpConfig();
     } catch { capability.value = null; }
 }
 
@@ -247,6 +281,33 @@ onMounted(() => {
       <p class="text-xs text-[color:var(--ink-3)]">
         该能力没有独立的消息入口配置，使用按风险等级的默认配额；如需覆盖可在「命令与意图」页按功能配置。
       </p>
+    </SectionCard>
+
+    <!-- R21-h 输入参数卡：注册表 inputSchema（执行前按此校验；缺参走模型追问） -->
+    <SectionCard v-if="schemaRows.length" title="输入参数" hint="来自能力注册表 inputSchema；执行前按此校验，缺参由模型向用户追问" class="mb-4">
+      <div class="space-y-2">
+        <div v-for="row in schemaRows" :key="row.name"
+          class="flex items-start gap-2.5 px-3 py-2 rounded-lg border border-[color:var(--hairline)] bg-[color:var(--page)]">
+          <span class="font-mono text-xs text-[color:var(--ink)] pt-px">{{ row.name }}</span>
+          <span class="text-[10.5px] font-mono text-[color:var(--ink-3)] border border-[color:var(--hairline-3)] rounded-md px-1.5 py-0.5 flex-none">{{ row.type }}</span>
+          <span v-if="row.required" class="text-[10px] font-bold text-[color:var(--accent)] bg-[color:var(--accent-soft)] rounded-md px-1.5 py-0.5 flex-none">必填</span>
+          <span class="text-xs text-[color:var(--ink-2)] leading-relaxed break-all">{{ row.desc || '—' }}</span>
+        </div>
+      </div>
+    </SectionCard>
+
+    <SectionCard v-if="capability?.provider === 'http-generic'" title="HTTP 能力配置" hint="capabilitiesHttp：启用、API Key（如描述符 keyHeaderName 需要）与故障备源；保存后下一轮热重载" class="mb-4">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <FormField label="启用">
+          <ToggleField :model-value="httpConfig.enabled !== false" label="允许调用" @update:model-value="(v: boolean) => { httpConfig.enabled = v; }" />
+        </FormField>
+        <FormField label="API Key" hint="只有描述符声明 keyHeaderName 时才会作为请求头发送；已保存的值可能显示为掩码">
+          <input v-model="httpConfig.apiKey" type="password" class="input-field font-mono text-xs" placeholder="可留空" autocomplete="off" />
+        </FormField>
+        <FormField label="故障备源 URL" hint="主站失败时使用；同样经过 SSRF 校验和超时限制">
+          <input v-model="httpConfig.fallbackEndpoint" class="input-field font-mono text-xs" placeholder="可留空，例如 https://backup.example/api" />
+        </FormField>
+      </div>
     </SectionCard>
 
     <SectionCard v-if="$slots.models" :title="modelsTitle" class="mb-4">

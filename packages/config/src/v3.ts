@@ -21,6 +21,8 @@ export interface AgentConfigV3 {
   maxModelRounds: number;
   maxToolRounds: number;
   maxParallelTools: number;
+  /** R15/C-2：全局同时执行的 Agent turn 上限（跨群共享，超出排队；0=不限制）。 */
+  maxConcurrentTurns: number;
   maxTokens: number;
   temperature: number;
   reasoningEffort: string;
@@ -102,6 +104,8 @@ export interface ConfigFieldMetadata {
   hotReload: ConfigFieldHotReload;
   danger?: boolean;
   legacyKey?: string;
+  /** R17：唯一写入点（primary editor）页面的路由路径；未标注 = 只读镜像或暂无 UI。 */
+  primaryEditor?: string;
 }
 
 export function defaultAgentConfigV3(): AgentConfigV3 {
@@ -117,6 +121,7 @@ export function defaultAgentConfigV3(): AgentConfigV3 {
     maxModelRounds: 8,
     maxToolRounds: 16,
     maxParallelTools: 4,
+    maxConcurrentTurns: 4,
     maxTokens: 8192,
     temperature: 0.7,
     reasoningEffort: 'high',
@@ -218,6 +223,7 @@ export function normalizeAgentConfigV3(input: unknown): AgentConfigV3 {
     maxModelRounds: intIn(raw.maxModelRounds, d.maxModelRounds, 1, 100),
     maxToolRounds: intIn(raw.maxToolRounds, d.maxToolRounds, 0, 200),
     maxParallelTools: intIn(raw.maxParallelTools, d.maxParallelTools, 1, 32),
+    maxConcurrentTurns: intIn(raw.maxConcurrentTurns, d.maxConcurrentTurns, 0, 256),
     maxTokens: intIn(raw.maxTokens, d.maxTokens, 1, 200_000),
     temperature: numberIn(raw.temperature, d.temperature, 0, 2),
     reasoningEffort: str(raw.reasoningEffort, d.reasoningEffort).trim().slice(0, 50) || d.reasoningEffort,
@@ -312,6 +318,7 @@ export const CONFIG_V3_FIELD_METADATA: readonly ConfigFieldMetadata[] = [
   field('agent.streaming', '流式输出（不适用：Napcat 只接受完整回复）', 'boolean', false, global, nextTurn),
   field('agent.maxToolRounds', '最大工具轮次', 'number', 16, global, nextTurn, { min: 0, max: 200 }),
   field('agent.maxParallelTools', '最大并行工具数', 'number', 4, global, nextTurn, { min: 1, max: 32 }),
+  field('agent.maxConcurrentTurns', '全局并发 Turn 上限', 'number', 4, global, nextTurn, { min: 0, max: 256, help: '跨群共享的同时执行的 Agent turn 上限，超出排队先来先得；0=不限制。1c2g 建议 4。' }),
   field('agent.maxTokens', '单轮最大 Token', 'number', 8192, global, nextTurn, { min: 1, max: 200_000 }),
   field('agent.temperature', '温度', 'number', 0.7, global, nextTurn, { min: 0, max: 2 }),
   field('agent.reasoningEffort', '推理强度', 'string', 'high', global, nextTurn),
