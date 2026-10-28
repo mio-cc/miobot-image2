@@ -1,4 +1,4 @@
-﻿import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router';
+import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router';
 
 /**
  * 用 hash 路由：面板挂在 /admin/ 下由静态文件服务器托管，
@@ -30,7 +30,7 @@ const routes: RouteRecordRaw[] = [
         path: '/access',
         name: 'access',
         component: () => import('../pages/AccessPage.vue'),
-        meta: { title: '输入与触发', group: '配置', icon: 'chat' },
+        meta: { title: '接入与准入', group: '配置', icon: 'chat' },
     },
     {
         // P1-E（R10 收口）：旧规划器页重定向到 Agent 与工具；旧组件保留在仓库供回滚，
@@ -148,7 +148,7 @@ const routes: RouteRecordRaw[] = [
         path: '/features',
         name: 'features',
         component: () => import('../pages/FeaturesPage.vue'),
-        meta: { title: '输入与触发', group: '配置', icon: 'template' },
+        meta: { title: '命令与意图', group: '配置', icon: 'template' },
     },
     {
         path: '/templates',
