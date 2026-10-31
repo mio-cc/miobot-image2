@@ -835,7 +835,13 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         diagnostics: { reportPages: result.pages, reportRows: result.rows, reportPageHeights: result.pageHeights, warnings: result.warnings },
       });
     } catch (error) {
-      return handlerFailure(invocation, `数据报告渲染失败：${String((error as Error)?.message || error)}`);
+      const message = String((error as Error)?.message || error);
+      // 数据缺失是可修正的输入问题，不是任务失败；引导模型先查数据再用 report.render，
+      // 不要因为一次空 spec 就改走 code.render 或向用户道歉。
+      if (message.includes('缺少报告数据行')) {
+        return handlerFailure(invocation, '缺少报告数据行：请先调用上游数据工具并把结果放进 rows/data 后再调用 report.render；不要改用 code.render 制作数据表。');
+      }
+      return handlerFailure(invocation, `数据报告渲染失败：${message}`);
     }
   }));
   orchestrationHandlers.set('browser.render', new RuntimeAdapterCapabilityHandler(async (invocation) => {
@@ -1899,7 +1905,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       .filter((message) => String(message.content || '').trim() && message.meta?.internal !== true && String(message.content || '').trim() !== resumeNotice);
     const pendingRecord = session.pendingJobs?.find((item) => item.jobId === job.jobId);
     const originalUser = userMessages.at(-1);
-    const originalText = String(pendingRecord?.meta?.originalUserText || originalUser?.content || '').trim();
+    const stripAsyncStatus = (value: unknown) => String(value || '').replace(/\n\n【系统状态】[\s\S]*$/g, '').trim();
+    const originalText = stripAsyncStatus(pendingRecord?.meta?.originalUserText || originalUser?.content);
     const originalAttachments = Array.isArray(pendingRecord?.meta?.originalAttachments)
       ? pendingRecord.meta.originalAttachments as any[]
       : Array.isArray(originalUser?.attachments) ? originalUser.attachments : [];

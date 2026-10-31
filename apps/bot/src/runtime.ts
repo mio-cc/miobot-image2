@@ -2425,7 +2425,8 @@ export function allReplyPlanOutputs(plan: any): any[] {
 }
 
 /** 只有新生成/新变换的图片才允许写入 Canvas 图库；历史图库、读图、网页截图不得回灌。 */
-const GALLERY_SYNC_CAPABILITIES = new Set(['image.generate', 'image.edit', 'image.stitch', 'code.render', 'template.use']);
+const GALLERY_SYNC_CAPABILITIES = new Set(['image.generate', 'image.edit', 'image.stitch', 'template.use']);
+// code.render / browser.render / report.render 是临时视觉产物，不进入 Canvas 图库。
 
 export function isGallerySyncEligibleImageOutput(output: any): boolean {
   if (!output || output.kind !== 'image' || !String(output.url || '').trim()) return false;

@@ -357,7 +357,7 @@ export async function renderReport(input: unknown, deps: ReportRenderDeps): Prom
     return kind === 'chart' || kind === 'table';
   });
   if (!spec.rows.length && hasDataBlocks) {
-    throw new Error('报告没有可用数据行：请把工具结果放进 spec.rows / spec.data；不要只传空表或空图表 spec');
+    throw new Error('缺少报告数据行：请先把上游工具结果放进 spec.rows / spec.data；不要只传空表或空图表 spec');
   }
   const pages = buildPages(spec);
   const images: string[] = [];

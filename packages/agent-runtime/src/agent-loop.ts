@@ -1018,7 +1018,7 @@ export class AgentRuntime implements AgentLoop {
         updatedAt: this.now(),
         meta: {
           ...(result.meta || {}),
-          ...(String(input.userText || '').trim() ? { originalUserText: String(input.userText).slice(0, 6000) } : {}),
+          ...(stripAsyncSystemStatus(input.userText) ? { originalUserText: stripAsyncSystemStatus(input.userText).slice(0, 6000) } : {}),
           ...(input.attachments?.length ? { originalAttachments: input.attachments } : {}),
           ...(input.replyPreference ? { originalReplyPreference: input.replyPreference } : {}),
           ...(typeof input.metadata?.replyPreferenceSessionKey === 'string' ? { originalReplyPreferenceSessionKey: input.metadata.replyPreferenceSessionKey } : {}),
@@ -1435,6 +1435,10 @@ function upsertToolMessage(messages: AgentMessage[], toolMessage: AgentToolMessa
     return [...messages.slice(0, insertAt), toolMessage, ...messages.slice(insertAt)];
   }
   return [...messages, toolMessage];
+}
+
+function stripAsyncSystemStatus(text: string): string {
+  return String(text || '').replace(/\n\n【系统状态】[\s\S]*$/g, '').trim();
 }
 
 function isInternalMessage(message: AgentMessage): boolean {

@@ -23,7 +23,8 @@ test('gallery sync: historical canvas gallery outputs are read-only and never re
 
 test('gallery sync: only newly generated image capabilities are eligible', () => {
   assert.equal(isGallerySyncEligibleImageOutput({ kind: 'image', url: 'https://x/1.png', meta: { sourceCapability: 'image.generate' } }), true);
-  assert.equal(isGallerySyncEligibleImageOutput({ kind: 'image', url: 'https://x/2.png', meta: { sourceCapability: 'code.render' } }), true);
+  assert.equal(isGallerySyncEligibleImageOutput({ kind: 'image', url: 'https://x/2.png', meta: { sourceCapability: 'code.render' } }), false);
+    assert.equal(isGallerySyncEligibleImageOutput({ kind: 'image', url: 'https://x/2b.png', meta: { sourceCapability: 'report.render' } }), false);
   assert.equal(isGallerySyncEligibleImageOutput({ kind: 'image', url: 'https://x/3.png', meta: { sourceCapability: 'image.stitch' } }), true);
   assert.equal(isGallerySyncEligibleImageOutput({ kind: 'image', url: 'https://x/4.png', meta: { sourceCapability: 'canvas.gallery' } }), false);
   assert.equal(isGallerySyncEligibleImageOutput({ kind: 'image', url: 'https://x/5.png', meta: { sourceCapability: 'file.read' } }), false);
