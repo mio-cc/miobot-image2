@@ -85,13 +85,46 @@ function normalizeColumns(raw: unknown, rows: Row[]): NormalColumn[] {
   return keys.slice(0, 12).map((key) => ({ key, label: key }));
 }
 
-function normalizeSpec(input: unknown): NormalizedSpec {
-  const wrapped = asRecord(input);
-  const raw = asRecord(wrapped.spec || wrapped.report || wrapped);
-  const rows = (Array.isArray(raw.rows) ? raw.rows : Array.isArray(raw.data) ? raw.data : [])
+function parseMaybeJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const text = value.trim();
+  if (!text || (!text.startsWith('[') && !text.startsWith('{'))) return value;
+  try { return JSON.parse(text); } catch { return value; }
+}
+
+function normalizeRows(value: unknown): Row[] {
+  const parsed = parseMaybeJson(value);
+  const source = Array.isArray(parsed) ? parsed : asRecord(parsed).items || asRecord(parsed).rows || asRecord(parsed).data;
+  if (!Array.isArray(source)) return [];
+  return source
     .filter((row) => row && typeof row === 'object' && !Array.isArray(row))
     .slice(0, 5000) as Row[];
-  const blocks = Array.isArray(raw.blocks) ? [...raw.blocks] : [];
+}
+
+function normalizeSpec(input: unknown): NormalizedSpec {
+  const wrapped = asRecord(parseMaybeJson(input));
+  const raw = asRecord(parseMaybeJson(wrapped.spec || wrapped.report || wrapped));
+  const parsedBlocks = parseMaybeJson(raw.blocks);
+  const blocks = Array.isArray(parsedBlocks) ? [...parsedBlocks] : parsedBlocks && typeof parsedBlocks === 'object' ? [parsedBlocks] : [];
+  // 模型可能把数据放在 data/items/records，或者只放在 table/chart block 里；
+  // 不能只看 raw.rows，否则会出现 rows=0 的空报告。
+  let rows = normalizeRows(raw.rows ?? raw.data ?? raw.items ?? raw.records ?? raw.dataset);
+  if (!rows.length) {
+    for (const block of blocks) {
+      const record = asRecord(block);
+      const blockKind = asString(record.kind || record.type).toLowerCase();
+      if (blockKind === 'table') {
+        rows = normalizeRows(record.rows ?? record.data ?? record.items);
+        if (rows.length) break;
+      }
+      if (blockKind === 'chart') {
+        const chart = asRecord(record.chart || record);
+        rows = normalizeRows(chart.data ?? record.rows);
+        if (rows.length) break;
+      }
+    }
+  }
+  const rawColumns = parseMaybeJson(raw.columns);
   if (!blocks.length && Array.isArray(raw.kpis)) blocks.push({ kind: 'kpi', items: raw.kpis });
   if (!blocks.length && raw.chart) blocks.push({ kind: 'chart', chart: raw.chart });
   const pageSize = Math.max(5, Math.min(MAX_PAGE_SIZE, Math.trunc(Number(raw.pageSize || raw.rowsPerPage) || DEFAULT_PAGE_SIZE)));
@@ -104,7 +137,7 @@ function normalizeSpec(input: unknown): NormalizedSpec {
     layout: asString(raw.layout || 'report').toLowerCase(),
     width: Math.max(720, Math.min(1600, Math.trunc(Number(raw.width) || PAGE_WIDTH))),
     rows,
-    columns: normalizeColumns(raw.columns, rows),
+    columns: normalizeColumns(rawColumns, rows),
     blocks,
     pageSize,
   };
@@ -319,6 +352,13 @@ function buildPages(spec: NormalizedSpec): Array<{ blocks: any[] }> {
 export async function renderReport(input: unknown, deps: ReportRenderDeps): Promise<ReportRenderResult> {
   if (!deps.browserRenderer) throw new Error('报告渲染不可用：未配置浏览器渲染器');
   const spec = normalizeSpec(input);
+  const hasDataBlocks = spec.blocks.some((block) => {
+    const kind = asString(asRecord(block).kind || asRecord(block).type).toLowerCase();
+    return kind === 'chart' || kind === 'table';
+  });
+  if (!spec.rows.length && hasDataBlocks) {
+    throw new Error('报告没有可用数据行：请把工具结果放进 spec.rows / spec.data；不要只传空表或空图表 spec');
+  }
   const pages = buildPages(spec);
   const images: string[] = [];
   const warnings: string[] = [];

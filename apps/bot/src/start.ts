@@ -807,6 +807,13 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   orchestrationHandlers.set('report.render', new RuntimeAdapterCapabilityHandler(async (invocation) => {
     try {
       const args = (invocation.step.args || {}) as Record<string, unknown>;
+      const nestedSpec = args.spec && typeof args.spec === 'object' ? args.spec as Record<string, unknown> : {};
+      logger.info('report.render 请求快照', {
+        keys: Object.keys(args).slice(0, 20),
+        specKeys: Object.keys(nestedSpec).slice(0, 20),
+        rowsCount: Array.isArray(args.rows) ? args.rows.length : Array.isArray(nestedSpec.rows) ? nestedSpec.rows.length : undefined,
+        blocksCount: Array.isArray(args.blocks) ? args.blocks.length : Array.isArray(nestedSpec.blocks) ? nestedSpec.blocks.length : undefined,
+      });
       const result = await renderReport(args, {
         browserRenderer: runtimeAdapterOptions.browserRenderer,
         outputDir: runtimeAdapterOptions.generatedFileDir || generatedFileDir,

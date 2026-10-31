@@ -97,3 +97,17 @@ test('R23 report.render splits 200 rows across stable pages', async () => {
   assert.equal(result.images.length, 7);
   assert.match(htmls.at(-1), /热门话题 200/);
 });
+
+test('R23 report.render accepts nested table data and JSON spec strings', async () => {
+  const htmls = [];
+  const renderer = { renderCode: async (artifact) => { htmls.push(String(artifact.html || '')); return { path: '/tmp/nested.png', name: 'nested.png', mime: 'image/png', width: 1080, height: 1200, size: 1 }; } };
+  const input = {
+    title: '嵌套数据报告',
+    blocks: [{ kind: 'table', rows: makeRows(5), columns: [{ key: 'name', label: '书名' }] }],
+  };
+  const result = await renderReport(JSON.stringify({ spec: input }), { browserRenderer: renderer, outputDir: '/tmp' });
+  assert.equal(result.rows, 5);
+  assert.equal(result.pages, 1);
+  assert.match(htmls[0], /热门话题 05/);
+  assert.match(htmls[0], /书名/);
+});

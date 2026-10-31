@@ -1008,6 +1008,11 @@ git_update_all() {
   require_root
   detect_runtime_layout
   git_pull_source
+  # 旧脚本函数体已加载，git pull 后必须重新执行新脚本才能拿到新的字体/插件钩子。
+  if [ -f "$SCRIPT_DIR/deploy-linux.sh" ]; then
+    log "重新加载更新后的 deploy-linux.sh，然后执行 rebuild"
+    exec bash "$SCRIPT_DIR/deploy-linux.sh" rebuild "$@"
+  fi
   rebuild_all
 }
 
