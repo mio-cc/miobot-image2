@@ -58,12 +58,37 @@ export class DefaultAgentContextBuilder implements AgentContextBuilder {
     }
     const maxChars = input.maxChars && input.maxChars > 0 ? Math.trunc(input.maxChars) : 0;
     if (maxChars && estimateChars(messages) > maxChars) trimToBudget(messages, maxChars, Boolean(input.compactionEnabled));
+    const sanitized = sanitizeToolMessagePairs(messages);
     return {
-      messages,
+      messages: sanitized,
       includedSections: sections.map(([label]) => label),
-      estimatedChars: estimateChars(messages),
+      estimatedChars: estimateChars(sanitized),
     };
   }
+}
+
+/**
+ex * 会话历史/压缩可能留下孤立的 tool message，或者修剪掉 assistant.tool_calls 却保留 tool result。
+ * 多数 OpenAI-compatible provider 会直接返回 400，所以发模型前必须清理。
+ */
+export function sanitizeToolMessagePairs(messages: AgentMessage[]): AgentMessage[] {
+  const cleaned: AgentMessage[] = [];
+  let activeCallIds = new Set<string>();
+  for (const message of messages) {
+    if (message.role === 'assistant') {
+      activeCallIds = new Set((message.toolCalls || []).map((call) => String(call.id || '')).filter(Boolean));
+      cleaned.push(message);
+      continue;
+    }
+    if (message.role === 'tool') {
+      const callId = String(message.toolCallId || '');
+      if (callId && activeCallIds.has(callId)) cleaned.push(message);
+      continue;
+    }
+    activeCallIds.clear();
+    cleaned.push(message);
+  }
+  return cleaned;
 }
 
 export function createContextBuilder(): AgentContextBuilder {

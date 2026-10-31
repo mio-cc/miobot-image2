@@ -346,6 +346,19 @@ install_bundled_capabilities() {
   done
 }
 
+ensure_cjk_fonts() {
+  local pm
+  pm="$(detect_pm)"
+  log "检查中文字体（报告图片依赖 CJK 字体）"
+  case "$pm" in
+    apt) apt-get install -y fonts-noto-cjk fonts-wqy-zenhei || warn "中文字体安装失败，报告图片可能出现方块；请手动安装 fonts-noto-cjk" ;;
+    dnf|yum) dnf install -y google-noto-sans-cjk-fonts || warn "中文字体安装失败，请手动安装 Noto CJK" ;;
+    pacman) pacman -S --noconfirm --needed noto-fonts-cjk || warn "中文字体安装失败，请手动安装 noto-fonts-cjk" ;;
+    apk) apk add --no-cache font-noto-cjk || warn "中文字体安装失败，请手动安装 font-noto-cjk" ;;
+    *) warn "未知包管理器，跳过 CJK 字体安装" ;;
+  esac
+}
+
 ensure_codex_python() {
   if [ "$INSTALL_CODEX_SDK" = "0" ] || [ "$INSTALL_CODEX_SDK" = "false" ] || [ "$INSTALL_CODEX_SDK" = "no" ]; then
     warn "INSTALL_CODEX_SDK=0，跳过 Codex Python SDK 安装。"
@@ -950,6 +963,7 @@ install_all() {
   require_root
   ensure_os_packages
   ensure_chromium
+  ensure_cjk_fonts
   ensure_node
   ensure_pnpm
   ensure_dirs
@@ -972,6 +986,7 @@ rebuild_all() {
   detect_runtime_layout
   ensure_os_packages
   ensure_chromium
+  ensure_cjk_fonts
   ensure_node
   ensure_pnpm
   ensure_dirs
@@ -1001,6 +1016,7 @@ env_only() {
   detect_runtime_layout
   ensure_os_packages
   ensure_chromium
+  ensure_cjk_fonts
   ensure_node
   ensure_pnpm
   ensure_dirs

@@ -100,7 +100,7 @@ function normalizeSpec(input: unknown): NormalizedSpec {
     subtitle: asString(raw.subtitle || raw.description || ''),
     insight: asString(raw.insight || raw.summary || ''),
     source: asString(raw.source || raw.footer || ''),
-    theme: raw.theme === 'light' ? 'light' : 'dark',
+    theme: raw.theme === 'dark' ? 'dark' : 'light',
     layout: asString(raw.layout || 'report').toLowerCase(),
     width: Math.max(720, Math.min(1600, Math.trunc(Number(raw.width) || PAGE_WIDTH))),
     rows,
@@ -142,7 +142,9 @@ function chartSvg(chart: Record<string, any>, rows: Row[], spec: NormalizedSpec)
     data = data.sort((a, b) => b.__y - a.__y).slice(0, topN);
   }
   const seriesNames = [...new Set(data.map((row) => row.__series).filter(Boolean))];
-  const colors = ['#60a5fa', '#34d399', '#fbbf24', '#fb7185', '#a78bfa', '#22d3ee', '#f97316', '#c084fc'];
+  const colors = spec.theme === 'light'
+    ? ['#8a5a35', '#2f6f62', '#b7791f', '#7c3aed', '#b45309', '#0f766e', '#9d174d', '#4d7c0f']
+    : ['#d6a56b', '#7fb7a5', '#e0b25c', '#c89ad9', '#d98b5f', '#70b7c6', '#d77b8b', '#9fbf73'];
   const textColor = spec.theme === 'light' ? '#334155' : '#cbd5e1';
   const mutedColor = spec.theme === 'light' ? '#64748b' : '#94a3b8';
   const gridColor = spec.theme === 'light' ? '#e2e8f0' : '#24344f';
@@ -150,7 +152,7 @@ function chartSvg(chart: Record<string, any>, rows: Row[], spec: NormalizedSpec)
     animation: false,
     backgroundColor: 'transparent',
     color: colors,
-    textStyle: { color: textColor, fontFamily: 'Microsoft YaHei, Noto Sans CJK SC, sans-serif' },
+    textStyle: { color: textColor, fontFamily: '"Noto Sans CJK SC", "Noto Sans CJK", "Source Han Sans SC", "WenQuanYi Zen Hei", "Microsoft YaHei", "Noto Sans SC", Arial, sans-serif' },
     grid: { left: 26, right: 28, top: seriesNames.length > 1 ? 54 : 28, bottom: 54, containLabel: true },
     tooltip: { show: false },
   };
@@ -255,12 +257,12 @@ function renderTable(block: any, spec: NormalizedSpec): string {
 
 function buildPageHtml(spec: NormalizedSpec, page: { blocks: any[] }, pageNo: number, totalPages: number): string {
   const dark = spec.theme !== 'light';
-  const bg = dark ? '#0b1220' : '#f7f8fb';
-  const card = dark ? '#111c33' : '#ffffff';
-  const text = dark ? '#e5e7eb' : '#1e293b';
-  const muted = dark ? '#94a3b8' : '#64748b';
-  const line = dark ? '#1d2d4a' : '#e2e8f0';
-  const accent = '#60a5fa';
+  const bg = dark ? '#1b1a18' : '#f3f0e8';
+  const card = dark ? '#26231f' : '#fffdf8';
+  const text = dark ? '#f5f1e8' : '#20252b';
+  const muted = dark ? '#b8aa98' : '#6b706f';
+  const line = dark ? '#493f35' : '#d9d1c3';
+  const accent = dark ? '#d6a56b' : '#8a5a35';
   const blocks = page.blocks.map((block) => {
     const kind = asString(block.kind || block.type).toLowerCase();
     if (kind === 'kpi') return renderKpi(block);
@@ -269,7 +271,7 @@ function buildPageHtml(spec: NormalizedSpec, page: { blocks: any[] }, pageNo: nu
     return renderText(block);
   }).join('');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=${spec.width},initial-scale=1"><style>
-*{box-sizing:border-box}html,body{margin:0;padding:0;width:100%;min-height:0;height:auto;overflow:visible;background:${bg};color:${text};font-family:"Microsoft YaHei","Noto Sans CJK SC","Noto Sans SC",Arial,sans-serif}body{padding:38px 44px 30px}.hero{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;border-bottom:1px solid ${line};padding-bottom:22px;margin-bottom:20px}.eyebrow,.block-kicker{color:${accent};font-size:12px;letter-spacing:2px;font-weight:800}.hero h1{font-size:34px;line-height:1.2;margin:8px 0 7px;letter-spacing:-1px}.hero p{margin:0;color:${muted};font-size:14px;line-height:1.5}.page-badge{border:1px solid ${line};background:${card};color:${muted};border-radius:999px;padding:8px 13px;font-size:12px;white-space:nowrap}.block{background:${card};border:1px solid ${line};border-radius:16px;padding:20px 22px;margin:0 0 15px}.block-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:14px}.block-head h2{font-size:20px;margin:5px 0 0}.block-head p{font-size:12px;color:${muted};margin:5px 0 0}.chart-type,.row-count{color:${muted};font-size:11px;border:1px solid ${line};border-radius:8px;padding:5px 8px;white-space:nowrap}.chart-canvas{width:100%;overflow:hidden}.chart-canvas svg{display:block;width:100%;height:auto}.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}.kpi{background:${dark ? '#0f1a2d' : '#f8fafc'};border:1px solid ${line};border-radius:12px;padding:14px}.kpi-label{font-size:12px;color:${muted}}.kpi-value{font-size:26px;font-weight:800;margin-top:7px;font-variant-numeric:tabular-nums}.kpi-delta{font-size:12px;font-weight:700;margin-top:4px}.kpi-delta.up,.trend.up{color:#34d399}.kpi-delta.down,.trend.down{color:#fb7185}.trend{font-weight:700;font-variant-numeric:tabular-nums}.table-wrap{overflow:hidden;border:1px solid ${line};border-radius:10px}table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:15px}th{background:${dark ? '#172554' : '#eff6ff'};color:${muted};font-size:11px;letter-spacing:.5px;text-align:left;padding:10px 12px;border-bottom:1px solid ${line}}td{padding:10px 12px;border-bottom:1px solid ${line};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${text}}tbody tr:nth-child(even){background:${dark ? '#0f1a2d' : '#f8fafc'}}tbody tr:last-child td{border-bottom:0}.insight{background:${dark ? '#172554' : '#eff6ff'};border-left:4px solid ${accent};color:${dark ? '#dbeafe' : '#1e3a8a'};padding:13px 16px;border-radius:8px;font-size:15px;line-height:1.55;margin:0 0 16px}.text-block p{color:${text};font-size:15px;line-height:1.7;white-space:pre-wrap;margin:0}.notice{color:${muted};font-size:14px}.footer{display:flex;justify-content:space-between;gap:12px;color:${muted};font-size:11px;margin-top:6px;padding:0 2px}.footer .source{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}@media(max-width:800px){.hero h1{font-size:28px}body{padding:24px 22px}.table-wrap{overflow-x:auto}}
+*{box-sizing:border-box}html,body{margin:0;padding:0;width:100%;min-height:0;height:auto;overflow:visible;background:${bg};color:${text};font-family:"Noto Sans CJK SC","Noto Sans CJK","Source Han Sans SC","WenQuanYi Zen Hei","Microsoft YaHei","Noto Sans SC",Arial,sans-serif}body{padding:38px 44px 30px}.hero{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;border-bottom:1px solid ${line};padding-bottom:22px;margin-bottom:20px}.eyebrow,.block-kicker{color:${accent};font-size:12px;letter-spacing:2px;font-weight:800}.hero h1{font-size:34px;line-height:1.2;margin:8px 0 7px;letter-spacing:-1px}.hero p{margin:0;color:${muted};font-size:14px;line-height:1.5}.page-badge{border:1px solid ${line};background:${card};color:${muted};border-radius:999px;padding:8px 13px;font-size:12px;white-space:nowrap}.block{background:${card};border:1px solid ${line};border-radius:16px;padding:20px 22px;margin:0 0 15px}.block-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:14px}.block-head h2{font-size:20px;margin:5px 0 0}.block-head p{font-size:12px;color:${muted};margin:5px 0 0}.chart-type,.row-count{color:${muted};font-size:11px;border:1px solid ${line};border-radius:8px;padding:5px 8px;white-space:nowrap}.chart-canvas{width:100%;overflow:hidden}.chart-canvas svg{display:block;width:100%;height:auto}.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}.kpi{background:${dark ? '#211e1a' : '#faf7f0'};border:1px solid ${line};border-radius:12px;padding:14px}.kpi-label{font-size:12px;color:${muted}}.kpi-value{font-size:26px;font-weight:800;margin-top:7px;font-variant-numeric:tabular-nums}.kpi-delta{font-size:12px;font-weight:700;margin-top:4px}.kpi-delta.up,.trend.up{color:#34d399}.kpi-delta.down,.trend.down{color:#fb7185}.trend{font-weight:700;font-variant-numeric:tabular-nums}.table-wrap{overflow:hidden;border:1px solid ${line};border-radius:10px}table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:15px}th{background:${dark ? '#3a3028' : '#f1e8da'};color:${muted};font-size:11px;letter-spacing:.5px;text-align:left;padding:10px 12px;border-bottom:1px solid ${line}}td{padding:10px 12px;border-bottom:1px solid ${line};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${text}}tbody tr:nth-child(even){background:${dark ? '#211e1a' : '#faf7f1'}}tbody tr:last-child td{border-bottom:0}.insight{background:${dark ? '#3a3028' : '#f7efe2'};border-left:4px solid ${accent};color:${dark ? '#f0dfc7' : '#5c4533'};padding:13px 16px;border-radius:8px;font-size:15px;line-height:1.55;margin:0 0 16px}.text-block p{color:${text};font-size:15px;line-height:1.7;white-space:pre-wrap;margin:0}.notice{color:${muted};font-size:14px}.footer{display:flex;justify-content:space-between;gap:12px;color:${muted};font-size:11px;margin-top:6px;padding:0 2px}.footer .source{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}@media(max-width:800px){.hero h1{font-size:28px}body{padding:24px 22px}.table-wrap{overflow-x:auto}}
 </style></head><body><header class="hero"><div><div class="eyebrow">MIOBOT · DATA REPORT</div><h1>${escapeHtml(spec.title)}</h1>${spec.subtitle ? `<p>${escapeHtml(spec.subtitle)}</p>` : ''}</div><span class="page-badge">第 ${pageNo} / ${totalPages} 页</span></header>${spec.insight && pageNo === 1 ? `<div class="insight">${escapeHtml(spec.insight)}</div>` : ''}${blocks}<footer class="footer"><span class="source">${escapeHtml(spec.source || '数据来源：Miobot 报告渲染')}</span><span>Miobot · report.render</span></footer></body></html>`;
 }
 
@@ -323,7 +325,7 @@ export async function renderReport(input: unknown, deps: ReportRenderDeps): Prom
   const pageHeights: number[] = [];
   for (let index = 0; index < pages.length; index += 1) {
     const html = buildPageHtml(spec, pages[index], index + 1, pages.length);
-    const artifact: CodeArtifact = { format: 'html', title: `${spec.title}${pages.length > 1 ? ` ${index + 1}/${pages.length}` : ''}`, width: spec.width, height: 1200, fullPage: true, html };
+    const artifact: CodeArtifact = { format: 'html', title: `${spec.title}${pages.length > 1 ? ` ${index + 1}/${pages.length}` : ''}`, width: spec.width, height: 1000, fullPage: true, html };
     const rendered = await deps.browserRenderer.renderCode(artifact, deps.outputDir);
     const name = `report-${Date.now()}-${index + 1}-${pages.length}.png`;
     const url = deps.uploadFile ? await deps.uploadFile(rendered.path, name, 'image/png') : `file://${rendered.path}`;

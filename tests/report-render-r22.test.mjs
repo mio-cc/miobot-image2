@@ -45,6 +45,8 @@ test('R23 report.render paginates data and renders chart blocks', async () => {
   assert.equal(result.images.length, 4);
   assert.equal(htmls.length, 4);
   assert.match(htmls[0], /<svg/);
+  assert.match(htmls[0], /#f3f0e8/);
+  assert.doesNotMatch(htmls[0], /#0b1220/);
   assert.doesNotMatch(htmls[0], /<script>alert/);
   assert.match(htmls[1], /趋势/);
   assert.match(htmls[1], /热门话题 30/);

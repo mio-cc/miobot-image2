@@ -459,6 +459,22 @@ export function createWebSearchService(options: WebSearchServiceOptions): WebSea
       let results = await searchProvider(runtime, { ...request, query });
       let usedProvider: WebSearchProvider = config.provider;
       let finalQuery = query;
+      // site:fanqienovel.com 这类站内语法部分 provider 会返回 0 条；先去掉 site: 约束重试。
+      if (!results.length && /\bsite:/i.test(query)) {
+        const stripped = query.replace(/\bsite:\S+/gi, '').replace(/\s+/g, ' ').trim();
+        if (stripped && stripped !== query) {
+          try {
+            results = await searchProvider(runtime, { ...request, query: stripped });
+            if (results.length) {
+              finalQuery = stripped;
+              logger?.info('联网搜索空结果，移除 site 约束重试', { query: query.slice(0, 80), rewritten: stripped.slice(0, 80), resultCount: results.length });
+            }
+          } catch (error) {
+            logger?.warn('移除 site 约束搜索失败', { error: String((error as Error)?.message || error) });
+          }
+        }
+      }
+
       // T3.5 agentic：空结果 → 模型改写查询，主 provider 重试一次。
       if (!results.length && options.rewriteQuery) {
         try {

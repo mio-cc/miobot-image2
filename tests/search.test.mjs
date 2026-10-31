@@ -205,3 +205,21 @@ test('web search T3.5: fallbackProvider 归一化——非法值清空，同主 
   const cfg3 = normalizeConfig({});
   assert.equal(cfg3.search.fallbackProvider, '');
 });
+
+test('web search T3.5: 空 site 查询会移除 site 约束重试', async () => {
+  const queries = [];
+  const service = createWebSearchService({
+    getConfig: () => config({ provider: 'searxng', retryCount: 0, cacheTtlSeconds: 0 }),
+    fetchImpl: async (url) => {
+      const query = new URL(String(url)).searchParams.get('q') || '';
+      queries.push(query);
+      if (query.includes('site:')) return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ results: [{ title: '命中', url: 'https://example.com/hit', snippet: 's' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  const response = await service.search({ query: 'site:fanqienovel.com 一本书' });
+  assert.equal(queries.length, 2);
+  assert.equal(queries[1], '一本书');
+  assert.equal(response.results.length, 1);
+  assert.equal(response.query, '一本书');
+});

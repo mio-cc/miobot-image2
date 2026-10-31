@@ -347,7 +347,7 @@ export class AgentRuntime implements AgentLoop {
           content: JSON.stringify(result),
           isError: !result.ok,
         };
-        session.messages = [ ...(session.messages || []).filter((message) => !(message.role === 'tool' && message.toolCallId === pendingCall.id)), toolMessage ];
+        session.messages = upsertToolMessage(session.messages || [], toolMessage);
         resumedToolResults.push(result);
         remainingApprovals = remainingApprovals.filter((item) => item.approvalId !== pendingApproval.approvalId);
         remainingCalls = remainingCalls.filter((call) => call.id !== pendingCall.id);
@@ -433,7 +433,7 @@ export class AgentRuntime implements AgentLoop {
         isError: !result.ok,
       };
       const remainingCalls = pendingCalls.filter((call) => call.id !== pendingCall.id);
-      session.messages = [ ...(session.messages || []).filter((message) => !(message.role === 'tool' && message.toolCallId === pendingCall.id)), toolMessage ];
+      session.messages = upsertToolMessage(session.messages || [], toolMessage);
       resumedToolResults.push(result);
       session.pendingJobs = existingPendingJobs.filter((item) => item.jobId !== pendingJob.jobId);
       if (!session.pendingJobs.length) session.pendingJobs = undefined;
@@ -461,7 +461,7 @@ export class AgentRuntime implements AgentLoop {
           }),
           isError: false,
         };
-        session.messages = [...(session.messages || []), toolResult];
+        session.messages = upsertToolMessage(session.messages || [], toolResult);
         // The user's answer is represented by the tool result. Attachment-only
         // answers still add a user message through the context builder.
         contextUserText = '';
@@ -680,6 +680,9 @@ export class AgentRuntime implements AgentLoop {
           if (decision.allowed) continue;
           const pending = Boolean(decision.pendingApproval || decision.pendingJob || decision.error?.code === 'approval_required');
           if (pending) {
+            // 审批/预检挂起也必须把 assistant.tool_calls 写入会话；否则恢复时只写
+            // tool result，OpenAI-compatible provider 会报 tool 没有前置 tool_calls。
+            this.appendAssistantToolCall(workingMessages, persistedMessages, response, validation.calls);
             const saved = this.saveSession(session, input, persistedMessages, {
               pendingToolCalls: validation.calls,
               ...(decision.pendingApproval ? { pendingApprovals: [decision.pendingApproval] } : {}),
@@ -932,6 +935,22 @@ export class AgentRuntime implements AgentLoop {
       working.push(message);
       persisted.push(structuredClone(message));
     }
+  }
+
+  private appendAssistantToolCall(
+    working: AgentMessage[],
+    persisted: AgentMessage[],
+    response: AgentModelResponse,
+    calls: ToolCall[],
+  ): void {
+    const assistant: AgentMessage = {
+      role: 'assistant',
+      content: response.assistant.text || '',
+      toolCalls: calls.map((call) => ({ id: call.id, name: call.name, arguments: call.arguments })),
+      ...(response.finishReason || response.assistant.finishReason ? { finishReason: response.finishReason || response.assistant.finishReason } : {}),
+    };
+    working.push(assistant);
+    persisted.push(structuredClone(assistant));
   }
 
   private appendSingleToolRound(
@@ -1396,6 +1415,26 @@ function toolErrorToTurnError(error: ToolError): { code: string; message: string
     ...(error.retryable !== undefined ? { retryable: error.retryable } : {}),
     ...(error.details ? { details: error.details } : {}),
   };
+}
+
+type AgentToolMessage = Extract<AgentMessage, { role: 'tool' }>;
+function upsertToolMessage(messages: AgentMessage[], toolMessage: AgentToolMessage): AgentMessage[] {
+  const callId = String(toolMessage.toolCallId || '');
+  const existing = messages.findIndex((message) => message.role === 'tool' && message.toolCallId === callId);
+  if (existing >= 0) {
+    return messages.map((message, index) => index === existing ? toolMessage : message);
+  }
+  // tool result 必须紧跟对应的 assistant.tool_calls；不能简单 append 到会话末尾，
+  // 否则下一轮 provider 会报 "role tool must be a response to ... tool_calls"。
+  const assistantIndex = messages.findIndex((message) => message.role === 'assistant'
+    && Array.isArray(message.toolCalls)
+    && message.toolCalls.some((call) => String(call.id || '') === callId));
+  if (assistantIndex >= 0) {
+    let insertAt = assistantIndex + 1;
+    while (insertAt < messages.length && messages[insertAt].role === 'tool') insertAt += 1;
+    return [...messages.slice(0, insertAt), toolMessage, ...messages.slice(insertAt)];
+  }
+  return [...messages, toolMessage];
 }
 
 function isInternalMessage(message: AgentMessage): boolean {
