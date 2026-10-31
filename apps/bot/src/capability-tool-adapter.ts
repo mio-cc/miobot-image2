@@ -88,6 +88,23 @@ export const MIGRATED_CAPABILITY_TOOLS = new Set([
   ...INTERACTIVE_CAPABILITY_TOOLS,
   ...STATEFUL_CAPABILITY_TOOLS,
 ]);
+/** 动态注册的能力默认必须进入 domain，不能因为不在静态白名单而被 searchable 过滤掉。 */
+export function inferCapabilityToolExposure(
+  descriptor: CapabilityDescriptor,
+  configured?: 'core' | 'domain' | 'searchable' | 'hidden',
+): 'core' | 'domain' | 'searchable' | 'hidden' | undefined {
+  if (configured) return configured;
+  const id = String(descriptor.id || '');
+  const provider = String(descriptor.provider || '');
+  if (STATEFUL_CAPABILITY_TOOLS.has(id)) return 'core';
+  if (provider === 'http-generic'
+    || provider.startsWith('plugin-')
+    || provider.startsWith('mcp')
+    || id.startsWith('http.')
+    || id.startsWith('mcp.')) return 'core';
+  return undefined;
+}
+
 export function createCapabilityToolBinding(descriptor: CapabilityDescriptor, handler: CapabilityHandler, options: ToolSpecAdapterOptions = {}): CapabilityToolBinding {
   return {
     spec: toolSpecFromCapabilityDescriptor(descriptor, { migrationStatus: 'adapted', ...options }),

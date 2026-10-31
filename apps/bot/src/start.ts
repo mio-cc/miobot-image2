@@ -6,7 +6,7 @@ import { createDefaultConfig, normalizeConfig, type AppConfig } from '../../../p
 import { ConsoleLogSink, JsonFileLogSink, createLogger, type StructuredLogger } from '../../../packages/logger/src/index.js';
 import { createBotApp } from './app.js';
 import { createAgentHost } from './agent-host.js';
-import { createCapabilityToolBinding, STATEFUL_CAPABILITY_TOOLS } from './capability-tool-adapter.js';
+import { createCapabilityToolBinding, inferCapabilityToolExposure, STATEFUL_CAPABILITY_TOOLS } from './capability-tool-adapter.js';
 import { createAgentToolPreflight } from './agent-tool-policy.js';
 import { FileToolIdempotencyStore, makeToolError, toolFailure, toolPending, toolSuccess, type ToolResult } from '../../../packages/tool-runtime/src/index.js';
 import { ToolJobRuntime, type ToolJobRecord } from './tool-job-runtime.js';
@@ -1142,6 +1142,23 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // 清单 plugins.json 供 web 面板进程展示（面板可见）。单个失败只告警不拖垮动动。
   void (async () => {
     const capabilitiesDir = path.join(dataDir, 'capabilities');
+    // 内置插件目录兜底：部署脚本通常会把 plugins/*.mjs 复制到 dataDir/capabilities；
+    // 如果直接运行源码或漏跑部署钩子，启动时也自动补装，且不覆盖已有同名插件。
+    const bundledPluginsDir = path.resolve(process.env.MIOBOT_BUNDLED_PLUGINS_DIR || path.join(process.cwd(), 'plugins'));
+    try {
+      const entries = await fs.readdir(bundledPluginsDir);
+      await fs.mkdir(capabilitiesDir, { recursive: true });
+      for (const file of entries.filter((name) => name.endsWith('.mjs')).sort()) {
+        const target = path.join(capabilitiesDir, file);
+        try { await fs.access(target); } catch {
+          await fs.copyFile(path.join(bundledPluginsDir, file), target);
+          logger.info('内置能力插件已安装', { file, target });
+        }
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code !== 'ENOENT') logger.warn('内置能力插件安装检查失败', { error: String((error as Error)?.message || error) });
+    }
     const manifest = await loadCapabilityPlugins(capabilitiesDir, { getConfig, client, logger, dataDir }, (plugin) => {
       orchestrationEnforcer.registerCapability(plugin.descriptor, plugin.handler);
     }, { logger });
@@ -1349,8 +1366,9 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       const configuredExposure = cfg.toolRegistry?.exposure?.[descriptor.id];
       // tts.speak 是底层合成工具，不是回复方式开关；Agent 语音偏好走 reply.presentation。
       if (descriptor.id === 'tts.speak' && !configuredExposure) return [];
+      const inferredExposure = inferCapabilityToolExposure(descriptor, configuredExposure as 'core' | 'domain' | 'searchable' | 'hidden' | undefined);
       const binding = createCapabilityToolBinding(descriptor, handler, {
-        ...(configuredExposure ? { exposure: configuredExposure } : STATEFUL_CAPABILITY_TOOLS.has(descriptor.id) ? { exposure: 'core' } : {}),
+        ...(inferredExposure ? { exposure: inferredExposure } : {}),
         ...(!descriptor.timeoutMs ? { timeoutMs: Math.max(1000, cfg.toolRegistry.defaultTimeoutMs) } : {}),
       });
       if (descriptor.mode !== 'async_job') return [binding];

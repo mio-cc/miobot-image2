@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import nodePath from 'node:path';
 import {
   builtinComfyUiProfile,
@@ -124,9 +124,13 @@ export interface ConfigRepositoryOptions {
 
 function miobotDataDir(): string {
   // 面板进程和 bot 进程共享同一批运行时文件。生产环境可以只设置
-  // MIOBOT_RUNTIME_DIR；不能悄悄退回固定 /var/lib 路径，否则自定义
-  // 数据目录时面板审批/记忆/能力测试会写到另一个目录。
-  return String(process.env.MIOBOT_DATA_DIR || process.env.MIOBOT_RUNTIME_DIR || '/var/lib/miobot-v2');
+  // MIOBOT_RUNTIME_DIR；本地开发脚本的默认目录是 cwd/.runtime，
+  // 不能默认跳到 /var/lib，否则面板会读不到本地 capabilities/plugins.json。
+  const configured = String(process.env.MIOBOT_DATA_DIR || process.env.MIOBOT_RUNTIME_DIR || '').trim();
+  if (configured) return configured;
+  const localRuntime = nodePath.resolve('.runtime');
+  if (existsSync(localRuntime)) return localRuntime;
+  return '/var/lib/miobot-v2';
 }
 
 function replyPreferenceFilePath(): string {
@@ -170,18 +174,20 @@ async function auditReplyPreferenceAction(action: string, data: Record<string, u
  * T4.2：插件能力描述符——bot 进程加载 capabilities/*.mjs 后把清单写到
  * capabilities/plugins.json；面板进程不执行插件 JS，只读清单合并展示（60s 缓存）。
  */
-let pluginDescriptorCache: { at: number; descriptors: CapabilityDescriptor[] } | null = null;
+let pluginDescriptorCache: { at: number; descriptors: CapabilityDescriptor[]; mtimeMs: number } | null = null;
 function pluginCapabilityDescriptors(): CapabilityDescriptor[] {
-  const now = Date.now();
-  if (pluginDescriptorCache && now - pluginDescriptorCache.at < 60_000) return pluginDescriptorCache.descriptors;
+  const manifestPath = nodePath.join(miobotDataDir(), 'capabilities', 'plugins.json');
+  let mtimeMs = 0;
+  try { mtimeMs = statSync(manifestPath).mtimeMs; } catch { mtimeMs = 0; }
+  if (pluginDescriptorCache && pluginDescriptorCache.mtimeMs === mtimeMs) return pluginDescriptorCache.descriptors;
   let descriptors: CapabilityDescriptor[] = [];
   try {
-    const raw = JSON.parse(readFileSync(nodePath.join(miobotDataDir(), 'capabilities', 'plugins.json'), 'utf8')) as { plugins?: Array<{ descriptor?: CapabilityDescriptor }> };
+    const raw = JSON.parse(readFileSync(manifestPath, 'utf8')) as { plugins?: Array<{ descriptor?: CapabilityDescriptor }> };
     descriptors = (Array.isArray(raw.plugins) ? raw.plugins : [])
       .map((entry) => entry?.descriptor)
       .filter((item): item is CapabilityDescriptor => Boolean(item?.id));
   } catch { /* 无清单 = 无插件 */ }
-  pluginDescriptorCache = { at: now, descriptors };
+  pluginDescriptorCache = { at: Date.now(), descriptors, mtimeMs };
   return descriptors;
 }
 

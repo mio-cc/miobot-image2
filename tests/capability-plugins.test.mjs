@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createDefaultConfig } from '../dist/packages/config/src/index.js';
 import { OrchestrationEnforcer } from '../dist/apps/bot/src/orchestration-enforce.js';
 import { loadCapabilityPlugins, pluginManifestPath } from '../dist/apps/bot/src/capability-plugins.js';
+import { createWebApi } from '../dist/packages/web-api/src/index.js';
 
 function writePlugin(dir, file, body) {
   fs.mkdirSync(dir, { recursive: true });
@@ -90,4 +91,23 @@ test('plugins T4.2: novel-platform plugin loads and exposes config action', asyn
   const result = await registered[0].handler.execute({ step: { id: 's1', args: { action: 'config', op: 'get' } } });
   assert.equal(result.status, 'success');
   assert.match(String(result.outputs?.[0]?.text || ''), /网文数据通/);
+});
+
+test('plugins T4.2: panel capability API reads plugins.json from MIOBOT_DATA_DIR', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'miobot-panel-plugin-'));
+  fs.mkdirSync(path.join(dir, 'capabilities'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'capabilities', 'plugins.json'), JSON.stringify({ plugins: [{ descriptor: {
+    id: 'plugin.echo', name: '插件回声', version: '1.0.0', provider: 'plugin', mode: 'sync', riskLevel: 'low', mergeable: true, outputKinds: ['text'], inputSchema: { type: 'object', properties: {}, additionalProperties: true },
+  } }] }), 'utf8');
+  const previous = process.env.MIOBOT_DATA_DIR;
+  process.env.MIOBOT_DATA_DIR = dir;
+  try {
+    const api = createWebApi();
+    const login = await api.handle({ method: 'POST', path: '/api/login', body: { password: 'change-me-on-first-login' } });
+    const response = await api.handle({ method: 'GET', path: '/api/orchestration/capabilities', headers: { authorization: 'Bearer ' + login.body.auth.token } });
+    assert.equal(response.status, 200);
+    assert.ok((response.body.capabilities || []).some((item) => item.id === 'plugin.echo'));
+  } finally {
+    if (previous === undefined) delete process.env.MIOBOT_DATA_DIR; else process.env.MIOBOT_DATA_DIR = previous;
+  }
 });

@@ -112,7 +112,7 @@ const routes: RouteRecordRaw[] = [
         path: '/agent',
         name: 'agent',
         component: () => import('../pages/AgentPage.vue'),
-        meta: { title: 'Agent', group: '配置', icon: 'route' },
+        meta: { title: 'Agent 与工具', group: '配置', icon: 'route' },
     },
     {
         // P2（R10 收口）：Tools 目录与详情页（动态 ToolSpec 只读视图 + exposure 覆盖）。
