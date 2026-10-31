@@ -37,7 +37,7 @@ const BUILTIN_ABILITY_IDS = new Set([
   'video.generate', 'audio.music.generate', 'audio.music.history', 'audio.music.replay',
   'audio.music.variant', 'audio.music.lyrics', 'audio.music.replace_section',
   'file.list', 'file.read', 'file.generate', 'file.delete',
-  'code.render', 'browser.render', 'tts.speak', 'voice.current', 'voice.search',
+  'code.render', 'report.render', 'browser.render', 'tts.speak', 'voice.current', 'voice.search',
   'voice.preview', 'voice.select', 'canvas.gallery', 'owner.recall', 'owner.model.list',
   'model.catalog.list', 'help', 'prompt.enhance', 'prompt.translate',
   'template.list', 'template.use', 'task.schedule', 'config.update', 'permission.update',

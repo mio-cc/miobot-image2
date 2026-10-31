@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "napcat-omnibot-v2",
   "version": "0.1.1",
   "private": true,
@@ -41,6 +41,7 @@
     "app-info-parser": "^1.1.6",
     "archiver": "^8.0.0",
     "docx": "^9.12.0",
+    "echarts": "^6.1.0",
     "exceljs": "^4.4.0",
     "fast-xml-parser": "^5.11.2",
     "iconv-lite": "^0.7.3",

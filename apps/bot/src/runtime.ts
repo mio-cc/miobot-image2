@@ -526,6 +526,7 @@ export async function handleCodeRenderRequest(
       '- 如果是角色，必须画出清晰的头部、身体、服装/配饰和动作，不能只画一个漂浮的脸或几何符号；',
       '- 使用分层上色、明暗和背景，避免大面积纯色、路径重叠和不可辨识碎片；',
       '- 保留用户要求的角色、动作、风格和文字，不要用水印、乱码或 emoji 代替画面；',
+      '- 如果用户给的是榜单/排行/表格/长列表：生成真实数据看板或表格，不画插画；完整保留全部条目和数值，使用紧凑行、列对齐和清晰层级；JSON 设置 fullPage:true、width:1080；',
       '- SVG/HTML/Canvas 必须可渲染，标签完整，代码自包含。',
     ].join('\n');
     const prompt = String(cfg.codeRender.promptTemplate || '').replaceAll('{{userContent}}', request.slice(0, 10000)) + qualitySuffix;
@@ -573,9 +574,9 @@ export async function handleCodeRenderRequest(
           });
           const repairPrompt = [
             '你上一次输出不符合代码画图协议。现在只输出一个合法 JSON 对象，不要 Markdown、不要解释。',
-            '格式：{"format":"html|svg|canvas|three","title":"作品标题","width":1080,"height":1080,"html":"可选","css":"可选","js":"可选","svg":"当format=svg时","sendSource":false}',
+            '格式：{"format":"html|svg|canvas|three","title":"作品标题","width":1080,"height":1080,"fullPage":true|false,"html":"可选","css":"可选","js":"可选","svg":"当format=svg时","sendSource":false}',
             '用户要求：' + request.slice(0, 6000),
-            '【质量要求】必须是一张完整、主体清晰、有分层上色和背景的插图；如果是角色，画出身体、服装和动作。',
+            '【质量要求】如果是榜单/表格/长列表，输出完整数据看板并设置 fullPage:true；否则必须是一张完整、主体清晰、有分层上色和背景的插图。',
             lastText ? ('上一次输出：' + lastText.slice(0, 6000)) : '上一次输出为空。',
           ].join('\n\n');
           const repaired = await chat(candidate, repairPrompt);
@@ -593,6 +594,10 @@ export async function handleCodeRenderRequest(
       }
     }
     if (!artifact) throw new Error(lastError || '代码画图没有生成可用产物');
+    // 榜单/表格/长列表默认必须完整截取页面，不能依赖模型每次都记得输出 fullPage。
+    if (/榜单|排行|表格|长列表|TOPs*d+|数据看板/i.test(request) && artifact && typeof artifact === 'object') {
+      artifact = { ...(artifact as Record<string, unknown>), fullPage: true };
+    }
     stage = 'browser';
     const rendered = await options.browserRenderer.renderCode(artifact, options.generatedFileDir);
     stage = 'upload';

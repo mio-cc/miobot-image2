@@ -185,7 +185,9 @@ export async function buildCodeDocument(artifact: CodeArtifact): Promise<string>
   return `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(artifact.title || 'Miobot Code Art')}</title>
-<style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#fff}${artifact.css || ''}</style>
+<style>${artifact.fullPage
+  ? 'html,body{margin:0;padding:0;width:100%;min-height:100%;height:auto;overflow:visible;background:#fff}'
+  : 'html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#fff}'}${artifact.css || ''}</style>
 </head><body>${body}
 ${three ? `<script>${three}</script>` : ''}
 <script>
@@ -307,7 +309,8 @@ export function createBrowserRenderer(options: BrowserRendererOptions): BrowserR
       await fs.unlink(filePath).catch(() => undefined);
       throw new Error(`截图超过大小上限 ${config().maxScreenshotBytes} bytes`);
     }
-    return { path: filePath, name, mime: 'image/png', width, height, size: stat.size, source };
+    const meta = await sharp(filePath).metadata().catch(() => undefined);
+    return { path: filePath, name, mime: 'image/png', width: Number(meta?.width) || width, height: Number(meta?.height) || height, size: stat.size, source };
   }
 
   async function renderSvgFallback(artifact: CodeArtifact, outputDir: string): Promise<RenderedImage> {
@@ -358,6 +361,12 @@ export function createBrowserRenderer(options: BrowserRendererOptions): BrowserR
       if (artifact.waitMs) await sleep(artifact.waitMs);
       const error = await page.evaluate(() => (window as any).__MIOBOT_ERROR__ || '').catch(() => '');
       if (error) throw new Error(`代码运行失败: ${String(error).slice(0, 500)}`);
+      const layout = await page.evaluate(() => ({
+        rows: document.querySelectorAll('tbody tr').length,
+        bodyHeight: document.body.scrollHeight,
+        documentHeight: document.documentElement.scrollHeight,
+      })).catch(() => undefined);
+      options.logger?.info('代码渲染布局快照', layout);
       return await saveScreenshot(page, outputDir, artifact.width, artifact.height, artifact.fullPage, artifact);
     } finally {
       await page.close().catch(() => undefined);

@@ -54,6 +54,7 @@ export const ARTIFACT_CAPABILITY_TOOLS = new Set([
   'video.generate',
   'file.generate',
   'code.render',
+  'report.render',
   'browser.render',
   'audio.music.generate',
   'audio.music.replay',

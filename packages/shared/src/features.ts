@@ -206,6 +206,13 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
     defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
   },
   {
+    id: 'report.render', label: '数据报告', capabilityId: 'report.render', category: 'render', implemented: true,
+    description: '把榜单、表格、KPI 和趋势/对比图渲染成多页图片报告；数据多时自动分页。',
+    defaultNaturalLanguage: true,
+    defaultAliases: ['数据报告', '榜单图片', '图表', '可视化', 'report', 'chart'],
+    defaultScopes: BOTH, defaultGroupActivation: 'mention-or-reply',
+  },
+  {
     id: 'web.screenshot', label: '网页截屏', capabilityId: 'browser.render', category: 'render', implemented: true,
     legacyCommand: 'webScreenshot', defaultNaturalLanguage: true,
     defaultAliases: ['网页截屏', '网页截图', '截屏', '截图网页', 'screenshot'],

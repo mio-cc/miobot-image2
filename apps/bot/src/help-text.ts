@@ -23,6 +23,7 @@ export function buildHelpText(cfg: AppConfig): string {
   add('file.generate');
   add('search.web');
   add('code.render');
+  add('report.render');
   add('web.screenshot');
   add('help');
   add('clear');

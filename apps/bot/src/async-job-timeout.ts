@@ -14,7 +14,7 @@ export function resolveAsyncJobTimeoutMs(cfg: AppConfig, toolName: string, reque
     if (comfy) values.push(Math.max(0, Number(comfy.queueTimeoutMs) || 0) + Math.max(0, Number(comfy.pollTimeoutMs) || 0) + 60_000);
   }
   if (toolName === 'video.generate') values.push(Math.max(0, Number(cfg.llm.videoTimeoutMs) || 0) + Math.max(0, Number(cfg.llm.videoPollTimeoutMs) || 0) + 60_000);
-  if (toolName === 'code.render') values.push(Math.max(0, Number(cfg.codeRender?.timeoutMs) || 0) + Math.max(0, Number(cfg.browserRender?.timeoutMs) || 0) + 60_000);
+  if (toolName === 'code.render' || toolName === 'report.render') values.push(Math.max(0, Number(cfg.codeRender?.timeoutMs) || 0) + Math.max(0, Number(cfg.browserRender?.timeoutMs) || 0) + 60_000);
   if (toolName === 'tts.speak') {
     values.push(Math.max(0, Number(cfg.bot.tts?.timeoutMs) || 0) + Math.max(0, Number(cfg.bot.tts?.preprocess?.timeoutMs) || 0) + 30_000);
   }

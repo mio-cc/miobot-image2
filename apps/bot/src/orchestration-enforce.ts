@@ -159,6 +159,12 @@ export class OrchestrationEnforcer {
       low: 'allow', medium: 'allow', high: 'ask_admin', critical: 'ask_admin',
     }), this.options.featureGate);
     this.refreshConfig(this.options.getConfig());
+    // 先注册装配层传入的全部 handler（HTTP 通用能力/web.fetch/catalog/job.cancel 等），
+    // 下面固定能力再覆盖为专用实现。否则 descriptors 有、dispatcher 没有 handler，
+    // listCapabilities() 最终会在 agentToolBindings 里被过滤掉。
+    for (const [handlerId, handler] of this.options.handlers || []) {
+      if (handler && !this.dispatcher.getHandler(handlerId)) this.dispatcher.registerHandler(handlerId, handler);
+    }
     for (const kind of MODEL_CAPABILITY_KINDS) {
       const handler = this.options.handlers?.get(kind) || new ModelCapabilityHandler(this.options.app, kind);
       this.dispatcher.registerHandler(kind, handler);
@@ -380,6 +386,8 @@ export class OrchestrationEnforcer {
     else this.pluginCapabilities.push(descriptor);
     this.dispatcher.registerHandler(descriptor.id, handler);
     this.configFingerprint = '';
+    // 立即重建 registry，让 listCapabilities() 在注册后马上可见，而不是等下一轮配置刷新。
+    this.refreshConfig(this.options.getConfig());
   }
 
   /** 面板/诊断用：当前全部能力（含插件）。 */

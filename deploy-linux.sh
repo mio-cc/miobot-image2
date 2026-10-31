@@ -332,6 +332,20 @@ ensure_dirs() {
   [ -f "$ENV_FILE" ] && chmod 0600 "$ENV_FILE"
 }
 
+install_bundled_capabilities() {
+  local file target
+  install -d -m 0700 "$RUNTIME_DIR/capabilities"
+  [ -d "$APP_DIR/plugins" ] || return 0
+  for file in "$APP_DIR"/plugins/*.mjs; do
+    [ -f "$file" ] || continue
+    target="$RUNTIME_DIR/capabilities/$(basename "$file")"
+    if [ ! -f "$target" ]; then
+      install -m 0600 "$file" "$target"
+      log "安装内置能力插件：$(basename "$file")"
+    fi
+  done
+}
+
 ensure_codex_python() {
   if [ "$INSTALL_CODEX_SDK" = "0" ] || [ "$INSTALL_CODEX_SDK" = "false" ] || [ "$INSTALL_CODEX_SDK" = "no" ]; then
     warn "INSTALL_CODEX_SDK=0，跳过 Codex Python SDK 安装。"
@@ -941,6 +955,7 @@ install_all() {
   ensure_dirs
   backup_runtime_data
   sync_source
+  install_bundled_capabilities
   ensure_codex_python
   migrate_legacy_runtime_config
   migrate_legacy_canvas_runtime
@@ -962,6 +977,7 @@ rebuild_all() {
   ensure_dirs
   backup_runtime_data
   sync_source
+  install_bundled_capabilities
   ensure_codex_python
   migrate_legacy_runtime_config
   migrate_legacy_canvas_runtime

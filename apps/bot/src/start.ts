@@ -23,7 +23,7 @@ import { normalizeForwardPayload } from './message-enrichment.js';
 import { FeatureGate } from './feature-gate.js';
 import { createOutboundImageCompressor, materializeImagesForNapcat, materializeAudioForNapcat } from './image-output.js';
 import { ApprovalRuntime } from './approval-runtime.js';
-import { buildCommandIntentPlan, createPermissionPolicyFromDefaults, hashApprovalPayload, resolvePermission, type UserRole } from '../../../packages/orchestration/src/index.js';
+import { buildCommandIntentPlan, createPermissionPolicyFromDefaults, hashApprovalPayload, resolvePermission, type CapabilityDescriptor, type UserRole } from '../../../packages/orchestration/src/index.js';
 import { ApprovalActionConsumer } from './approval-actions.js';
 import { CapabilityTestActionConsumer } from './capability-test-actions.js';
 import { NodeLatencyActionConsumer, NodeLatencyRecorder, probeAllNodes, wrapClientWithLatency } from './node-latency.js';
@@ -56,6 +56,7 @@ import { CanvasStore } from '../../../packages/canvas-service/src/index.js';
 import type { CapabilityHandler, CapabilityInvocation, ExecutionResult } from '../../../packages/orchestration/src/index.js';
 import { createWebSearchService } from '../../../packages/search/src/index.js';
 import { createBrowserRenderer } from '../../../packages/browser-render/src/index.js';
+import { renderReport } from './report-render.js';
 import { fetchComfyUiObjectInfo, probeComfyUiPrompt } from '../../../packages/comfyui/src/index.js';
 import { SunoClient } from '../../../packages/orchestration/src/suno.js';
 import { PendingFileIndex, DEFAULT_FILE_PARSE_LIMITS } from '../../../packages/file-ingest/src/index.js';
@@ -803,6 +804,33 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     if (outcome.message) return handlerFailure(invocation, outcome.message);
     return registerResultArtifacts(invocation, executionFromBotResult(invocation, outcome.result));
   }));
+  orchestrationHandlers.set('report.render', new RuntimeAdapterCapabilityHandler(async (invocation) => {
+    try {
+      const args = (invocation.step.args || {}) as Record<string, unknown>;
+      const result = await renderReport(args, {
+        browserRenderer: runtimeAdapterOptions.browserRenderer,
+        outputDir: runtimeAdapterOptions.generatedFileDir || generatedFileDir,
+        uploadFile: runtimeAdapterOptions.uploadFile || uploadGeneratedFile,
+        logger,
+      });
+      const outputs = result.images.map((url, index) => ({
+        kind: 'image' as const,
+        url,
+        priority: 9,
+        mergeable: true,
+        meta: { name: `report-${index + 1}-${result.pages}.png`, page: index + 1, pages: result.pages, pageHeight: result.pageHeights[index], warnings: result.warnings },
+      }));
+      return registerResultArtifacts(invocation, {
+        jobId: invocation.plan.planId,
+        stepId: invocation.step.id,
+        status: 'success',
+        outputs,
+        diagnostics: { reportPages: result.pages, reportRows: result.rows, reportPageHeights: result.pageHeights, warnings: result.warnings },
+      });
+    } catch (error) {
+      return handlerFailure(invocation, `数据报告渲染失败：${String((error as Error)?.message || error)}`);
+    }
+  }));
   orchestrationHandlers.set('browser.render', new RuntimeAdapterCapabilityHandler(async (invocation) => {
     const outcome = await handleWebScreenshotRequest(runtimeAdapterOptions, invocation.request.text, invocation.request.chat.type, invocation.request.chat.groupId, invocation.request.user.qq);
     if (outcome.message) return handlerFailure(invocation, outcome.message);
@@ -863,7 +891,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     const keyword = String(args.keyword || '').trim().toLowerCase();
     const category = String(args.category || '').trim();
     const CATEGORY_PATTERNS: Array<[string, RegExp]> = [
-      ['生成', /^(image|video|audio|code)/],
+      ['生成', /^(image|video|audio|code|report)/],
       ['解析', /^(file|memory|ocr|interrogate)/],
       ['信息', /^(web|search|render|browser)/],
       ['输入', /^(session|reply|tts)/],
@@ -959,7 +987,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   }));
 
   // R16：有专属后台配置页的能力（能力目录里标注用）。
-  const DEDICATED_CAP_PAGES = new Set(['image.generate', 'image.edit', 'image.interrogate', 'audio.music.generate', 'tts.speak', 'file.read', 'file.list', 'memory.search', 'web.search', 'browser.render', 'code.render']);
+  const DEDICATED_CAP_PAGES = new Set(['image.generate', 'image.edit', 'image.interrogate', 'audio.music.generate', 'tts.speak', 'file.read', 'file.list', 'memory.search', 'web.search', 'browser.render', 'code.render', 'report.render']);
   // R13：Suno 迟到投递——等待超时但远端任务仍在跑时不丢弃，登记后由轮询补投。
   const sunoLateDeliveries = new Map<string, { invocation: import('../../../packages/orchestration/src/index.js').CapabilityInvocation; composed?: unknown; rawUserText: string; registeredAt: number; delivered: boolean; jobId?: string }>();
   const registerSunoLateDelivery = (taskId: string, input: { invocation: import('../../../packages/orchestration/src/index.js').CapabilityInvocation; composed?: unknown; rawUserText: string }) => {
@@ -1100,6 +1128,14 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       return undefined;
     },
   });
+  // HTTP descriptor 本身也必须进入 registry；只塞 handler 会让 listCapabilities() 看不到它们，
+  // Agent loadout 随后把没有 descriptor 的能力过滤掉。
+  for (const descriptor of httpRegistry.list()) {
+    const capability = httpRegistry.toCapabilityDescriptor(descriptor.id) as CapabilityDescriptor | undefined;
+    const handler = orchestrationHandlers.get(descriptor.id);
+    if (capability && handler) orchestrationEnforcer.registerCapability(capability, handler);
+  }
+  logger.info('http capability descriptors registered', { count: httpRegistry.list().length });
   // 编排器就绪后接入能力默认配额解析（featureGate 先于 enforcer 创建，用闭包晚绑定）。
   describeCapabilityForGate = (id) => orchestrationEnforcer.describeCapabilityForGate(id);
   // T4.2：插件目录加载（dataDir/capabilities/*.mjs，工厂 (ctx) => {descriptor, handler}）；

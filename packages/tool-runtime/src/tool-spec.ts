@@ -164,6 +164,7 @@ export const DOMAIN_TOOL_NAMES = [
   'file.list',
   'file.generate',
   'code.render',
+  'report.render',
   'browser.render',
   'tts.speak',
   'voice.current',

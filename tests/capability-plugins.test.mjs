@@ -78,3 +78,16 @@ test('plugins T4.2: enforcer.registerCapability——注册后可被规划执行
   assert.ok(text2.includes('插件回声'), 'refreshConfig replaceAll 不得冲掉插件能力');
   assert.ok(enforcer.listCapabilities().some((item) => item.id === 'plugin.echo'), 'listCapabilities 含插件');
 });
+
+test('plugins T4.2: novel-platform plugin loads and exposes config action', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'miobot-novel-plugin-'));
+  fs.copyFileSync(path.resolve('plugins/novel-platform.mjs'), path.join(dir, 'novel-platform.mjs'));
+  const registered = [];
+  const manifest = await loadCapabilityPlugins(dir, { getConfig: () => ({}), client: {}, dataDir: dir }, (plugin) => registered.push(plugin), {});
+  assert.equal(manifest.length, 1);
+  assert.equal(registered[0].descriptor.id, 'novel.platform');
+  assert.equal(registered[0].descriptor.provider, 'plugin-novel');
+  const result = await registered[0].handler.execute({ step: { id: 's1', args: { action: 'config', op: 'get' } } });
+  assert.equal(result.status, 'success');
+  assert.match(String(result.outputs?.[0]?.text || ''), /网文数据通/);
+});
