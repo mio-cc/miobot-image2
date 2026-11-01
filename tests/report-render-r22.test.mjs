@@ -111,3 +111,42 @@ test('R23 report.render accepts nested table data and JSON spec strings', async 
   assert.match(htmls[0], /热门话题 05/);
   assert.match(htmls[0], /书名/);
 });
+
+test('R24 direct HTML: model-designed page bypasses report template and default sample content', async () => {
+  let artifact;
+  const renderer = {
+    renderCode: async (input) => {
+      artifact = input;
+      return { path: '/tmp/direct-page.png', name: 'direct-page.png', mime: 'image/png', width: 900, height: 1440, size: 12345 };
+    },
+  };
+  const html = '<!doctype html><html><head><meta charset="utf-8"></head><body><main><h1>我的自定义数据页</h1><p>真实数据：30 条</p><div class="chart">图表区域</div></main></body></html>';
+  const result = await renderReport({ html, width: 900, fullPage: true, css: 'body{background:#fffdf8}' }, {
+    browserRenderer: renderer,
+    outputDir: '/tmp',
+    uploadFile: async () => 'https://example.test/direct-page.png',
+  });
+  assert.equal(result.pages, 1);
+  assert.equal(result.images[0], 'https://example.test/direct-page.png');
+  assert.equal(artifact.width, 900);
+  assert.equal(artifact.fullPage, true);
+  assert.match(String(artifact.html), /我的自定义数据页/);
+  assert.match(String(artifact.html), /body\{background:#fffdf8\}/);
+  assert.doesNotMatch(String(artifact.html), /2024年度经营数据看板/);
+  assert.doesNotMatch(String(artifact.html), /MIOBOT · DATA REPORT/);
+});
+
+test('R24 direct HTML: empty page content is rejected instead of rendering a default template', async () => {
+  const renderer = { renderCode: async () => ({ path: '/tmp/x.png', name: 'x.png', mime: 'image/png', width: 1080, height: 1000, size: 1 }) };
+  await assert.rejects(() => renderReport({}, { browserRenderer: renderer, outputDir: '/tmp' }), /缺少报告数据行/);
+});
+
+test('R24 report.render contract exposes model-authored html and no default template fields', async () => {
+  const descriptor = builtinCapabilityDescriptors().find((item) => item.id === 'report.render');
+  assert.ok(descriptor, 'report.render descriptor exists');
+  assert.equal(descriptor.name, '页面/数据报告渲染');
+  assert.equal(descriptor.inputSchema.properties.html.type, 'string');
+  assert.equal(descriptor.inputSchema.properties.fullPage.type, 'boolean');
+  assert.match(descriptor.description, /自包含.*HTML/);
+  assert.match(descriptor.description, /固定报告模板/);
+});

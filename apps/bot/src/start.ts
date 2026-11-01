@@ -813,6 +813,9 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         specKeys: Object.keys(nestedSpec).slice(0, 20),
         rowsCount: Array.isArray(args.rows) ? args.rows.length : Array.isArray(nestedSpec.rows) ? nestedSpec.rows.length : undefined,
         blocksCount: Array.isArray(args.blocks) ? args.blocks.length : Array.isArray(nestedSpec.blocks) ? nestedSpec.blocks.length : undefined,
+        htmlChars: typeof args.html === 'string' ? args.html.length : typeof nestedSpec.html === 'string' ? nestedSpec.html.length : 0,
+        blockKinds: (Array.isArray(args.blocks) ? args.blocks : Array.isArray(nestedSpec.blocks) ? nestedSpec.blocks : []).slice(0, 12).map((block: any) => String(block?.kind || block?.type || '')),
+        dataKeys: (Array.isArray(args.blocks) ? args.blocks : Array.isArray(nestedSpec.blocks) ? nestedSpec.blocks : []).slice(0, 12).map((block: any) => Object.keys(block || {}).filter((key) => /data|row|item|value/i.test(key))),
       });
       const result = await renderReport(args, {
         browserRenderer: runtimeAdapterOptions.browserRenderer,

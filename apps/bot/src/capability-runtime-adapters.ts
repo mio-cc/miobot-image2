@@ -11,7 +11,7 @@ export function executionFromBotResult(
   }
   const outputs: ExecutionOutput[] = [];
   if (result.text?.trim()) outputs.push({ kind: 'text', text: result.text, priority: 10, mergeable: true });
-  for (const image of result.images || []) outputs.push({ kind: 'image', url: image, priority: 9, mergeable: true });
+  for (const image of result.images || []) outputs.push({ kind: 'image', url: image, priority: 9, mergeable: true, ...(result.skipGallerySync ? { meta: { readOnlyArtifact: true } } : {}) });
   for (const video of result.videos || []) outputs.push({ kind: 'video', url: video, priority: 8, mergeable: true });
   const legacySpokenText = result.kind === 'chat' && result.text?.trim() && (result.audio || []).length ? result.text.trim() : undefined;
   for (const audio of result.audio || []) outputs.push({

@@ -29,4 +29,6 @@ test('gallery sync: only newly generated image capabilities are eligible', () =>
   assert.equal(isGallerySyncEligibleImageOutput({ kind: 'image', url: 'https://x/4.png', meta: { sourceCapability: 'canvas.gallery' } }), false);
   assert.equal(isGallerySyncEligibleImageOutput({ kind: 'image', url: 'https://x/5.png', meta: { sourceCapability: 'file.read' } }), false);
   assert.equal(isGallerySyncEligibleImageOutput({ kind: 'image', url: 'https://x/6.png', meta: { sourceCapability: 'browser.render' } }), false);
+    assert.equal(isGallerySyncEligibleImageOutput({ kind: 'image', url: 'https://x/7.png' }), true);
+    assert.equal(isGallerySyncEligibleImageOutput({ kind: 'image', url: 'https://x/8.png', meta: { readOnlyArtifact: true } }), false);
 });

@@ -1,50 +1,84 @@
-﻿# report.render 数据报告渲染
+# report.render：模型直接设计 HTML 页面
 
-`report.render` 把结构化数据渲染成图片报告，适合榜单、表格、KPI、趋势和对比图。模型只提供数据与视觉意图，系统负责字体测量、列宽、分页、页头和页码。
+`report.render` 现在是一个**模型驱动的 HTML 页面渲染能力**，不是固定数据报告模板。
 
-## 基本结构
+模型负责：
+
+- 理解用户意图和上下文；
+- 从上游工具结果中取得真实数据；
+- 设计完整 HTML、CSS、SVG 或内联 JS；
+- 把标题、数据、图表、表格和视觉风格直接写进页面。
+
+后端只负责：
+
+- 校验输入尺寸和大小；
+- 用 Chromium 打开自包含 HTML；
+- 截图并返回图片产物；
+- 检查空白内容、页面高度和超时。
+
+**不存在默认报告模板、默认示例数据或占位数据。** 如果既没有 `html`，也没有旧版 `rows/data`，工具会明确返回缺少页面内容，而不是生成示例看板。
+
+## 新接口（推荐）
 
 ```json
 {
-  "title": "本周热门话题 TOP 80",
-  "subtitle": "统计时间：2026-10-28 · 共 80 条",
-  "source": "数据来源：示例平台",
-  "theme": "dark",
-  "pageSize": 30,
-  "rows": [{"rank":1,"name":"话题 A","heat":100000,"trend":"+1.2%"}],
-  "columns": [{"key":"rank","label":"排名","width":64,"align":"right"},{"key":"name","label":"话题","weight":2},{"key":"heat","label":"热度","width":120,"align":"right"}],
-  "blocks": [
-    {"kind":"kpi","items":[{"label":"总条目","value":"80"}]},
-    {"kind":"chart","title":"热度 TOP 10","chart":{"type":"horizontal-bar","x":"name","y":"heat","topN":10,"unit":"指数"}},
-    {"kind":"table","title":"完整榜单"}
-  ]
+  "html": "<!doctype html><html><head><style>...</style></head><body>...</body></html>",
+  "css": "body { background: #f3f0e8; }",
+  "js": "",
+  "title": "本周网文热度榜",
+  "width": 1080,
+  "height": 1000,
+  "fullPage": true
 }
 ```
 
-## 图表类型
+字段说明：
 
-- `bar`：纵向柱状图
-- `horizontal-bar`：横向排行榜
-- `line`：趋势折线图
-- `area`：面积趋势图
-- `pie` / `donut`：构成占比
-- `scatter`：相关性散点图
+- `html`：完整、自包含的页面源码。外部网络请求会被 Chromium 拦截，因此样式、脚本、数据和字体引用应内联。
+- `css` / `js`：可选追加内容；也可以直接全部写进 `html`。
+- `width`：320-1600，默认 1080。
+- `height`：320-12000，默认 1000。
+- `fullPage`：默认 `true`；页面底部背景会自动填满截图视口，横向溢出会被裁剪，避免半屏黑/白块。
+- `title`：图片标题，仅用于渲染服务日志和产物命名。
 
-图表由本地 ECharts 生成 SVG，再由 Chromium 截图，不依赖外部 CDN。
+## Agent/Harness 契约
 
-## 分页规则
+1. 先完成数据获取。`report.render` 不替模型查询、补全或编造数据。
+2. 模型把上游工具返回的真实数据嵌入 HTML；禁止使用 `2024 年度经营数据看板` 之类的示例内容。
+3. 数据表、榜单、KPI、趋势图和数据看板优先走 `report.render`，由模型设计页面；`code.render` 只做自由视觉、艺术海报、Canvas/Three.js 等。
+4. 如果 `report.render` 返回缺少内容或页面渲染失败，模型应先补数据或修正 HTML，再重试一次；不要把内部失败说明直接当成用户结果。
+5. 渲染产物标记为 `readOnlyArtifact`，只发送给 QQ，不同步 Canvas 图库。
 
-- 表格默认每页 30 行，可由 `pageSize` 或 table block 单独覆盖，范围 5-60。
-- 图表和 KPI 优先放在第一页，表格从后续页开始。
-- 每页重复标题、表头、页脚和页码。
-- 最多 8 页；超过时返回明确错误，避免无限刷屏。
-- 需要更多数据时减少字段、提高每页行数或只输出 TOP N。
+## 旧版兼容
 
-## 与 code.render 的分工
-
-- `report.render`：结构化数据、榜单、表格、KPI、图表、自动分页。
-- `code.render`：自定义 HTML/SVG/Canvas/Three.js 和艺术化视觉。
+旧的 `spec/rows/columns/blocks` 结构化接口仍保留用于兼容历史任务，但新请求不应再依赖固定模板。结构化模式只在明确传入数据行时工作，缺少数据会返回错误，不会回退到示例内容。
 
 ## 诊断
 
-每一页的图片输出会带 `page`、`pages`、`pageHeight`、`warnings` 元数据，便于模型或运维判断是否需要调整 `pageSize`、拆分图表或减少数据。
+- `report.render 请求快照`：`keys`、`htmlChars`、`rowsCount`、`blocksCount`、`blockKinds`、`dataKeys`。
+- `HTML 页面渲染完成`：`width`、`height`、`bytes`、`htmlChars`。
+- `代码渲染布局快照`：`rows`、`bodyHeight`、`documentHeight`。
+- 生成的图片元数据包含 `page`、`pages`、`pageHeight`、`warnings`、`readOnlyArtifact`。
+
+## 本地 Napcat 全链路测试
+
+`tests/agent-e2e-html-napcat-r24.test.mjs` 使用本地 WebSocket 模拟 Napcat：
+
+```text
+QQ 群消息
+  -> NapcatAdapter
+  -> AgentRuntime
+  -> report.render(html) 异步任务
+  -> 本地 Chromium 截图
+  -> 异步 job resume
+  -> ReplyPlan
+  -> 模拟 Napcat send_group_msg
+```
+
+测试同时断言：
+
+- 页面由模型提供，不出现默认示例数据；
+- 图片宽度为请求宽度，中文正常；
+- 异步挂起期间不发送任何 QQ 消息；
+- resume 后图片和文本到达 QQ；
+- 渲染截图不会调用 Canvas 图库同步。

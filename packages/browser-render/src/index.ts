@@ -186,8 +186,8 @@ export async function buildCodeDocument(artifact: CodeArtifact): Promise<string>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(artifact.title || 'Miobot Code Art')}</title>
 <style>${artifact.fullPage
-  ? 'html,body{margin:0;padding:0;width:100%;min-height:100%;height:auto;overflow:visible;background:#fff}'
-  : 'html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#fff}'}${artifact.css || ''}</style>
+  ? 'html,body{margin:0;padding:0;width:100%;min-height:100%;height:auto;box-sizing:border-box;overflow-x:hidden;overflow-y:visible;background:#fff}'
+  : 'html,body{margin:0;padding:0;width:100%;height:100%;box-sizing:border-box;overflow:hidden;background:#fff}'}${artifact.css || ''}</style>
 </head><body>${body}
 ${three ? `<script>${three}</script>` : ''}
 <script>

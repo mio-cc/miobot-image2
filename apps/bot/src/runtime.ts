@@ -2433,6 +2433,8 @@ export function isGallerySyncEligibleImageOutput(output: any): boolean {
   const sourceCapability = String(output.meta?.sourceCapability || output.meta?.capabilityId || '').trim();
   if (output.meta?.readOnlyArtifact === true) return false;
   if (sourceCapability) return GALLERY_SYNC_CAPABILITIES.has(sourceCapability);
+  // 旧格式生图输出通常没有 sourceCapability；默认保留同步。
+  // code.render/browser.render/report.render 会显式带 readOnlyArtifact=true，不进入图库。
   return true;
 }
 

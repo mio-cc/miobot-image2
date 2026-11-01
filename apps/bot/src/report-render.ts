@@ -114,12 +114,12 @@ function normalizeSpec(input: unknown): NormalizedSpec {
       const record = asRecord(block);
       const blockKind = asString(record.kind || record.type).toLowerCase();
       if (blockKind === 'table') {
-        rows = normalizeRows(record.rows ?? record.data ?? record.items);
+        rows = normalizeRows(record.rows ?? record.data ?? record.items ?? record.records ?? record.values);
         if (rows.length) break;
       }
       if (blockKind === 'chart') {
         const chart = asRecord(record.chart || record);
-        rows = normalizeRows(chart.data ?? record.rows);
+        rows = normalizeRows(chart.data ?? record.data ?? chart.values ?? record.rows);
         if (rows.length) break;
       }
     }
@@ -349,9 +349,54 @@ function buildPages(spec: NormalizedSpec): Array<{ blocks: any[] }> {
   return pages;
 }
 
+function directHtmlPayload(input: unknown): { html: string; title: string; width: number; height: number; fullPage: boolean } | undefined {
+  const wrapped = asRecord(parseMaybeJson(input));
+  const raw = asRecord(parseMaybeJson(wrapped.spec || wrapped.report || wrapped));
+  let html = asString(raw.html || raw.pageHtml || raw.document).trim();
+  if (!html) return undefined;
+  // 兼容模型把整页放进 Markdown 代码块的情况。
+  html = html.replace(/^\s*\`\`\`(?:html)?\s*/i, '').replace(/\s*\`\`\`\s*$/i, '').trim();
+  const css = asString(raw.css).trim();
+  const js = asString(raw.js).trim();
+  if (css) {
+    const style = '<style>' + css + '</style>';
+    html = /<\/head>/i.test(html) ? html.replace(/<\/head>/i, style + '</head>') : style + html;
+  }
+  if (js) {
+    const script = '<script>' + js.replace(/<\/script/gi, '<\\/script') + '</script>';
+    html = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, script + '</body>') : html + script;
+  }
+  // 保证自定义页面的 html/body 至少撑满截图视口，避免 fullPage 底部出现白色/黑色半屏。
+  const viewportFill = '<style>html,body{box-sizing:border-box;min-height:100vh;overflow-x:hidden;}</style>';
+  html = /<\/head>/i.test(html) ? html.replace(/<\/head>/i, viewportFill + '</head>') : viewportFill + html;
+  const width = Math.max(320, Math.min(1600, Math.trunc(Number(raw.width) || PAGE_WIDTH)));
+  const height = Math.max(320, Math.min(12000, Math.trunc(Number(raw.height) || 1000)));
+  return { html, title: asString(raw.title, '自定义页面'), width, height, fullPage: raw.fullPage !== false };
+}
+
 export async function renderReport(input: unknown, deps: ReportRenderDeps): Promise<ReportRenderResult> {
   if (!deps.browserRenderer) throw new Error('报告渲染不可用：未配置浏览器渲染器');
+  const direct = directHtmlPayload(input);
+  if (direct) {
+    // 直接渲染模型自己设计的完整 HTML，不经过任何固定报告模板。
+    const rendered = await deps.browserRenderer.renderCode({
+      format: 'html',
+      title: direct.title,
+      width: direct.width,
+      height: direct.height,
+      fullPage: direct.fullPage,
+      html: direct.html,
+    }, deps.outputDir);
+    const name = 'page-' + Date.now() + '-' + direct.width + 'x' + rendered.height + '.png';
+    const url = deps.uploadFile ? await deps.uploadFile(rendered.path, name, 'image/png') : 'file://' + rendered.path;
+    const warnings = rendered.height > 12000 ? ['页面高度 ' + rendered.height + 'px，建议拆分为多页'] : [];
+    deps.logger?.info('HTML 页面渲染完成', { width: rendered.width, height: rendered.height, bytes: rendered.size, htmlChars: direct.html.length });
+    return { images: [url], pages: 1, rows: 0, warnings, pageHeights: [rendered.height] };
+  }
   const spec = normalizeSpec(input);
+  if (!spec.rows.length && !spec.blocks.length) {
+    throw new Error('缺少报告数据行：请提供完整 html，或提供 rows/data 后再调用 report.render；不要依赖默认模板');
+  }
   const hasDataBlocks = spec.blocks.some((block) => {
     const kind = asString(asRecord(block).kind || asRecord(block).type).toLowerCase();
     return kind === 'chart' || kind === 'table';
