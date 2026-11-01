@@ -88,7 +88,7 @@ test('plugins T4.2: novel-platform plugin loads and exposes config action', asyn
   assert.equal(manifest.length, 1);
   assert.equal(registered[0].descriptor.id, 'novel.platform');
   assert.equal(registered[0].descriptor.provider, 'plugin-novel');
-  assert.equal(registered[0].descriptor.presentationHint, '');
+  assert.equal(registered[0].descriptor.presentationHint, '图表');
   const result = await registered[0].handler.execute({ step: { id: 's1', args: { action: 'config', op: 'get' } } });
   assert.equal(result.status, 'success');
   assert.match(String(result.outputs?.[0]?.text || ''), /网文数据通/);

@@ -1223,6 +1223,7 @@ export default function createNovelPlatformPlugin(ctx) {
       '输出为文本（含排名/书名/作者/分类/数据与本地统计）或图片直链，基于数据回答即可。',
     ].join('\n'),
     provider: 'plugin-novel',
+    presentationHint: '图表',
     mode: 'sync',
     riskLevel: 'low',
     mergeable: true,
