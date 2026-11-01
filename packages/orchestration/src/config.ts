@@ -79,15 +79,39 @@ export interface OrchestrationConfig {
     embeddingNodeIndex: number;
     embeddingModel: string;
     embeddingDimensions: number;
-    topK: number;
-    minScore: number;
-    maxContextChars: number;
+    // topK/minScore/maxContextChars 曾与 contextPolicy.memory* 双真源并存，已收口删除——
+    // 检索预算唯一真源 contextPolicy.memoryTopK/memoryMinScore/memoryMaxChars。
     recentTurns: number;
     summarizeEvery: number;
     retentionDays: number;
     hybridSearch: boolean;
     autoIngest: boolean;
     userGlobalProfileEnabled: boolean;
+    /**
+     * 记忆库优先（灰度开关）：群聊回复的上下文组装在记忆命中非空时跳过 Napcat
+     * get_group_msg_history 拉取（省一次上游调用）；记忆为空/关闭时仍走群历史兜底。
+     */
+    memoryFirstGroupContext: boolean;
+    /** 观察与写入（Harness Memory Layer）：所有消息先观察入库，再触发路由。 */
+    observation: {
+      enabled: boolean;
+      includeGroupMessages: boolean;
+      includePrivateMessages: boolean;
+      includeAssistantReplies: boolean;
+      includeAttachments: boolean;
+      maxTextCharsPerMessage: number;
+      /**
+       * 连发消息合并窗口（ms）：触发后短暂等待并收集同会话窗口内的相邻消息
+       * （卡头/中间/结尾带触发的连发场景），合并进回合输入；0 = 关闭。所有消息仍照常入库。
+       */
+      coalesceWindowMs: number;
+    };
+    /** 保留与清理：每 cleanupIntervalDays 天执行一次，滚动保留 retentionDays 天。 */
+    retention: {
+      cleanupIntervalDays: number;
+      cleanupHour: number;
+      cleanupMinute: number;
+    };
   };
   capabilityOverrides: Record<string, CapabilityOverride>;
   execution: {
@@ -231,15 +255,27 @@ export function defaultOrchestrationConfig(): OrchestrationConfig {
       embeddingNodeIndex: 0,
       embeddingModel: '',
       embeddingDimensions: 1536,
-      topK: 8,
-      minScore: 0.2,
-      maxContextChars: 5000,
       recentTurns: 4,
       summarizeEvery: 20,
-      retentionDays: 30,
+      retentionDays: 3,
       hybridSearch: true,
       autoIngest: true,
       userGlobalProfileEnabled: false,
+      memoryFirstGroupContext: false,
+      observation: {
+        enabled: true,
+        includeGroupMessages: true,
+        includePrivateMessages: true,
+        includeAssistantReplies: true,
+        includeAttachments: true,
+        maxTextCharsPerMessage: 10000,
+        coalesceWindowMs: 400,
+      },
+      retention: {
+        cleanupIntervalDays: 3,
+        cleanupHour: 4,
+        cleanupMinute: 0,
+      },
     },
     capabilityOverrides: {},
     execution: {
@@ -535,21 +571,35 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
     })(),
     memory: (() => {
       const m = record(raw.memory);
+      const obs = record(m.observation);
+      const ret = record(m.retention);
       return {
         enabled: bool(m.enabled, d.memory.enabled),
         dataDir: String(m.dataDir || d.memory.dataDir).trim(),
         embeddingNodeIndex: numberIn(m.embeddingNodeIndex, d.memory.embeddingNodeIndex, 0, 10000),
         embeddingModel: String(m.embeddingModel || d.memory.embeddingModel).trim(),
         embeddingDimensions: numberIn(m.embeddingDimensions, d.memory.embeddingDimensions, 1, 16384),
-        topK: numberIn(m.topK, d.memory.topK, 1, 100),
-        minScore: numberIn(m.minScore, d.memory.minScore, 0, 1),
-        maxContextChars: numberIn(m.maxContextChars, d.memory.maxContextChars, 200, 50000),
         recentTurns: numberIn(m.recentTurns, d.memory.recentTurns, 0, 20),
         summarizeEvery: numberIn(m.summarizeEvery, d.memory.summarizeEvery, 2, 500),
         retentionDays: numberIn(m.retentionDays, d.memory.retentionDays, 1, 3650),
         hybridSearch: bool(m.hybridSearch, d.memory.hybridSearch),
         autoIngest: bool(m.autoIngest, d.memory.autoIngest),
         userGlobalProfileEnabled: bool(m.userGlobalProfileEnabled, d.memory.userGlobalProfileEnabled),
+        memoryFirstGroupContext: bool(m.memoryFirstGroupContext, d.memory.memoryFirstGroupContext),
+        observation: {
+          enabled: bool(obs.enabled, d.memory.observation.enabled),
+          includeGroupMessages: bool(obs.includeGroupMessages, d.memory.observation.includeGroupMessages),
+          includePrivateMessages: bool(obs.includePrivateMessages, d.memory.observation.includePrivateMessages),
+          includeAssistantReplies: bool(obs.includeAssistantReplies, d.memory.observation.includeAssistantReplies),
+          includeAttachments: bool(obs.includeAttachments, d.memory.observation.includeAttachments),
+          maxTextCharsPerMessage: numberIn(obs.maxTextCharsPerMessage, d.memory.observation.maxTextCharsPerMessage, 200, 200000),
+          coalesceWindowMs: numberIn(obs.coalesceWindowMs, d.memory.observation.coalesceWindowMs, 0, 2000),
+        },
+        retention: {
+          cleanupIntervalDays: numberIn(ret.cleanupIntervalDays, d.memory.retention.cleanupIntervalDays, 1, 365),
+          cleanupHour: numberIn(ret.cleanupHour, d.memory.retention.cleanupHour, 0, 23),
+          cleanupMinute: numberIn(ret.cleanupMinute, d.memory.retention.cleanupMinute, 0, 59),
+        },
       };
     })(),
     capabilityOverrides: (() => {

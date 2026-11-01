@@ -60,7 +60,7 @@ function makeCfg() {
   cfg.bot.replyStrategies.text = 'plain';
   cfg.bot.keywordTrigger = { enabled: true, words: ['大鱼'], contextMessages: 5, windowMs: 10000, intentModel: '', intentNodeIndex: 0 };
   // 延续判断免检（本文件只测链路，不测模型判断力）
-  cfg.bot.autoContinue = { enabled: true, windowMs: 60000, maxRounds: 3, cooldownMs: 15000, requireModelCheck: false };
+  cfg.bot.autoContinue = { enabled: true, windowMs: 60000, maxRounds: 3, requireModelCheck: false };
   return cfg;
 }
 

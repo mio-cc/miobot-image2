@@ -1,5 +1,5 @@
 ﻿import { createHash } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { promises as fs, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { count, create, insert, remove, search, type AnyOrama } from '@orama/orama';
 import { persistToFile, restoreFromFile } from '@orama/plugin-data-persistence/server';
@@ -83,16 +83,30 @@ export interface MemoryDocument {
   embedding: number[];
 }
 
+/** 附件只存引用与元数据，绝不把 base64 大字段写进向量库。 */
+export interface MemoryAttachmentMeta {
+  type: 'image' | 'video' | 'audio' | 'file';
+  /** 可公开访问的引用（URL / file id / 容器路径）。 */
+  ref?: string;
+  name?: string;
+  size?: number;
+}
+
 export interface IngestMemoryInput {
   botId: string;
   chatType: 'group' | 'private';
   groupId?: string;
   userId: string;
   authorName?: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   text: string;
   messageId?: string;
   createdAt?: string;
+  /** 消息原始事件时间（重连补发时与 capturedAt 区分，用于排序与天桶清理）。 */
+  eventTime?: string;
+  attachments?: MemoryAttachmentMeta[];
+  /** 写入来源：observation=观察链路 / reply=回复链路 / summary=摘要 / admin。 */
+  source?: 'observation' | 'reply' | 'summary' | 'admin';
 }
 
 export interface RetrieveMemoryInput {
@@ -104,6 +118,8 @@ export interface RetrieveMemoryInput {
   topK?: number;
   minScore?: number;
   maxContextChars?: number;
+  /** 作用域过滤（memory.search 内部技能用）：缺省 = 全部可见 namespace。 */
+  scopeFilter?: Array<MemoryDocument['scope']>;
 }
 
 export interface MemoryHit {
@@ -199,28 +215,35 @@ export class ChatMemoryService {
     return Boolean(memory.enabled && memory.autoIngest);
   }
 
-  async ingest(input: IngestMemoryInput): Promise<{ ok: boolean; indexed: number; error?: string }> {
-    this.syncRoot();
-    const memory = this.options.getConfig().orchestration.memory;
-    if (!memory.enabled || !memory.autoIngest) return { ok: false, indexed: 0, error: 'memory_disabled' };
-    const text = String(input.text || '').trim();
-    if (!text) return { ok: true, indexed: 0 };
-    let embeddings: number[][];
-    try {
-      embeddings = await this.embedding.embed([text]);
-    } catch (error) {
-      this.options.logger?.warn('memory embedding failed; message not indexed', { error: String((error as Error)?.message || error) });
-      return { ok: false, indexed: 0, error: String((error as Error)?.message || error) };
+  /** 附件元数据增强：正文追加 `[类型:引用]` 标记，附件-only 消息也能入库可检索。 */
+  private augmentText(text: string, attachments?: MemoryAttachmentMeta[]): string {
+    let out = String(text || '').trim();
+    for (const item of attachments || []) {
+      const ref = String(item?.ref || item?.name || '').trim();
+      if (!ref) continue;
+      const label = item.type === 'image' ? '图片' : item.type === 'video' ? '视频' : item.type === 'audio' ? '语音' : '文件';
+      out = (out ? out + ' ' : '') + `[${label}:${ref.slice(0, 300)}]`;
     }
-    const vector = embeddings[0];
-    if (!vector?.length) return { ok: false, indexed: 0, error: 'embedding_empty' };
-    const createdAt = input.createdAt || new Date().toISOString();
+    return out.slice(0, 20000);
+  }
+
+  /** Orama 对重复 id 的 insert 会抛错（实证 2026-11）；据此实现幂等——补发/重放零重复。 */
+  private static isDuplicateIdError(error: unknown): boolean {
+    return /already exists/i.test(String((error as Error)?.message || error));
+  }
+
+  /** 单条写入（向量已就绪），跨 group/personal/global/private namespace 落位。 */
+  private async ingestWithVector(input: IngestMemoryInput, vector: number[]): Promise<{ indexed: number; deduped: boolean }> {
+    const memory = this.options.getConfig().orchestration.memory;
+    const text = this.augmentText(input.text, input.attachments);
+    if (!text) return { indexed: 0, deduped: false };
+    const createdAt = input.eventTime || input.createdAt || new Date().toISOString();
     const messageId = String(input.messageId || hash(text.slice(0, 200) + createdAt));
     const base = {
       botId: input.botId,
       groupId: String(input.groupId || ''),
-      userId: input.chatType === 'private' ? String(input.userId) : String(input.userId),
-      authorName: String(input.authorName || input.userId),
+      userId: String(input.userId || ''),
+      authorName: String(input.authorName || input.userId || ''),
       role: input.role,
       text,
       createdAt,
@@ -230,26 +253,77 @@ export class ChatMemoryService {
       embedding: vector,
     };
     let indexed = 0;
+    let deduped = false;
+    const place = async (ns: MemoryNamespace, id: string, scope: MemoryDocument['scope']): Promise<void> => {
+      const outcome = await this.insertDocument(ns, { ...base, id, scope });
+      if (outcome === 'inserted') indexed += 1;
+      else deduped = true;
+    };
     if (input.chatType === 'group') {
-      const groupNs: MemoryNamespace = { kind: 'group', botId: input.botId, groupId: String(input.groupId || '') };
-      await this.insertDocument(groupNs, { ...base, id: `g:${messageId}:${input.role}`, scope: 'group_shared' });
-      indexed += 1;
-      void this.maybeSummarize(groupNs);
-      const personalNs: MemoryNamespace = { kind: 'personal', botId: input.botId, groupId: String(input.groupId || ''), userId: String(input.userId) };
-      await this.insertDocument(personalNs, { ...base, id: `p:${messageId}:${input.role}`, scope: 'personal_group_user' });
-      indexed += 1;
+      const groupId = String(input.groupId || '');
+      await place({ kind: 'group', botId: input.botId, groupId }, `g:${messageId}:${input.role}`, 'group_shared');
+      void this.maybeSummarize({ kind: 'group', botId: input.botId, groupId });
+      await place({ kind: 'personal', botId: input.botId, groupId, userId: String(input.userId || '') }, `p:${messageId}:${input.role}`, 'personal_group_user');
       if (memory.userGlobalProfileEnabled) {
-        const globalNs: MemoryNamespace = { kind: 'personal', botId: input.botId, groupId: '', userId: String(input.userId) };
-        await this.insertDocument(globalNs, { ...base, id: `p:${messageId}:${input.role}`, scope: 'personal_group_user' });
-        indexed += 1;
+        await place({ kind: 'personal', botId: input.botId, groupId: '', userId: String(input.userId || '') }, `p:${messageId}:${input.role}`, 'personal_group_user');
       }
     } else {
-      const privateNs: MemoryNamespace = { kind: 'private', botId: input.botId, userId: String(input.userId) };
-      await this.insertDocument(privateNs, { ...base, id: `u:${messageId}:${input.role}`, scope: 'private_user' });
-      indexed += 1;
-      void this.maybeSummarize(privateNs);
+      await place({ kind: 'private', botId: input.botId, userId: String(input.userId || '') }, `u:${messageId}:${input.role}`, 'private_user');
+      void this.maybeSummarize({ kind: 'private', botId: input.botId, userId: String(input.userId || '') });
     }
-    return { ok: true, indexed };
+    return { indexed, deduped };
+  }
+
+  async ingest(input: IngestMemoryInput): Promise<{ ok: boolean; indexed: number; deduped?: boolean; error?: string }> {
+    const results = await this.ingestBatch([input]);
+    return results[0];
+  }
+
+  /**
+   * 批量写入：一次 embedding HTTP 承载整批（观察链路全量入库的成本基础），
+   * embedding 失败时整批返回 ok:false（调用方进持久重试队列，不丢消息）。
+   */
+  async ingestBatch(inputs: IngestMemoryInput[]): Promise<Array<{ ok: boolean; indexed: number; deduped?: boolean; error?: string }>> {
+    this.syncRoot();
+    const memory = this.options.getConfig().orchestration.memory;
+    const items = (inputs || []).map((input) => ({ input, text: this.augmentText(input.text, input.attachments) }));
+    const disabled = !memory.enabled || !memory.autoIngest;
+    const embeddable = disabled ? [] : items
+      .map((item, index) => ({ index, text: item.text }))
+      .filter((item) => item.text);
+    const results: Array<{ ok: boolean; indexed: number; deduped?: boolean; error?: string }> = items.map(() => ({ ok: false, indexed: 0 }));
+    if (disabled) {
+      for (let i = 0; i < items.length; i += 1) results[i] = { ok: false, indexed: 0, error: 'memory_disabled' };
+      return results;
+    }
+    // 分块批量 embedding（provider 单批上限 32）；embeddable 携带原索引，避免反查。
+    const vectors = new Map<number, number[]>();
+    for (let start = 0; start < embeddable.length; start += 32) {
+      const chunk = embeddable.slice(start, start + 32);
+      try {
+        const embeddings = await this.embedding.embed(chunk.map((item) => item.text));
+        chunk.forEach((item, offset) => {
+          const vector = embeddings[offset];
+          if (vector?.length) vectors.set(item.index, vector);
+        });
+      } catch (error) {
+        this.options.logger?.warn('memory batch embedding failed; items deferred to retry', { count: chunk.length, error: String((error as Error)?.message || error) });
+      }
+    }
+    for (let i = 0; i < items.length; i += 1) {
+      const vector = vectors.get(i);
+      if (!vector) {
+        results[i] = { ok: false, indexed: 0, error: items[i].text ? 'embedding_failed' : 'empty_text' };
+        continue;
+      }
+      try {
+        const outcome = await this.ingestWithVector(items[i].input, vector);
+        results[i] = { ok: true, indexed: outcome.indexed, ...(outcome.deduped ? { deduped: true } : {}) };
+      } catch (error) {
+        results[i] = { ok: false, indexed: 0, error: String((error as Error)?.message || error) };
+      }
+    }
+    return results;
   }
 
   async retrieve(input: RetrieveMemoryInput): Promise<MemoryContextResult> {
@@ -257,9 +331,11 @@ export class ChatMemoryService {
     const memory = this.options.getConfig().orchestration.memory;
     if (!memory.enabled) return { context: '', hits: [], degraded: false, namespaces: [] };
     const query = String(input.query || '').trim();
-    const topK = Math.max(1, Math.trunc(Number(input.topK) || memory.topK));
-    const minScore = Number.isFinite(Number(input.minScore)) ? Number(input.minScore) : memory.minScore;
-    const maxContextChars = Math.max(200, Math.trunc(Number(input.maxContextChars) || memory.maxContextChars));
+    // 检索预算唯一真源 contextPolicy（曾与 orchestration.memory.topK* 双真源并存，已收口删除）。
+    const contextPolicyCfg = this.options.getConfig().contextPolicy;
+    const topK = Math.max(1, Math.trunc(Number(input.topK) || contextPolicyCfg.memoryTopK));
+    const minScore = Number.isFinite(Number(input.minScore)) ? Number(input.minScore) : contextPolicyCfg.memoryMinScore;
+    const maxContextChars = Math.max(200, Math.trunc(Number(input.maxContextChars) || contextPolicyCfg.memoryMaxChars));
     const namespaces: MemoryNamespace[] = input.chatType === 'group'
       ? [
           { kind: 'group', botId: input.botId, groupId: String(input.groupId || '') },
@@ -279,6 +355,9 @@ export class ChatMemoryService {
     }
     const all: MemoryHit[] = [];
     for (const ns of namespaces) {
+      // memory.search 的 scopeFilter：群聊 auto=全部可见；group=仅群共享；group_user=群共享+个人。
+      const nsScope = ns.kind === 'group' ? 'group_shared' as const : ns.kind === 'private' ? 'private_user' as const : 'personal_group_user' as const;
+      if (input.scopeFilter?.length && !input.scopeFilter.includes(nsScope)) continue;
       const where: Record<string, string> = { botId: ns.botId };
       if (ns.groupId) where.groupId = ns.groupId;
       if (ns.kind !== 'group') where.userId = ns.userId || '';
@@ -290,6 +369,10 @@ export class ChatMemoryService {
             vector: { value: queryVector, property: 'embedding' },
             where,
             limit: topK,
+            // Orama 3.x 默认自带 ~0.8 的相似度硬截断（本地端到端模拟 2026-11-01 实测：
+            // 0.92 命中、0.71 被静默丢弃），nvidia 嵌入下大量语义相关落在 0.5-0.8 区间，
+            // 会让老记忆对向量检索"失忆"。截断权移交我们自己的 memoryMinScore 语义。
+            similarity: Math.max(0, Math.min(1, Number(minScore) || 0)),
           } as any);
           for (const hit of result.hits as any[]) {
             const doc = hit.document as MemoryDocument;
@@ -356,6 +439,64 @@ export class ChatMemoryService {
       degraded,
       namespaces: namespaces.map(namespaceLabel),
     };
+  }
+
+  /**
+   * 会话收尾固化（auto-compact 式）：会话结束（如 /clear）时把尾巴对话压缩成
+   * role=system 摘要写回记忆库，补上滚动摘要（summarizeEvery）覆盖不到的尾部。
+   * 摘要失败不抛错——收尾固化为尽力而为，绝不阻塞清屏本身。
+   */
+  async summarizeSession(input: {
+    botId: string;
+    chatType: 'group' | 'private';
+    groupId?: string;
+    userId: string;
+    messages: Array<{ role: 'user' | 'assistant' | 'system'; text: string; userId?: string }>;
+  }): Promise<{ ok: boolean; summaryChars?: number; error?: string }> {
+    this.syncRoot();
+    const memory = this.options.getConfig().orchestration.memory;
+    if (!memory.enabled || !memory.autoIngest) return { ok: false, error: 'memory_disabled' };
+    if (!this.options.summarize) return { ok: false, error: 'summarizer_missing' };
+    const docs: MemoryDocument[] = (input.messages || [])
+      .map((item, index) => ({
+        id: `tail:${index}`,
+        botId: input.botId,
+        scope: 'group_shared' as const,
+        groupId: String(input.groupId || ''),
+        userId: String(input.userId || ''),
+        authorName: item.role === 'assistant' ? '助手' : String(item.userId || input.userId || '用户'),
+        role: item.role,
+        text: String(item.text || '').trim().slice(0, 4000),
+        createdAt: new Date().toISOString(),
+        messageId: `tail:${index}`,
+        embeddingModel: this.embedding.model,
+        embeddingDimensions: this.embedding.dimensions,
+        embedding: [],
+      }))
+      .filter((doc) => doc.text && doc.role !== 'system');
+    if (docs.length < 2) return { ok: false, error: 'not_enough_turns' };
+    const namespace: MemoryNamespace = input.chatType === 'group'
+      ? { kind: 'group', botId: input.botId, groupId: String(input.groupId || '') }
+      : { kind: 'private', botId: input.botId, userId: String(input.userId) };
+    let summary: string;
+    try {
+      summary = String(await this.options.summarize({ namespace, messages: docs }) || '').trim();
+    } catch (error) {
+      return { ok: false, error: String((error as Error)?.message || error) };
+    }
+    if (!summary) return { ok: false, error: 'empty_summary' };
+    const outcome = await this.ingestWithVector({
+      botId: input.botId,
+      chatType: input.chatType,
+      groupId: input.groupId === undefined ? undefined : String(input.groupId),
+      userId: String(input.userId || ''),
+      authorName: '会话收尾摘要',
+      role: 'system',
+      text: '【会话收尾摘要】' + summary,
+      messageId: 'tail:' + hash(input.botId + '|' + (input.groupId || '') + '|' + String(input.userId || '') + '|' + Date.now()),
+      source: 'summary',
+    }, (await this.embedding.embed([summary]))[0] || []);
+    return outcome.indexed > 0 ? { ok: true, summaryChars: summary.length } : { ok: false, error: 'embed_failed' };
   }
 
   private async maybeSummarize(ns: MemoryNamespace): Promise<void> {
@@ -489,9 +630,10 @@ export class ChatMemoryService {
         await new Promise((resolve) => setTimeout(resolve, 2000));
       }
     }
-    // 4) retention 清理
-    const pruned = await this.prune(now);
-    stats.pruned = pruned.removed;
+    // 4) retention 清理：删除权已移交 memory-retention 调度任务（retentionCleanup，
+    // 每 cleanupIntervalDays 天执行、滚动保留 retentionDays 天）。巩固只做评分/归并/淘汰，
+    // 避免启动 prune、夜间巩固、定时清理三条路径重复删除同一批数据。
+    stats.pruned = 0;
     this.options.logger?.info('memory consolidate finished', { ...stats });
     return stats;
   }
@@ -510,26 +652,108 @@ export class ChatMemoryService {
     }
   }
 
-  async prune(now = Date.now()): Promise<{ removed: number }> {
+  // ── 保留与清理（Harness Memory Layer）：每 cleanupIntervalDays 天执行一次，
+  // 滚动保留 retentionDays 个自然日桶。dayBucket 由 createdAt 前 10 位派生——
+  // 不改 Orama schema，老索引文件直接兼容；重连补发的老消息会因 eventTime 落入旧桶被正常清理。
+  // lastRetentionRunAt 持久化在数据目录，重启不重复执行；这是唯一的自动删除路径。
+  // （旧 prune() 每日按 createdAt 滚动删除，已与保留策略语义冲突，随启动清理路径一并删除。）
+
+  private retentionStatePath(): string {
+    return path.join(this.rootPath(), 'retention-state.json');
+  }
+
+  private async loadRetentionState(): Promise<{ lastRetentionRunAt?: string }> {
+    try { return JSON.parse(await fs.readFile(this.retentionStatePath(), 'utf8')) as { lastRetentionRunAt?: string }; } catch { return {}; }
+  }
+
+  private async saveRetentionState(state: { lastRetentionRunAt: string }): Promise<void> {
+    await fs.mkdir(this.rootPath(), { recursive: true });
+    const temp = this.retentionStatePath() + '.tmp';
+    await fs.writeFile(temp, JSON.stringify(state, null, 2), 'utf8');
+    await fs.rename(temp, this.retentionStatePath());
+  }
+
+  async retentionState(): Promise<{ lastRetentionRunAt?: string; due: boolean; cleanupIntervalDays: number; retentionDays: number }> {
     this.syncRoot();
     const memory = this.options.getConfig().orchestration.memory;
-    if (!memory.enabled) return { removed: 0 };
-    const cutoff = now - Math.max(1, memory.retentionDays) * 24 * 60 * 60 * 1000;
-    let removed = 0;
-    for (const [key, promise] of this.dbs) {
-      const db = await promise;
+    const state = await this.loadRetentionState();
+    return {
+      lastRetentionRunAt: state.lastRetentionRunAt,
+      due: this.shouldRunRetention(Date.now(), state),
+      cleanupIntervalDays: Math.max(1, memory.retention.cleanupIntervalDays),
+      retentionDays: Math.max(1, memory.retentionDays),
+    };
+  }
+
+  shouldRunRetention(now = Date.now(), state?: { lastRetentionRunAt?: string }): boolean {
+    const memory = this.options.getConfig().orchestration.memory;
+    const intervalMs = Math.max(1, memory.retention.cleanupIntervalDays) * 24 * 60 * 60 * 1000;
+    // 未显式传状态时同步读盘（重启后的新实例也能正确判断"不重复执行"）。
+    const resolved = state || this.loadRetentionStateSync();
+    const last = Date.parse(String(resolved?.lastRetentionRunAt || ''));
+    if (!Number.isFinite(last)) return true;
+    return now - last >= intervalMs;
+  }
+
+  private loadRetentionStateSync(): { lastRetentionRunAt?: string } {
+    try { return JSON.parse(readFileSync(this.retentionStatePath(), 'utf8')) as { lastRetentionRunAt?: string }; } catch { return {}; }
+  }
+
+  /**
+   * 按天桶滚动清理：删除 dayBucket(createdAt) < cutoffDay 的文档（含重连补发的旧消息）。
+   * dryRun 只统计不删除；backup 导出被删文档为 JSON 后再删（审计/误删恢复）。
+   * force=true（admin 手动"立即清理"）跳过 cleanupIntervalDays 节流——节流只约束后台调度；
+   * 成功执行（含 force）都会推进 lastRetentionRunAt。
+   */
+  async retentionCleanup(input: { now?: number; dryRun?: boolean; backup?: boolean; force?: boolean } = {}): Promise<{
+    ran: boolean; dryRun: boolean; removed: number; namespaces: number; cutoffDay: string; backupFile?: string; ranAt: string; reason?: string;
+  }> {
+    this.syncRoot();
+    const now = input.now ?? Date.now();
+    const memory = this.options.getConfig().orchestration.memory;
+    const ranAt = new Date(now).toISOString();
+    const base = { ran: false, dryRun: input.dryRun === true, removed: 0, namespaces: 0, cutoffDay: '', ranAt };
+    if (!memory.enabled) return { ...base, reason: 'memory_disabled' };
+    const state = await this.loadRetentionState();
+    if (!input.dryRun && !input.force && !this.shouldRunRetention(now, state)) return { ...base, reason: 'not_due' };
+    const retentionDays = Math.max(1, memory.retentionDays);
+    const floor = new Date(now - (retentionDays - 1) * 24 * 60 * 60 * 1000);
+    const cutoffDay = `${floor.getFullYear()}-${String(floor.getMonth() + 1).padStart(2, '0')}-${String(floor.getDate()).padStart(2, '0')}`;
+    const manifest = await this.loadManifest();
+    const keys = [...new Set<string>([...Object.keys(manifest), ...this.dbs.keys()])];
+    const staleDocs: MemoryDocument[] = [];
+    let namespaces = 0;
+    for (const key of keys) {
+      const db = await this.loadDbByKey(key);
+      if (!db) continue;
       let result: any;
       try { result = await search(db, { term: '', limit: 10000 } as any); } catch { continue; }
-      for (const hit of result.hits as any[]) {
-        const doc = hit.document as MemoryDocument;
-        if (Date.parse(doc.createdAt) < cutoff) {
-          await remove(db, doc.id);
-          removed += 1;
-        }
+      const stale = (result.hits as any[])
+        .map((hit) => hit.document as MemoryDocument)
+        .filter((doc) => String(doc.createdAt || '').slice(0, 10) < cutoffDay);
+      if (!stale.length) continue;
+      namespaces += 1;
+      if (input.dryRun) { staleDocs.push(...stale); continue; }
+      for (const doc of stale) {
+        try { await remove(db, doc.id); staleDocs.push(doc); } catch { /* 已不在索引 */ }
       }
       await this.persistKey(key);
     }
-    return { removed };
+    const backupFile = input.backup !== false && staleDocs.length
+      ? await this.writeRetentionBackup(staleDocs, input.dryRun === true, now)
+      : undefined;
+    if (!input.dryRun) {
+      await this.saveRetentionState({ lastRetentionRunAt: ranAt });
+      this.options.logger?.info('memory retention cleanup finished', { removed: staleDocs.length, cutoffDay, namespaces });
+    }
+    return { ran: true, dryRun: input.dryRun === true, removed: staleDocs.length, namespaces, cutoffDay, ...(backupFile ? { backupFile } : {}), ranAt };
+  }
+
+  private async writeRetentionBackup(docs: MemoryDocument[], dryRun: boolean, now: number): Promise<string> {
+    await fs.mkdir(this.rootPath(), { recursive: true });
+    const file = path.join(this.rootPath(), `retention-backup-${dryRun ? 'dryrun-' : ''}${new Date(now).toISOString().replace(/[:.]/g, '-')}.json`);
+    await fs.writeFile(file, JSON.stringify({ exportedAt: new Date(now).toISOString(), dryRun, count: docs.length, documents: docs }, null, 2), 'utf8');
+    return file;
   }
 
   async listNamespaces(): Promise<Array<{ key: string; namespace: MemoryNamespace; count: number }>> {
@@ -686,10 +910,16 @@ export class ChatMemoryService {
     return promise;
   }
 
-  private async insertDocument(ns: MemoryNamespace, doc: MemoryDocument): Promise<void> {
+  private async insertDocument(ns: MemoryNamespace, doc: MemoryDocument): Promise<'inserted' | 'deduped'> {
     const db = await this.getDb(ns);
-    await insert(db, { ...doc, embedding: doc.embedding.slice(0, this.embedding.dimensions) });
+    try {
+      await insert(db, { ...doc, embedding: doc.embedding.slice(0, this.embedding.dimensions) });
+    } catch (error) {
+      if (ChatMemoryService.isDuplicateIdError(error)) return 'deduped';
+      throw error;
+    }
     await this.schedulePersist(namespaceKey(ns, this.embedding.model, this.embedding.dimensions));
+    return 'inserted';
   }
 
   // T3.4：防抖落盘——活跃群里每条消息都 insert，若每次都全量 persist 一个 JSON 索引文件，

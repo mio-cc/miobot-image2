@@ -79,8 +79,24 @@ export interface BotRuntimeOptions {
     userId: number | string;
     query: string;
   }) => Promise<string | undefined>;
-  /** 异步记忆写入；失败不得影响回复链路。 */
-  ingestMemory?: (input: {
+  /**
+   * 连发消息合并窗口：触发回合收集同会话爆发缓冲内的相邻用户消息（时间正序、排除触发消息本身）。
+   * 覆盖"一连串消息卡头/中间/结尾带触发"的场景；由 start.ts 注入 MemoryObserver.collectBurst。
+   */
+  collectBurst?: (input: {
+    botId: string;
+    chatType: 'group' | 'private';
+    groupId?: number | string;
+    userId: number | string;
+    excludeMessageId?: number | string;
+  }) => Array<{ userId: string; authorName: string; text: string; imageRefs: string[]; at: number; messageId: string }> | Promise<Array<{ userId: string; authorName: string; text: string; imageRefs: string[]; at: number; messageId: string }>>;
+  /**
+   * Harness Memory Layer 观察写入（同步入队即返回，失败不得影响回复链路）。
+   * 所有消息（含未被 @/命令命中的群聊、纯图片、重连补发）在触发路由前观察入库；
+   * 闸门顺序：self/重复/频控拦截后才调用，白名单黑名单由 runtime 用 isObservationScopeAllowed 把关。
+   */
+  observeMemory?: (input: {
+    botId: string;
     chatType: 'group' | 'private';
     groupId?: number | string;
     userId: number | string;
@@ -88,6 +104,19 @@ export interface BotRuntimeOptions {
     role: 'user' | 'assistant';
     text: string;
     messageId?: number | string;
+    eventTime?: string;
+    attachments?: Array<{ type: 'image' | 'video' | 'audio' | 'file'; ref?: string; name?: string; size?: number }>;
+  }) => void | Promise<void>;
+  /**
+   * 会话收尾固化（auto-compact 式）：/clear 等会话结束时把尾巴对话交给记忆层摘要。
+   * 实现为尽力而为：失败不影响清屏；不传则跳过。
+   */
+  consolidateSession?: (input: {
+    sessionId: string;
+    chatType: 'group' | 'private';
+    groupId?: number | string;
+    userId: number | string;
+    turns: Array<{ role: 'system' | 'user' | 'assistant'; content: unknown }>;
   }) => void | Promise<void>;
   /** 文本回复转语音:返回 record 文件引用则发语音,返回空则发文本。 */
   /** 文件元数据索引；不传则不记录文件消息。 */
@@ -925,11 +954,23 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     // 旧逻辑 memoryContext 非空就跳过群历史，而记忆 recentTurns>0 时几乎恒非空，导致群上下文长期失效（线上时测）。
     const buildChatContext = async (): Promise<{ context: string | undefined; ms: number }> => {
       const startedAt = Date.now();
-      const parts: string[] = [];
+      // 记忆库优先（灰度开关 memoryFirstGroupContext）：记忆命中非空时跳过 Napcat 群历史拉取，
+      // 省一次上游调用；记忆为空/关闭/降级时照旧兜底（group-context.ts）。
       const memory = await loadChatMemoryContext();
+      if (chatType === 'group' && Boolean(cfg.orchestration.memory?.memoryFirstGroupContext) && memory) {
+        // 记忆库优先时相邻消息（合并窗口）同样要带上，不能因提前返回而丢失。
+        const contextWithBurst = burstLines.trim()
+          ? memory + '\n\n【相邻消息（合并窗口；与本次提问同一时间的连发消息，按时间正序，用于接住上下文）】\n' + burstLines.trim()
+          : memory;
+        log?.info('上下文组装（记忆库优先，跳过群历史拉取）', { groupId: event.group_id, memoryChars: memory.length, burstChars: burstLines.length, ms: Date.now() - startedAt });
+        return { context: contextWithBurst, ms: Date.now() - startedAt };
+      }
+      const parts: string[] = [];
       if (memory) parts.push(`【相关记忆】\n${memory}`);
       const groupHistory = await loadGroupContext();
       if (groupHistory) parts.push(groupHistory);
+      // 连发消息合并窗口：把与本次提问同一时间的相邻消息补进上下文（触发前/后的连发都覆盖）。
+      if (burstLines.trim()) parts.push('【相邻消息（合并窗口；与本次提问同一时间的连发消息，按时间正序，用于接住上下文）】\n' + burstLines.trim());
       const context = parts.join('\n\n') || undefined;
       log?.info('上下文组装', {
         groupId: event.group_id, sources: parts.length,
@@ -937,6 +978,16 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         chars: context?.length || 0, ms: Date.now() - startedAt,
       });
       return { context, ms: Date.now() - startedAt };
+    };
+
+    // 会话收尾固化（Harness Memory Layer）：清屏前把会话尾巴交给记忆层做摘要（尽力而为，
+    // 异步不阻塞清屏；未注入 consolidateSession 时为空操作）。会话真身可能在 agentSessions
+    // （Agent 主运行时），runtime 不预判 turns 是否为空——是否值得固化由 start.ts 侧判断。
+    const consolidateSessionTail = (): void => {
+      try {
+        const turns = options.app.sessions.get(sessionId) || [];
+        void Promise.resolve(options.consolidateSession?.({ sessionId, chatType, groupId: event.group_id, userId: userId ?? '', turns })).catch(() => undefined);
+      } catch { /* 尽力而为 */ }
     };
 
     const reportProblem = async (kind: string, error: unknown, extra?: Record<string, unknown>): Promise<void> => {
@@ -968,15 +1019,10 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       return { handled: false, reason: 'self-message' };
     }
 
-    // 陈旧消息丢弃：积压/重连补推的老消息不再回复，避免“两分钟前的问题现在才答”扎堆刷屏。
+    // 陈旧消息判定（纯计算，早于频控）：积压/重连补推的老消息不再回复，避免“两分钟前的问题现在才答”扎堆刷屏。
     const maxAgeSec = cfg.bot.staleMessageMaxAgeSeconds;
-    if (maxAgeSec > 0 && typeof event.time === 'number' && event.time > 0) {
-      const ageMs = Date.now() - event.time * 1000;
-      if (ageMs > maxAgeSec * 1000) {
-        log?.info('消息被忽略', { reason: 'stale-message', ageSeconds: Math.round(ageMs / 1000), maxAgeSeconds: maxAgeSec });
-        return { handled: false, reason: 'stale-message' };
-      }
-    }
+    const staleAgeMs = typeof event.time === 'number' && event.time > 0 ? Date.now() - event.time * 1000 : 0;
+    const isStaleMessage = maxAgeSec > 0 && staleAgeMs > maxAgeSec * 1000;
 
     const eventKey = event.message_id !== undefined && event.message_id !== null && String(event.message_id).trim()
       ? chatType + ':' + String(event.group_id ?? '') + ':' + String(userId ?? '') + ':' + String(event.message_id)
@@ -995,12 +1041,43 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     }
 
     // T2.2/C6 第一道闸：每用户消息频率上限（默认 6/分钟，0=关闭）。超出静默丢弃——
-    // 不回"你太快了"（防刷屏原则），只留日志供日报统计；去重/陈旧检查之后，
-    // 重连补推的重复消息不占额度。
+    // 不回"你太快了"（防刷屏原则），只留日志供日报统计；重连补推的陈旧消息不占额度。
     const rateLimitPerMinute = Math.max(0, Math.trunc(Number(cfg.bot.messageRateLimitPerMinute ?? 0)) || 0);
-    if (rateLimitPerMinute > 0 && isUserRateLimited(String(userId ?? ''), rateLimitPerMinute)) {
+    if (rateLimitPerMinute > 0 && !isStaleMessage && isUserRateLimited(String(userId ?? ''), rateLimitPerMinute)) {
       log?.info('消息被忽略', { reason: 'user-rate-limited', userId: String(userId ?? ''), limitPerMinute: rateLimitPerMinute });
       return { handled: false, reason: 'user-rate-limited' };
+    }
+
+    // Harness Memory Layer 观察闸门（先观察、后路由）：self/重复/频控消息已在上方拦截；
+    // 陈旧补发消息也要观察（它们正是重连窗口里丢失的聊天历史），但不回复；
+    // 白名单/黑名单在此独立把关（与 bot-router 同标准），名单外的会话绝不写入向量库。
+    if (options.observeMemory && isObservationScopeAllowed(cfg, chatType, event.group_id, userId)) {
+      try {
+        options.observeMemory({
+          botId: selfIdRaw,
+          chatType,
+          groupId: event.group_id,
+          userId: userId ?? '',
+          authorName: String(event.sender?.card || event.sender?.nickname || userId || ''),
+          role: 'user',
+          text: stripNonTextCqSegments(rawMessage).trim(),
+          messageId: event.message_id,
+          eventTime: typeof event.time === 'number' && event.time > 0 ? new Date(event.time * 1000).toISOString() : undefined,
+          attachments: [
+            ...baseImages.map((ref) => ({ type: 'image' as const, ref })),
+            ...baseVideos.map((ref) => ({ type: 'video' as const, ref })),
+            ...baseAudios.map((ref) => ({ type: 'audio' as const, ref })),
+            ...baseFiles.map((file) => ({ type: 'file' as const, ref: String(file?.url || file?.file || file?.fileId || file?.name || ''), name: file?.name, size: file?.size })),
+          ],
+        });
+      } catch {
+        // 观察失败绝不影响回复链路。
+      }
+    }
+
+    if (isStaleMessage) {
+      log?.info('消息被忽略', { reason: 'stale-message', ageSeconds: Math.round(staleAgeMs / 1000), maxAgeSeconds: maxAgeSec });
+      return { handled: false, reason: 'stale-message' };
     }
     // 主人命令优先于普通路由。
     if (options.handleApprovalReply) {
@@ -1223,36 +1300,47 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       const acKey = 'group:' + String(event.group_id ?? '') + ':' + String(userId ?? '');
       const acState = autoContinueStates.get(acKey);
       const now = Date.now();
-      if (acState) {
+      // 确定性预过滤（addressee 线索，零成本）：@ 了别人 / 明确回复"非 bot"的消息，
+      // 不进入续话与群级关注判定（回复 bot 的消息早经 replyToBot 触发路由，走不到这里）。
+      const candidateMentions = extractMentions(event);
+      const hasReplySegment = Array.isArray(event.message)
+        ? event.message.some((seg) => seg?.type === 'reply')
+        : /\[CQ:reply,/.test(rawMessage);
+      const replyToOther = hasReplySegment && replyToBot === false;
+      if (candidateMentions.length > 0 || replyToOther) {
+        continueChecked = true;
+        log?.info('续话预过滤：消息明确指向他人', { mentions: candidateMentions.length, replyToOther });
+      } else if (acState) {
         const windowMs = Math.max(10000, Number(cfg.bot.autoContinue.windowMs) || 60000);
         const maxRounds = Math.max(1, Math.min(10, Number(cfg.bot.autoContinue.maxRounds) || 1));
-        const cooldownMs = Math.max(5000, Number(cfg.bot.autoContinue.cooldownMs) || 30000);
         const withinWindow = now - acState.lastBotReplyAt <= windowMs;
         const withinRounds = acState.rounds < maxRounds;
-        const pastCooldown = now - acState.lastContinueAt >= cooldownMs;
-        if (withinWindow && withinRounds && pastCooldown) {
+        if (withinWindow && withinRounds) {
           const plainText = stripNonTextCqSegments(rawMessage).trim();
           if (plainText) {
             stageBegin('continue');
               continueChecked = true;
+            // 判定上下文：群级关注窗口的 transcript 覆盖触发以来的整段对话（此前用户级判定只看
+            // botLastReply+userText，判定器是半瞎的——2026-11-02 去冷却改造时补上）。
+            const focusForContext = groupFocusStates.get('group:' + String(event.group_id ?? ''));
             const shouldContinue = await options.triggerIntentChecker?.checkContinueIntent({
               userText: plainText,
               userName: String(event.sender?.card || event.sender?.nickname || userId || ''),
               botLastReply: acState.lastBotReplyText.slice(0, 300),
+              ...(focusForContext?.transcript?.length ? { groupContext: focusForContext.transcript.slice(-6).join('\n') } : {}),
             });
             log?.info('对话延续判断', { rounds: acState.rounds, maxRounds, shouldContinue: Boolean(shouldContinue) });
             if (shouldContinue) {
               acState.rounds += 1;
-              acState.lastContinueAt = now;
               // commandText 必须带上：enforce 失败回退旧链路时，旧链路从 commandText 取用户原文；
               // 缺了会被判成空@消息，回"我在。直接说需求就行"罐头话（线上时测）。
               decision = { kind: 'chat', source: 'auto_continue', confidence: 0.85, reason: 'continue_round_' + acState.rounds, commandText: plainText, params: { prompt: plainText, tokens: [] } } as any;
-            } else {
-              autoContinueStates.delete(acKey);
             }
+            // 意图判定 false 不再一票否决删除窗口：一次误判不应让 bot 聋到下次 @；
+            // 窗口/轮次自然到期时仍会清理（原 cooldownMs 时间闸门已删除——语义判定是唯一的门）。
             stageEnd('continue');
           }
-        } else if (!withinWindow || !withinRounds) {
+        } else {
           autoContinueStates.delete(acKey);
         }
       }
@@ -1318,20 +1406,8 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       return { handled: false, reason: decision.reason };
     }
     log?.info('路由决策', { kind: decision.kind, commandText: (decision as any).commandText?.slice(0, 80) });
-    // 只把真正进入 bot 会话的消息写入记忆；群聊里未被 @/命令命中的闲聊不入库，
-    // 避免 Napcat 上报全群消息时产生无边界 embedding 成本和隐私风险。
-    const memoryUserText = stripNonTextCqSegments(rawMessage).trim();
-    if (memoryUserText) {
-      void Promise.resolve(options.ingestMemory?.({
-        chatType,
-        groupId: event.group_id,
-        userId: String(userId || ''),
-        authorName: String(event.sender?.card || event.sender?.nickname || userId),
-        role: 'user',
-        text: memoryUserText.slice(0, 10000),
-        messageId: event.message_id,
-      })).catch(() => undefined);
-    }
+    // 用户消息的记忆写入已前移到观察闸门（先观察、后路由）——未被 @/命令命中的闲聊、
+    // 纯图片、重连补发消息同样入库；此处不再重复写入，避免双计。
 
 
     // 本会话的最新消息序号——迟到的 chat 回复发送前会核对，被更新消息取代则不发。
@@ -1352,6 +1428,24 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const referencedAudios = referenced ? extractAudios(referenced) : [];
     const forwardAudios = forwardNodes.flatMap((n) => extractAudios(n as unknown as NapcatMessageEvent));
     const maxInputImages = Math.max(1, cfg.freeMode.maxInputImages || 6);
+    // 连发消息合并窗口（Harness Memory Layer）：触发后短暂等待并收集同会话窗口内的相邻用户
+    // 消息（卡头/中间/结尾带触发的连发场景），合并进回合上下文与模型图片输入；0 = 关闭。
+    // 所有消息仍照常入库，这里只是把"同一波连发"补齐给模型看。
+    let burstLines = '';
+    const burstImageRefs: string[] = [];
+    const coalesceWindowMs = Math.max(0, Math.trunc(Number(cfg.orchestration.memory?.observation?.coalesceWindowMs ?? 400)) || 0);
+    if (coalesceWindowMs > 0 && options.collectBurst && (decision.kind === 'freeMode' || decision.kind === 'chat')) {
+      await new Promise((resolve) => setTimeout(resolve, coalesceWindowMs));
+      try {
+        const burst = await options.collectBurst({ botId: selfIdRaw, chatType, groupId: event.group_id, userId: userId ?? '', excludeMessageId: event.message_id });
+        for (const item of burst) {
+          const stamp = new Date(item.at).toTimeString().slice(0, 5);
+          burstLines += `[${stamp}] ${item.authorName} [QQ:${item.userId}]: ${item.text.replace(/\s+/g, ' ').slice(0, 500)}\n`;
+          burstImageRefs.push(...item.imageRefs);
+        }
+        if (burst.length) log?.info('合并窗口收集相邻消息', { groupId: event.group_id, count: burst.length, images: burstImageRefs.length });
+      } catch { /* 尽力而为，不阻塞回复 */ }
+    }
     // 最近图片记忆：本条消息没带图时，并入此前因无触发被忽略的群图片（短窗），
     // 支撑"先发图 → 再 @bot 提问"的常见用法（线上时测：图片被忽略后提问，bot 看不到图）。
     let recentImageRefs: string[] = [];
@@ -1370,6 +1464,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const enrichedImages = dedupeImageUrls([
       ...baseImages,
       ...recentImageRefs,
+      ...burstImageRefs,
       ...quotedImages,
     ]).slice(0, maxInputImages);
     const enrichedVideos = dedupeVideoUrls([
@@ -1606,6 +1701,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         }
       }
       if (decision.command === 'clear') {
+        consolidateSessionTail();
         options.app.sessions.clear(sessionId);
         await engine.replyText(replyCtx, '已开启新对话，之前的上下文已清除。');
         return { handled: true, kind: 'clear' };
@@ -1767,6 +1863,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
               await engine.replyText(replyCtx, buildHelpText(cfg), 'forward'); // R15/H-2：能力/帮助列表固定合并转发
               return { handled: true, kind: 'help' };
             } else if (legacyIntent.intent === 'clear') {
+              consolidateSessionTail();
               options.app.sessions.clear(sessionId);
               await engine.replyText(replyCtx, '已开启新对话，之前的上下文已清除。');
               return { handled: true, kind: 'clear' };
@@ -1962,7 +2059,8 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     if (result.files?.length) memoryReplyParts.push(`[生成了 ${result.files.length} 个文件]`);
     if (result.audio?.length) memoryReplyParts.push(`[生成了 ${result.audio.length} 段语音]`);
     if (memoryReplyParts.length) {
-      void Promise.resolve(options.ingestMemory?.({
+      void Promise.resolve(options.observeMemory?.({
+        botId: selfIdRaw,
         chatType,
         groupId: event.group_id,
         userId: String(userId || ''),
@@ -1970,6 +2068,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         role: 'assistant',
         text: memoryReplyParts.join('\n').slice(0, 10000),
         messageId: String(event.message_id || Date.now()) + ':assistant',
+        eventTime: new Date().toISOString(),
       })).catch(() => undefined);
     }
     // 对话延续状态更新：bot 回复后记录该用户/群，窗口内的下一条消息可自动延续。
@@ -2020,7 +2119,7 @@ armAutoContinue(chatType, event.group_id, userId, result.text || '', source !== 
   /** 关键词触发每用户冷却（防同一人连环触发判断）。 */
   const keywordTriggerCooldowns = new Map<string, number>();
   /** 对话延续状态（groupId:userId → bot 回复时间/轮数/摘要）。 */
-  const autoContinueStates = new Map<string, { lastBotReplyAt: number; rounds: number; lastContinueAt: number; lastBotReplyText: string; windowId?: string }>();
+  const autoContinueStates = new Map<string, { lastBotReplyAt: number; rounds: number; lastBotReplyText: string; windowId?: string }>();
   /** 群级关注窗口：显式触发后观察群消息，按模型判定是否接话；每个用户仍有独立 session。 */
   const groupFocusStates = new Map<string, {
     triggerUserId: string;
@@ -2051,7 +2150,7 @@ armAutoContinue(chatType, event.group_id, userId, result.text || '', source !== 
       } else if (hardTrigger) {
         // 只有显式触发/新的正常回复才创建 per-user 延续状态；group focus 续话不创建，
         // 由群级关注窗口预算统一控制，避免预算耗尽后又被 per-user 状态续上。
-        autoContinueStates.set(acKey, { lastBotReplyAt: Date.now(), rounds: 0, lastContinueAt: 0, lastBotReplyText: replyText.slice(0, 500), ...(windowId ? { windowId } : {}) });
+        autoContinueStates.set(acKey, { lastBotReplyAt: Date.now(), rounds: 0, lastBotReplyText: replyText.slice(0, 500), ...(windowId ? { windowId } : {}) });
       }
       if (autoContinueStates.size > 2000) {
         const oldest = autoContinueStates.keys().next().value;
@@ -2144,11 +2243,16 @@ armAutoContinue(chatType, event.group_id, userId, result.text || '', source !== 
       const whitelist = cfg.bot.whitelistGroups || [];
       if (whitelist.length && !whitelist.includes(groupId)) return;
     }
-    const cooldownMs = Math.max(0, Math.trunc(Number(poke.cooldownSec) || 0)) * 1000;
-    const key = userId + ':' + groupId;
+    // 会话级共享窗口（windowSec，默认 60s）：同一群聊每窗口只响应一次戳一戳，全群共享额度；
+    // 不再按用户冷却（旧行为：不同用户 30s 内轮流各回各的，戳一戳可被刷屏）。0 = 不限。
+    const windowMs = Math.max(0, Math.trunc(Number(poke.windowSec) || 0)) * 1000;
+    const key = groupId ? 'g:' + groupId : 'p:' + userId;
     const now = Date.now();
     const last = pokeCooldowns.get(key) || 0;
-    if (cooldownMs > 0 && now - last < cooldownMs) return;
+    if (windowMs > 0 && now - last < windowMs) {
+      log?.info('戳一戳回复被会话级窗口拦截', { groupId, userId, remainMs: windowMs - (now - last) });
+      return;
+    }
     pokeCooldowns.set(key, now);
     if (pokeCooldowns.size > 2000) {
       const oldestPoke = pokeCooldowns.keys().next().value;
@@ -2163,9 +2267,11 @@ armAutoContinue(chatType, event.group_id, userId, result.text || '', source !== 
     }
     lastPokeTexts.set(key, text);
     try {
+      // 用带追踪的 trackedReply 发送：戳一戳回复进入撤回追踪器，/plch 才能撤回它
+      // （此前走裸 reply，/plch 眼里这些消息不存在——线上 2026-11-01 日志实锤）。
       const sent = groupId
-        ? await options.reply.sendGroupText(Number(groupId) || groupId, text)
-        : await options.reply.sendPrivateText(Number(userId) || userId, text);
+        ? await trackedReply.sendGroupText(Number(groupId) || groupId, text)
+        : await trackedReply.sendPrivateText(Number(userId) || userId, text);
       if (!sent.success) log?.warn('戳一戳回复发送失败', { groupId, userId, error: sent.error });
     } catch (error) {
       log?.warn('戳一戳回复发送异常', { groupId, userId, error: String((error as Error)?.message || error) });
@@ -2692,7 +2798,13 @@ async function sendResultUnlocked(
             if (file) {
               planToSend = replacePrimaryTextWithAudio(planToSend, target, file);
             } else if (voiceEligible) {
-              await reportProblem?.('auto-tts-synthesize-failed', '自动 TTS 返回空文件', { textChars: target.text.length });
+              // voice='on' 路径跳过了启发式资格检查；但合成空返回时必须先用资格判定
+              // （含 TTS 全局开关）复核，否则 TTS 关闭时每条回复都会向 owner 刷"问题上报"
+              // （本地端到端模拟 2026-11-01 实测）。
+              let reportable = true;
+              try { reportable = await voiceEligible(target.text, { chatType: ctx.chatType, groupId: ctx.groupId, userId: ctx.userId }); }
+              catch { reportable = true; }
+              if (reportable) await reportProblem?.('auto-tts-synthesize-failed', '自动 TTS 返回空文件', { textChars: target.text.length });
             }
           } catch (error) {
             await reportProblem?.('auto-tts-synthesize-error', error, { textChars: target.text.length });
@@ -2870,6 +2982,20 @@ export function toRouterConfig(cfg: AppConfig, selfId?: string | number): BotRou
 export function toReplyStrategyConfig(cfg: AppConfig): ReplyStrategyConfig {
   const s = cfg.bot.replyStrategies;
   return { text: s.text, image: s.image, multiImage: s.multiImage, video: s.video, multiVideo: s.multiVideo, file: s.file, multiFile: s.multiFile, mixed: s.mixed, textReply: cfg.bot.textReply };
+}
+
+/**
+ * 观察作用域闸门：与 bot-router 的白名单/黑名单同标准。
+ * Harness Memory Layer 的隐私红线——名单外的群/私聊/用户消息绝不写入向量库。
+ */
+export function isObservationScopeAllowed(cfg: AppConfig, chatType: 'group' | 'private', groupId: number | string | undefined, userId: number | string | undefined): boolean {
+  const bot = cfg.bot;
+  if (chatType === 'group') {
+    if (!isAllowedByWhitelist(groupId, bot.whitelistGroups || [])) return false;
+    if (groupId !== undefined && userId !== undefined && isGroupUserBlacklisted(groupId, userId, bot.blacklistGroupUsers || [])) return false;
+    return true;
+  }
+  return isAllowedByWhitelist(userId, bot.whitelistPrivate || []);
 }
 
 /**

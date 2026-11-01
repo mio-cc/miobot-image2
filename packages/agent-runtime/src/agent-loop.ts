@@ -515,6 +515,8 @@ export class AgentRuntime implements AgentLoop {
     let lastRepairReason: string | undefined;
     // P0-2：reply.presentation 按当前 turn 暂存，最终随 AgentTurnResult 交给 AgentHost。
     let turnReplyPreference: AgentReplyPreference | undefined;
+    // 图片降级重试标记：provider 对图片报错时剥图重试一次，随 meta 交回 host 供日志观测。
+    let imageDegraded = false;
 
     for (let round = 0; round < this.limits.maxModelRounds; round += 1) {
       this.throwIfStopped(input, signal);
@@ -526,7 +528,7 @@ export class AgentRuntime implements AgentLoop {
           reason: 'token_budget_exhausted', repairLimits: this.repairLimits, deadlineAt: executionState.deadlineAt,
         });
       }
-      const response = await this.deps.model.chat({
+      const chatArgs = () => ({
         model: this.deps.mainModel,
         ...(this.deps.nodeIndex !== undefined ? { nodeIndex: this.deps.nodeIndex } : {}),
         messages: workingMessages.map((message) => structuredClone(message)),
@@ -535,9 +537,39 @@ export class AgentRuntime implements AgentLoop {
         maxTokens: Math.max(1, Math.min(budget.remainingTokens, this.limits.maxTokens)),
         temperature: temperatureOverride ?? this.deps.temperature,
         signal,
-        purpose: 'turn',
+        purpose: 'turn' as const,
         timeoutMs: Math.max(1, executionState.deadlineAt - Date.now()),
       });
+      let response;
+      try {
+        response = await this.deps.model.chat(chatArgs());
+      } catch (error) {
+        // 图片降级重试：provider 对图片内容报错（服务端下载失败 / 模型不支持视觉）时，
+        // 剥掉图片重试一次纯文本回合——避免"用户 @ 了却因相邻图片失效而整轮沉默"。
+        // 仅首轮 + 回合确实带图 + 错误形态像图片问题时触发；剥图重试仍失败则照常抛出。
+        const errorMessage = String((error as Error)?.message || error);
+        const hasImages = workingMessages.some((message) => 'imageRefs' in message && Array.isArray(message.imageRefs) && message.imageRefs.length);
+        const imageLikeError = /image|图片|download|fetch|media|attachment|vision|multimodal/i.test(errorMessage);
+        if (round === 0 && hasImages && imageLikeError && !signal?.aborted) {
+          for (const message of workingMessages) {
+            if ('imageRefs' in message && Array.isArray(message.imageRefs) && message.imageRefs.length) {
+              message.content = String(message.content || '').trim() + '\n（附带的图片加载失败，已省略；如需图片请让用户重新发送）';
+              message.imageRefs = undefined;
+            }
+          }
+          // 同步剥掉持久化侧的 imageRefs：坏图不能进 session 历史，否则下一轮重传
+          // 会再次失败并再次触发降级（多一次失败调用的延迟）。
+          for (const message of persistedMessages) {
+            if ('imageRefs' in message && Array.isArray(message.imageRefs) && message.imageRefs.length) {
+              message.imageRefs = undefined;
+            }
+          }
+          imageDegraded = true;
+          response = await this.deps.model.chat(chatArgs());
+        } else {
+          throw error;
+        }
+      }
       temperatureOverride = undefined;
       this.consumeModelUsage(response, budget);
       this.throwIfStopped(input, signal);
@@ -798,7 +830,7 @@ export class AgentRuntime implements AgentLoop {
       }
 
       if (validation.text.trim()) {
-        return this.completeWithText(input, session, persistedMessages, budget, validation.text, workingMessages, executedResults, turnReplyPreference);
+        return this.completeWithText(input, session, persistedMessages, budget, validation.text, workingMessages, executedResults, turnReplyPreference, imageDegraded);
       }
     }
 
@@ -1109,6 +1141,7 @@ export class AgentRuntime implements AgentLoop {
     workingMessages: AgentMessage[],
     toolResults: AgentToolResult[],
     turnReplyPreference?: AgentReplyPreference,
+    imageDegraded?: boolean,
   ): AgentTurnResult {
     const assistant: AgentMessage = { role: 'assistant', content: text };
     workingMessages.push(assistant);
@@ -1127,6 +1160,7 @@ export class AgentRuntime implements AgentLoop {
       ...(toolResults.length ? { toolResults } : {}),
       ...(turnReplyPreference ? { replyPreference: turnReplyPreference } : {}),
       usage: this.finalUsage(budget),
+      ...(imageDegraded ? { meta: { imageDegraded: true } } : {}),
     };
   }
 

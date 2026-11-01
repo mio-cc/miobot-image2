@@ -3,12 +3,11 @@ import assert from 'node:assert/strict';
 import { createBotApp, createBotMessageRuntime } from '../dist/apps/bot/src/main.js';
 import { createDefaultConfig } from '../dist/packages/config/src/index.js';
 
-test('contextPolicy R9 BUG-4: group context fields override legacy bot.groupContext', async () => {
+test('contextPolicy R9 BUG-4: 群上下文唯一真源 contextPolicy（旧 bot.groupContext 已删除）', async () => {
   const cfg = createDefaultConfig();
   cfg.bot.botQqId = '10000';
   cfg.bot.whitelistGroups = ['3000'];
   cfg.bot.replyStrategies.text = 'plain';
-  cfg.bot.groupContext.enabled = false;
   cfg.contextPolicy.groupContextEnabled = true;
   cfg.contextPolicy.groupContextMessages = 2;
   cfg.contextPolicy.groupContextMaxChars = 500;
@@ -56,4 +55,26 @@ test('contextPolicy R9 BUG-4: group context fields override legacy bot.groupCont
   assert.equal(result.handled, true);
   assert.equal(fetchedCount, 10);
   assert.match(seenGroupContext, /历史消息一|历史消息二/);
+});
+
+test('config 迁移: 旧 bot.groupContext 由 normalize 收口到 contextPolicy（Harness Memory Layer）', async () => {
+  const { normalizeConfig } = await import('../dist/packages/config/src/index.js');
+  // 场景一：contextPolicy 群上下文字段全为默认 → 旧值回填（含 skipForward/includeImages 无条件接管）。
+  const migrated = normalizeConfig({
+    bot: { botQqId: '10000', groupContext: { enabled: true, messageCount: 30, skipForward: false, includeImages: true, maxChars: 4000 } },
+    contextPolicy: {},
+  });
+  assert.equal(migrated.contextPolicy.groupContextSkipForward, false, 'skipForward 无条件接管（旧字段曾是唯一来源）');
+  assert.equal(migrated.contextPolicy.groupContextIncludeImages, true);
+  assert.equal(migrated.contextPolicy.groupContextMessages, 30);
+  assert.equal(migrated.contextPolicy.groupContextMaxChars, 4000);
+  // 场景二：contextPolicy 已被用户定制（Agent 页改过）→ 不回填，尊重用户现值。
+  const customized = normalizeConfig({
+    bot: { botQqId: '10000', groupContext: { enabled: false, messageCount: 5, maxChars: 1000 } },
+    contextPolicy: { groupContextMessages: 100 },
+  });
+  assert.equal(customized.contextPolicy.groupContextMessages, 100, '定制过的 contextPolicy 不被迁移覆盖');
+  assert.equal(customized.contextPolicy.groupContextSkipForward, true, 'skipForward 旧字段为默认值时迁回默认');
+  // normalize 输出不再携带旧字段。
+  assert.equal(migrated.bot.groupContext, undefined, 'bot.groupContext 已从配置形态删除');
 });

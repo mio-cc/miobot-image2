@@ -170,7 +170,7 @@ test('local simulation: private/group QQ events traverse real Napcat WebSocket a
 test('local simulation: group same-name members stay distinct by QQ id through real Napcat events', async () => {
   const sim = await createNapcatSimulation();
   const cfg = makeConfig();
-  cfg.bot.groupContext.enabled = true;
+  cfg.contextPolicy.groupContextEnabled = true;
   let capturedContext = '';
   const app = makeApp(async (input) => {
     capturedContext = String(input.context || '');

@@ -20,7 +20,7 @@ export interface PromptEntry {
 export const PROMPT_REGISTRY: readonly PromptEntry[] = [
   // ── 输入侧（R15 收编） ──
   { id: 'trigger.intent', title: '@ 触发判定', description: '判断群消息用户是否在跟 bot 说话', configPath: 'bot.keywordTrigger.triggerIntentPromptTemplate', category: 'input', hotReload: 'next_turn', variables: '{{words}} {{context}} {{userText}} {{userName}} {{triggerWord}}' },
-  { id: 'trigger.continue', title: '续话判定', description: 'autoContinue 窗口内判断是否延续对话', configPath: 'bot.autoContinue.continueIntentPromptTemplate', category: 'input', hotReload: 'next_turn', variables: '{{focusNote}} {{botLastReply}} {{userText}} {{userName}}' },
+  { id: 'trigger.continue', title: '续话判定', description: 'autoContinue 窗口内判断是否延续对话（addressee 判定：用户可能在与群里其他人交流）', configPath: 'bot.autoContinue.continueIntentPromptTemplate', category: 'input', hotReload: 'next_turn', variables: '{{focusNote}} {{groupContext}} {{botLastReply}} {{userText}} {{userName}}' },
   // ── 生成侧 ──
   { id: 'suno.composer', title: 'Suno 作曲', description: '歌词与参数规划（含歌名原创最高优先级 override）', configPath: 'orchestration.suno.composerPromptTemplate', category: 'generation', hotReload: 'next_turn', variables: '{{userRequest}} {{intents}} {{context}}' },
   { id: 'image.enhance', title: '提示词润色', description: '用户原始提示词 → 图像生成结构化提示词', configPath: 'llm.enhancePromptTemplate', category: 'generation', hotReload: 'next_turn', variables: '{{rawPrompt}}' },

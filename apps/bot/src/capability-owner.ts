@@ -32,10 +32,13 @@ export class OwnerRecallCapabilityHandler implements CapabilityHandler {
     if (expired) parts.push(`${expired} 条已超撤回窗口`);
     if (failed.length) parts.push(`${failed.length} 条撤回失败`);
     const text = parts.length ? parts.join('；') + '。' : '撤回失败。';
+    // 超窗/合并转发是预期内的信息性结果，不算失败——只有真实撤回失败才报 partial，
+    // 否则编排层会对"5 条已超撤回窗口"这种正常答复误发 capability_failed 告警（线上 2026-11-01 实锤）。
+    const status = failed.length ? 'partial' : 'success';
     return {
       jobId: invocation.plan.planId,
       stepId: invocation.step.id,
-      status: succeeded && !failed.length && !forward.length && !expired ? 'success' : 'partial',
+      status: failed.length ? 'partial' : 'success',
       outputs: [{ kind: 'text', text, priority: 10, mergeable: true }],
       diagnostics: { succeeded, failed: failed.length, expired, forward: forward.length },
     };

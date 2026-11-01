@@ -42,6 +42,12 @@ export interface ToolMetadata {
   permissions?: string[];
   /** Set for adapters that are not yet able to execute through the V2 executor. */
   migrationStatus?: 'contract-only' | 'adapted' | 'native';
+  /** 内部能力：Agent 可见（toolSpecs），用户不可见、不可直接调用。 */
+  internal?: boolean;
+  /** 是否出现在用户可见目录（capability.catalog/help/用户命令）；internal 能力恒为 false。 */
+  userVisible?: boolean;
+  /** 作用域由服务端从执行上下文绑定；模型传入的 groupId/userId 等越权参数必须被拒绝。 */
+  scopeBound?: boolean;
 }
 
 export interface ToolSpec {
@@ -134,6 +140,8 @@ export interface LegacyCapabilityDescriptorLike {
   mode?: string;
   permissions?: string[];
   effect?: string;
+  /** 内部能力：Agent 可见、用户不可见不可调用（记忆检索等）。 */
+  internal?: boolean;
 }
 
 export interface ToolSpecAdapterOptions {
@@ -155,6 +163,8 @@ export const CORE_TOOL_NAMES = [
   'file.read',
   'ask_user',
   'update_plan',
+  // 内部记忆技能：Agent 始终可见（用户目录/命令不暴露，scope 由服务端绑定）。
+  'memory.search',
 ] as const;
 
 export const DOMAIN_TOOL_NAMES = [
@@ -281,6 +291,7 @@ export function toolSpecFromCapabilityDescriptor(
       permissions: descriptor.permissions,
       migrationStatus: options.migrationStatus || 'adapted',
       presentationHint: String(descriptor.presentationHint || '').trim(),
+      ...(descriptor.internal ? { internal: true, userVisible: false, scopeBound: true } : {}),
     },
   });
 }

@@ -85,8 +85,8 @@ async function createHarness(options = {}) {
   cfg.bot.botQqId = '10000';
   cfg.bot.ownerQQs = ['1'];
   cfg.bot.triggerModes = { mention: true, replyToBot: true };
-  cfg.bot.groupContext.enabled = true;
-  cfg.bot.groupContext.messageCount = 10;
+  cfg.contextPolicy.groupContextEnabled = true;
+  cfg.contextPolicy.groupContextMessages = 10;
   cfg.bot.replyStrategies.text = 'plain';
   cfg.bot.replyStrategies.image = 'plain';
   cfg.bot.replyStrategies.multiImage = 'plain';
@@ -259,7 +259,7 @@ test('QQ matrix integration: quote + at + text + image + video + file + voice + 
 test('QQ matrix: auto-continue catches a no-mention follow-up once and then stops at maxRounds', async () => {
   const h = await createHarness({
     config: {
-      bot: { autoContinue: { enabled: true, windowMs: 60000, maxRounds: 1, cooldownMs: 5000, requireModelCheck: false } },
+      bot: { autoContinue: { enabled: true, windowMs: 60000, maxRounds: 1, requireModelCheck: false } },
     },
     triggerIntentChecker: { async checkContinueIntent() { return true; } },
     agent: async (input) => ({ handled: true, text: '自动续话：' + input.text }),
@@ -379,7 +379,7 @@ test('QQ matrix: long text reply respects textReply maxChars and sends bounded p
 test('QQ matrix: auto-continue checker can reject a follow-up and clear state', async () => {
   let checks = 0;
   const h = await createHarness({
-    config: { bot: { autoContinue: { enabled: true, windowMs: 60000, maxRounds: 3, cooldownMs: 5000 } } },
+    config: { bot: { autoContinue: { enabled: true, windowMs: 60000, maxRounds: 3 } } },
     triggerIntentChecker: { async checkContinueIntent() { checks += 1; return false; } },
     agent: async () => ({ handled: true, text: '首次回复' }),
   });

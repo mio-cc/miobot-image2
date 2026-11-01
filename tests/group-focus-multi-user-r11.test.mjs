@@ -13,7 +13,7 @@ function setup() {
   cfg.bot.replyStrategies.text = 'plain';
   cfg.bot.autoContinue = {
     enabled: true, windowMs: 60000, maxRounds: 3,
-    cooldownMs: 5000, requireModelCheck: true, focusMaxMessages: 20,
+    requireModelCheck: true, focusMaxMessages: 20,
   };
   const agentInputs = [];
   const checkerCalls = [];
@@ -80,7 +80,11 @@ test('group focus R11: users stay isolated, interjections do not steal the conve
   assert.ok(h.agentInputs.filter((item) => item.userId === '1002').length >= 2);
   const focusChecks = h.checkerCalls.filter((item) => item.focusMode === true);
   assert.ok(focusChecks.some((item) => item.userText === '今天吃什么' && item.isOriginalUser === false));
-  assert.ok(focusChecks.some((item) => item.userText === '继续这个话题'));
+  // 冷却删除后的新流程：A 的"继续这个话题"由用户级续话判定接管（不再靠冷却让位给焦点判定），
+  // 且用户级判定现在必须带群聊上下文（此前只看 botLastReply+userText 的缺口已修复）。
+  const aUserLevelCheck = h.checkerCalls.find((item) => item.userText === '继续这个话题' && item.focusMode !== true);
+  assert.ok(aUserLevelCheck, 'A 的续话消息由用户级判定接管');
+  assert.ok(typeof aUserLevelCheck.groupContext === 'string' && aUserLevelCheck.groupContext.length > 0, '用户级判定带群聊上下文');
   assert.ok(focusChecks.every((item) => typeof item.groupContext === 'string' && item.groupContext.length > 0));
 });
 
@@ -90,7 +94,7 @@ test('group focus R11: the observed window is bounded by message budget', async 
   cfg.agent.enabled = true; cfg.agent.mode = 'enforce';
   cfg.bot.botQqId = '10000'; cfg.bot.ownerQQs = ['1']; cfg.bot.whitelistGroups = ['3000'];
   cfg.bot.replyStrategies.text = 'plain';
-  cfg.bot.autoContinue = { enabled: true, windowMs: 60000, maxRounds: 3, cooldownMs: 5000, requireModelCheck: true, focusMaxMessages: 1 };
+  cfg.bot.autoContinue = { enabled: true, windowMs: 60000, maxRounds: 3, requireModelCheck: true, focusMaxMessages: 1 };
   const inputs = [];
   const runtime = createBotMessageRuntime({
     app: { handle: async () => ({ kind: 'chat', handled: false }), engine: { handleExplicit: async () => null }, sessions: { clear() {}, get: () => [], append() {} }, registry: () => ({}), client: {} },

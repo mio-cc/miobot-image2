@@ -171,7 +171,7 @@ test('角度-多用户: 两个用户同时在同一群触发，互不干扰', as
 test('角度-恢复: 会话快照重启恢复后延续判断仍工作', async () => {
   const sim = await createSim();
   const cfg = makeConfig();
-  cfg.bot.autoContinue = { enabled: true, windowMs: 60000, maxRounds: 3, cooldownMs: 0, requireModelCheck: false };
+  cfg.bot.autoContinue = { enabled: true, windowMs: 60000, maxRounds: 3, requireModelCheck: false };
   const store = { data: { 'group:100:2': [{ role: 'user', content: '你好' }, { role: 'assistant', content: '你好呀' }] } };
   const app = {
     handle: async (i) => ({ kind: 'chat', handled: true, text: '在的', decision: { kind: 'chat', params: {} } }),

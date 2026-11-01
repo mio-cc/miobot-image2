@@ -47,7 +47,8 @@ test('config import v2: wrapper upgrades to v3 and keeps legacy values', () => {
   assert.equal(imported.config.llm.apiKeys.length, 1);
   assert.equal(imported.config.llm.chatModel, 'legacy-model');
   assert.equal(imported.config.bot.persona.name, 'Legacy Bot');
-  assert.equal(imported.config.bot.groupContext.enabled, true);
+  assert.equal(imported.config.contextPolicy.groupContextEnabled, true, '旧 bot.groupContext 迁移后由 contextPolicy 承载');
+  assert.equal(imported.config.bot.groupContext, undefined, '旧字段已从配置形态删除');
   assert.equal(imported.config.bot.autoContinue.enabled, true);
   assert.equal(imported.config.orchestration.suno.baseUrl, 'https://suno.legacy.example');
   assert.equal(imported.config.agent.mode, 'enforce');

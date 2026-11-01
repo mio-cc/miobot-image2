@@ -135,6 +135,8 @@ export class TriggerIntentChecker {
       botLastReply: input.botLastReply.slice(0, 300),
       userText: input.userText.slice(0, 500),
       userName: input.userName,
+      // 用户级（非 focus）续话判定也带上群聊上下文——此前只看 botLastReply+userText，判定器缺上下文。
+      groupContext: String(input.groupContext || '').trim(),
     });
     const t0 = Date.now();
     try {

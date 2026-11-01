@@ -34,20 +34,19 @@ const KNOWN_DIALECTS: ProviderDialect[] = ['openai', 'anthropic', 'gemini', 'hug
 // bridge 里读一次、给定唯一优先级，业务侧只取 bridge 输出。
 
 /**
- * 群历史上下文的单一读取点（M-1）。历史上有两套字段：v3 contextPolicy.*
- * 与旧 bot.groupContext.*——两页 UI 都能改、运行时 `?? ` 链取值导致"配置失灵"。
- * R15 裁定：contextPolicy 为唯一真源；bot.groupContext 仅作老配置迁移来源，
- * 只有 contextPolicy 未设置（undefined，而非 false）时才回退旧值。
+ * 群历史上下文的单一读取点（M-1）。历史上 bot.groupContext.* 与 contextPolicy.* 双真源并存
+ * （skipForward/includeImages 只有旧字段承载，其余字段被 contextPolicy 恒定短路），
+ * 曾导致 AccessPage 开关失效——Harness Memory Layer 收口：唯一真源 contextPolicy.groupContext*，
+ * 旧字段由 packages/config normalize 一次性迁移后删除。
  */
 export function toGroupContextConfig(cfg: AppConfig): { enabled: boolean; messageCount: number; skipForward: boolean; includeImages: boolean; maxChars: number } {
   const cp = cfg.contextPolicy;
-  const gc = cfg.bot?.groupContext;
   return {
-    enabled: cp?.groupContextEnabled ?? gc?.enabled ?? true,
-    messageCount: cp?.groupContextMessages ?? gc?.messageCount ?? 30,
-    skipForward: gc?.skipForward ?? true,
-    includeImages: gc?.includeImages ?? true,
-    maxChars: cp?.groupContextMaxChars ?? gc?.maxChars ?? 4000,
+    enabled: cp?.groupContextEnabled ?? true,
+    messageCount: cp?.groupContextMessages ?? 30,
+    skipForward: cp?.groupContextSkipForward ?? true,
+    includeImages: cp?.groupContextIncludeImages ?? true,
+    maxChars: cp?.groupContextMaxChars ?? 4000,
   };
 }
 

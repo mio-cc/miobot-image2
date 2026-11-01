@@ -130,6 +130,12 @@ export interface CapabilityDescriptor {
   external?: boolean;
   estimatedCost?: number;
   modelRounds?: number;
+  /**
+   * 内部能力：只对 Agent 暴露（toolSpecs/bindings 可见），对用户不可见、不可直接调用。
+   * capability.catalog、help、用户命令均过滤；handler 必须从执行上下文绑定作用域，
+   * 拒绝模型传入的 groupId/userId 等越权参数。
+   */
+  internal?: boolean;
 }
 
 export interface ExecutionOutput {

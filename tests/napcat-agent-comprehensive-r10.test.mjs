@@ -72,8 +72,8 @@ function makeConfig() {
   cfg.bot.botQqId = '10000';
   cfg.bot.ownerQQs = ['1'];
   cfg.bot.triggerModes = { mention: true, replyToBot: true };
-  cfg.bot.groupContext.enabled = true;
-  cfg.bot.groupContext.messageCount = 10;
+  cfg.contextPolicy.groupContextEnabled = true;
+  cfg.contextPolicy.groupContextMessages = 10;
   cfg.bot.replyStrategies.text = 'plain';
   cfg.bot.replyStrategies.image = 'plain';
   cfg.bot.replyStrategies.multiImage = 'plain';

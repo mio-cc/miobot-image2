@@ -263,8 +263,8 @@ const DEFAULT_POKE_REPLIES = ['戳我干嘛呀', '别戳啦，在的呢', '收�
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
         <div class="md:col-span-3 text-xs font-medium">事件源（notice / request）</div>
         <div class="flex items-end"><ToggleField v-model="config.bot.poke.enabled" label="戳一戳响应" hint="被戳时从回复池随机回一句" /></div>
-        <FormField label="戳一戳冷却 (秒)" hint="每用户冷却，防连戳刷屏">
-          <input v-model.number="config.bot.poke.cooldownSec" type="number" min="0" max="3600" class="input-field" :disabled="!config.bot.poke.enabled" />
+        <FormField label="戳一戳回复间隔 (秒)" hint="同一群聊共享：窗口内全群只响应一次戳一戳（0=不限）">
+          <input v-model.number="config.bot.poke.windowSec" type="number" min="0" max="3600" class="input-field" :disabled="!config.bot.poke.enabled" />
         </FormField>
         <FormField label="戳一戳回复池" hint="每行一句，被戳时随机挑一条（最多 20 条；清空则回落出厂默认）">
           <textarea v-model="pokeRepliesText" @blur="commitPokeReplies" rows="4" class="input-field resize-y"
@@ -290,25 +290,6 @@ const DEFAULT_POKE_REPLIES = ['戳我干嘛呀', '别戳啦，在的呢', '收�
       </div>
     </SectionCard>
 
-    <SectionCard title="群聊上下文" hint="@bot 时自动带上最近的群聊记录，让回答接得住话题" class="mb-4">
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <ToggleField v-model="config.bot.groupContext.enabled" label="启用群聊上下文" />
-        <FormField label="拉取条数" hint="范围 5-100（超出会被后端钳制）；太多会明显推高 token 消耗">
-          <input v-model.number="config.bot.groupContext.messageCount" type="number" min="5" max="100"
-            :disabled="!config.bot.groupContext.enabled" class="input-field" />
-        </FormField>
-        <FormField label="最大字符数">
-          <input v-model.number="config.bot.groupContext.maxChars" type="number" min="500" step="500"
-            :disabled="!config.bot.groupContext.enabled" class="input-field" />
-        </FormField>
-        <div class="grid grid-cols-1 gap-2">
-          <ToggleField v-model="config.bot.groupContext.skipForward" label="跳过合并转发消息"
-            :disabled="!config.bot.groupContext.enabled" />
-          <ToggleField v-model="config.bot.groupContext.includeImages" label="带上图片"
-            hint="对话模型不支持视觉时会自动忽略" :disabled="!config.bot.groupContext.enabled" />
-        </div>
-      </div>
-    </SectionCard>
 
     <SectionCard title="名单" hint="白名单留空表示全部放行">
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">

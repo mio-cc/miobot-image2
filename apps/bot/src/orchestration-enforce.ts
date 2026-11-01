@@ -154,6 +154,11 @@ export class OrchestrationEnforcer {
     registerSunoLateDelivery?: (taskId: string, input: { invocation: import('../../../packages/orchestration/src/index.js').CapabilityInvocation; composed?: unknown; rawUserText: string }) => void;
     /** R13：迟到投递钩子——enforcer 组好 result 后由装配方发送（enforcer 无发送通道）。 */
     onExternalDeliver?: (invocation: import('../../../packages/orchestration/src/index.js').CapabilityInvocation, result: import('./runtime-types.js').RuntimeResult) => Promise<void> | void;
+    /**
+     * Harness Memory Layer：session.clear 前的会话收尾固化回调（摘要写回记忆库）。
+     * 尽力而为：抛错由调用方吞掉，不影响清屏。
+     */
+    onSessionClear?: (input: { sessionId: string; chatType: 'group' | 'private'; groupId?: string; userId: string }) => void | Promise<void>;
   }) {
     this.dispatcher = new CapabilityDispatcher(this.registry, createPermissionPolicyFromDefaults({
       low: 'allow', medium: 'allow', high: 'ask_admin', critical: 'ask_admin',
@@ -198,9 +203,19 @@ export class OrchestrationEnforcer {
     }
     this.dispatcher.registerHandler('session.clear', {
       execute: async (invocation) => {
-        const sessionId = invocation.request.chat.type === 'group'
+        const chatType: 'group' | 'private' = invocation.request.chat.type === 'group' ? 'group' : 'private';
+        const sessionId = chatType === 'group'
           ? 'group:' + String(invocation.request.chat.groupId ?? '') + ':' + invocation.request.user.qq
           : 'private:' + invocation.request.user.qq;
+        // Harness Memory Layer：清屏前把会话尾巴交给记忆层收尾固化（尽力而为，失败不影响清屏）。
+        try {
+          await Promise.resolve(this.options.onSessionClear?.({
+            sessionId,
+            chatType,
+            ...(chatType === 'group' ? { groupId: String(invocation.request.chat.groupId ?? '') } : {}),
+            userId: invocation.request.user.qq,
+          }));
+        } catch { /* 尽力而为 */ }
         this.options.app.sessions?.clear?.(sessionId);
         return {
           jobId: invocation.plan.planId,

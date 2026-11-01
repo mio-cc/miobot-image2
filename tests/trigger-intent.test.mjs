@@ -15,7 +15,7 @@ function makeChecker(chatImpl, overrides = {}) {
   cfg.llm.chatNodeIndex = 2;
   cfg.llm.chatModel = 'chat-model';
   cfg.bot.keywordTrigger = { enabled: true, words: ['小喵'], contextMessages: 5, windowMs: 10000, intentModel: '', intentNodeIndex: 0 };
-  cfg.bot.autoContinue = { enabled: true, windowMs: 60000, maxRounds: 3, cooldownMs: 5000, requireModelCheck: true };
+  cfg.bot.autoContinue = { enabled: true, windowMs: 60000, maxRounds: 3, requireModelCheck: true };
   const calls = [];
   const client = { chat: async (nodeIndex, req) => { calls.push({ nodeIndex, req }); return chatImpl(req); } };
   const checker = new TriggerIntentChecker({ getConfig: () => cfg, client, ...overrides });

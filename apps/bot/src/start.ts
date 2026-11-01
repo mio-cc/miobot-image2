@@ -34,6 +34,8 @@ import { JobRecoveryService } from './job-recovery.js';
 import { FileDeleteCapabilityHandler, ManagedArtifactRegistry, type ArtifactScope } from './managed-artifacts.js';
 import { AuditService } from './audit-service.js';
 import { ChatMemoryService } from './memory-service.js';
+import { MemoryObserver } from './memory-observer.js';
+import { createMemorySearchHandler } from './memory-search-handler.js';
 import { FishAudioVoiceService } from './voice-service.js';
 import { OwnerRecallCapabilityHandler } from './capability-owner.js';
 import { createSentMessageTracker } from './sent-messages.js';
@@ -341,8 +343,10 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // 节点延迟被动采集：包装 chat/vision，每次真实调用按节点记录耗时/成败 → node-latency.json（面板可读）。
   const nodeLatencyRecorder = new NodeLatencyRecorder({ filePath: path.join(dataDir, 'node-latency.json'), logger });
   wrapClientWithLatency(client, nodeLatencyRecorder, (nodeIndex) => getConfig().llm.apiKeys?.[nodeIndex]?.name);
+  // 记忆数据目录：service 与观察队列共用一处（pending.jsonl 与索引同目录）。
+  const memoryRootDir = (): string => getConfig().orchestration.memory.dataDir || path.join(dataDir, 'memory');
   const memoryService = new ChatMemoryService({
-    rootDir: getConfig().orchestration.memory.dataDir || path.join(dataDir, 'memory'),
+    rootDir: memoryRootDir,
     getConfig,
     logger,
     summarize: async ({ namespace, messages }) => {
@@ -380,6 +384,16 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       return scores;
     },
   });
+  // Harness Memory Layer 观察链路：所有消息先入观察队列（有界/批量 embedding/失败进 pending.jsonl
+  // 持久重试），再走触发路由。rootDir 与 memoryService 同源，pending 与索引同目录。
+  const memoryObserver = new MemoryObserver({
+    getConfig,
+    rootDir: memoryRootDir,
+    ingestBatch: (items) => memoryService.ingestBatch(items),
+    logger,
+  });
+  void memoryObserver.retryPending().catch(() => undefined);
+  memoryObserver.startRetryLoop();
   // 注意别传 registry：createBotApp 一旦收到实例就退化成 `() => 该实例`，
   // 把它自己那条可热重载的分支整个绕过去。BotEngine 判断「这个模型支不支持生图/视频」
   // 用的就是这份注册表，于是用户在面板上加了能力覆盖、提示热重载成功，
@@ -653,7 +667,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         } as any);
         return text;
       }
-      // T3.4：记忆夜间巩固（03:30）——评分 + 归并 + 淘汰 + retention prune，memory 关闭时自身零计数返回。
+      // T3.4：记忆夜间巩固（03:30）——评分 + 归并 + 淘汰；retention 删除已移交 memory-retention 任务。
       if (job.type === 'memory-consolidate') {
         // 安静窗口（03:00–06:30）外不跑：模型密集后台任务白天触发（含部署补跑）会打满免费档拖垮交互。
         if (!withinQuietWindow(new Date())) {
@@ -661,8 +675,19 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
           return null;
         }
         const stats = await memoryService.consolidate();
-        if (stats.namespaces || stats.merged || stats.evicted || stats.pruned) {
+        if (stats.namespaces || stats.merged || stats.evicted) {
           logger?.info('记忆夜间巩固完成', stats as unknown as Record<string, unknown>);
+        }
+        return null;
+      }
+      // Harness Memory Layer：保留清理（唯一自动删除路径）——每 cleanupIntervalDays 天执行一次，
+      // 滚动保留 retentionDays 个自然日桶。纯本地 IO（无模型调用），白天补跑安全；
+      // lastRetentionRunAt 持久化在 memory 数据目录，重启不重复执行。
+      if (job.type === 'memory-retention') {
+        const cfgRetention = getConfig().orchestration.memory.retention;
+        const result = await memoryService.retentionCleanup({ dryRun: false, backup: true });
+        if (result.ran) {
+          logger?.info('记忆保留清理完成', { removed: result.removed, cutoffDay: result.cutoffDay, intervalDays: cfgRetention.cleanupIntervalDays, backupFile: result.backupFile });
         }
         return null;
       }
@@ -684,6 +709,15 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   schedulerForSchedule = scheduler;
   // T3.4：记忆夜间巩固——固定 03:30 低峰执行；memory 未动用时 consolidate 自身返回零计数。
   scheduler.register({ id: 'memory-consolidate', kind: 'daily', type: 'memory-consolidate', hour: 3, minute: 30, enabled: true });
+  // Harness Memory Layer：保留清理调度——默认每 3 天执行、滚动保留 3 天（orchestration.memory.retention 可配）。
+  scheduler.register({
+    id: 'memory-retention',
+    kind: 'daily',
+    type: 'memory-retention',
+    hour: getConfig().orchestration.memory.retention.cleanupHour,
+    minute: getConfig().orchestration.memory.retention.cleanupMinute,
+    enabled: true,
+  });
   void scheduler.start();
 
   const pendingJobFile = process.env.MIOBOT_PENDING_JOB_FILE || path.join(dataDir, 'orchestration-pending-jobs.json');
@@ -711,7 +745,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     await Promise.allSettled([
       auditService.prune(),
       traceWriter.pruneNow(),
-      memoryService.prune(),
+      // 记忆库的删除已收敛到 memory-retention 调度任务（retentionCleanup，按 lastRetentionRunAt 节流）；
+      // 这里不再每日全量 prune，避免与保留策略"每 3 天清理一次"的语义打架。
     ]);
     approvalRuntime.pruneTerminal(retentionDays, Date.now(), protectedApprovals);
   };
@@ -914,6 +949,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     ];
     const categoryOf = (key: string) => CATEGORY_PATTERNS.find(([, re]) => re.test(key))?.[0] || '其他';
     let descriptors = orchestrationEnforcer.listCapabilities();
+    // 内部能力（memory.search 等）不对目录暴露：Agent 经 toolSpecs 直接持有，无需目录发现。
+    descriptors = descriptors.filter((d) => !d.internal);
     if (category) descriptors = descriptors.filter((d) => categoryOf(String(d.id)) === category);
     if (keyword) {
       descriptors = descriptors.filter((d) =>
@@ -931,6 +968,13 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success',
       outputs: [{ kind: 'text', text, priority: 10, mergeable: true }],
     };
+  }));
+  // Harness Memory Layer：内部记忆技能 handler——只对 Agent 暴露（descriptor internal=true，
+  // 用户目录/help/命令均过滤）。作用域由服务端绑定，模型传越权参数 → forbidden_scope（见 memory-search-handler.ts）。
+  orchestrationHandlers.set('memory.search', createMemorySearchHandler({
+    memoryService,
+    getConfig,
+    resolveBotId: () => String(getConfig().bot.botQqId || adapter.selfQqId || 'unknown'),
   }));
   orchestrationHandlers.set('job.cancel', new RuntimeAdapterCapabilityHandler(async (invocation) => {
     const args = (invocation.step.args || {}) as Record<string, unknown>;
@@ -1045,7 +1089,48 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   };
   const sunoLateDeliveryTimer = setInterval(() => { void pollSunoLateDeliveries(); }, 60_000);
   sunoLateDeliveryTimer.unref?.();
+  // 会话收尾固化（auto-compact 式）：session.clear（编排 enforce 命令路径）与 /clear 旧命令路径共用。
+  // 会话真身在 agentSessions（Agent 主运行时）；旧引擎 turns 仅作回退；memory 关闭时空操作。
+  const consolidateSessionMemory = async (input: {
+    sessionId: string;
+    chatType: 'group' | 'private';
+    groupId?: number | string;
+    userId: number | string;
+    legacyTurns?: Array<{ role: 'system' | 'user' | 'assistant'; content: unknown }>;
+  }): Promise<void> => {
+    try {
+      const memoryCfg = getConfig().orchestration.memory;
+      const agentMessages = agentSessions.load(input.sessionId)?.messages || [];
+      logger?.info('会话收尾固化触发', { sessionId: input.sessionId, agentMessages: agentMessages.length, legacyTurns: input.legacyTurns?.length || 0, enabled: memoryCfg.enabled, autoIngest: memoryCfg.autoIngest });
+      if (!memoryCfg.enabled || !memoryCfg.autoIngest) return;
+      const turns = agentMessages.length
+        ? agentMessages.map((m) => ({ role: m.role, content: String(m.content ?? '') }))
+        : (input.legacyTurns || []);
+      const messages = turns
+        .filter((turn) => turn.role === 'user' || turn.role === 'assistant')
+        .map((turn) => ({
+          role: (turn.role === 'assistant' ? 'assistant' : 'user') as 'assistant' | 'user',
+          text: String(typeof turn.content === 'string' ? turn.content : JSON.stringify(turn.content ?? '')).slice(0, 4000),
+          userId: String(input.userId || ''),
+        }))
+        .filter((item) => item.text.trim() && !item.text.includes('【Miobot 问题上报】'));
+      if (messages.length < 2) return;
+      const outcome = await memoryService.summarizeSession({
+        botId: String(getConfig().bot.botQqId || adapter.selfQqId || 'unknown'),
+        chatType: input.chatType,
+        groupId: input.groupId === undefined ? undefined : String(input.groupId),
+        userId: String(input.userId || ''),
+        messages,
+      });
+      if (outcome.ok) logger?.info('会话收尾摘要已写入记忆库', { sessionId: input.sessionId, summaryChars: outcome.summaryChars });
+      else if (outcome.error !== 'not_enough_turns') logger?.warn('会话收尾摘要失败（不影响清屏）', { sessionId: input.sessionId, error: outcome.error });
+    } catch (error) {
+      logger?.warn('会话收尾固化异常（不影响清屏）', { error: String((error as Error)?.message || error) });
+    }
+  };
+
   const orchestrationEnforcer = new OrchestrationEnforcer({
+    onSessionClear: (input) => consolidateSessionMemory(input),
     registerSunoLateDelivery,
     onExternalDeliver: async (invocation, result) => {
       // R13：迟到投递的发送——复用 sendAgentOutcome 的发送队列与 ReplyPlan 处理。
@@ -1240,7 +1325,14 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         const removed = await memoryService.clearUser(botId, String(action.userId), action.groupId);
         return { ok: true, removed };
       }
-      if (action.type === 'prune') return { ok: true, ...(await memoryService.prune()) };
+      if (action.type === 'retention_now') {
+        // admin 手动触发：force 跳过调度节流（面板"立即清理"不应被 cleanupIntervalDays 挡住）。
+        const result = await memoryService.retentionCleanup({ dryRun: action.dryRun === true, backup: true, force: true });
+        return { ok: true, ...result };
+      }
+      if (action.type === 'observer_stats') {
+        return { ok: true, observer: memoryObserver.statsSnapshot(), retention: await memoryService.retentionState() };
+      }
       throw new Error('memory_action_unknown');
     },
   });
@@ -1582,19 +1674,25 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       const voiceContext = voiceCandidates.length ? voiceService.formatCandidates(voiceCandidates) : '';
       return [result.context, voiceContext].filter(Boolean).join('\n\n') || undefined;
     },
-    ingestMemory: async (input) => {
+    observeMemory: (input) => {
       const botId = String(getConfig().bot.botQqId || adapter.selfQqId || 'unknown');
-      await memoryService.ingest({
+      memoryObserver.observe({
         botId,
         chatType: input.chatType,
-        groupId: input.groupId === undefined ? undefined : String(input.groupId),
-        userId: String(input.userId),
+        groupId: input.groupId === undefined ? undefined : input.groupId,
+        userId: input.userId,
         authorName: input.authorName,
         role: input.role,
         text: input.text,
-        messageId: input.messageId === undefined ? undefined : String(input.messageId),
+        messageId: input.messageId === undefined ? undefined : input.messageId,
+        eventTime: input.eventTime,
+        attachments: input.attachments,
       });
     },
+    // 连发消息合并窗口：触发回合收集同会话窗口内的相邻用户消息（observer 爆发缓冲）。
+    collectBurst: (input) => memoryObserver.collectBurst(input),
+    // 会话收尾固化：委托共享实现（真身在 agentSessions，编排 session.clear 与旧命令路径共用）。
+    consolidateSession: (input) => consolidateSessionMemory({ ...input }),
     agentRuntime: async (input) => {
       const cfg = getConfig();
       const mode = cfg.agent?.enabled ? cfg.agent.mode : 'off';
@@ -1640,6 +1738,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         safeTextFallback: outcome.turn?.meta?.safeTextFallback === true,
         partial: outcome.turn?.meta?.partial === true,
         timedOut: outcome.turn?.meta?.timedOut === true,
+        imageDegraded: outcome.turn?.meta?.imageDegraded === true,
         errorCode: outcome.turn?.error?.code,
         errorMessage: outcome.turn?.error?.message,
         toolResultCount: outcome.turn?.toolResults?.length,
@@ -1759,8 +1858,11 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
           const rendered = renderTtsPreprocessPrompt(String(pre.promptTemplate || ''), text);
           const res = await client.chat(pre.nodeIndex, { model: pre.model, messages: [{ role: 'user', content: rendered }] });
           const out = String(res.text || '').trim();
-          if (out) speakText = out.slice(0, Math.max(1, Number(pre.maxOutputChars || 1000)));
-          else if (!pre.fallbackToOriginal) return null;
+          if (out) {
+            speakText = out.slice(0, Math.max(1, Number(pre.maxOutputChars || 1000)));
+            // Harness 观测：把前置转化（fish-audio 标签）的输入输出落日志，供面板/排查查看打了什么标签。
+            logger?.info('tts 前置转化输出', { originalChars: text.length, taggedChars: speakText.length, original: text.slice(0, 300), tagged: speakText.slice(0, 600) });
+          } else if (!pre.fallbackToOriginal) return null;
         } catch {
           if (!pre.fallbackToOriginal) return null;
         }
@@ -2184,6 +2286,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     approvalActionConsumer.stop();
     capabilityTestConsumer.stop();
     memoryActionConsumer.stop();
+    // Harness Memory Layer：先停观察队列并冲刷，再落盘记忆索引。
+    try { await memoryObserver.dispose(); } catch { /* best effort */ }
     // T3.4：记忆防抖落盘的优雅退出 flush。
     try { await memoryService.flush(); } catch { /* best effort */ }
     if (agentSessionsPersistTimer) clearTimeout(agentSessionsPersistTimer);

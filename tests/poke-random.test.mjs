@@ -10,7 +10,7 @@ import { createDefaultConfig } from '../dist/packages/config/src/index.js';
 function makeCfg() {
   const cfg = createDefaultConfig();
   cfg.bot.botQqId = '10000';
-  cfg.bot.poke = { enabled: true, cooldownSec: 0, replies: ['戳我干嘛呀', '别戳啦，在的呢', '收到收到，有事直接说~', '再戳就报警了哦'] };
+  cfg.bot.poke = { enabled: true, windowSec: 0, replies: ['戳我干嘛呀', '别戳啦，在的呢', '收到收到，有事直接说~', '再戳就报警了哦'] };
   return cfg;
 }
 

@@ -76,7 +76,7 @@ function makeCfg(node) {
   cfg.llm.chatEnabled = true;
   cfg.bot.replyStrategies.text = 'plain';
   // R15/#8：模板/超时来自默认配置；这里只覆盖行为开关，不整体替换对象。
-  cfg.bot.autoContinue = { ...cfg.bot.autoContinue, enabled: true, windowMs: 60000, maxRounds: 3, cooldownMs: 5000, requireModelCheck: true };
+  cfg.bot.autoContinue = { ...cfg.bot.autoContinue, enabled: true, windowMs: 60000, maxRounds: 3, requireModelCheck: true };
   if (node) {
     cfg.llm.apiKeys = [{ name: node.name, baseUrl: node.baseUrl, key: node.key, enabled: true, models: node.models, modelsFetchedAt: '', concurrency: 0 }];
     cfg.llm.chatNodeIndex = 0;
@@ -407,26 +407,25 @@ test('L2E-轮数上限: maxRounds=1，第二次延续请求被拒且不再调模
   } finally { await e2e.sim.close(); }
 });
 
-test('L2E-冷却: cooldown(5s) 内的第二条消息被静默跳过，冷却过后恢复', async () => {
+test('L2E-连续对话: 冷却已删除，快节奏后续消息逐条语义判定并续话', async () => {
   const cfg = makeCfg(null);
   // R15/#8：模板/超时来自默认配置；这里只覆盖行为开关，不整体替换对象。
-  cfg.bot.autoContinue = { ...cfg.bot.autoContinue, enabled: true, windowMs: 60000, maxRounds: 3, cooldownMs: 5000, requireModelCheck: true };
+  cfg.bot.autoContinue = { ...cfg.bot.autoContinue, enabled: true, windowMs: 60000, maxRounds: 3, requireModelCheck: true };
   const checker = scriptedChecker({ contVerdict: true });
   const e2e = await setupE2E({ cfg, checker });
   try {
     await e2e.establish();
-    e2e.followUp('再粉嫩一点'); // 触发延续 → 冷却开始
+    e2e.followUp('再粉嫩一点'); // 第 1 轮延续
     await waitUntil(() => e2e.sends() === 2, 4000, '第 1 轮延续回复');
     await sleep(250);
-    e2e.followUp('再粉嫩一点'); // 冷却期内 → 应被跳过且不调模型
-    await sleep(500);
-    assert.equal(checker.calls.cont.length, 1, '冷却期内不应调用延续判断');
-    assert.equal(e2e.sends(), 2, '冷却期内不应回复');
-    await sleep(5200);
-    e2e.followUp('再粉嫩一点'); // 冷却结束 → 恢复
-    await waitUntil(() => e2e.sends() === 3, 4000, '冷却结束后的延续回复');
-    note2('冷却', { checkCalls: checker.calls.cont.length, sends: e2e.sends() });
-    assert.equal(checker.calls.cont.length, 2, '冷却结束后恢复判断');
+    e2e.followUp('再粉嫩一点'); // 冷却已删除 → 立即语义判定并续话（旧行为：30s 聋窗）
+    await waitUntil(() => e2e.sends() === 3, 4000, '第 2 轮延续回复');
+    await sleep(250);
+    e2e.followUp('换个风格');
+    await waitUntil(() => e2e.sends() === 4, 4000, '第 3 轮延续回复');
+    note2('连续对话', { checkCalls: checker.calls.cont.length, sends: e2e.sends() });
+    assert.equal(checker.calls.cont.length, 3, '每条后续消息都被语义判定（无时间闸门）');
+    assert.equal(e2e.sends(), 4, '三轮延续全部回复');
   } finally { await e2e.sim.close(); }
 });
 

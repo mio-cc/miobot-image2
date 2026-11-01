@@ -220,6 +220,8 @@ function removeExposure(id: string) {
         <FormField label="压缩阈值 Tokens"><input v-model.number="context.compactionThresholdTokens" type="number" min="1000" class="input-field" /></FormField>
         <FormField label="Pinned Facts 上限"><input v-model.number="context.pinnedFactsMaxItems" type="number" min="1" max="500" class="input-field" /></FormField>
         <ToggleField v-model="context.groupContextEnabled" label="启用群上下文" />
+        <ToggleField v-model="context.groupContextSkipForward" label="群上下文跳过合并转发" hint="原 bot.groupContext.skipForward 迁入（唯一真源）" />
+        <ToggleField v-model="context.groupContextIncludeImages" label="群上下文带上图片" hint="对话模型不支持视觉时会自动忽略" />
         <ToggleField v-model="context.compactionEnabled" label="启用上下文压缩（摘要裁剪）" />
         <ToggleField v-model="context.spillEnabled" label="溢出工具结果落盘（已接线）" />
       </div>

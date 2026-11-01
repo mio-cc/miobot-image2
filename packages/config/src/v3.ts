@@ -69,6 +69,10 @@ export interface ContextConfigV3 {
   groupContextEnabled: boolean;
   groupContextMessages: number;
   groupContextMaxChars: number;
+  /** 群上下文跳过合并转发消息（原 bot.groupContext.skipForward 唯一真源迁入）。 */
+  groupContextSkipForward: boolean;
+  /** 群上下文包含图片 URL（原 bot.groupContext.includeImages 唯一真源迁入）。 */
+  groupContextIncludeImages: boolean;
   memoryTopK: number;
   memoryMinScore: number;
   memoryMaxChars: number;
@@ -177,6 +181,8 @@ export function defaultContextConfigV3(): ContextConfigV3 {
     groupContextEnabled: true,
     groupContextMessages: 30,
     groupContextMaxChars: 4_000,
+    groupContextSkipForward: true,
+    groupContextIncludeImages: true,
     memoryTopK: 8,
     memoryMinScore: 0.2,
     memoryMaxChars: 5_000,
@@ -291,6 +297,8 @@ export function normalizeContextConfigV3(input: unknown): ContextConfigV3 {
     groupContextEnabled: bool(raw.groupContextEnabled, d.groupContextEnabled),
     groupContextMessages: intIn(raw.groupContextMessages, d.groupContextMessages, 1, 500),
     groupContextMaxChars: intIn(raw.groupContextMaxChars, d.groupContextMaxChars, 200, 100_000),
+    groupContextSkipForward: bool(raw.groupContextSkipForward, d.groupContextSkipForward),
+    groupContextIncludeImages: bool(raw.groupContextIncludeImages, d.groupContextIncludeImages),
     memoryTopK: intIn(raw.memoryTopK, d.memoryTopK, 1, 100),
     memoryMinScore: numberIn(raw.memoryMinScore, d.memoryMinScore, 0, 1),
     memoryMaxChars: intIn(raw.memoryMaxChars, d.memoryMaxChars, 200, 100_000),
@@ -356,6 +364,8 @@ export const CONFIG_V3_FIELD_METADATA: readonly ConfigFieldMetadata[] = [
   field('contextPolicy.groupContextEnabled', '启用群上下文', 'boolean', true, global, nextTurn),
   field('contextPolicy.groupContextMessages', '群上下文消息数', 'number', 30, global, nextTurn, { min: 1, max: 500 }),
   field('contextPolicy.groupContextMaxChars', '群上下文字符上限', 'number', 4_000, global, nextTurn, { min: 200, max: 100_000 }),
+  field('contextPolicy.groupContextSkipForward', '群上下文跳过合并转发', 'boolean', true, global, nextTurn),
+  field('contextPolicy.groupContextIncludeImages', '群上下文包含图片', 'boolean', true, global, nextTurn),
   field('contextPolicy.memoryTopK', '记忆 TopK', 'number', 8, global, nextTurn, { min: 1, max: 100 }),
   field('contextPolicy.memoryMinScore', '记忆最小分数', 'number', 0.2, global, nextTurn, { min: 0, max: 1 }),
   field('contextPolicy.memoryMaxChars', '记忆字符上限', 'number', 5_000, global, nextTurn, { min: 200, max: 100_000 }),

@@ -631,8 +631,8 @@ test('group context: 同名群成员通过 QQ 号区分，并标注当前提问�
   const getConfig = () => {
     const c = withAgentOff(createDefaultConfig());
     c.bot.botQqId = '10000';
-    c.bot.groupContext.enabled = true;
-    c.bot.groupContext.messageCount = 10;
+    c.contextPolicy.groupContextEnabled = true;
+    c.contextPolicy.groupContextMessages = 10;
     return c;
   };
   const app = createBotApp({ getConfig, client });
@@ -950,7 +950,7 @@ test('runtime: memory context and group history are both fetched and merged (不
       memoryQueries += 1;
       return '【长期记忆】\n用户 [QQ:5]: 之前讨论过猫';
     },
-    ingestMemory: (input) => { ingested.push(input); },
+    observeMemory: (input) => { ingested.push(input); },
     fetchGroupHistory: async () => {
       historyCalls += 1;
       return [];
@@ -966,21 +966,136 @@ test('runtime: memory context and group history are both fetched and merged (不
   assert.equal(memoryQueries, 1);
   // 修复：群历史不再被记忆命中短路——两类上下文互补（记忆=历史事实，群历史=刚才群里说了什么）
   assert.equal(historyCalls, 1);
-  await new Promise((resolve) => setTimeout(resolve, 20));
   assert.ok(ingested.some((item) => item.role === 'user' && item.text.includes('继续聊刚才的话题')));
   assert.ok(ingested.some((item) => item.role === 'assistant'));
 });
-test('runtime: ignored group message is not written into long-term memory', async () => {
-  const ingested = [];
-  const { rt } = setup({ ingestMemory: (input) => { ingested.push(input); } });
+test('runtime 观察链路: 未被 @ 的群聊消息也写入长期记忆（先观察后路由，Harness Memory Layer）', async () => {
+  const observed = [];
+  const { rt, reply } = setup({ observeMemory: (input) => { observed.push(input); } });
   const result = await rt.handleMessageEvent({
     post_type: 'message', message_type: 'group', group_id: 3001, user_id: 5, message_id: 8802,
     sender: { nickname: '路人' }, raw_message: '群里普通闲聊',
     message: [{ type: 'text', data: { text: '群里普通闲聊' } }],
   });
-  assert.equal(result.handled, false);
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(ingested.length, 0);
+  assert.equal(result.handled, false, '未触发消息不回复');
+  assert.equal(reply.sent.length, 0);
+  // 旧断言「ignored 消息不入库」已被 Harness Memory Layer 推翻：观察链路先于触发路由，
+  // 三条连发只进两条的问题正是从这里修掉的。
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].role, 'user');
+  assert.equal(observed[0].text, '群里普通闲聊');
+  assert.equal(observed[0].chatType, 'group');
+  assert.equal(String(observed[0].groupId), '3001');
+});
+test('runtime 观察闸门: 频控命中的消息不观察，重连补发的陈旧消息观察但不回复', async () => {
+  const observed = [];
+  const { rt } = setup({
+    observeMemory: (input) => { observed.push(input); },
+    getConfig: () => {
+      const c = withAgentOff(createDefaultConfig());
+      c.bot.botQqId = '10000';
+      c.bot.messageRateLimitPerMinute = 1;
+      c.bot.staleMessageMaxAgeSeconds = 60;
+      return c;
+    },
+  });
+  // 独立 userId（777）：isUserRateLimited 的窗口是模块级共享状态，避免污染其他用例的 user 5。
+  // 第 1 条：新鲜消息 → user 观察 + bot 回复（assistant 也观察），共 2 条。
+  await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 777, message_id: 901, time: Math.floor(Date.now() / 1000), raw_message: '新鲜消息' });
+  assert.equal(observed.length, 2);
+  assert.equal(observed[0].role, 'user');
+  assert.equal(observed[1].role, 'assistant');
+  // 第 2 条：频控命中 → 不观察不回复。
+  const limited = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 777, message_id: 902, time: Math.floor(Date.now() / 1000), raw_message: '超频消息' });
+  assert.equal(limited.reason, 'user-rate-limited');
+  assert.equal(observed.length, 2);
+  // 第 3 条：陈旧补发（2 分钟前）→ 不占频控额度、观察入库、但不回复。
+  const stale = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 777, message_id: 903, time: Math.floor(Date.now() / 1000) - 120, raw_message: '补发的历史消息' });
+  assert.equal(stale.reason, 'stale-message');
+  assert.equal(observed.length, 3);
+  assert.equal(observed[2].role, 'user');
+  assert.equal(observed[2].text, '补发的历史消息');
+});
+test('runtime 会话收尾: /clear 触发 consolidateSession（会话尾巴交给记忆层）且会话被清空', async () => {
+  const consolidations = [];
+  const { rt, reply } = setup({
+    consolidateSession: async (input) => { consolidations.push(input); },
+  });
+  // 先聊一轮建立会话。
+  await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 950, raw_message: '记住暗号是芝麻' });
+  // /clear 清屏。
+  const result = await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 951, raw_message: '/clear' });
+  assert.equal(result.kind, 'clear');
+  assert.equal(consolidations.length, 1, '清屏前触发一次收尾固化');
+  assert.equal(consolidations[0].sessionId, 'private:5');
+  assert.ok(consolidations[0].turns.length >= 2, '携带 user+assistant 对话轮');
+  assert.ok(reply.sent.some((s) => s[0] === 'privateText' && String(s[2]).includes('新对话')));
+  // 空会话再 clear：仍会调用（是否值得固化由 start.ts 读 agentSessions 后决定），但 turns 为空。
+  await rt.handleMessageEvent({ post_type: 'message', message_type: 'private', user_id: 5, message_id: 952, raw_message: '/clear' });
+  assert.equal(consolidations.length, 2);
+  assert.deepEqual(consolidations[1].turns, [], '旧引擎会话已清空，turns 为空');
+});
+test('runtime 记忆库优先: memoryFirstGroupContext 开启且记忆命中时跳过群历史拉取', async () => {
+  let historyCalls = 0;
+  const { rt } = setup({
+    loadMemoryContext: async () => '【长期记忆】\n用户 [QQ:5]: 之前讨论过猫',
+    fetchGroupHistory: async () => { historyCalls += 1; return []; },
+    getConfig: () => {
+      const c = withAgentOff(createDefaultConfig());
+      c.bot.botQqId = '10000';
+      c.orchestration.memory.memoryFirstGroupContext = true;
+      return c;
+    },
+  });
+  await rt.handleMessageEvent({
+    post_type: 'message', message_type: 'group', group_id: 3200, user_id: 5, message_id: 960,
+    sender: { nickname: '同名' },
+    raw_message: '[CQ:at,qq=10000] 接着聊猫',
+    message: [{ type: 'at', data: { qq: '10000' } }, { type: 'text', data: { text: ' 接着聊猫' } }],
+  });
+  assert.equal(historyCalls, 0, '记忆命中非空时不拉 Napcat 群历史');
+});
+test('runtime 记忆库优先: 记忆未命中时仍走群历史兜底', async () => {
+  let historyCalls = 0;
+  const { rt } = setup({
+    loadMemoryContext: async () => undefined,
+    fetchGroupHistory: async () => { historyCalls += 1; return []; },
+    getConfig: () => {
+      const c = withAgentOff(createDefaultConfig());
+      c.bot.botQqId = '10000';
+      c.orchestration.memory.memoryFirstGroupContext = true;
+      return c;
+    },
+  });
+  await rt.handleMessageEvent({
+    post_type: 'message', message_type: 'group', group_id: 3201, user_id: 5, message_id: 961,
+    sender: { nickname: '同名' },
+    raw_message: '[CQ:at,qq=10000] 随便聊聊',
+    message: [{ type: 'at', data: { qq: '10000' } }, { type: 'text', data: { text: ' 随便聊聊' } }],
+  });
+  assert.equal(historyCalls, 1, '记忆为空时兜底拉取群历史');
+});
+test('runtime 观察闸门: 白名单外的群和黑名单用户不观察（隐私红线）', async () => {
+  const observed = [];
+  const { rt } = setup({
+    observeMemory: (input) => { observed.push(input); },
+    getConfig: () => {
+      const c = withAgentOff(createDefaultConfig());
+      c.bot.botQqId = '10000';
+      c.bot.whitelistGroups = ['3333'];
+      c.bot.blacklistGroupUsers = ['3333:666'];
+      return c;
+    },
+  });
+  // 白名单外群：router 拦截且观察闸门放行到不了。
+  await rt.handleMessageEvent({ post_type: 'message', message_type: 'group', group_id: 4444, user_id: 5, message_id: 911, raw_message: '外部群消息' });
+  assert.equal(observed.length, 0);
+  // 白名单内但黑名单用户：不观察。
+  await rt.handleMessageEvent({ post_type: 'message', message_type: 'group', group_id: 3333, user_id: 666, message_id: 912, raw_message: '黑名单用户消息' });
+  assert.equal(observed.length, 0);
+  // 白名单内正常用户：观察。
+  await rt.handleMessageEvent({ post_type: 'message', message_type: 'group', group_id: 3333, user_id: 5, message_id: 913, raw_message: '正常消息' });
+  assert.equal(observed.length, 1);
 });
 
 test('runtime T2.2: 每用户消息频率超限静默丢弃，不回复不报错', async () => {
@@ -1007,10 +1122,10 @@ test('runtime T2.2b: 戳一戳响应——只回被戳的 bot 本人、带冷却
   await handlers.notice(pokeAtBot);
   assert.equal(reply.sent.length, 1);
   assert.equal(reply.sent[0][0], 'groupText');
-  // 冷却内第二次不回；戳别人不回。
+  // 会话级共享窗口内第二次不回（哪怕换个人戳）；戳别人不回。
   await handlers.notice(pokeAtBot);
-  await handlers.notice(pokeAtOther);
-  assert.equal(reply.sent.length, 1);
+  await handlers.notice({ ...pokeAtBot, user_id: 6 });
+  assert.equal(reply.sent.length, 1, '全群共享窗口：换用户戳也不回');
   // 私聊戳（无 group_id）走 privateText。
   await handlers.notice({ post_type: 'notice', notice_type: 'notify', sub_type: 'poke', user_id: 7, target_id: 10000 });
   assert.equal(reply.sent.length, 2);
@@ -1106,7 +1221,7 @@ test('runtime T3.7: 高危 owner 命令二次确认——/plch 20 先确认，/o
 test('runtime B: 群历史与记忆合并注入（上下文统一组装，enforce 单字段接收）', async () => {
   const inputs = [];
   let historyCalls = 0;
-  const enforceCfg = () => { const c = withAgentOff(createDefaultConfig()); c.bot.botQqId = '10000'; c.orchestration.enabled = true; c.orchestration.mode = 'enforce'; c.bot.groupContext = { ...c.bot.groupContext, enabled: true }; return c; };
+  const enforceCfg = () => { const c = withAgentOff(createDefaultConfig()); c.bot.botQqId = '10000'; c.orchestration.enabled = true; c.orchestration.mode = 'enforce'; c.contextPolicy.groupContextEnabled = true; return c; };
   const base = {
     fetchGroupHistory: async () => { historyCalls += 1; return [{ time: 1, sender: { user_id: 5, nickname: 'u' }, message: [{ type: 'text', data: { text: '群历史一条' } }] }]; },
     enforceOrchestration: async (input) => {
@@ -1131,4 +1246,65 @@ test('runtime B: 群历史与记忆合并注入（上下文统一组装，enforc
   assert.equal(historyCalls, 2, '每次都拉群历史');
   assert.match(inputs[1].groupContext, /群历史一条/);
   assert.ok(!/相关记忆/.test(inputs[1].groupContext), '无记忆命中时不出现记忆段');
+});
+
+test('runtime 合并窗口: 触发回合把相邻消息文本与图片并入模型输入', async () => {
+  const { client, rt } = setup({
+    collectBurst: () => [
+      { userId: '6', authorName: '小红', text: '我们周末去爬山吧', imageRefs: ['http://x/burst.png'], at: Date.now() - 500, messageId: 'x1' },
+    ],
+    getConfig: () => {
+      const c = withAgentOff(createDefaultConfig());
+      c.bot.botQqId = '10000';
+      c.orchestration.memory.observation.coalesceWindowMs = 60;
+      return c;
+    },
+  });
+  await rt.handleMessageEvent({
+    post_type: 'message', message_type: 'group', group_id: 3300, user_id: 5, message_id: 970,
+    sender: { nickname: '小明' },
+    raw_message: '[CQ:at,qq=10000] 周末计划整理一下',
+    message: [{ type: 'at', data: { qq: '10000' } }, { type: 'text', data: { text: ' 周末计划整理一下' } }],
+  });
+  const modelPayload = JSON.stringify(client.calls);
+  assert.ok(modelPayload.includes('相邻消息'), '合并窗口文本块进入模型输入');
+  assert.ok(modelPayload.includes('去爬山'), '相邻消息内容可见');
+  assert.ok(modelPayload.includes('burst.png'), '相邻消息图片并入模型输入');
+});
+
+test('runtime 续话预过滤: @别人的消息不进入续话判定（确定性 addressee 线索，零成本）', async () => {
+  let continueChecks = 0;
+  const { rt, reply } = setup({
+    triggerIntentChecker: { checkContinueIntent: async () => { continueChecks += 1; return true; } },
+    getConfig: () => {
+      const c = withAgentOff(createDefaultConfig());
+      c.bot.botQqId = '10000';
+      c.bot.autoContinue.enabled = true;
+      c.bot.autoContinue.requireModelCheck = true;
+      return c;
+    },
+  });
+  // @bot 建立续话窗口。
+  await rt.handleMessageEvent({
+    post_type: 'message', message_type: 'group', group_id: 3400, user_id: 5, message_id: 980,
+    sender: { nickname: '小明' },
+    raw_message: '[CQ:at,qq=10000] 开始对话',
+    message: [{ type: 'at', data: { qq: '10000' } }, { type: 'text', data: { text: ' 开始对话' } }],
+  });
+  assert.ok(reply.sent.length >= 1);
+  // @别人的消息：预过滤拦截，不调用意图判定。
+  await rt.handleMessageEvent({
+    post_type: 'message', message_type: 'group', group_id: 3400, user_id: 5, message_id: 981,
+    sender: { nickname: '小明' },
+    raw_message: '[CQ:at,qq=9999] 你看这个',
+    message: [{ type: 'at', data: { qq: '9999' } }, { type: 'text', data: { text: ' 你看这个' } }],
+  });
+  assert.equal(continueChecks, 0, '@别人被预过滤，意图判定零调用');
+  // 普通无 @ 消息：进入判定（checker 返回 true → 续话）。
+  const cont = await rt.handleMessageEvent({
+    post_type: 'message', message_type: 'group', group_id: 3400, user_id: 5, message_id: 982,
+    sender: { nickname: '小明' }, raw_message: '继续', message: [{ type: 'text', data: { text: '继续' } }],
+  });
+  assert.equal(continueChecks, 1, '普通消息正常进入判定');
+  assert.equal(cont.handled, true, '判定 true → 续话');
 });

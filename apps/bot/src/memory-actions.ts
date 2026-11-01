@@ -5,12 +5,14 @@ import { loadJsonlActionCursor, readJsonlActionBatch, reconcileJsonlActionOffset
 
 export interface MemoryAction {
   id: string;
-  type: 'list' | 'search' | 'clear_group' | 'clear_user' | 'prune';
+  type: 'list' | 'search' | 'clear_group' | 'clear_user' | 'retention_now' | 'observer_stats';
   botId?: string;
   chatType?: 'group' | 'private';
   groupId?: string;
   userId?: string;
   query?: string;
+  /** retention_now：true = 只统计不删除。 */
+  dryRun?: boolean;
   createdAt?: string;
 }
 
