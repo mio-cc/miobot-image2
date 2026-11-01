@@ -93,6 +93,14 @@ test('plugins T4.2: novel-platform plugin loads and exposes config action', asyn
   assert.match(String(result.outputs?.[0]?.text || ''), /网文数据通/);
 });
 
+test('plugins T4.2: novel-platform 新书榜 alias defaults to 签约新书榜', () => {
+  const source = fs.readFileSync(path.resolve('plugins/novel-platform.mjs'), 'utf8');
+  const sign = source.split('\n').find((line) => line.trimStart().startsWith('sign:')) || '';
+  const newbook = source.split('\n').find((line) => line.trimStart().startsWith('newbook:')) || '';
+  assert.match(sign, /新书榜/);
+  assert.match(sign, /签约新书榜/);
+  assert.doesNotMatch(newbook.slice(newbook.indexOf('aliases:')), /'新书榜'/);
+});
 test('plugins T4.2: panel capability API reads plugins.json from MIOBOT_DATA_DIR', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'miobot-panel-plugin-'));
   fs.mkdirSync(path.join(dir, 'capabilities'), { recursive: true });

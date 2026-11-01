@@ -83,8 +83,8 @@ const QIDIAN_RANKS = {
   newfans:   { title: '书友榜',   api: 'newfans',   aliases: ['newfans', '书友', '书友榜', '新粉'] },
   rec:       { title: '推荐榜',   api: 'rec',       aliases: ['rec', '推荐', '推荐榜', '推荐票'] },
   update:    { title: '更新榜',   api: 'update',    aliases: ['update', '更新', '更新榜', '日更', 'vipup'] },
-  sign:      { title: '签约新书榜', api: 'sign',      aliases: ['sign', '签约', '签约榜', '签约新书', '签约新书榜', '签约作者'], gender: 'male' },
-  newbook:   { title: '未签约新书榜', api: 'newbook',   aliases: ['newbook', '未签约新书', '未签约新书榜', '未签约', '新书', '新书榜'], gender: 'male' },
+  sign:      { title: '签约新书榜', api: 'sign',      aliases: ['sign', '签约', '签约榜', '签约新书', '签约新书榜', '签约作者', '新书', '新书榜'], gender: 'male' },
+  newbook:   { title: '未签约新书榜', api: 'newbook',   aliases: ['newbook', '未签约新书', '未签约新书榜', '未签约'], gender: 'male' },
   newauthor: { title: '新人榜',   api: 'newauthor', aliases: ['newauthor', '新人', '新人榜', '新作者', '新人作者'], gender: 'male' },
   strongrec: { title: '本周强推', ssr: '/strongrec/', aliases: ['strongrec', '强推', '本周强推', '新书强推', '起点强推'] },
   sanjiang:  { title: '三江网文新风', ssr: '/sanjiang/', aliases: ['sanjiang', '三江', '三江榜', '三江推荐', '网文新风', '三江网文新风'] },
@@ -104,7 +104,7 @@ function normalizeQidianRank(v) {
   if (!s) return 'yuepiao';
   if (QIDIAN_PC_ONLY[s]) return { pcOnly: QIDIAN_PC_ONLY[s] };
   const keys = Object.keys(QIDIAN_RANKS);
-  // 第一轮：精确命中（"新书榜"必须落到未签约新书榜，不能被"签约新书榜"抢走）
+  // 第一轮：精确命中（"新书榜"/"新书"默认落到签约新书榜；未签约需明确说"未签约新书榜"）
   for (const key of keys) {
     if (QIDIAN_RANKS[key].aliases.some((a) => s === a)) return key;
   }
