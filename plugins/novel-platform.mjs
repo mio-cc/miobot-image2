@@ -75,25 +75,42 @@ function normalizeGender(v) {
   return '';
 }
 
-// 起点榜单映射（11 榜，全部实测）
+// 起点榜单映射（实测全量；ssr=true 表示走 SSR 页内嵌数据而非 list 接口）
 const QIDIAN_RANKS = {
-  yuepiao: { title: '月票榜', api: 'yuepiao', aliases: ['yuepiao', '月票', '月票榜', '本月月票'] },
-  hotsales: { title: '畅销榜', api: 'hotsales', aliases: ['hotsales', '畅销', '畅销榜', '热销', '热销榜', '销量'] },
-  readindex: { title: '阅读榜', api: 'readIndex', aliases: ['readindex', '阅读', '阅读榜', '阅读指数', '追读', '追读榜'] },
-  newfans: { title: '书友榜', api: 'newfans', aliases: ['newfans', '书友', '书友榜', '新粉'] },
-  rec: { title: '推荐榜', api: 'rec', aliases: ['rec', '推荐', '推荐榜', '推荐票'] },
-  update: { title: '更新榜', api: 'update', aliases: ['update', '更新', '更新榜', '日更'] },
-  sign: { title: '签约榜', api: 'sign', aliases: ['sign', '签约', '签约榜'], gender: 'male' },
-  newbook: { title: '新书榜', api: 'newbook', aliases: ['newbook', '新书', '新书榜'], gender: 'male' },
-  newauthor: { title: '新人榜', api: 'newauthor', aliases: ['newauthor', '新人', '新人榜', '新作者'], gender: 'male' },
-  collect: { title: '收藏榜', api: 'collect', aliases: ['collect', '收藏', '收藏榜'], gender: 'female' },
-  free: { title: '免费榜', api: 'free', aliases: ['free', '免费', '免费榜'], gender: 'female' },
+  yuepiao:   { title: '月票榜',   api: 'yuepiao',   aliases: ['yuepiao', '月票', '月票榜', '本月月票'] },
+  hotsales:  { title: '畅销榜',   api: 'hotsales',  aliases: ['hotsales', '畅销', '畅销榜', '热销', '热销榜', '销量'] },
+  readindex: { title: '阅读指数榜', api: 'readIndex', aliases: ['readindex', '阅读', '阅读榜', '阅读指数', '追读', '追读榜'] },
+  newfans:   { title: '书友榜',   api: 'newfans',   aliases: ['newfans', '书友', '书友榜', '新粉'] },
+  rec:       { title: '推荐榜',   api: 'rec',       aliases: ['rec', '推荐', '推荐榜', '推荐票'] },
+  update:    { title: '更新榜',   api: 'update',    aliases: ['update', '更新', '更新榜', '日更', 'vipup'] },
+  sign:      { title: '签约新书榜', api: 'sign',      aliases: ['sign', '签约', '签约榜', '签约新书', '签约新书榜', '签约作者'], gender: 'male' },
+  newbook:   { title: '未签约新书榜', api: 'newbook',   aliases: ['newbook', '未签约新书', '未签约新书榜', '未签约', '新书', '新书榜'], gender: 'male' },
+  newauthor: { title: '新人榜',   api: 'newauthor', aliases: ['newauthor', '新人', '新人榜', '新作者', '新人作者'], gender: 'male' },
+  strongrec: { title: '本周强推', ssr: '/strongrec/', aliases: ['strongrec', '强推', '本周强推', '新书强推', '起点强推'] },
+  sanjiang:  { title: '三江网文新风', ssr: '/sanjiang/', aliases: ['sanjiang', '三江', '三江榜', '三江推荐', '网文新风', '三江网文新风'] },
+  collect:   { title: '收藏榜',   api: 'collect',   aliases: ['collect', '收藏', '收藏榜'], gender: 'female' },
+  free:      { title: '免费榜',   api: 'free',      aliases: ['free', '免费', '免费榜'], gender: 'female' },
 };
+
+// 仅起点 PC 端提供的榜单（移动通道未开放，纯 HTTP 无法获取）——命中时给出明确引导
+const QIDIAN_PC_ONLY = {
+  留存: '留存榜', 留存榜: '留存榜', retention: '留存榜',
+  vip收藏: 'VIP收藏榜', vip收藏榜: 'VIP收藏榜', vipcollect: 'VIP收藏榜',
+  潜力: '潜力榜', 潜力榜: '潜力榜', potential: '潜力榜',
+};
+
 function normalizeQidianRank(v) {
   const s = String(v || '').trim().toLowerCase();
   if (!s) return 'yuepiao';
-  for (const [key, meta] of Object.entries(QIDIAN_RANKS)) {
-    if (meta.aliases.some((a) => s === a || s.includes(a) || a.includes(s))) return key;
+  if (QIDIAN_PC_ONLY[s]) return { pcOnly: QIDIAN_PC_ONLY[s] };
+  const keys = Object.keys(QIDIAN_RANKS);
+  // 第一轮：精确命中（"新书榜"必须落到未签约新书榜，不能被"签约新书榜"抢走）
+  for (const key of keys) {
+    if (QIDIAN_RANKS[key].aliases.some((a) => s === a)) return key;
+  }
+  // 第二轮：包含式模糊匹配（先查输入包含别名，再查别名包含输入）
+  for (const key of keys) {
+    if (QIDIAN_RANKS[key].aliases.some((a) => s.includes(a) || a.includes(s))) return key;
   }
   return '';
 }
@@ -450,10 +467,15 @@ async function qidianListApi(rankKey, gender, pageNum, extra = {}) {
 /** 起点榜单：records 归一化。category/month/pages 全部宽容处理。 */
 async function qidianRank(args) {
   const rankKey = normalizeQidianRank(args.rank);
+  if (rankKey && typeof rankKey === 'object' && rankKey.pcOnly) {
+    return { error: `「${rankKey.pcOnly}」仅起点 PC 端提供，移动通道未开放（纯 HTTP 无法获取）。相近替代：留存/追读 → 阅读指数榜、畅销榜；新书类 → 签约新书榜、未签约新书榜、新人榜。` };
+  }
   if (!rankKey) {
-    return { error: `未识别的起点榜单「${args.rank}」。可用榜单：${Object.values(QIDIAN_RANKS).map((r) => r.title).join('、')}（可直接传中文名或 yuepiao 等英文 id）。` };
+    return { error: `未识别的起点榜单「${args.rank}」。可用榜单：${Object.values(QIDIAN_RANKS).map((r) => r.title).join('、')}（可直接传中文名或 yuepiao 等英文 id）。注：留存榜/追读榜/VIP收藏榜/潜力榜仅 PC 端提供，本插件暂不支持。` };
   }
   const meta = QIDIAN_RANKS[rankKey];
+  // SSR 型榜单（本周强推/三江网文新风）：数据内嵌在页面里，不走 list 接口
+  if (meta.ssr) return qidianSsrRank(rankKey, meta, args);
   const gender = args.gender ? normalizeGender(args.gender) : (meta.gender || 'male');
   if (!gender) return { error: `未识别频道「${args.gender}」，请传 男/女（male/female）。注意：${meta.title}仅提供${meta.gender === 'male' ? '男频' : '女频'}数据。` };
   const pages = Math.min(3, Math.max(1, Math.trunc(Number(args.pages) || 1)));
@@ -492,6 +514,37 @@ async function qidianRank(args) {
     records,
     stats: buildStats(records),
     notes: extra.yearmonth ? '（历史月份数据为起点官方存档）' : '',
+  };
+}
+
+/** 起点本周强推 / 三江网文新风：SSR 页内嵌 records（混有 isTime 时间分隔条目，过滤掉只留书） */
+async function qidianSsrRank(rankKey, meta, args) {
+  const res = await fetchText(`https://m.qidian.com${meta.ssr}`, 'qidian', { accept: 'text/html' });
+  if (res.status !== 200) throw new Error(`起点页面 ${res.status}`);
+  const st = extractJsonScript(res.text);
+  const raw = findKeyDeep(st, 'records');
+  const all = Array.isArray(raw) ? raw : [];
+  const books = all.filter((r) => r && r.bid);
+  const sTime = findKeyDeep(st, 'sTime');
+  const eTime = findKeyDeep(st, 'eTime');
+  const records = books.map((r, i) => ({
+    pos: i + 1,
+    name: r.bName || '未知',
+    author: r.bAuth || '',
+    category: r.cat || '',
+    metric: r.cnt || '',
+    metricLabel: '字数',
+    desc: String(r.rec || r.desc || '').replace(/\s+/g, '').slice(0, 60),
+    bookId: String(r.bid || ''),
+    extra: r.state || '',
+  }));
+  const period = sTime && eTime ? `（${sTime}~${eTime}）` : '';
+  return {
+    platform: 'qidian', kind: 'rank', key: `${rankKey}_all`,
+    header: `起点${meta.title}${period}`,
+    records,
+    stats: buildStats(records),
+    notes: '（编辑精选推荐位，非纯数据排名；rec 字段为编辑推荐语）',
   };
 }
 
@@ -1157,13 +1210,17 @@ export default function createNovelPlatformPlugin(ctx) {
     name: '网文数据通（起点/番茄/七猫）',
     version: '1.0.0',
     description: [
-      '拉取起点中文网、番茄小说、七猫小说的榜单与书籍数据，并支持跨天对比分析（核心能力）。四大 action：',
-      '① rank 榜单：platform 必传；起点支持月票/畅销/阅读(追读)/书友/推荐/更新/签约/新书/新人/收藏/免费 11 榜，且支持 category 分类过滤（如"仙侠"）和 month 历史月份（仅月票榜，如"上月"）；番茄支持阅读榜(人气/在读)/新书榜+38个分类；七猫支持热门/新书/完本榜；七猫传 category 时返回该分类的热门/更新书库榜。gender 传 男/女。pages 1-3（每页约20本）。',
-      '② search 搜书：keyword 传书名/作者/主角名，返回书名/作者/收藏/推荐/ID；番茄不支持 search（会返回替代方案）。',
-      '③ book 书籍档案：bookId（可直接传书籍详情页链接，自动提取 ID）或 bookName（自动搜索匹配）。起点返回收藏/总推荐/月票及月票榜排名/推荐票/粉丝值/打赏/荣誉/最近章节；番茄返回在读人数/字数/总章节；七猫返回字数/作者数据。',
-      '④ compare 对比：今天 vs N 天前（days 参数，默认 7）。不带 bookId 时对比当前榜单（排名升降/新上榜/跌出/指标变化），带 bookId 时对比单本书的数据变化（收藏/月票/在读增量）。对比基于每日自动落盘的快照，刚部署时历史不足会如实说明。',
-      '⑤ config 配置：查看或修改插件配置（缓存时长 cacheHours 默认12小时、快照保留天数等）。用户说"把缓存改成6小时"时调用本 action。',
-      '用户提到排行榜/榜单/网文/小说推荐/某本书数据/数据变化/涨没涨时使用。参数尽量用用户原话传回（中文别名可识别）；结果基于真实拉取数据回答并做分析，不要凭记忆编造。',
+      '起点中文网/番茄小说/七猫小说的榜单与书籍数据查询 + 跨天对比。真实拉取，勿凭记忆编造。',
+      '',
+      'action 参数：',
+      '- rank：榜单。rank 值——起点：月票榜|畅销榜|阅读指数榜|书友榜|推荐榜|更新榜|签约新书榜|未签约新书榜|新人榜|本周强推|三江网文新风|收藏榜|免费榜；番茄：阅读榜|新书榜；七猫：热门榜|新书榜|完本榜。',
+      '  可选：category=分类（如 仙侠/玄幻）；gender=男|女；pages=1~3；month=历史月份（仅起点月票榜，如 上月/2026-10）。起点 PC 端的留存榜/追读榜/VIP收藏榜/潜力榜无移动接口，不支持。番茄/七猫传 category 时返回分类书库榜。',
+      '- search：keyword=书名/作者（番茄无搜索通道，会返回替代方案）。',
+      '- book：bookId（可直接传书籍详情页链接）或 bookName（无 ID 时自动搜索匹配）。',
+      '- compare：传榜单参数或 bookId，days=对比几天前（默认7）。基于每日自动落盘的快照做排名升降与数据增量对比。',
+      '- config：查看/修改插件配置，可传 cacheHours（缓存小时数，默认12）、snapshotRetentionDays、minRequestIntervalMs、disabledPlatforms。',
+      '',
+      '输出为文本（含排名/书名/作者/分类/数据与本地统计）或图片直链，基于数据回答即可。',
     ].join('\n'),
     provider: 'plugin-novel',
     mode: 'sync',
@@ -1173,21 +1230,21 @@ export default function createNovelPlatformPlugin(ctx) {
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', description: 'rank=榜单 | search=搜书 | book=书籍详情 | compare=跨天对比 | config=查看/修改配置' },
-        platform: { type: 'string', description: '起点/番茄/七猫（中文、拼音、英文均可）' },
-        rank: { type: 'string', description: '榜单名，用用户原话即可：如 月票榜/畅销榜/阅读榜/追读/推荐榜/新书榜/完本榜/热门榜；番茄可传分类名做分类榜' },
-        gender: { type: 'string', description: '男/女（男频/女频）' },
-        category: { type: 'string', description: '分类名，如 仙侠/都市/玄幻/总裁豪门；起点、番茄、七猫榜单均支持' },
-        month: { type: 'string', description: '仅起点月票榜：历史月份，如 上月/2026-10/10月' },
-        pages: { type: 'number', description: '榜单页数（可选，默认1，最多3）' },
+        action: { type: 'string', description: 'rank|search|book|compare|config' },
+        platform: { type: 'string', description: '起点|番茄|七猫（中英文均可）' },
+        rank: { type: 'string', description: '榜单名，见 description 列表' },
+        gender: { type: 'string', description: '男|女' },
+        category: { type: 'string', description: '分类名，如 仙侠/总裁豪门' },
+        month: { type: 'string', description: '历史月份（仅起点月票榜），如 上月/2026-10' },
+        pages: { type: 'number', description: '榜单页数，默认1，最大3' },
         keyword: { type: 'string', description: 'search 用：书名/作者/主角名' },
         bookId: { type: 'string', description: 'book/compare 用：书籍ID或详情页链接' },
-        bookName: { type: 'string', description: 'book 用：书名（无 ID 时自动搜索匹配）' },
-        days: { type: 'number', description: 'compare 用：对比几天前，默认 7' },
-        op: { type: 'string', description: 'config 用：get=查看 | set=修改' },
-        cacheHours: { type: 'number', description: 'config 用：缓存时长（小时）' },
+        bookName: { type: 'string', description: 'book 用：书名（无 ID 时自动搜索）' },
+        days: { type: 'number', description: 'compare 用：对比几天前，默认7' },
+        op: { type: 'string', description: 'config 用：get|set' },
+        cacheHours: { type: 'number', description: 'config 用：缓存小时数' },
         snapshotRetentionDays: { type: 'number', description: 'config 用：快照保留天数' },
-        disabledPlatforms: { type: 'string', description: 'config 用：要停用的平台（逗号分隔，传空启用全部）' },
+        disabledPlatforms: { type: 'string', description: 'config 用：停用平台，逗号分隔' },
       },
       additionalProperties: true,
     },
