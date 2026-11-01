@@ -218,7 +218,7 @@ export class AgentRuntime implements AgentLoop {
     if (mode === 'off') {
       return this.failedResult(input, 'agent_runtime_disabled', 'Agent runtime is disabled.');
     }
-    if (!String(input.userText || '').trim()) {
+    if (!String(input.userText || '').trim() && !(input.attachments?.length)) {
       return this.failedResult(input, 'empty_user_input', 'User input is empty.');
     }
     const controller = new AbortController();
