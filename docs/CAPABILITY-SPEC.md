@@ -90,3 +90,13 @@ interface CapabilityHandler {
 - 三层架构与冲突分析：《Miobot-三层Bot架构深度分析与升级方案 v6》（桌面 任务/）
 - 执行任务清单：《Miobot-实施方案-2026-10-24》（桌面 任务/）
 - 本仓库：GROK.md（项目导航）、REBUILD_STATUS.md（已过期，以 git log 为准）
+
+## 展示方式推荐（presentationHint）
+
+所有能力（内置、插件、HTTP 能力、MCP 工具和后续新增能力）都支持可选的 `presentationHint` 字段，默认空字符串。
+
+- 空值：不改变模型默认呈现行为；
+- 非空：能力描述会附带【展示方式推荐】，Planner manifest 也会携带；
+- 例：`presentationHint: "图表"` 表示操作者希望该能力输出优先组织成图表，但用户当前明确要求优先；
+- 后台：能力详情页「展示方式推荐」保存到 `orchestration.capabilityOverrides[id].presentationHint`；
+- 插件可以在 descriptor 中直接提供默认值，后台 override 可覆盖。

@@ -77,6 +77,8 @@ function toggleRegistryEnabled() {
     if (capability.value) capability.value.enabled = next;
 }
 
+const presentationHint = computed({ get: () => String((orch.value as any)?.capabilityOverrides?.[props.capabilityId]?.presentationHint ?? capability.value?.presentationHint ?? ""), set: (value: string) => { if (!orch.value) return; (orch.value as any).capabilityOverrides ||= {}; const current = (orch.value as any).capabilityOverrides[props.capabilityId] || {}; (orch.value as any).capabilityOverrides[props.capabilityId] = { ...current, presentationHint: String(value || "") }; } });
+
 function toggleRegistryApproval() {
     if (!orch.value) return;
     orch.value.capabilityOverrides ||= {};
@@ -244,6 +246,8 @@ onMounted(() => {
     </header>
 
     <slot name="intro" />
+
+    <SectionCard title="展示方式推荐" hint="作为能力契约发送给模型；填 图表 时，用户没有明确反对则优先把该能力的输出组织为图表。留空表示不改变默认行为。"><FormField label="推荐呈现方式"><input v-model="presentationHint" class="input-field" placeholder="留空 = 无变化，例如：图表、表格、排行榜" /></FormField></SectionCard>
 
     <SectionCard v-if="featureSetting" title="启用与配额" hint="消息入口的 FeatureGate 配额（C6）：冷却、每日上限、并发与触发方式；启停跟随页顶「启用能力」开关（单源）" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">

@@ -82,7 +82,7 @@ export class HttpCapabilityRegistry {
   }
 
   /** 生成 capability descriptor（builtin-capabilities 同形态），接入 orchestration 注册表。 */
-  toCapabilityDescriptor(id: string): { id: string; name: string; description: string; provider: string; mode: 'sync'; riskLevel: string; mergeable: boolean; outputKinds: string[]; inputSchema: unknown } | undefined {
+  toCapabilityDescriptor(id: string): { id: string; name: string; description: string; provider: string; presentationHint: string; mode: 'sync'; riskLevel: string; mergeable: boolean; outputKinds: string[]; inputSchema: unknown } | undefined {
     const descriptor = this.get(id);
     if (!descriptor) return undefined;
     const properties: Record<string, unknown> = {};
@@ -99,6 +99,7 @@ export class HttpCapabilityRegistry {
       name: descriptor.name,
       description: descriptor.description,
       provider: 'http-generic',
+      presentationHint: '',
       mode: 'sync',
       riskLevel: 'low',
       mergeable: true,

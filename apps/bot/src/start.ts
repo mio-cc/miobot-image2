@@ -922,7 +922,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     const lines = descriptors.slice(0, 40).map((d) => {
       const enabled = getConfig().orchestration.capabilityOverrides?.[d.id]?.enabled !== false;
       const known = DEDICATED_CAP_PAGES.has(String(d.id));
-      return `- ${d.id}（${d.name}）：${String(d.description || '').slice(0, 80)}${known ? '［有专属配置页］' : ''}${enabled ? '' : '［已停用］'}`;
+      return `- ${d.id}（${d.name}）：${String(d.description || '').slice(0, 80)}${d.presentationHint ? '【展示方式推荐：' + d.presentationHint + '】' : ''}${known ? '［有专属配置页］' : ''}${enabled ? '' : '［已停用］'}`;
     });
     const text = lines.length
       ? `可用能力目录（${descriptors.length} 项）：\n${lines.join('\n')}`

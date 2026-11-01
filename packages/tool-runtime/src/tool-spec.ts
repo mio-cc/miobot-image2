@@ -1,4 +1,4 @@
-﻿import { ToolRuntimeError, type ToolError } from './tool-errors.js';
+import { ToolRuntimeError, type ToolError } from './tool-errors.js';
 import { normalizeToolInputSchema, normalizeToolOutputSchema } from './tool-schema.js';
 
 export const TOOL_SIDE_EFFECTS = [
@@ -36,6 +36,8 @@ export interface ToolMetadata {
   naturalLanguage?: boolean;
   legacyCommand?: string;
   legacyEffect?: string;
+  /** Operator-recommended presentation for capability outputs. */
+  presentationHint?: string;
   implementationMode?: string;
   permissions?: string[];
   /** Set for adapters that are not yet able to execute through the V2 executor. */
@@ -115,6 +117,7 @@ export interface LegacyCapabilityDescriptorLike {
   version?: string;
   name?: string;
   description?: string;
+  presentationHint?: string;
   provider?: string;
   enabled?: boolean;
   aliases?: string[];
@@ -254,6 +257,7 @@ export function toolSpecFromCapabilityDescriptor(
     name: id,
     title: String(descriptor.name || id),
     description: String(descriptor.description || descriptor.name || id),
+    ...(String(descriptor.presentationHint || '').trim() ? { description: String(descriptor.description || descriptor.name || id) + '\n\n【展示方式推荐】' + String(descriptor.presentationHint).trim() + '。在不违背用户当前明确要求的前提下，优先采用该呈现方式；空值不改变默认行为。' } : {}),
     version: descriptor.version || '1.0.0',
     provider: descriptor.provider,
     enabled: options.enabled ?? descriptor.enabled !== false,
@@ -276,6 +280,7 @@ export function toolSpecFromCapabilityDescriptor(
       implementationMode: descriptor.mode,
       permissions: descriptor.permissions,
       migrationStatus: options.migrationStatus || 'adapted',
+      presentationHint: String(descriptor.presentationHint || '').trim(),
     },
   });
 }

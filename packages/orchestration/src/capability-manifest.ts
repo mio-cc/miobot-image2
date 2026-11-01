@@ -4,6 +4,8 @@ export interface CapabilityManifestEntry {
   id: string;
   name: string;
   description: string;
+  /** Operator-recommended presentation for this capability; empty means no change. */
+  presentationHint: string;
   effect: CapabilityEffect;
   inputSchema: Record<string, unknown>;
   requiredContext: string[];
@@ -51,6 +53,7 @@ export function buildCapabilityManifest(
       id: item.id,
       name: item.name,
       description: String(descriptionOverrides[item.id] || item.description || '').trim(),
+      presentationHint: String(item.presentationHint || '').trim(),
       effect: item.effect || 'unknown',
       inputSchema: item.inputSchema || {},
       requiredContext: item.requiredContext || [],

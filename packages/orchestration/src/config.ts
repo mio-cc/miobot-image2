@@ -5,6 +5,8 @@ export interface CapabilityOverride {
   enabled?: boolean;
   approvalRequired?: boolean;
   riskLevel?: RiskLevel;
+  /** presentation recommendation; empty means no change. */
+  presentationHint?: string;
 }
 
 export interface ModelRoleConfig {
@@ -559,6 +561,7 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
           ...(item.enabled === undefined ? {} : { enabled: bool(item.enabled, true) }),
           ...(item.approvalRequired === undefined ? {} : { approvalRequired: bool(item.approvalRequired, false) }),
           ...(item.riskLevel === 'low' || item.riskLevel === 'medium' || item.riskLevel === 'high' || item.riskLevel === 'critical' ? { riskLevel: item.riskLevel } : {}),
+          ...(typeof item.presentationHint === 'string' ? { presentationHint: String(item.presentationHint).trim().slice(0, 2000) } : {}),
         };
       }
       return out;

@@ -1,7 +1,7 @@
 import type { CapabilityDescriptor, CapabilityEffect } from './types.js';
 
 export function builtinCapabilityDescriptors(): CapabilityDescriptor[] {
-  const base = { version: '1.0.0', enabled: true } as const;
+  const base = { version: '1.0.0', enabled: true, presentationHint: '' } as const;
   const descriptors: CapabilityDescriptor[] = [
     { ...base, id: 'chat.reply', name: '自然语言对话', description: '直接回答、解释、判断、写作或对话，输出文本。', provider: 'model', mode: 'stream', riskLevel: 'low', mergeable: true, outputKinds: ['text'], inputSchema: { type: 'object', properties: { prompt: { type: 'string' }, question: { type: 'string' } }, additionalProperties: true } },
     { ...base, id: 'help', name: '帮助', description: '返回 Miobot 的完整帮助文本。', provider: 'builtin', mode: 'sync', riskLevel: 'low', mergeable: true, outputKinds: ['text'] },
@@ -240,7 +240,7 @@ export function builtinCapabilityDescriptors(): CapabilityDescriptor[] {
 
 export function applyCapabilityOverrides(
   descriptors: CapabilityDescriptor[],
-  overrides: Record<string, { enabled?: boolean; approvalRequired?: boolean; riskLevel?: CapabilityDescriptor['riskLevel'] }> = {},
+  overrides: Record<string, { enabled?: boolean; approvalRequired?: boolean; riskLevel?: CapabilityDescriptor['riskLevel']; presentationHint?: string }> = {},
 ): CapabilityDescriptor[] {
   return descriptors.map((descriptor) => {
     const override = overrides[descriptor.id];
@@ -250,6 +250,7 @@ export function applyCapabilityOverrides(
       ...(override.enabled === undefined ? {} : { enabled: override.enabled }),
       ...(override.approvalRequired === undefined ? {} : { approvalRequired: override.approvalRequired }),
       ...(override.riskLevel === undefined ? {} : { riskLevel: override.riskLevel }),
+      ...(override.presentationHint === undefined ? {} : { presentationHint: override.presentationHint }),
     };
   });
 }

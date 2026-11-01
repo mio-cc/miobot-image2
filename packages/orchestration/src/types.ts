@@ -1,4 +1,4 @@
-﻿export type UserRole = 'guest' | 'user' | 'admin' | 'owner';
+export type UserRole = 'guest' | 'user' | 'admin' | 'owner';
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
 export type PermissionMode = 'allow' | 'ask_admin' | 'deny';
 export type ApprovalState = 'pending' | 'approved' | 'rejected' | 'expired' | 'cancelled';
@@ -101,6 +101,8 @@ export interface CapabilityDescriptor {
   version: string;
   name: string;
   description?: string;
+  /** presentation recommendation; empty means no change. */
+  presentationHint?: string;
   /** 语义结果类型：Planner 按期望结果和副作用匹配，而不是按主题词匹配。 */
   effect?: CapabilityEffect;
   /** 执行前必须具备的事实性上下文，例如图片、文件、URL。 */

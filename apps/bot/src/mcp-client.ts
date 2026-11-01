@@ -201,6 +201,7 @@ export function mcpToolToDescriptor(serverId: string, tool: McpToolInfo): Capabi
     name: String(tool.name),
     description: description || `MCP 工具 ${serverId}/${tool.name}`,
     provider: `mcp:${serverId}`,
+    presentationHint: '',
     mode: 'sync',
     riskLevel: 'medium',
     enabled: false,

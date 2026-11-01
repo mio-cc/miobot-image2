@@ -63,15 +63,16 @@ export async function loadCapabilityPlugins(
       if (!loaded?.descriptor?.id || typeof loaded?.handler?.execute !== 'function') {
         throw new Error('插件形态无效：需要 { descriptor: {id, ...}, handler: { execute } }');
       }
-      register({ descriptor: loaded.descriptor, handler: loaded.handler, source: file });
+      const descriptor = { ...loaded.descriptor, presentationHint: String(loaded.descriptor.presentationHint || '').trim() };
+      register({ descriptor, handler: loaded.handler, source: file });
       manifest.push({
-        id: loaded.descriptor.id,
-        name: String(loaded.descriptor.name || loaded.descriptor.id),
-        version: String(loaded.descriptor.version || '-'),
-        description: String(loaded.descriptor.description || ''),
+        id: descriptor.id,
+        name: String(descriptor.name || descriptor.id),
+        version: String(descriptor.version || '-'),
+        description: String(descriptor.description || ''),
         source: file,
         loadedAt: new Date().toISOString(),
-        descriptor: loaded.descriptor,
+        descriptor,
       });
       options.logger?.info('能力插件已加载', { id: loaded.descriptor.id, source: file });
     } catch (error) {
