@@ -342,6 +342,13 @@ install_bundled_capabilities() {
     if [ ! -f "$target" ]; then
       install -m 0600 "$file" "$target"
       log "安装内置能力插件：$(basename "$file")"
+    elif ! cmp -s "$file" "$target"; then
+      # 内置插件更新时必须刷新；否则 git pull 后生产仍继续加载旧插件。
+      backup="$RUNTIME_DIR/capabilities/backups/$(basename "$file").$(date +%Y%m%d%H%M%S).bak"
+      install -d -m 0700 "$RUNTIME_DIR/capabilities/backups"
+      cp -a "$target" "$backup" 2>/dev/null || true
+      install -m 0600 "$file" "$target"
+      log "更新内置能力插件：$(basename "$file")（旧版已备份）"
     fi
   done
 }
