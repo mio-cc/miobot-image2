@@ -69,6 +69,8 @@ export interface BotRuntimeOptions {
   fetchReferencedMessage?: (replyId: string | number) => Promise<NapcatMessageEvent | null>;
   /** 可选:展开合并转发消息(get_forward_msg),把转发节点文本/图片带给模型。 */
   fetchForwardMessage?: (forwardId: string) => Promise<NapcatHistoryMessage[] | null>;
+  /** 可选:转发内容入记忆的展开超时上限(毫秒);默认 15s,测试注入用,生产不必配置。 */
+  forwardMemoryExpandTimeoutMs?: number;
   /** 可选:拉取群历史消息(@bot 时取最近群聊上下文)。由 start.ts 注入 napcat callAction。 */
   fetchGroupHistory?: (groupId: number | string, anchorMessageId: number | string, count: number) => Promise<NapcatHistoryMessage[]>;  /** 向量记忆检索；命中时优先于固定条数群历史。 */
   /** 可选:通用 NapCat action 调用（好友请求处理 set_friend_add_request 等）。由 start.ts 注入。 */
@@ -1073,26 +1075,35 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     // 陈旧补发消息也要观察（它们正是重连窗口里丢失的聊天历史），但不回复；
     // 白名单/黑名单在此独立把关（与 bot-router 同标准），名单外的会话绝不写入向量库。
     if (options.observeMemory && isObservationScopeAllowed(cfg, chatType, event.group_id, userId)) {
-      try {
-        options.observeMemory({
-          botId: selfIdRaw,
-          chatType,
-          groupId: event.group_id,
-          userId: userId ?? '',
-          authorName: String(event.sender?.card || event.sender?.nickname || userId || ''),
-          role: 'user',
-          text: stripNonTextCqSegments(rawMessage).trim(),
-          messageId: event.message_id,
-          eventTime: typeof event.time === 'number' && event.time > 0 ? new Date(event.time * 1000).toISOString() : undefined,
-          attachments: [
-            ...baseImages.map((ref) => ({ type: 'image' as const, ref })),
-            ...baseVideos.map((ref) => ({ type: 'video' as const, ref })),
-            ...baseAudios.map((ref) => ({ type: 'audio' as const, ref })),
-            ...baseFiles.map((file) => ({ type: 'file' as const, ref: String(file?.url || file?.file || file?.fileId || file?.name || ''), name: file?.name, size: file?.size })),
-          ],
-        });
-      } catch {
-        // 观察失败绝不影响回复链路。
+      const observationInput = {
+        botId: selfIdRaw,
+        chatType,
+        groupId: event.group_id,
+        userId: userId ?? '',
+        authorName: String(event.sender?.card || event.sender?.nickname || userId || ''),
+        role: 'user' as const,
+        messageId: event.message_id,
+        eventTime: typeof event.time === 'number' && event.time > 0 ? new Date(event.time * 1000).toISOString() : undefined,
+        attachments: [
+          ...baseImages.map((ref) => ({ type: 'image' as const, ref })),
+          ...baseVideos.map((ref) => ({ type: 'video' as const, ref })),
+          ...baseAudios.map((ref) => ({ type: 'audio' as const, ref })),
+          ...baseFiles.map((file) => ({ type: 'file' as const, ref: String(file?.url || file?.file || file?.fileId || file?.name || ''), name: file?.name, size: file?.size })),
+        ],
+      };
+      const observedText = stripNonTextCqSegments(rawMessage).trim();
+      const observationForwardIds = extractForwardIds(event);
+      if (observationForwardIds.length) {
+        // 合并转发像普通消息一样入记忆：异步展开后原文 + 聚合内容合成一条观察记录写入
+        //（复用 observer 的截断/messageId 去重/批量 embedding/pending 重试全链路），
+        // 之后用户问起靠记忆检索自然命中。展开不阻塞主链路；失败/超时降级占位，不丢记录。
+        void observeForwardIntoMemory(observationInput, observedText, observationForwardIds, options, log).catch(() => undefined);
+      } else {
+        try {
+          options.observeMemory({ ...observationInput, text: observedText });
+        } catch {
+          // 观察失败绝不影响回复链路。
+        }
       }
     }
 
@@ -1422,6 +1433,8 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         while (list.length > RECENT_IMAGE_MAX * 3) list.shift();
         recentImageMemory.set(imageKey, list);
       }
+      // 含合并转发的未触发消息不再需要暂存：内容已由观察闸门异步展开入记忆（见 observeForwardIntoMemory），
+      // 后续触发时靠记忆检索（loadMemoryContext）自然命中。
       log?.info('消息被忽略', { reason: decision.reason, rawMessage: rawMessage.slice(0, 80) });
       logTiming('ignored');
       return { handled: false, reason: decision.reason };
@@ -1437,6 +1450,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
 
     // 转发富化:展开当前消息/引用消息里的合并转发(get_forward_msg),取文本 + 图片,
     // 连同引用消息的图片,合并进最终送模型的 images,避免引用图片与转发内容丢失。
+    //（记忆侧的持久化由观察闸门的 observeForwardIntoMemory 异步完成，与本条即时富化互不影响。）
     const forwardIds = [...extractForwardIds(event), ...(referenced ? extractForwardIds(referenced) : [])];
     const forwardNodes = await expandForwards(forwardIds, options, log);
     const referenceBody = referenced ? extractReferenceText(referenced).trim() : '';
@@ -1511,7 +1525,9 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     if (droppedImages > 0) log?.warn('部分图片无法读取，已从模型输入移除', { droppedImages, totalImages: enrichedImages.length });
     if (enrichedImages.length > 0 && modelImages.length === 0) {
       await reportProblem('image-input-failed', '图片读取失败。QQ 图片 URL 可能已过期，Napcat 也没能返回可用的图片内容。', { imageCount: enrichedImages.length });
-      return { handled: true, kind: 'image-input-failed' };
+      // 转发文本仍在时不整条丢弃：图片降级为不可用，继续走文本链路（转发内容优先保住）。
+      if (!forwardText) return { handled: true, kind: 'image-input-failed' };
+      log?.info('转发图片全部不可读，保留转发文本继续处理', { droppedImages, forwardTextChars: forwardText.length });
     }
 
     const replyCtx: ReplyContext = {
@@ -2502,6 +2518,86 @@ async function expandForwards(
     }
   }
   return out;
+}
+
+// ── 合并转发入记忆（观察链路）───────────────────────────────────────────
+/** 观察记录的完整入参（与 BotRuntimeOptions.observeMemory 的输入一致，text 由本链路组合）。 */
+type MemoryObservationInput = Omit<Parameters<NonNullable<BotRuntimeOptions['observeMemory']>>[0], 'text'>;
+/** 展开超时上限：观察是后台任务，不跟 napcat.getMessageTimeoutMs（用户可配 60s+）走。 */
+const FORWARD_MEMORY_EXPAND_TIMEOUT_MS = 15_000;
+/** 同时在途的展开任务上限（防转发风暴连打 Napcat get_forward_msg）。 */
+const FORWARD_MEMORY_CONCURRENCY = 2;
+/** 等待队列上限：超出直接按占位入库，不排队（保内存有界）。 */
+const FORWARD_MEMORY_QUEUE_MAX = 32;
+let forwardMemoryActive = 0;
+let forwardMemoryWaiting = 0;
+const forwardMemoryWaiters: Array<() => void> = [];
+
+async function runWithForwardMemorySlot<T>(task: () => Promise<T>): Promise<T> {
+  if (forwardMemoryActive >= FORWARD_MEMORY_CONCURRENCY) {
+    await new Promise<void>((resolve) => forwardMemoryWaiters.push(resolve));
+  }
+  forwardMemoryActive += 1;
+  try {
+    return await task();
+  } finally {
+    forwardMemoryActive = Math.max(0, forwardMemoryActive - 1);
+    const next = forwardMemoryWaiters.shift();
+    if (next) next();
+  }
+}
+
+/**
+ * 合并转发观察入库：原文 + 异步展开的聚合内容合成一条记忆记录（一条消息一条记录，
+ * messageId 去重与向量检索粒度一致）。聚合而非逐条子消息入库——保留"谁在这次转发里说了
+ * 什么"的完整语境，一条 embedding，避免碎片记录挤占检索 topK。
+ * 展开带 15s 超时 + 并发上限，失败/超时/未注入 fetchForwardMessage 降级为
+ * '[合并转发内容不可读]' 占位（与附件占位 [图片:ref] 同语义），保证观察记录不丢。
+ */
+async function observeForwardIntoMemory(
+  input: MemoryObservationInput,
+  text: string,
+  forwardIds: string[],
+  options: BotRuntimeOptions,
+  log?: StructuredLogger,
+): Promise<void> {
+  const observe = options.observeMemory;
+  if (!observe) return;
+  const body = String(text || '').trim();
+  const placeholder = `${body ? body + ' ' : ''}[合并转发内容不可读]`;
+  const fallback = (): void => {
+    try { observe({ ...input, text: placeholder }); } catch { /* 尽力而为 */ }
+  };
+  if (!options.fetchForwardMessage || forwardMemoryWaiting >= FORWARD_MEMORY_QUEUE_MAX) {
+    fallback();
+    return;
+  }
+  forwardMemoryWaiting += 1;
+  try {
+    const timeoutMs = Math.max(100, Math.trunc(Number(options.forwardMemoryExpandTimeoutMs) || FORWARD_MEMORY_EXPAND_TIMEOUT_MS));
+    const nodes = await runWithForwardMemorySlot(() => Promise.race([
+      expandForwards(forwardIds, options, log),
+      new Promise<NapcatHistoryMessage[]>((resolve) => {
+        const timer = setTimeout(() => resolve([]), timeoutMs);
+        timer.unref?.();
+      }),
+    ]));
+    const forwardText = nodes.length ? formatForwardMessages(nodes, { maxChars: 4000 }) : '';
+    try {
+      observe({
+        ...input,
+        text: forwardText
+          ? `${body ? body + '\n\n' : ''}【合并转发内容】\n${forwardText}`
+          : placeholder,
+      });
+    } catch { /* 尽力而为 */ }
+    if (forwardText) log?.info('合并转发内容已入记忆', { forwardIds, chars: forwardText.length });
+    else log?.warn('合并转发内容不可读，已按占位入记忆', { forwardIds });
+  } catch {
+    fallback();
+  } finally {
+    forwardMemoryWaiting -= 1;
+  }
 }
 
 function singleTextFromReplyPlan(plan: any): string | null {

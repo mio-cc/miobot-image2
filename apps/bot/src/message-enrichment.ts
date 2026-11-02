@@ -63,7 +63,8 @@ function collectForwardIdsUnknown(value: unknown, ids: string[], depth: number):
     const v = obj[k];
     if (v !== undefined && v !== null && typeof v !== 'object') ids.push(String(v));
   }
-  for (const key of ['message', 'content', 'messages', 'nodes', 'data', 'forward', 'meta', 'extra']) {
+  // 旧版 QQ 安卓端"聊天记录"json 卡片的 resid 嵌在 meta.detail 下，detail 必须在递归键表里。
+  for (const key of ['message', 'content', 'messages', 'nodes', 'data', 'forward', 'meta', 'detail', 'extra']) {
     if (obj[key] !== undefined) collectForwardIdsUnknown(obj[key], ids, depth + 1);
   }
 }

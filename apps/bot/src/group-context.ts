@@ -70,6 +70,11 @@ export function formatHistoryMessageText(
         case 'file':
           parts.push(`[文件:${data.file || data.name || ''}]`);
           break;
+        case 'forward':
+          // 群历史里的合并转发：内容靠记忆检索（观察链路已异步展开入库），这里至少留占位，
+          // 不再因无文本被整条过滤——与图片 [图片] 占位同语义。
+          parts.push('[合并转发]');
+          break;
         case 'record':
         case 'voice':
           parts.push('[语音]');

@@ -689,7 +689,8 @@ export class NapcatAdapter {
   }
 
   async getForwardMessage(forwardId: number | string, timeoutMs = Math.max(this.options.getMessageTimeoutMs, 30000)): Promise<unknown> {
-    const response = await this.callAction('get_forward_msg', { id: String(forwardId) }, timeoutMs);
+    // OneBot 11 标准参数名为 message_id，go-cqhttp/Napcat 历史实现也接受 id——两者同送，兼容分叉。
+    const response = await this.callAction('get_forward_msg', { id: String(forwardId), message_id: String(forwardId) }, timeoutMs);
     return response.data ?? response;
   }
 
