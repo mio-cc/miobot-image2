@@ -1347,6 +1347,14 @@ function mime(file) {
   const ext = path.extname(file).toLowerCase();
   return ext === '.html' ? 'text/html; charset=utf-8' : ext === '.js' ? 'text/javascript; charset=utf-8' : ext === '.css' ? 'text/css; charset=utf-8' : ext === '.svg' ? 'image/svg+xml' : ext === '.ico' ? 'image/x-icon' : ext === '.png' ? 'image/png' : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : ext === '.json' ? 'application/json; charset=utf-8' : 'application/octet-stream';
 }
+/** 静态缓存策略：带内容指纹的构建产物（vite: name-[hash].ext）可永久缓存；入口/无指纹文件必须每次协商，否则发布后锁死旧版本。 */
+function cacheHeadersFor(file) {
+  const base = path.basename(file);
+  if (base !== 'index.html' && /[-_][A-Za-z0-9_-]{8,}\.[a-z0-9]+$/i.test(base)) {
+    return { 'cache-control': 'public, max-age=31536000, immutable' };
+  }
+  return { 'cache-control': 'no-cache' };
+}
 async function serveFile(res, root, requestPath, prefix, rewriteHtml = false) {
   let rel = decodeURIComponent(requestPath.slice(prefix.length)).replace(/^\/+/, '');
   if (!rel || rel.endsWith('/')) rel = path.join(rel, 'index.html');
@@ -1360,9 +1368,9 @@ async function serveFile(res, root, requestPath, prefix, rewriteHtml = false) {
         .replaceAll('href="/favicon.ico"', 'href="/canvas/favicon.ico"')
         .replaceAll('src="/assets/', 'src="/canvas/assets/')
         .replaceAll('href="/assets/', 'href="/canvas/assets/');
-      return send(res, 200, html, { 'content-type': 'text/html; charset=utf-8' });
+      return send(res, 200, html, { 'content-type': 'text/html; charset=utf-8', ...cacheHeadersFor(file) });
     }
-    return send(res, 200, data, { 'content-type': mime(file) });
+    return send(res, 200, data, { 'content-type': mime(file), ...cacheHeadersFor(file) });
   } catch {
     if (requestPath.startsWith(prefix)) {
       const index = path.join(root, 'index.html');

@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import client from '../api/client';
 import { useConfigStore } from '../stores/config';
+import { useCapabilityStore } from '../stores/capabilities';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
@@ -197,18 +198,21 @@ async function testCapability(item: any, mode: 'validate' | 'dry_run' | 'live' =
 async function decideApproval(item: any, decision: 'approve' | 'reject' | 'cancel') {
     try {
         await client.post('/orchestration/approvals', { code: item.code, decision });
-        await loadCapabilities();
+        // 审批会写 capabilityOverrides，注册表状态随之变化 → 强刷绕过 TTL。
+        await loadCapabilities(true);
     } catch { /* 错误由后端审计日志记录 */ }
 }
 
-async function loadCapabilities() {
+async function loadCapabilities(forceRegistry = false) {
     try {
-        const [capRes, approvalRes, auditRes] = await Promise.all([
-            client.get('/orchestration/capabilities'),
+        // 注册表走 store 共享缓存（60s TTL，~64KB 大 payload 三页复用）；审批后由上方强刷。
+        const capStore = useCapabilityStore();
+        const [, approvalRes, auditRes] = await Promise.all([
+            capStore.refreshRegistry(forceRegistry),
             client.get('/orchestration/approvals'),
             client.get('/orchestration/audit'),
         ]);
-        capabilities.value = capRes.data?.capabilities || [];
+        capabilities.value = capStore.registry as any[];
         syncPreviewCapability(previewCapability.value);
         approvals.value = approvalRes.data?.approvals || [];
         auditRecords.value = auditRes.data?.audit || [];

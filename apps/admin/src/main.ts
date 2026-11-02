@@ -90,6 +90,15 @@ export function createAdminApp(options: AdminAppOptions = {}): AdminApp {
 /** 把 admin 响应套用到 Node http 响应(供 apps/admin 的 http 适配层调用)。 */
 export function applyAdminResponse(res: { statusCode: number; setHeader: (k: string, v: string) => void; end: (chunk?: string) => void }, result: AdminResponse): void {
   res.statusCode = result.status;
+  // 透传 web-api 协商缓存头（ETag/Cache-Control）；漏掉的话 ETag 在装配层就被吞了。
+  for (const [key, value] of Object.entries(result.headers || {})) {
+    if (value) res.setHeader(key, value);
+  }
+  // 304 必须空体（RFC 7232）；带 body 会被浏览器当坏响应。
+  if (result.status === 304) {
+    res.end();
+    return;
+  }
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.end(JSON.stringify(result.body));
 }

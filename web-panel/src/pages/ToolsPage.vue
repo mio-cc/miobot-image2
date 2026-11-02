@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import client, { errorMessage } from '../api/client';
+import { errorMessage } from '../api/client';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import { useConfigStore } from '../stores/config';
+import { useCapabilityStore } from '../stores/capabilities';
 
 interface CapabilityItem {
     id: string;
@@ -35,12 +36,15 @@ function effectiveExposure(cap: CapabilityItem): string {
     return exposure.value?.[cap.id] || (cap as any).exposure || '推导';
 }
 
-async function refresh() {
+async function refresh(force = false) {
     loading.value = true;
     error.value = '';
     try {
-        const res = await client.get('/orchestration/capabilities');
-        capabilities.value = res.data.capabilities || [];
+        // 复用 store 的注册表缓存（60s TTL）；「刷新」按钮 = 强刷（模板里显式传参）。
+        const capStore = useCapabilityStore();
+        await capStore.refreshRegistry(force);
+        capabilities.value = capStore.registry as CapabilityItem[];
+        if (capStore.registryError) error.value = capStore.registryError;
     } catch (e: any) {
         error.value = errorMessage(e, '读取工具目录失败');
     } finally {
@@ -77,7 +81,7 @@ onMounted(() => { void Promise.all([refresh(), loadExposure()]); });
 
     <SectionCard title="已注册工具" hint="来自能力注册表的动态 ToolSpec；hidden 不进入 loadout" class="mb-4">
       <template #action>
-        <button class="btn-outline" :disabled="loading" @click="refresh">刷新</button>
+        <button class="btn-outline" :disabled="loading" @click="refresh(true)">刷新</button>
       </template>
       <p v-if="error" class="text-xs status-crit mb-2">{{ error }}</p>
       <p v-if="loading" class="text-xs text-[color:var(--ink-3)]">读取中…</p>

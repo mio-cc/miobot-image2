@@ -32,6 +32,9 @@ const savedLogLimit = Number(window.localStorage.getItem('miobot.logLimit') || 3
 const limit = ref(Number.isFinite(savedLogLimit) ? Math.min(10000, Math.max(1, Math.trunc(savedLogLimit))) : 300);
 const entries = ref<LogEntry[]>([]);
 const total = ref(0);
+/** 服务端口径：当前筛选命中数（不受分页截断）与该日志源全量数。 */
+const filteredTotal = ref(0);
+const grandTotal = ref(0);
 const loading = ref(false);
 const logError = ref('');
 const autoRefresh = ref(true);
@@ -60,18 +63,42 @@ async function fetchLogs(showLoading = true) {
   if (showLoading) loading.value = true;
   logError.value = '';
   try {
-    const params: Record<string, unknown> = { limit: limit.value };
+    const params: Record<string, unknown> = { limit: limit.value, offset: 0 };
     if (level.value !== 'all') params.level = level.value;
     if (search.value.trim()) params.contains = search.value.trim();
     const res = await client.get(basePath.value, { params });
     // 后端按时间正序返回；界面要最新的在最上面。
     entries.value = [...(res.data.items || [])].reverse();
     total.value = res.data.total || 0;
+    filteredTotal.value = res.data.total ?? entries.value.length;
+    grandTotal.value = res.data.grandTotal ?? res.data.total ?? 0;
   } catch (e: any) {
     logError.value = errorMessage(e, '日志加载失败');
   } finally {
     if (showLoading) loading.value = false;
   }
+}
+
+/**
+ * 「复制筛选结果 / 下载」用：按 offset 分页拉全当前筛选条件下的所有日志（不只当前页）。
+ * 服务端已返回真实 total（命中数），逐页向前翻到取完；设上限防误点拖垮面板。
+ */
+async function fetchAllFilteredLogs(cap = 10000): Promise<LogEntry[]> {
+  const pageSize = Math.min(500, Math.max(1, limit.value));
+  const collected: LogEntry[] = [];
+  const params: Record<string, unknown> = {};
+  if (level.value !== 'all') params.level = level.value;
+  if (search.value.trim()) params.contains = search.value.trim();
+  let offset = 0;
+  // 服务端 items 为时间正序；各页直接拼接即完整正序，最后统一 reverse。
+  for (;;) {
+    const res = await client.get(basePath.value, { params: { ...params, limit: pageSize, offset } });
+    const items: LogEntry[] = res.data.items || [];
+    collected.push(...items);
+    offset += items.length;
+    if (!items.length || items.length < pageSize || offset >= cap) break;
+  }
+  return collected.reverse();
 }
 
 async function clearLogs() {
@@ -81,6 +108,8 @@ async function clearLogs() {
     const res = await client.post(`${basePath.value}/clear`, {});
     entries.value = [...(res.data.items || [])].reverse();
     total.value = res.data.total || 0;
+    filteredTotal.value = res.data.total ?? 0;
+    grandTotal.value = res.data.grandTotal ?? res.data.total ?? 0;
   } catch (e: any) {
     logError.value = errorMessage(e, '清空失败');
   } finally {
@@ -141,9 +170,16 @@ function levelClass(value: string) {
   return 'status-good';
 }
 
-/** 下载当前筛选结果为 .log（与「复制筛选结果」同一数据口径：当前已加载条目，非全量历史）。 */
-function downloadLogs() {
-  const text = entries.value.map(formatEntry).join('\n\n') || '（无匹配日志）';
+/** 复制当前筛选结果（分页拉全量；回执 N = 实际取到的条数）。 */
+async function copyAllFiltered() {
+  const all = await fetchAllFilteredLogs();
+  await copyText(all.map(formatEntry).join('\n\n'), `已复制 ${all.length} 条（当前筛选结果）`);
+}
+
+/** 下载当前筛选结果为 .log（分页拉全量，N 取服务端真实命中数）。 */
+async function downloadLogs() {
+  const all = await fetchAllFilteredLogs();
+  const text = all.map(formatEntry).join('\n\n') || '（无匹配日志）';
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -152,7 +188,7 @@ function downloadLogs() {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(a.href);
-  copyStatus.value = `已下载 ${entries.value.length} 条日志`;
+  copyStatus.value = `已下载 ${all.length} 条日志`;
   window.setTimeout(() => { if (copyStatus.value.startsWith('已下载')) copyStatus.value = ''; }, 1800);
 }
 
@@ -240,13 +276,13 @@ onBeforeUnmount(stopTimer);
         <label class="flex items-center gap-1.5 text-xs text-[color:var(--ink-3)]">
           <input type="checkbox" v-model="autoRefresh" />自动刷新
         </label>
-        <span class="text-xs text-[color:var(--ink-3)] ml-auto whitespace-nowrap" title="当前筛选命中的条数 / 该日志源的总条数">命中 {{ entries.length }} / 共 {{ total }} 条</span>
+        <span class="text-xs text-[color:var(--ink-3)] ml-auto whitespace-nowrap" title="当前筛选命中的条数（服务端口径，不受分页截断）/ 该日志源的总条数">命中 {{ filteredTotal }} / 共 {{ grandTotal }} 条</span>
         <button class="btn-outline text-xs" :disabled="loading" @click="fetchLogs()">{{ loading ? '刷新中...' : '刷新' }}</button>
-        <button class="btn-outline text-xs" :disabled="!entries.length"
-          :title="`复制当前筛选命中的 ${entries.length} 条（级别：${level === 'all' ? '全部' : level}${search.trim() ? '；关键字：' + search.trim() : ''}），不是全部历史`"
-          @click="copyText(entries.map(formatEntry).join('\n\n'), `已复制 ${entries.length} 条（当前筛选结果）`)">复制筛选结果 · {{ entries.length }} 条</button>
-        <button class="btn-outline text-xs" :disabled="!entries.length"
-          :title="`下载当前筛选命中的 ${entries.length} 条为 .log 文件`"
+        <button class="btn-outline text-xs" :disabled="!filteredTotal"
+          :title="`复制当前筛选命中的 ${filteredTotal} 条（级别：${level === 'all' ? '全部' : level}${search.trim() ? '；关键字：' + search.trim() : ''}），不是全部历史`"
+          @click="copyAllFiltered">复制筛选结果 · {{ filteredTotal }} 条</button>
+        <button class="btn-outline text-xs" :disabled="!filteredTotal"
+          :title="`下载当前筛选命中的 ${filteredTotal} 条为 .log 文件`"
           @click="downloadLogs">下载 .log</button>
         <button class="btn-danger text-xs" :disabled="loading" @click="clearLogs">清空</button>
       </div>

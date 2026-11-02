@@ -1,9 +1,11 @@
 import type { WebApiRequest } from '../../web-api/src/index.js';
 
-/** admin 响应：状态码放宽为 number（含 501/502 等 web-api 未覆盖的码）。结构与 WebApiResponse 兼容。 */
+/** admin 响应：状态码放宽为 number（含 501/502/304 等 web-api 未覆盖的码）。结构与 WebApiResponse 兼容。 */
 export interface AdminResponse<T = unknown> {
   status: number;
   body: T;
+  /** 可选响应头（web-api 协商缓存的 ETag/Cache-Control 透传）；304 时 body 为空。 */
+  headers?: Record<string, string>;
 }
 
 /** 复用 web-api 的请求形状（method/path/headers/body），传输无关。 */

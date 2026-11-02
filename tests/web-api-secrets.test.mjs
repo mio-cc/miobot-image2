@@ -346,3 +346,68 @@ test('config import: unrecognized payload is rejected without clearing current c
   assert.throws(() => repo.importAndSave({ config: {} }), /无法识别/);
   assert.deepEqual(repo.getConfig(), before);
 });
+
+/* ── POST /api/config 打码值校验（与 import 共用 assertSecretsResolved；2026-11 补齐覆盖） ── */
+
+test('POST /config 提交打码串（对不上本机旧值）被整体拒绝，不落盘', async () => {
+  const { api, repository, auth } = makeApi();
+  const before = JSON.stringify(repository.getConfig());
+  // 圆点形态但 salt 对不上（模拟从别处面板粘来的打码值）
+  const res = await api.handle({
+    method: 'POST', path: '/api/config', headers: auth,
+    body: { panel: { passwordSeed: 'sup••••••••word' }, llm: { apiKeys: [{ name: 'A', key: 'sk-••••••••9999' }] } },
+  });
+  assert.equal(res.status, 400, '必须 400 拒绝');
+  assert.ok(res.body.error.includes('打码值'), '错误文案说明是打码值问题');
+  assert.equal(JSON.stringify(repository.getConfig()), before, '配置未被改动');
+});
+
+test('POST /config 提交真实新密钥正常保存', async () => {
+  const { api, repository, auth } = makeApi();
+  const res = await api.handle({
+    method: 'POST', path: '/api/config', headers: auth,
+    body: { llm: { apiKeys: [{ name: 'A', baseUrl: 'https://a.example.com/v1', key: 'sk-brand-new-real-key-000' }] } },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(repository.getConfig().llm.apiKeys[0].key, 'sk-brand-new-real-key-000');
+});
+
+test('POST /config 混合字段（部分真实部分打码）被拒，且只点名打码字段', async () => {
+  const { api, repository, auth } = makeApi();
+  const res = await api.handle({
+    method: 'POST', path: '/api/config', headers: auth,
+    body: {
+      llm: { apiKeys: [
+        { name: 'A', baseUrl: 'https://a.example.com/v1', key: 'sk-real-key-aaaaaaaa1234' }, // 原值回存，还原成功
+        { name: 'B', baseUrl: 'https://b.example.com/v1', key: 'sk-••••••••dead' },          // 对不上的打码串
+      ] },
+    },
+  });
+  assert.equal(res.status, 400);
+  assert.ok(res.body.error.includes('llm.apiKeys[1].key'), '错误文案定位到具体字段');
+  assert.ok(res.body.error.includes('B'), '错误文案含节点名');
+  assert.ok(!res.body.error.includes('apiKeys[0]'), '正常的字段不该被点名');
+});
+
+test('POST /config 外部星号掩码形态（sk-****abcd）同样被拒', async () => {
+  const { api, repository, auth } = makeApi();
+  const before = JSON.stringify(repository.getConfig());
+  const res = await api.handle({
+    method: 'POST', path: '/api/config', headers: auth,
+    body: { napcat: { token: 'ska-****abcd****ef' } },
+  });
+  assert.equal(res.status, 400, '4+ 连续星号按外部掩码形态拒绝');
+  assert.ok(res.body.error.includes('napcat.token'), '错误文案定位到字段');
+  assert.equal(JSON.stringify(repository.getConfig()), before, '配置未被改动');
+});
+
+test('POST /config 面板原样回存（打码值恰好匹配当前值）仍走还原通道，正常保存', async () => {
+  const { api, repository, auth } = makeApi();
+  const masked = await api.handle({ method: 'GET', path: '/api/config', headers: auth });
+  const res = await api.handle({
+    method: 'POST', path: '/api/config', headers: auth,
+    body: { napcat: { token: masked.body.config.napcat.token } },
+  });
+  assert.equal(res.status, 200, '原样回存不应被误拒');
+  assert.equal(repository.getConfig().napcat.token, 'napcat-token-value', '真实密钥被还原保留');
+});

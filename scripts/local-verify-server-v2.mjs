@@ -252,6 +252,11 @@ async function serveFile(res, root, requestPath, prefix, rewriteHtml = false) {
   if (!rel || rel.endsWith('/')) rel = path.join(rel, 'index.html');
   const file = path.resolve(root, rel);
   if (!file.startsWith(path.resolve(root))) return sendJson(res, 403, { error: 'Forbidden' });
+  // 静态缓存策略：带内容指纹的产物 immutable；入口/无指纹文件 no-cache（发布不锁死）。
+  const base = path.basename(file);
+  const cacheControl = base !== 'index.html' && /[-_][A-Za-z0-9_-]{8,}\.[a-z0-9]+$/i.test(base)
+    ? 'public, max-age=31536000, immutable'
+    : 'no-cache';
   try {
     const data = await fs.readFile(file);
     if (rewriteHtml && path.basename(file) === 'index.html') {
@@ -260,9 +265,9 @@ async function serveFile(res, root, requestPath, prefix, rewriteHtml = false) {
         .replaceAll('href="/favicon.ico"', 'href="/canvas/favicon.ico"')
         .replaceAll('src="/assets/', 'src="/canvas/assets/')
         .replaceAll('href="/assets/', 'href="/canvas/assets/');
-      return send(res, 200, html, { 'content-type': 'text/html; charset=utf-8' });
+      return send(res, 200, html, { 'content-type': 'text/html; charset=utf-8', 'cache-control': cacheControl });
     }
-    return send(res, 200, data, { 'content-type': mime(file) });
+    return send(res, 200, data, { 'content-type': mime(file), 'cache-control': cacheControl });
   } catch {
     // 带扩展名的请求（.js/.css/.png…）缺失时必须如实 404。
     // 回退 index.html 会让浏览器拿到 text/html 冒充 JS 模块，报

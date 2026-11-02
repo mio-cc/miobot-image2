@@ -177,10 +177,20 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 ::selection { background: var(--accent-soft); }
+/* 滚动条：细窄低对比，悬停/拖动才提亮（Firefox 走 scrollbar-*，WebKit 走伪元素；
+   token 化后暗色自动跟随。Canvas 画布前台与虚拟滚动不受影响——仅改外观不改滚动行为。） */
+* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ink-3) 42%, transparent) transparent; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--hairline-3); border-radius: 99px; border: 2px solid transparent; background-clip: padding-box; }
-::-webkit-scrollbar-thumb:hover { background: var(--ink-3); background-clip: padding-box; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--ink-3) 42%, transparent);
+  border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active { background: var(--ink-3); background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }
 
 /* ─── 侧栏 ─── */
 .sidebar {

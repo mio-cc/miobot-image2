@@ -86,7 +86,8 @@ const crumbs = computed<Crumb[]>(() => {
 
 async function handleSave() {
     const result = await configStore.save();
-    if (result.ok) capabilities.refresh();
+    // 保存会改变配置/能力覆盖状态 → 体检与注册表强刷绕过 60s TTL。
+    if (result.ok) { capabilities.refresh(true); capabilities.refreshRegistry(true); }
 }
 
 async function handleExport() {

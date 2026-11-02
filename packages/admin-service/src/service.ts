@@ -162,13 +162,11 @@ export class AdminService {
     }
   }
 
-  private readLogs(channel: 'system' | 'canvas', rawPath: string): { success: true; items: unknown[]; total: number } {
+  private readLogs(channel: 'system' | 'canvas', rawPath: string): { success: true; items: unknown[]; total: number; grandTotal: number; offset: number; limit: number } {
     const query = parseLogQuery(rawPath);
     // R18：system 频道合并 bot 进程的 bot-logs.jsonl（跨进程文件交换）——
     // 面板此前只看到 admin 自己的 MemoryLogSink，bot 的运行日志完全不可见。
     if (channel === 'system') {
-      const adminItems = this.logs.system.query(query);
-      const botItems = readBotLogFile(query);
       // R21-f 去重：bot 启动器把同一条日志同时写进 logs/system.ndjson（admin 侧
       // FileLogStore 读它）和 bot-logs.jsonl（readBotLogFile 读它），合并时会得到
       // 两份完全相同的记录（timestamp+level+scope+message 全等）。按该四元组去重，
@@ -181,14 +179,18 @@ export class AdminService {
         seen.add(key);
         return true;
       };
-      const merged = [...adminItems, ...botItems]
+      // 先按「无筛选」合并去重（grandTotal 基准），再在合并结果上套筛选，
+      // 保证 total/grandTotal 与 items 来自同一个视图。
+      const grandAll = [...this.logs.system.query({}), ...readBotLogFile({})]
         .filter(dedupe)
         .sort((a, b) => String((a as any).timestamp || '').localeCompare(String((b as any).timestamp || '')));
-      const limited = query.limit !== undefined ? merged.slice(-query.limit) : merged.slice(-300);
-      return { success: true, items: limited, total: limited.length };
+      const filtered = filterByLogQuery(grandAll, query);
+      return paginateLogs(filtered, query, grandAll.length);
     }
-    const items = this.logs[channel].query(query);
-    return { success: true, items, total: items.length };
+    // canvas 通道：先按筛选条件取全量（不带 limit），total 才是"命中数"而不是"当前页大小"。
+    const all = this.logs[channel].query({ level: query.level, scope: query.scope, contains: query.contains });
+    const grand = this.logs[channel].query({}).length;
+    return paginateLogs(all, query, grand);
   }
 }
 
@@ -216,6 +218,30 @@ function readBotLogFile(query: LogQuery): unknown[] {
     }
     return query.limit !== undefined ? items.slice(-query.limit) : items;
   } catch { return []; }
+}
+
+/** 日志分页默认页大小（面板观测页沿用原 300 条默认）。 */
+const LOG_DEFAULT_PAGE = 300;
+
+/** 在已合并的记录上套筛选条件（level/scope/contains），与 filterLogRecords 语义一致。 */
+function filterByLogQuery(items: unknown[], query: LogQuery): unknown[] {
+  let out = items;
+  if (query.level) out = out.filter((item) => (item as any).level === query.level);
+  if (query.scope) out = out.filter((item) => String((item as any).scope || '').startsWith(query.scope!));
+  if (query.contains) {
+    const needle = query.contains.toLowerCase();
+    out = out.filter((item) => JSON.stringify(item).toLowerCase().includes(needle));
+  }
+  return out;
+}
+
+/** 末尾分页：offset=0 取最新 limit 条（未传 limit 时用默认页），响应带真实命中数与全量数。 */
+function paginateLogs(filtered: unknown[], query: LogQuery, grandTotal: number) {
+  const limit = query.limit !== undefined ? Math.max(0, Math.trunc(query.limit)) : LOG_DEFAULT_PAGE;
+  const offset = Math.max(0, Math.trunc(query.offset || 0));
+  const end = Math.max(0, filtered.length - offset);
+  const start = Math.max(0, end - limit);
+  return { success: true as const, items: filtered.slice(start, end), total: filtered.length, grandTotal, offset, limit };
 }
 
 export function createAdminService(options: AdminServiceOptions = {}): AdminService {
@@ -250,6 +276,8 @@ function parseLogQuery(rawPath: string): LogQuery {
   if (contains) out.contains = contains;
   const limit = params.get('limit');
   if (limit && Number.isFinite(Number(limit))) out.limit = Math.min(10000, Math.max(0, Math.trunc(Number(limit))));
+  const offset = params.get('offset');
+  if (offset && Number.isFinite(Number(offset))) out.offset = Math.min(1_000_000, Math.max(0, Math.trunc(Number(offset))));
   return out;
 }
 

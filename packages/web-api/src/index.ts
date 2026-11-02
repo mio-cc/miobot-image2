@@ -28,7 +28,7 @@ export const WEB_API_PACKAGE: PackageDescriptor = {
 
 export type WebApiMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 export type WebApiHeaders = Record<string, string | undefined>;
-export type WebApiStatus = 200 | 201 | 400 | 401 | 404 | 405 | 429 | 500; // R15/N-20: 429 登录限速
+export type WebApiStatus = 200 | 201 | 304 | 400 | 401 | 404 | 405 | 429 | 500; // 304 协商缓存；R15/N-20: 429 登录限速
 
 export interface PanelAuthSnapshot {
   token: string;
@@ -111,6 +111,8 @@ export interface WebApiRequest {
 export interface WebApiResponse<T = unknown> {
   status: WebApiStatus;
   body: T;
+  /** 可选响应头（ETag/Cache-Control 协商缓存）；304 时 body 为空、头必带。 */
+  headers?: Record<string, string>;
 }
 
 export type ConfigReloadListener = (event: HotReloadEvent, config: AppConfig) => void;
@@ -1061,7 +1063,15 @@ export class WebApi {
         const cfg = this.repository.getConfig();
         const descriptors = applyCapabilityOverrides(allCapabilityDescriptors(), cfg.orchestration?.capabilityOverrides || {});
         const gated = applyRuntimeCapabilityGates(descriptors, { sunoEnabled: Boolean(cfg.orchestration?.suno?.enabled), externalEnabled: Boolean(cfg.orchestration?.externalProviders?.enabled), allowlist: cfg.orchestration?.externalProviders?.allowlist || [] });
-        return ok({ success: true, capabilities: gated.map((item) => ({ ...item, health: capabilityHealth(cfg, item) })), manifest: buildCapabilityManifest(gated) });
+        const body = { success: true, capabilities: gated.map((item) => ({ ...item, health: capabilityHealth(cfg, item) })), manifest: buildCapabilityManifest(gated) };
+        // ETag 协商缓存（~64KB 大 payload）：内容指纹命中 If-None-Match 时返 304 空体。
+        // no-cache = 允许浏览器存储但每次协商；与前端 60s TTL 正交（TTL 期内不发请求，过期后协商只需 304）。
+        const etag = `"cap-${createHash('sha1').update(JSON.stringify(body)).digest('hex').slice(0, 16)}"`;
+        const inm = String((request.headers as Record<string, string | undefined> | undefined)?.['if-none-match'] || '');
+        if (inm && inm.split(',').map((v) => v.trim()).includes(etag)) {
+          return { status: 304, body: undefined as unknown as Record<string, unknown>, headers: { etag, 'cache-control': 'no-cache' } };
+        }
+        return { status: 200, body, headers: { etag, 'cache-control': 'no-cache' } };
       }
       if (method === 'GET' && path === '/api/reply-preferences') {
         const records = await readReplyPreferenceRecords();

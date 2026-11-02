@@ -35,6 +35,8 @@ export interface LogQuery {
   scope?: string;
   contains?: string;
   limit?: number;
+  /** 从结果末尾往前跳过的条数（分页用：offset=0 取最新一页，offset=limit 取上一页）。 */
+  offset?: number;
 }
 
 const LEVEL_WEIGHT: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };

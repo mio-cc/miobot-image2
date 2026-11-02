@@ -147,6 +147,11 @@ export function unmaskConfigSecrets(incoming: unknown, stored: unknown): unknown
 
 /** 打码哨兵。凭据里出现它，只可能是还原失败或用户粘了别处的打码值。 */
 const MASK_SENTINEL = '••••';
+/**
+ * 外部掩码形态：4 个及以上连续星号（如从别处面板复制的 `sk-****abcd`）。
+ * 真实凭据出现 4 连星号的概率趋近于零；识别它可以把「粘错来源的掩码串」也拦在保存前。
+ */
+const STAR_MASK_RE = /\*{4,}/;
 
 /**
  * 找出还原之后仍然带着打码哨兵的凭据字段。
@@ -159,7 +164,7 @@ const MASK_SENTINEL = '••••';
  */
 export function findUnresolvedSecrets(config: unknown): string[] {
   const bad: string[] = [];
-  const contains = (value: unknown) => typeof value === 'string' && value.includes(MASK_SENTINEL);
+  const contains = (value: unknown) => typeof value === 'string' && (value.includes(MASK_SENTINEL) || STAR_MASK_RE.test(value));
 
   for (const dottedPath of SECRET_PATHS) {
     if (contains(getPath(config, dottedPath))) bad.push(dottedPath);

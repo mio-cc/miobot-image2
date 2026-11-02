@@ -60,7 +60,7 @@ export class LogFileStore {
   }
 }
 
-/** 过滤日志记录：level 精确、scope 前缀、contains 全文（忽略大小写）、limit 取末尾 N 条。语义与 MemoryLogSink.query 对齐。 */
+/** 过滤日志记录：level 精确、scope 前缀、contains 全文（忽略大小写）、limit/offset 从末尾取页（offset=0 最新一页）。语义与 MemoryLogSink.query 对齐。 */
 export function filterLogRecords(records: LogRecord[], query: LogQuery = {}): LogRecord[] {
   let items = [...records];
   if (query.level) {
@@ -73,7 +73,12 @@ export function filterLogRecords(records: LogRecord[], query: LogQuery = {}): Lo
     const needle = query.contains.toLowerCase();
     items = items.filter((item) => JSON.stringify(item).toLowerCase().includes(needle));
   }
-  if (query.limit !== undefined) items = items.slice(-Math.max(0, Math.trunc(query.limit)));
+  if (query.limit !== undefined) {
+    const offset = Math.max(0, Math.trunc(query.offset || 0));
+    const end = Math.max(0, items.length - offset);
+    const start = Math.max(0, end - Math.max(0, Math.trunc(query.limit)));
+    items = items.slice(start, end);
+  }
   return items;
 }
 

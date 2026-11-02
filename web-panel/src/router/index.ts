@@ -203,6 +203,21 @@ export const router = createRouter({
     routes,
 });
 
+/**
+ * 路由 chunk 空闲预取（性能优化）：空闲时把全部页面模块拉进浏览器缓存，
+ * 之后点侧栏切换不再有「下载 JS → 渲染」的等待（生产环境低带宽/无缓存头时尤为明显）。
+ * 模块由打包器缓存，重复 import() 不产生新请求；redirect 路由没有 component，跳过。
+ */
+{
+    const idle: (cb: () => void) => void =
+        (window as any).requestIdleCallback || ((cb: () => void) => window.setTimeout(cb, 1500));
+    idle(() => {
+        for (const route of routes) {
+            if (typeof route.component === 'function') void (route.component as () => Promise<unknown>)().catch(() => undefined);
+        }
+    });
+}
+
 /** 侧栏用：只有带 meta 的才是导航项（根重定向和 404 没有 meta）。 */
 export const navRoutes = routes.filter(route => route.meta?.title) as Array<
     RouteRecordRaw & { path: string; meta: NavMeta }

@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import client from '../api/client';
 import { useCapabilityStore } from '../stores/capabilities';
 
 /**
@@ -71,20 +70,11 @@ interface RegItem {
   riskLevel?: string;
   health?: { status?: string; detail?: string };
 }
-const registry = ref<RegItem[]>([]);
-const registryLoading = ref(false);
-const registryError = ref('');
-
-async function refreshRegistry() {
-  registryLoading.value = true;
-  registryError.value = '';
-  try {
-    const res = await client.get('/orchestration/capabilities');
-    registry.value = res.data.capabilities || [];
-  } catch (e: any) {
-    registryError.value = e?.response?.data?.error || e?.message || '读取能力注册表失败';
-  } finally { registryLoading.value = false; }
-}
+/* 注册表改为 store 共享缓存（60s TTL）：permissions/tools 页复用同一份数据，不再每页重拉 64KB。 */
+const registry = computed<RegItem[]>(() => store.registry as RegItem[]);
+const registryLoading = computed(() => store.registryLoading);
+const registryError = computed(() => store.registryError);
+function refreshRegistry(force = false) { return store.refreshRegistry(force); }
 
 /** 体检绑定 → 注册表 id 的模型/节点信息映射（能对上的卡片显示节点·模型）。 */
 const BIND_TO_DESC: Record<string, string> = {
