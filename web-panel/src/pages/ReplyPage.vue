@@ -275,7 +275,7 @@ const nonTextOptions = strategyOptions.filter((opt) => !opt.textOnly);
               <input v-model="entry.personaName" class="input-field" placeholder="如：群A专属" />
             </FormField>
           </div>
-          <button class="btn-outline !px-2 text-red-600" title="删除此群覆盖" @click="removeGroupOverride(gid)">×</button>
+          <button class="btn-danger !px-2 !py-0.5" title="删除此群覆盖" @click="removeGroupOverride(gid)">×</button>
         </div>
       </div>
     </SectionCard>

@@ -224,9 +224,8 @@ const DEFAULT_POKE_REPLIES = ['戳我干嘛呀', '别戳啦，在的呢', '收�
           <FormField label="关注窗口消息数" hint="0=关闭；显式触发后最多观察多少条群消息，只对模型判定为接续当前话题的消息回复">
             <input v-model="config.bot.autoContinue.focusMaxMessages" type="number" min="0" max="100" class="input-field" />
           </FormField>
-          <FormField label="冷却间隔（毫秒）" hint="两次延续之间的最小间隔">
-            <input v-model="config.bot.autoContinue.cooldownMs" type="number" min="5000" max="120000" class="input-field" />
-          </FormField>
+          <!-- 原「冷却间隔 cooldownMs」输入框已移除：字段不在 AppConfig 中，
+               且运行时注释明示该时间闸门已删除（语义判定是唯一的门），保存即被 normalize 丢弃。 -->
           <div class="flex items-end"><ToggleField v-model="config.bot.autoContinue.requireModelCheck" label="模型判断延续意图" hint="关闭则纯时间窗口判断（可能误触发）" /></div>
         </div>
       </div>

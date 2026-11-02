@@ -27,8 +27,8 @@ async function submit() {
 <template>
   <div class="min-h-screen flex items-center justify-center p-4">
     <div class="card p-7 w-full max-w-sm">
-      <div class="mono font-bold text-base tracking-wide mb-1">
-        MIOBOT<span class="text-[color:var(--ink-3)] font-normal">·console</span>
+      <div class="brand-title text-base tracking-wide mb-1">
+        Miobot<span class="text-[color:var(--ink-3)] font-normal">·管理控制台</span>
       </div>
       <p class="text-[color:var(--ink-3)] text-xs mb-6">NapCat 多模型机器人控制台</p>
 

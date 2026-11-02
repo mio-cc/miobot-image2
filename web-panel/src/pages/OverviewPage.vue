@@ -6,7 +6,8 @@ import { useCapabilityStore } from '../stores/capabilities';
 import SectionCard from '../components/SectionCard.vue';
 import AppIcon from '../components/AppIcon.vue';
 import SparkLine from '../components/SparkLine.vue';
-import BarChart from '../components/BarChart.vue';
+import AreaChart from '../components/AreaChart.vue';
+import DonutStat from '../components/DonutStat.vue';
 
 /**
  * 总览页。打开后台第一眼要能回答"这台机器人现在到底好不好"，
@@ -36,6 +37,15 @@ const nodeSummary = computed(() => {
 const errorCount = computed(() => recentLogs.value.filter(item => item.level === 'error').length);
 const warnCount = computed(() => recentLogs.value.filter(item => item.level === 'warn').length);
 
+/** 能力健康环聚合（纯展示：正常 / 需处理 / 已停用），数据源仍是体检 bindings。 */
+const healthDonut = computed(() => {
+    const list = capabilities.bindings || [];
+    const ok = list.filter((b: any) => b.ok && b.enabled !== false).length;
+    const warn = list.filter((b: any) => !b.ok && b.enabled !== false).length;
+    const off = list.filter((b: any) => b.enabled === false).length;
+    return { ok, warn, off };
+});
+
 const metrics = ref<any>(null);
 const chartSeries = ref<'message' | 'image' | 'chat' | 'agent_failure'>('message');
 const seriesOptions = [
@@ -44,6 +54,29 @@ const seriesOptions = [
     { key: 'image', label: '生图' },
     { key: 'agent_failure', label: 'Agent 失败' },
 ] as const;
+
+/* ── 按会话 / 按模型 维度面板（决策：会话为主粒度，可切模型；插件维度不做） ── */
+const dimsView = ref<'session' | 'model'>('session');
+
+/** 维度行：key 展示名 + 计数 + 占比条宽度。空数据由模板空态兜底。 */
+const dimsRows = computed(() => {
+    const m = metrics.value;
+    const source = dimsView.value === 'session' ? (m?.sessionTop || []) : (m?.byModel || []);
+    const max = Math.max(...source.map((r: any) => r.count || 0), 1);
+    return source.map((row: any) => ({
+        key: String(row.key || ''),
+        label: dimsView.value === 'session' ? formatSessionKey(String(row.key || '')) : String(row.key || '—'),
+        count: row.count || 0,
+        share: Math.round(((row.count || 0) / max) * 100),
+    }));
+});
+
+/** 会话 key 转展示名：group:{群号} → 群 {群号}；private:{QQ} → 私聊 {QQ}；未知原样。 */
+function formatSessionKey(key: string): string {
+    if (key.startsWith('group:')) return `群 ${key.slice(6) || '—'}`;
+    if (key.startsWith('private:')) return `私聊 ${key.slice(8) || '—'}`;
+    return key || '—';
+}
 
 /** stat tile 用的四项指标；平均耗时来自后端累计的时长统计。 */
 const tiles = computed(() => {
@@ -57,17 +90,6 @@ const tiles = computed(() => {
         { key: 'error', label: '处理失败', value: m.totals?.error ?? 0, trend: m.trends?.error ?? 0, series: m.series?.error, invert: true },
     ];
 });
-
-function trendText(trend: number | null, invert = false) {
-    if (trend === null) return { text: '', cls: 'text-[color:var(--ink-3)]' };
-    if (trend === 0) return { text: '与前 12 小时持平', cls: 'text-[color:var(--ink-3)]' };
-    const up = trend > 0;
-    const good = invert ? !up : up;
-    return {
-        text: `${up ? '↑' : '↓'} ${Math.abs(trend)}% 较前 12 小时`,
-        cls: good ? 'status-good' : 'status-crit',
-    };
-}
 
 async function loadMetrics() {
     try {
@@ -174,34 +196,81 @@ onMounted(async () => {
     </div>
 
     <!-- 指标卡 -->
-    <div v-if="tiles.length" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-4">
-      <div v-for="tile in tiles" :key="tile.key" class="card px-4 pt-3.5 pb-2.5">
-        <div class="text-xs text-[color:var(--ink-2)] mb-1.5 flex items-center justify-between">
+    <div v-if="tiles.length" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
+      <div v-for="tile in tiles" :key="tile.key" class="card px-4 pt-3.5 pb-3">
+        <div class="text-[11.5px] text-[color:var(--ink-2)] mb-2 flex items-center justify-between">
           {{ tile.label }}<span class="tag">24h</span>
         </div>
-        <div class="text-[26px] font-bold tracking-tight leading-none">
-          {{ tile.value }}<span v-if="tile.suffix" class="text-[15px] font-medium text-[color:var(--ink-3)]">{{ tile.suffix }}</span>
+        <div class="stat-value">
+          {{ tile.value }}<span v-if="tile.suffix" style="font-size:13px" class="font-medium text-[color:var(--ink-3)]">{{ tile.suffix }}</span>
         </div>
-        <div class="text-[11.5px] mt-1" :class="trendText(tile.trend ?? null, tile.invert).cls">
-          {{ trendText(tile.trend ?? null, tile.invert).text || '　' }}
+        <div class="mt-2 flex items-center">
+          <span v-if="tile.trend === null" class="delta flat">累计均值</span>
+          <span v-else-if="tile.trend === 0" class="delta flat">持平 · 前 12 小时</span>
+          <span v-else class="delta" :class="(tile.invert ? tile.trend < 0 : tile.trend > 0) ? 'up' : 'down'">
+            {{ tile.trend > 0 ? '↑' : '↓' }} {{ Math.abs(tile.trend) }}%<span style="opacity:.7;font-weight:500"> · 较前 12 小时</span>
+          </span>
         </div>
-        <SparkLine :data="tile.series || []" :labels="metrics?.hourLabels" class="mt-2" />
+        <div class="mt-1"><SparkLine :data="tile.series || []" :labels="metrics?.hourLabels" /></div>
       </div>
     </div>
 
-    <!-- 24 小时活动 -->
-    <SectionCard v-if="metrics" title="24 小时活动" hint="按小时统计" class="mb-4">
+    <!-- 24 小时活动（面积图）+ 能力健康环（体检数据聚合） -->
+    <div v-if="metrics" class="grid grid-cols-1 lg:grid-cols-[1fr_316px] gap-3 mb-4">
+      <SectionCard title="24 小时活动" hint="按小时统计">
+        <template #actions>
+          <div class="segmented">
+            <button v-for="opt in seriesOptions" :key="opt.key"
+              :class="chartSeries === opt.key ? 'on' : ''"
+              @click="chartSeries = opt.key">{{ opt.label }}</button>
+          </div>
+        </template>
+        <AreaChart :data="metrics.series?.[chartSeries] || []" :labels="metrics.hourLabels || []" />
+        <p class="text-[color:var(--ink-3)] text-[11px] mt-2">
+          指标落盘在运行目录，进程重启不会清零；只保留最近 24 小时。
+        </p>
+      </SectionCard>
+
+      <SectionCard title="能力健康" hint="模型体检实时聚合">
+        <DonutStat :ok="healthDonut.ok" :warn="healthDonut.warn" :off="healthDonut.off" label="能力正常" />
+      </SectionCard>
+    </div>
+
+    <!-- 按会话 ⇄ 按模型（24h 维度聚合；决策：会话为主粒度） -->
+    <SectionCard v-if="metrics" title="活跃会话与模型" hint="近 24 小时消息/产出按维度聚合" class="mb-4">
       <template #actions>
-        <div class="segmented">
-          <button v-for="opt in seriesOptions" :key="opt.key"
-            :class="chartSeries === opt.key ? 'on' : ''"
-            @click="chartSeries = opt.key">{{ opt.label }}</button>
+        <div class="segmented" role="tablist" aria-label="维度切换">
+          <button :class="dimsView === 'session' ? 'on' : ''" role="tab" :aria-selected="dimsView === 'session'"
+            @click="dimsView = 'session'">按会话</button>
+          <button :class="dimsView === 'model' ? 'on' : ''" role="tab" :aria-selected="dimsView === 'model'"
+            @click="dimsView = 'model'">按模型</button>
         </div>
       </template>
-      <BarChart :data="metrics.series?.[chartSeries] || []" :labels="metrics.hourLabels || []" />
-      <p class="text-[color:var(--ink-3)] text-[11px] mt-2">
-        指标落盘在运行目录，进程重启不会清零；只保留最近 24 小时。
-      </p>
+
+      <div v-if="!dimsRows.length" class="empty-state">
+        <div class="empty-title">暂无{{ dimsView === 'session' ? '会话' : '模型' }}维度数据</div>
+        <div class="empty-sub">机器人处理消息后，这里会展示近 24 小时最活跃的{{ dimsView === 'session' ? '群与私聊' : '模型' }}</div>
+      </div>
+
+      <!-- 单会话/多行共用：max 占比条 + 长群名截断（title 提示全名） -->
+      <div v-else class="space-y-1">
+        <div v-for="(row, i) in dimsRows" :key="row.key"
+          class="flex items-center gap-3 px-1 py-1.5 border-b border-dashed border-[color:var(--hairline-2)] last:border-b-0">
+          <span class="mono text-[11px] text-[color:var(--ink-3)] w-6 text-right flex-none" :aria-hidden="true">{{ Number(i) + 1 }}</span>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-baseline justify-between gap-3 mb-1">
+              <span class="text-[12.5px] text-[color:var(--ink)] truncate" :title="row.label">{{ row.label }}</span>
+              <span class="mono text-[12px] text-[color:var(--ink-2)] flex-none">{{ row.count }}</span>
+            </div>
+            <div class="h-[4px] rounded-full bg-[color:var(--surface-2)] overflow-hidden" aria-hidden="true">
+              <div class="h-full rounded-full" style="background: var(--series-1); opacity: .65" :style="{ width: `${row.share}%` }"></div>
+            </div>
+          </div>
+        </div>
+        <p v-if="dimsView === 'session' && (metrics.sessionTop || []).length >= 20" class="text-[11px] text-[color:var(--ink-3)] mt-2">
+          只展示最活跃的前 20 个会话。
+        </p>
+      </div>
     </SectionCard>
 
     <div class="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-4">
@@ -209,22 +278,24 @@ onMounted(async () => {
         <template #actions>
           <RouterLink to="/routing" class="btn-outline text-xs">管理</RouterLink>
         </template>
-        <table class="w-full text-[12.5px]">
-          <tbody>
-            <tr v-for="item in capabilities.bindings" :key="item.key"
-              class="border-b border-[color:var(--hairline-2)] last:border-b-0">
-              <td class="px-4 py-2.5 whitespace-nowrap">{{ item.label }}</td>
-              <td class="px-4 py-2.5 mono text-xs min-w-0 truncate">{{ item.model || '—' }}</td>
-              <td class="px-4 py-2.5 text-right whitespace-nowrap">
-                <span class="dot" :class="!item.enabled ? 'dot-warn' : (item.ok ? 'dot-good' : 'dot-crit')"
-                  :title="item.reason || (item.ok ? '正常' : '有问题')"></span>
-              </td>
-            </tr>
-            <tr v-if="!capabilities.bindings.length">
-              <td class="px-4 py-6 text-center text-[color:var(--ink-3)]">正在检查…</td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="overflow-x-auto">
+          <table class="w-full text-[12.5px]">
+            <tbody>
+              <tr v-for="item in capabilities.bindings" :key="item.key"
+                class="border-b border-[color:var(--hairline-2)] last:border-b-0">
+                <td class="px-4 py-2.5 whitespace-nowrap">{{ item.label }}</td>
+                <td class="px-4 py-2.5 mono text-xs min-w-0 truncate" :title="item.model">{{ item.model || '—' }}</td>
+                <td class="px-4 py-2.5 text-right whitespace-nowrap">
+                  <span class="dot" :class="!item.enabled ? 'dot-warn' : (item.ok ? 'dot-good' : 'dot-crit')"
+                    :title="item.reason || (item.ok ? '正常' : '有问题')"></span>
+                </td>
+              </tr>
+              <tr v-if="!capabilities.bindings.length">
+                <td class="px-4 py-6 text-center text-[color:var(--ink-3)]">正在检查…</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </SectionCard>
 
       <SectionCard title="最近事件" :hint="logTotal ? `共 ${logTotal} 条` : ''" no-padding>

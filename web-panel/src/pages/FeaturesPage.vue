@@ -176,7 +176,7 @@ onMounted(loadFeatures);
 
     <div v-if="loading" class="text-sm text-[color:var(--ink-3)] mb-4">正在加载功能目录...</div>
     <div v-if="loadError" class="status-crit text-sm mb-4">{{ loadError }}</div>
-    <div v-if="collisions.length" class="rounded-lg border border-red-500/40 bg-red-500/5 px-3 py-2 text-xs status-crit mb-4">
+    <div v-if="collisions.length" class="rounded-lg border px-3 py-2 text-xs status-crit mb-4" style="border-color: color-mix(in srgb, var(--critical) 35%, transparent); background: var(--critical-soft);">
       <div class="font-medium mb-1">命令别名冲突：</div>
       <div v-for="[alias, names] in collisions" :key="alias">
         {{ alias }} 同时属于 {{ names.join(' / ') }}

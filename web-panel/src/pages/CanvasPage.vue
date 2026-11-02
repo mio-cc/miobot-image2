@@ -104,8 +104,19 @@ onMounted(loadCards);
       </template>
 
       <p v-if="cardsError" class="px-4 py-3 status-crit text-xs">{{ cardsError }}</p>
-      <div v-else-if="!visibleCards.length" class="px-4 py-8 text-center text-[color:var(--ink-3)] text-sm">
-        {{ cardsLoading ? '加载中...' : '还没有记录' }}
+      <div v-else-if="!visibleCards.length" class="empty-state">
+        <template v-if="cardsLoading">
+          <div class="empty-title">加载中…</div>
+          <div class="empty-sub">正在读取生成与反推记录</div>
+        </template>
+        <template v-else-if="cards.length">
+          <div class="empty-title">该筛选下没有记录</div>
+          <div class="empty-sub">切换「全部」查看所有生成与反推记录</div>
+        </template>
+        <template v-else>
+          <div class="empty-title">还没有记录</div>
+          <div class="empty-sub">在 QQ 里让机器人生图或反推后，产物会出现在这里</div>
+        </template>
       </div>
       <div v-else class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 p-4">
         <div v-for="card in visibleCards" :key="`${card.kind}-${card.id}`"

@@ -40,7 +40,8 @@ function onMove(event: MouseEvent) {
 <template>
   <div class="relative">
     <svg :viewBox="`0 0 ${width} ${height}`" preserveAspectRatio="none"
-      class="w-full h-[34px] block overflow-visible"
+      class="w-full h-[34px] block overflow-visible" role="img"
+      :aria-label="`24 小时趋势：最高 ${Math.max(...(data || [0]), 0)}，最近一小时 ${(data || []).slice(-1)[0] ?? 0}`"
       @mousemove="onMove" @mouseleave="hoverIndex = null">
       <polygon :points="areaPath" fill="color-mix(in srgb, var(--series-1) 14%, transparent)" />
       <polyline :points="linePath" fill="none" stroke="var(--series-1)" stroke-width="2"

@@ -15,6 +15,8 @@ const capabilities = useCapabilityStore();
 
 const importInput = ref<HTMLInputElement | null>(null);
 const theme = ref<'auto' | 'light' | 'dark'>((localStorage.getItem('miobot_theme') as any) || 'auto');
+/* P15：氛围层（光斑/纸纹）用户开关——低配设备或嫌晃时可关闭；reduced-motion 只停动画不停渲染。 */
+const atmosphere = ref(localStorage.getItem('miobot_atmosphere') !== 'off');
 
 applyTheme();
 
@@ -27,6 +29,11 @@ function applyTheme() {
 function cycleTheme() {
     theme.value = theme.value === 'auto' ? 'light' : theme.value === 'light' ? 'dark' : 'auto';
     applyTheme();
+}
+
+function toggleAtmosphere() {
+    atmosphere.value = !atmosphere.value;
+    localStorage.setItem('miobot_atmosphere', atmosphere.value ? 'on' : 'off');
 }
 
 /** 侧栏按分组展示，同组的路由排在一起。 */
@@ -126,17 +133,25 @@ function handleLogout() {
 </script>
 
 <template>
-  <div class="grid grid-cols-[224px_1fr] max-[860px]:grid-cols-[62px_1fr] h-screen">
+  <!-- 桌面层：四周留白（原型量级 + 一档：桌面 24~32px），680 断点收窄到 8px，纸页浮在桌面上 -->
+  <div class="h-screen p-2 lg:p-6 xl:p-8 bg-[color:var(--desk)] overflow-hidden" :class="{ 'no-atmosphere': !atmosphere }">
+    <!-- 纸页外壳（原型 .win）：大圆角 + 细描边 + 桌面投影，整页摊在桌面上 -->
+    <div class="relative h-full grid grid-cols-[224px_1fr] max-[860px]:grid-cols-[62px_1fr] rounded-[14px] border border-[color:var(--hairline-2)] bg-[color:var(--page)] overflow-hidden"
+      style="box-shadow: var(--shell-shadow);">
+    <!-- 宣纸氛围层：极淡双色光斑 + 纸纹颗粒（纯装饰，不拦截交互） -->
+    <div class="aurora a" aria-hidden="true"></div>
+    <div class="aurora b" aria-hidden="true"></div>
+    <div class="paper-grain" aria-hidden="true"></div>
     <aside class="sidebar overflow-y-auto">
       <div class="px-4 py-4 border-b border-[color:var(--hairline-2)] flex items-center gap-3">
-        <div class="flex-none w-[30px] h-[30px] rounded-[9px] grid place-items-center text-white shadow-sm"
-          style="background: var(--accent); box-shadow: 0 2px 6px rgba(79,70,229,.28);">
+        <div class="flex-none w-[30px] h-[30px] rounded-[9px] grid place-items-center text-[color:var(--accent-ink)] shadow-sm"
+          style="background: var(--accent); box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 30%, transparent);">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M5 12h4M13 5h6a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-6z"/><path d="M4 18h3a3 3 0 0 0 3-3V9a3 3 0 0 0-3-3H4z"/>
           </svg>
         </div>
         <div class="min-w-0 max-[860px]:hidden">
-          <div class="font-bold text-[14px] tracking-wide text-[color:var(--ink)]">Miobot</div>
+          <div class="brand-title text-[15px] tracking-wide text-[color:var(--ink)]">Miobot</div>
           <div class="text-[color:var(--ink-3)] text-[10.5px] mt-0.5">管理控制台 v2</div>
         </div>
       </div>
@@ -167,7 +182,7 @@ function handleLogout() {
     </aside>
 
     <div class="flex flex-col overflow-hidden">
-      <header class="flex items-center gap-3 px-5 h-[52px] flex-none border-b border-[color:var(--hairline-2)] bg-[color:var(--surface)]">
+      <header class="flex items-center gap-3 px-5 h-[54px] flex-none border-b border-[color:var(--hairline-2)] bg-[color:var(--topbar-bg)] backdrop-blur-md">
         <!-- R21-g 面包屑：父级可点击返回上层，当前页加粗不可点 -->
         <nav class="text-[13px] flex items-center gap-1.5 max-sm:hidden min-w-0" aria-label="面包屑">
           <RouterLink to="/overview" class="text-[color:var(--ink-3)] hover:text-[color:var(--accent)] transition-colors">控制台</RouterLink>
@@ -180,13 +195,15 @@ function handleLogout() {
         </nav>
         <span class="flex-1"></span>
 
-        <span v-if="configStore.saveStatus" class="text-xs"
+        <span v-if="configStore.saveStatus" class="text-xs truncate max-w-[36vw]" :title="configStore.saveStatus"
           :class="configStore.saveStatus.includes('失败') ? 'status-crit' : 'status-good'">
           {{ configStore.saveStatus }}
         </span>
-        <span v-else-if="configStore.dirty" class="text-xs flex items-center gap-1.5 status-warn">
-          <span class="dot dot-warn"></span>
-          未保存：{{ configStore.dirtySections.join('、') || '有改动' }}
+        <span v-else-if="configStore.dirty" class="flex items-center gap-1.5 min-w-0" :title="`未保存的分区：${configStore.dirtySections.join('、')}`">
+          <span class="dot dot-warn flex-none"></span>
+          <span class="text-xs status-warn flex-none">未保存</span>
+          <span v-for="section in configStore.dirtySections.slice(0, 3)" :key="section" class="tag tag-warn max-sm:hidden">{{ section }}</span>
+          <span v-if="configStore.dirtySections.length > 3" class="text-xs text-[color:var(--ink-3)] max-sm:hidden">+{{ configStore.dirtySections.length - 3 }}</span>
         </span>
         <span v-else-if="configStore.loaded" class="text-xs flex items-center gap-1.5 text-[color:var(--ink-3)]">
           <span class="dot dot-good"></span>已保存
@@ -195,8 +212,13 @@ function handleLogout() {
         <input ref="importInput" type="file" accept="application/json,.json" class="hidden" @change="handleImportFile" />
         <button class="btn-outline max-lg:hidden" @click="handleExport">导出</button>
         <button class="btn-outline max-lg:hidden" @click="importInput?.click()">导入</button>
-        <button class="btn-outline !px-2" :title="`主题：${themeLabel}`" @click="cycleTheme">
+        <button class="btn-outline !px-2" :title="`主题：${themeLabel}`" :aria-label="`切换主题，当前：${themeLabel}`" @click="cycleTheme">
           <AppIcon name="moon" :size="14" />
+        </button>
+        <button class="btn-outline !px-2" :title="`氛围效果：${atmosphere ? '开' : '关'}`"
+          :aria-label="`切换氛围效果（纸纹与光斑），当前：${atmosphere ? '开启' : '关闭'}`"
+          :aria-pressed="atmosphere" @click="toggleAtmosphere">
+          <AppIcon name="sparkle" :size="14" />
         </button>
         <button class="btn-primary" :disabled="configStore.saving || !configStore.dirty" @click="handleSave">
           {{ configStore.saving ? '保存中...' : '保存并热重载' }}
@@ -210,6 +232,7 @@ function handleLogout() {
           </RouterView>
         </div>
       </main>
+    </div>
     </div>
   </div>
 </template>

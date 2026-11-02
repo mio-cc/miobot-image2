@@ -238,7 +238,7 @@ onMounted(() => { void capabilityStore.refresh(); });
       <!-- 主对话（继承源头 · 首卡强调） -->
       <div class="relative bg-[color:var(--surface)] border-2 border-[color:var(--accent-line)] rounded-[16px] shadow-[var(--sh-1)] overflow-hidden mb-3">
         <div class="flex items-center gap-4 px-5 py-4 flex-wrap">
-          <div class="w-10 h-10 rounded-[12px] grid place-items-center flex-none bg-[color:var(--accent)] text-white">
+          <div class="w-10 h-10 rounded-[12px] grid place-items-center flex-none bg-[color:var(--accent)] text-[color:var(--accent-ink)]">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5c-1.2 0-2.4-.25-3.4-.7L3.5 20.5l1.2-4.4A8.5 8.5 0 1 1 21 11.5z"/>
             </svg>
@@ -274,13 +274,14 @@ onMounted(() => { void capabilityStore.refresh(); });
           <!-- 选择器区域 -->
           <div class="flex-1 min-w-[240px]">
             <!-- 继承态（虚线框 · 点击自定义） -->
-            <div v-if="isInherit(role) && editingRole !== role.key"
-              class="inline-flex items-center gap-2.5 px-3.5 py-2 border border-dashed border-[color:var(--hairline-3)] rounded-[10px] bg-[color:var(--page)] text-[13px] cursor-pointer transition-colors duration-150 group hover:border-[color:var(--ink-3)] max-w-full"
+            <button v-if="isInherit(role) && editingRole !== role.key" type="button"
+              class="inline-flex items-center gap-2.5 px-3.5 py-2 border border-dashed border-[color:var(--hairline-3)] rounded-[10px] bg-[color:var(--page)] text-[13px] text-left cursor-pointer transition-colors duration-150 group hover:border-[color:var(--ink-3)] max-w-full"
+              :title="`当前跟随主对话（${mainModel.model || '未设置'}），点击自定义`"
               @click="makeCustom(role); editingRole = role.key">
               <span class="text-[10px] font-bold tracking-wide bg-[color:var(--off-soft)] text-[color:var(--ink-3)] rounded-md px-1.5 py-0.5 flex-none">跟随</span>
               <span class="font-medium text-[color:var(--ink-2)] truncate">{{ mainModel.model || '（未设置）' }}</span>
               <span class="text-[color:var(--accent)] text-[11px] font-medium opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">自定义 →</span>
-            </div>
+            </button>
 
             <!-- 覆盖态（选择器） -->
             <div v-else class="flex items-center gap-3 flex-wrap">
@@ -312,15 +313,18 @@ onMounted(() => { void capabilityStore.refresh(); });
         <button class="btn-outline text-xs" @click="addNode">＋ 添加节点</button>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5">
+      <div v-if="!rows.length" class="empty-state">
+        <div class="empty-title">没有匹配的节点</div>
+        <div class="empty-sub">换个关键词，或清空搜索查看全部 {{ stats.total }} 个节点</div>
+      </div>
+
+      <div v-else class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5">
         <div v-for="{ node, idx } in rows" :key="idx"
           class="group relative bg-[color:var(--surface)] border border-[color:var(--hairline-2)] rounded-[14px] p-4 shadow-[var(--sh-1)] transition-all duration-200 hover:-translate-y-[3px] hover:shadow-[var(--sh-2)] hover:border-[color:var(--accent-line)]">
 
-          <!-- 启用状态点 -->
-          <span class="absolute top-[18px] right-4 w-2 h-2 rounded-full transition-shadow"
-            :class="node.enabled !== false
-              ? 'bg-emerald-500 shadow-[0_0_0_3.5px_rgba(16,185,129,0.15)]'
-              : 'bg-slate-400 shadow-[0_0_0_3.5px_rgba(148,163,184,0.15)]'"/>
+          <!-- 启用状态点（token 语义色） -->
+          <span class="absolute top-[18px] right-4 dot" :class="node.enabled !== false ? 'dot-good' : 'dot-idle'"
+            :title="node.enabled !== false ? '已启用' : '已停用'"/>
 
           <!-- 名称 + 类型标签 -->
           <div class="flex items-center gap-2 mb-1 pr-6">
@@ -346,7 +350,7 @@ onMounted(() => { void capabilityStore.refresh(); });
               @click="fetchModels(idx)">拉取</button>
             <button class="border border-[color:var(--hairline-3)] rounded-lg px-2.5 py-1 text-[color:var(--ink-2)] hover:border-[color:var(--ink-3)] transition-colors duration-150"
               @click="node.enabled = node.enabled === false ? true : false">{{ node.enabled === false ? '启用' : '停用' }}</button>
-            <button class="border border-[color:var(--hairline-3)] rounded-lg px-2.5 py-1 text-red-500 hover:border-red-300 transition-colors duration-150"
+            <button class="btn-danger !px-2.5 !py-1 !rounded-lg"
               @click="removeNode(idx)">删除</button>
           </div>
         </div>

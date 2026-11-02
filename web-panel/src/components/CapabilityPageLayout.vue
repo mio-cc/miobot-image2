@@ -336,7 +336,7 @@ onMounted(() => {
         <button class="btn-outline !px-3 !py-1" type="button" @click="runTest('live')">实跑</button>
         <ToggleField :model-value="capability?.approvalRequired ?? false" label="高风险需审批" @update:model-value="toggleRegistryApproval" />
         <span v-if="capability?.health" class="text-xs text-[color:var(--ink-3)]">
-          健康：<span :class="capability.health.status === 'ok' ? 'text-emerald-500' : capability.health.status === 'disabled' ? 'text-amber-500' : 'text-rose-500'">{{ capability.health.status }}</span>
+          健康：<span :class="capability.health.status === 'ok' ? 'status-good' : capability.health.status === 'disabled' ? 'status-warn' : 'status-crit'">{{ capability.health.status }}</span>
           {{ capability.health.detail }}
         </span>
       </div>

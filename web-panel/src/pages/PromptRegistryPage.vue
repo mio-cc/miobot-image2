@@ -126,21 +126,18 @@ onMounted(() => { void refresh(); });
     <div class="flex flex-wrap items-center gap-3 mb-4">
       <input v-model="searchKeyword" placeholder="搜索提示词…" class="input-field w-52" />
       <div class="flex flex-wrap gap-2">
-        <button v-for="cat in CATEGORIES" :key="cat"
-          class="text-xs rounded-full border px-4 py-1.5 transition-colors"
-          :class="filterCategory === cat
-            ? 'bg-[color:var(--ink)] text-white border-transparent font-semibold'
-            : 'bg-[color:var(--surface)] text-[color:var(--ink-2)] border-[color:var(--hairline-3)]'"
+        <button v-for="cat in CATEGORIES" :key="cat" type="button"
+          class="chip" :class="filterCategory === cat ? 'on' : ''"
           @click="filterCategory = cat">{{ cat }}</button>
       </div>
       <span class="text-xs text-[color:var(--ink-3)] ml-auto">{{ filtered.length }} 项</span>
       <button class="btn-outline text-xs" @click="refresh" :disabled="loading">{{ loading ? '刷新中…' : '刷新' }}</button>
     </div>
 
-    <p v-if="flash" class="mb-3 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+    <p v-if="flash" class="mb-3 text-xs status-good rounded-lg px-3 py-2" style="background: var(--good-soft);">
       {{ flash }}
     </p>
-    <p v-if="error" class="mb-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{{ error }}</p>
+    <p v-if="error" class="mb-3 text-xs status-crit rounded-lg px-3 py-2" style="background: var(--critical-soft);">{{ error }}</p>
 
     <div v-for="entry in filtered" :key="entry.id" class="mb-3">
       <SectionCard>
@@ -150,7 +147,7 @@ onMounted(() => { void refresh(); });
               <span class="text-sm font-semibold">{{ entry.title }}</span>
               <span class="tag">{{ CATEGORY_LABELS[entry.category] || entry.category }}</span>
               <span v-if="entry.builtin" class="tag opacity-50">内置·只读</span>
-              <span v-else class="tag bg-emerald-50 text-emerald-700 border border-emerald-200">可编辑</span>
+              <span v-else class="tag tag-good">可编辑</span>
             </div>
             <div class="text-xs text-[color:var(--ink-3)] mt-0.5 font-mono">{{ entry.id }}</div>
             <div class="text-xs text-[color:var(--ink-2)] mt-1">{{ entry.description }}</div>

@@ -32,6 +32,18 @@ export interface MetricsBucket {
   /** 该桶代表的整点时间戳。 */
   hour: number;
   counts: Partial<Record<MetricEvent, number>>;
+  /**
+   * 维度计数（总览「按会话/按模型」面板）。
+   * session key 约定：`group:{群号}` / `private:{QQ}`；model 为模型名。
+   * 可选字段：旧 metrics.json 没有它，按空对象兼容读取，不回写历史。
+   */
+  dims?: { session?: Record<string, number>; model?: Record<string, number> };
+}
+
+/** record 的可选维度：会话与模型，缺省不计维度。 */
+export interface MetricDims {
+  session?: string;
+  model?: string;
 }
 
 export interface MetricsSnapshot {
@@ -43,6 +55,10 @@ export interface MetricsSnapshot {
   trends: Record<string, number>;
   /** 各类操作的平均耗时（毫秒）。 */
   averages: Record<string, number>;
+  /** 24h 窗口内按会话聚合的 Top 20（count 降序）；无维度数据时为空数组。 */
+  sessionTop: Array<{ key: string; count: number }>;
+  /** 24h 窗口内按模型聚合的全量计数（count 降序）。 */
+  byModel: Array<{ key: string; count: number }>;
 }
 
 export interface MetricsState {
@@ -139,7 +155,7 @@ export class Metrics {
     }
   }
 
-  record(event: MetricEvent, count = 1): void {
+  record(event: MetricEvent, count = 1, dims?: MetricDims): void {
     this.ensureLoaded();
     const hour = this.currentHour();
     let bucket = this.state.buckets.find((b) => b.hour === hour);
@@ -149,6 +165,11 @@ export class Metrics {
       this.prune();
     }
     bucket.counts[event] = (bucket.counts[event] || 0) + count;
+    if (dims && (dims.session || dims.model)) {
+      const d = (bucket.dims ||= {});
+      if (dims.session) d.session = d.session || {}, d.session[dims.session] = (d.session[dims.session] || 0) + count;
+      if (dims.model) d.model = d.model || {}, d.model[dims.model] = (d.model[dims.model] || 0) + count;
+    }
     this.scheduleFlush();
   }
 
@@ -197,6 +218,23 @@ export class Metrics {
       averages[key] = value.count ? Math.round(value.total / value.count) : 0;
     }
 
+    // 维度聚合：只统计 24h 窗口内的桶（与 series 同一口径）。
+    // 旧数据没有 dims 时聚合结果为空数组，前端按空态渲染。
+    const windowHours = new Set(hours);
+    const sessionCounts: Record<string, number> = {};
+    const modelCounts: Record<string, number> = {};
+    for (const bucket of this.state.buckets) {
+      if (!windowHours.has(bucket.hour)) continue;
+      for (const [key, value] of Object.entries(bucket.dims?.session || {})) {
+        sessionCounts[key] = (sessionCounts[key] || 0) + value;
+      }
+      for (const [key, value] of Object.entries(bucket.dims?.model || {})) {
+        modelCounts[key] = (modelCounts[key] || 0) + value;
+      }
+    }
+    const toSorted = (source: Record<string, number>) =>
+      Object.entries(source).map(([key, count]) => ({ key, count })).sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+
     return {
       hours: hours.map((h) => new Date(h).toISOString()),
       hourLabels: hours.map((h) => String(new Date(h).getHours()).padStart(2, '0')),
@@ -204,6 +242,8 @@ export class Metrics {
       totals,
       trends,
       averages,
+      sessionTop: toSorted(sessionCounts).slice(0, 20),
+      byModel: toSorted(modelCounts),
     };
   }
 

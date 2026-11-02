@@ -159,13 +159,30 @@ const healthCards = computed<Card[]>(() => {
 
 const cards = computed<Card[]>(() => (view.value === 'registry' ? registryCards.value : healthCards.value));
 
-/** 卡片分页：默认每页 12 张，避免所有能力在一页纵向挤成一条长列表。 */
-const PAGE_SIZE = 12;
+/** 卡片分页：原型密度 6×3=18/页（小卡片高密度网格）。 */
+const PAGE_SIZE = 18;
 const page = ref(1);
 const totalPages = computed(() => Math.max(1, Math.ceil(cards.value.length / PAGE_SIZE)));
 const pagedCards = computed(() => cards.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE));
 watch([keyword, category, view], () => { page.value = 1; });
 watch(cards, () => { if (page.value > totalPages.value) page.value = totalPages.value; });
+
+/** 窗口化页码：1 … 4 5 6 … 12（首尾页 + 当前页前后各一页），页数多时不溢出。 */
+const pageWindow = computed<Array<number | '…'>>(() => {
+  const t = totalPages.value;
+  const cur = page.value;
+  if (t <= 7) return Array.from({ length: t }, (_, i) => i + 1);
+  const set = new Set<number>([1, t, cur - 1, cur, cur + 1]);
+  const nums = [...set].filter(n => n >= 1 && n <= t).sort((a, b) => a - b);
+  const out: Array<number | '…'> = [];
+  let prev = 0;
+  for (const n of nums) {
+    if (n - prev > 1) out.push('…');
+    out.push(n);
+    prev = n;
+  }
+  return out;
+});
 
 // 按分类计数（当前视图）
 const countByCat = (cat: string) => {
@@ -197,13 +214,10 @@ onMounted(() => {
       </div>
       <input v-model="keyword" placeholder="搜索能力…" class="input-field !w-auto flex-1 min-w-[140px]" />
       <div class="flex flex-wrap gap-2">
-        <button v-for="cat in CATEGORIES" :key="cat.id"
-          class="text-xs rounded-full border px-4 py-1.5 transition-all"
-          :class="category === cat.id
-            ? 'bg-[color:var(--ink)] text-white border-transparent font-semibold'
-            : 'bg-[color:var(--surface)] text-[color:var(--ink-2)] border-[color:var(--hairline-3)] hover:border-[color:var(--ink-3)]'"
+        <button v-for="cat in CATEGORIES" :key="cat.id" type="button"
+          class="chip" :class="category === cat.id ? 'on' : ''"
           @click="category = cat.id">
-          {{ cat.label }} <span class="opacity-60 ml-0.5">{{ countByCat(cat.id) }}</span>
+          {{ cat.label }} <span class="n">{{ countByCat(cat.id) }}</span>
         </button>
       </div>
       <span class="text-xs text-[color:var(--ink-3)] ml-auto flex items-center gap-1.5">
@@ -215,20 +229,27 @@ onMounted(() => {
       </span>
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-3.5">
+    <!-- 骨架屏：注册表读取中（小卡片密度） -->
+    <div v-if="view === 'registry' && registryLoading && !registry.length" class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-2.5">
+      <div v-for="i in 12" :key="`sk-${i}`" class="card p-2.5">
+        <div class="skeleton w-[22px] h-[22px] rounded-md mb-2"></div>
+        <div class="skeleton h-3 w-2/3 mb-1.5"></div>
+        <div class="skeleton h-2.5 w-1/2 mb-2"></div>
+        <div class="skeleton h-2.5 w-3/4"></div>
+      </div>
+    </div>
+
+    <!-- 能力卡片：原型小卡片高密度网格（6 列 / 每页 18；1240→4 列，680→2 列） -->
+    <div v-else class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-2.5">
       <router-link v-for="card in pagedCards" :key="view + ':' + card.id" :to="card.href" class="block group">
-        <div class="relative bg-[color:var(--surface)] border border-[color:var(--hairline-2)] rounded-[14px] p-4 shadow-[var(--sh-1)] transition-all duration-200 group-hover:-translate-y-[3px] group-hover:shadow-[var(--sh-2)] group-hover:border-[color:var(--accent-line)] cursor-pointer">
-          <!-- 健康状态点（C2 光晕） -->
-          <span class="absolute top-4 right-4 w-2 h-2 rounded-full"
-            :class="!card.enabled
-              ? 'bg-[color:var(--off)] shadow-none'
-              : card.ok
-                ? 'bg-emerald-500 shadow-[0_0_0_3.5px_rgba(16,185,129,0.12)]'
-                : 'bg-amber-500 shadow-[0_0_0_3.5px_rgba(245,158,11,0.12)]'"
+        <div class="relative bg-[color:var(--surface)] border border-[color:var(--hairline-2)] rounded-[10px] px-3 py-2.5 shadow-[var(--sh-1)] transition-all duration-200 group-hover:-translate-y-[2px] group-hover:shadow-[var(--sh-2)] group-hover:border-[color:var(--accent-line)] cursor-pointer h-full">
+          <!-- 健康状态点（token 语义色，暗色自动适配） -->
+          <span class="absolute top-2.5 right-2.5 dot"
+            :class="!card.enabled ? 'dot-idle' : card.ok ? 'dot-good' : 'dot-warn'"
             :title="!card.enabled ? '已停用' : card.ok ? '正常' : (card.reason || '不可用')" />
 
-          <!-- 分类图标（C2 线性 SVG） -->
-          <div class="w-[38px] h-[38px] rounded-[11px] grid place-items-center mb-3 transition-transform duration-200 group-hover:scale-[1.06]"
+          <!-- 分类图标（纸面分类色砖，原型 22px） -->
+          <div class="w-[22px] h-[22px] rounded-md grid place-items-center mb-1.5 transition-transform duration-200 group-hover:scale-[1.08]"
             :class="{
               'bg-[color:var(--c-gen-soft)] text-[color:var(--c-gen)]': card.category === '生成',
               'bg-[color:var(--c-info-soft)] text-[color:var(--c-info)]': card.category === '信息',
@@ -236,36 +257,36 @@ onMounted(() => {
               'bg-[color:var(--c-input-soft)] text-[color:var(--c-input)]': card.category === '输入',
               'bg-[color:var(--off-soft)] text-[color:var(--ink-3)]': !['生成','信息','解析','输入'].includes(card.category),
             }">
-            <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
               <path v-for="(seg, i) in catSvg(card.id).split('|')" :key="i" :d="seg" />
             </svg>
           </div>
 
-          <div class="text-[14.5px] font-bold tracking-[-0.01em]">{{ card.label }}</div>
-          <div class="text-[11.5px] text-[color:var(--ink-3)] mt-0.5 mb-3 font-mono truncate">{{ card.id }}</div>
+          <div class="text-[12.5px] font-semibold tracking-[-0.01em] truncate" :title="card.label">{{ card.label }}</div>
+          <div class="text-[10px] text-[color:var(--ink-3)] mt-0.5 mb-1.5 font-mono truncate">{{ card.id }}</div>
 
-          <div class="flex items-center gap-2 text-xs text-[color:var(--ink-2)]">
-            <span class="text-[11.5px] font-semibold rounded-md px-2 py-0.5" :class="catTag(card.id)">{{ card.category }}</span>
-            <span class="truncate">{{ card.sub || '—' }}</span>
+          <div class="flex items-center gap-1.5 text-[color:var(--ink-2)] min-w-0">
+            <span class="text-[9.5px] font-semibold rounded-[4px] px-1.5 py-px flex-none" :class="catTag(card.id)">{{ card.category }}</span>
+            <span class="truncate text-[10.5px]" :title="card.sub">{{ card.sub || '—' }}</span>
           </div>
-
-          <!-- hover 时滑入箭头（C2 微交互） -->
-          <span class="absolute right-3.5 bottom-3.5 text-[color:var(--accent)] opacity-0 -translate-x-1 transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0">→</span>
         </div>
       </router-link>
     </div>
 
-    <div v-if="totalPages > 1" class="flex flex-wrap items-center justify-between gap-3 mt-5 px-1">
-      <span class="text-xs text-[color:var(--ink-3)]">共 {{ cards.length }} 项 · 每页 {{ PAGE_SIZE }} 项</span>
-      <div class="flex items-center gap-1.5">
-        <button type="button" class="btn-outline text-xs !px-3 !py-1.5" :disabled="page <= 1" @click="page -= 1">上一页</button>
-        <span class="text-xs text-[color:var(--ink-2)] px-2">第 {{ page }} / {{ totalPages }} 页</span>
-        <button type="button" class="btn-outline text-xs !px-3 !py-1.5" :disabled="page >= totalPages" @click="page += 1">下一页</button>
-      </div>
+    <!-- 分页（窗口化页码） -->
+    <div v-if="totalPages > 1" class="pager mt-5 px-1">
+      <span class="pg-info">共 {{ cards.length }} 项 · 每页 {{ PAGE_SIZE }} 项</span>
+      <button type="button" class="pg-btn" :disabled="page <= 1" aria-label="上一页" @click="page -= 1">‹</button>
+      <template v-for="(p, i) in pageWindow" :key="`pg-${i}`">
+        <span v-if="p === '…'" class="pg-gap">…</span>
+        <button v-else type="button" class="pg-btn" :class="p === page ? 'on' : ''" @click="page = p">{{ p }}</button>
+      </template>
+      <button type="button" class="pg-btn" :disabled="page >= totalPages" aria-label="下一页" @click="page += 1">›</button>
     </div>
 
-    <p v-if="!registryLoading && !store.loading && !cards.length" class="text-sm text-[color:var(--ink-3)] mt-8 text-center">
-      没有匹配的能力。换个关键词或分类试试。
-    </p>
+    <div v-if="!registryLoading && !store.loading && !cards.length" class="empty-state">
+      <div class="empty-title">没有匹配的能力</div>
+      <div class="empty-sub">换个关键词或分类试试；新能力注册后会自动出现在这里</div>
+    </div>
   </div>
 </template>

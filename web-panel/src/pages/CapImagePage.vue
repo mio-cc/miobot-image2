@@ -159,6 +159,8 @@ async function restoreComfyBaseline() {
         comfyWorkflowMessage.value = '请先填写 profile ID';
         return;
     }
+    // 覆盖性操作：会用内置 baseline 覆盖该 profile 的自定义 workflow/参数映射/默认值。
+    if (!window.confirm(`恢复内置 baseline 会覆盖 profile「${id}」的自定义 workflow 与参数。确认？`)) return;
     try {
         const res = await client.put('/orchestration/comfyui/workflows/' + comfyNodeIndex.value + '/' + encodeURIComponent(id), { restoreBuiltin: true });
         comfyWorkflowMessage.value = '已恢复内置 baseline';
@@ -452,8 +454,8 @@ onMounted(loadComfyWorkflows);
       </div>
       <div v-if="comfyWorkflowValidation" class="mt-3 text-xs">
         <p>校验：<strong>{{ comfyWorkflowValidation.ok ? '通过' : '失败' }}</strong>；节点数 {{ comfyWorkflowValidation.nodeCount }}</p>
-        <p v-if="comfyWorkflowValidation.errors?.length" class="text-red-400">错误：{{ comfyWorkflowValidation.errors.join('；') }}</p>
-        <p v-if="comfyWorkflowValidation.warnings?.length" class="text-amber-400">警告：{{ comfyWorkflowValidation.warnings.join('；') }}</p>
+        <p v-if="comfyWorkflowValidation.errors?.length" class="status-crit text-xs">错误：{{ comfyWorkflowValidation.errors.join('；') }}</p>
+        <p v-if="comfyWorkflowValidation.warnings?.length" class="status-warn text-xs">警告：{{ comfyWorkflowValidation.warnings.join('；') }}</p>
       </div>
       <details class="mt-3">
         <summary class="text-xs cursor-pointer text-[color:var(--ink-3)]">查看节点结构（{{ comfyWorkflowNodesInfo.length }}）</summary>

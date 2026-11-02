@@ -89,7 +89,7 @@ onMounted(() => { void Promise.all([refresh(), loadExposure()]); });
           class="field-box w-full text-left"
           @click="openDetail(cap.id)"
         >
-          <div class="flex items-center gap-2 min-w-0">
+          <div class="flex items-center gap-2 min-w-0 flex-wrap">
             <span class="font-mono text-xs truncate">{{ cap.id }}</span>
             <span class="tag">{{ EXPOSURE_LABEL[effectiveExposure(cap)] || effectiveExposure(cap) }}</span>
             <span v-if="cap.riskLevel" class="tag">{{ cap.riskLevel }}</span>

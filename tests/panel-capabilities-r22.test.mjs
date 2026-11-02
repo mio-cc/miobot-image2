@@ -8,7 +8,8 @@ const tools = readFileSync('web-panel/src/pages/ToolsPage.vue', 'utf8');
 const router = readFileSync('web-panel/src/router/index.ts', 'utf8');
 
 test('R22 capability grid paginates cards', () => {
-  assert.match(capabilities, /const PAGE_SIZE = 12/);
+  // 阶段4视觉修正（用户确认）：小卡片高密度网格按原型 6×3=18/页（原 12/页）。
+  assert.match(capabilities, /const PAGE_SIZE = 18/);
   assert.match(capabilities, /const pagedCards = computed/);
   assert.match(capabilities, /v-for="card in pagedCards"/);
   assert.match(capabilities, /上一页/);

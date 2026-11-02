@@ -141,6 +141,21 @@ function levelClass(value: string) {
   return 'status-good';
 }
 
+/** 下载当前筛选结果为 .log（与「复制筛选结果」同一数据口径：当前已加载条目，非全量历史）。 */
+function downloadLogs() {
+  const text = entries.value.map(formatEntry).join('\n\n') || '（无匹配日志）';
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `miobot-${source.value}-logs-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.log`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+  copyStatus.value = `已下载 ${entries.value.length} 条日志`;
+  window.setTimeout(() => { if (copyStatus.value.startsWith('已下载')) copyStatus.value = ''; }, 1800);
+}
+
 /* ── 编排 trace / 配置版本 / 待补全任务 ───────────────────── */
 
 const traces = ref<any[]>([]);
@@ -225,30 +240,47 @@ onBeforeUnmount(stopTimer);
         <label class="flex items-center gap-1.5 text-xs text-[color:var(--ink-3)]">
           <input type="checkbox" v-model="autoRefresh" />自动刷新
         </label>
+        <span class="text-xs text-[color:var(--ink-3)] ml-auto whitespace-nowrap" title="当前筛选命中的条数 / 该日志源的总条数">命中 {{ entries.length }} / 共 {{ total }} 条</span>
         <button class="btn-outline text-xs" :disabled="loading" @click="fetchLogs()">{{ loading ? '刷新中...' : '刷新' }}</button>
         <button class="btn-outline text-xs" :disabled="!entries.length"
-          @click="copyText(entries.map(formatEntry).join('\n\n'), `已复制 ${entries.length} 条`)">复制当前</button>
+          :title="`复制当前筛选命中的 ${entries.length} 条（级别：${level === 'all' ? '全部' : level}${search.trim() ? '；关键字：' + search.trim() : ''}），不是全部历史`"
+          @click="copyText(entries.map(formatEntry).join('\n\n'), `已复制 ${entries.length} 条（当前筛选结果）`)">复制筛选结果 · {{ entries.length }} 条</button>
+        <button class="btn-outline text-xs" :disabled="!entries.length"
+          :title="`下载当前筛选命中的 ${entries.length} 条为 .log 文件`"
+          @click="downloadLogs">下载 .log</button>
         <button class="btn-danger text-xs" :disabled="loading" @click="clearLogs">清空</button>
       </div>
 
       <p v-if="logError" class="status-crit text-xs mb-2">{{ logError }}</p>
       <p v-if="copyStatus" class="status-good text-xs mb-2">{{ copyStatus }}</p>
 
-      <div v-if="loading && !entries.length" class="py-10 text-center text-[color:var(--ink-3)] text-sm">正在加载...</div>
-      <div v-else-if="!entries.length" class="py-10 text-center text-[color:var(--ink-3)] text-sm">暂无日志</div>
+      <div v-if="loading && !entries.length" class="empty-state">
+        <div class="empty-title">正在加载日志…</div>
+        <div class="empty-sub">主进程与画布日志来自不同管道，稍等片刻</div>
+      </div>
+      <div v-else-if="!entries.length" class="empty-state">
+        <div class="empty-title">暂无日志</div>
+        <div class="empty-sub">{{ logError || '该来源/级别下没有匹配的记录' }}</div>
+      </div>
       <div v-else class="max-h-[420px] overflow-y-auto mono text-xs">
         <div v-for="entry in entries" :key="keyOf(entry)"
-          class="border-b border-[color:var(--hairline-2)] last:border-b-0 px-2 py-2 hover:bg-[color:var(--surface-2)]">
-          <div class="grid grid-cols-[64px_46px_auto_1fr_auto] gap-3 items-baseline">
+          class="log-row border-b border-[color:var(--hairline-2)] last:border-b-0 px-2 py-2 hover:bg-[color:var(--surface-2)]">
+          <div class="grid grid-cols-[64px_46px_auto_1fr_auto_auto] gap-3 items-baseline">
             <span class="text-[color:var(--ink-3)] text-[10.5px]">{{ String(entry.timestamp).slice(11, 19) }}</span>
             <span class="text-[10px] font-bold uppercase" :class="levelClass(entry.level)">{{ entry.level }}</span>
             <span class="text-[10.5px]" style="color: var(--series-1)">[{{ entry.scope }}]</span>
-            <span class="min-w-0 truncate text-[color:var(--ink-2)]" style="font-family: var(--sans); font-size: 12.5px">{{ entry.message }}</span>
+            <span class="min-w-0 truncate text-[color:var(--ink-2)]" style="font-family: var(--sans); font-size: 12.5px" :title="entry.message">{{ entry.message }}</span>
             <button v-if="detailsOf(entry)" class="text-[10.5px] text-[color:var(--ink-3)] hover:underline whitespace-nowrap"
               @click="expanded[keyOf(entry)] = !expanded[keyOf(entry)]">
               {{ expanded[keyOf(entry)] ? '收起' : '详情' }}
             </button>
             <span v-else></span>
+            <button class="row-copy" type="button" title="复制这条日志" aria-label="复制这条日志"
+              @click="copyText(formatEntry(entry), '已复制这条日志')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            </button>
           </div>
           <div v-if="expanded[keyOf(entry)]" class="mt-2 rounded-md bg-[color:var(--surface-2)] p-3">
             <div class="flex justify-end mb-1">
@@ -297,19 +329,19 @@ onBeforeUnmount(stopTimer);
         <span class="text-xs text-[color:var(--ink-3)]">{{ traceRequestIdFilter ? `命中 ${filteredTraces.length} 条` : `共 ${traces.length} 条` }}</span>
       </div>
       <div class="overflow-x-auto max-h-[360px]">
-        <table class="w-full text-xs">
-          <thead class="text-[color:var(--ink-3)] border-b border-[color:var(--hairline-2)]">
-            <tr><th class="text-left py-2 pr-3">时间</th><th class="text-left py-2 pr-3">请求</th><th class="text-left py-2 pr-3">阶段</th><th class="text-left py-2 pr-3">摘要</th><th class="text-left py-2">操作</th></tr>
+        <table class="data-tbl text-xs">
+          <thead>
+            <tr><th class="th">时间</th><th class="th">请求</th><th class="th">阶段</th><th class="th">摘要</th><th class="th">操作</th></tr>
           </thead>
           <tbody>
-            <tr v-for="trace in filteredTraces" :key="trace.id" class="border-b border-[color:var(--hairline-2)]/60">
-              <td class="py-2 pr-3 mono whitespace-nowrap">{{ String(trace.timestamp || '').slice(11, 19) }}</td>
-              <td class="py-2 pr-3 mono"><button class="hover:underline" type="button" @click="traceRequestIdFilter = String(trace.requestId || '')">{{ trace.requestId }}</button></td>
-              <td class="py-2 pr-3">{{ trace.stage }}</td>
-              <td class="py-2 pr-3">{{ trace.summary }}</td>
-              <td class="py-2"><button class="btn-outline !px-2 !py-1" type="button" @click="loadTraceReplay(trace)">回放</button></td>
+            <tr v-for="trace in filteredTraces" :key="trace.id">
+              <td class="mono whitespace-nowrap">{{ String(trace.timestamp || '').slice(11, 19) }}</td>
+              <td class="mono"><button class="hover:underline" type="button" @click="traceRequestIdFilter = String(trace.requestId || '')">{{ trace.requestId }}</button></td>
+              <td class="whitespace-nowrap">{{ trace.stage }}</td>
+              <td class="max-w-[420px] truncate" :title="trace.summary">{{ trace.summary }}</td>
+              <td><button class="btn-outline !px-2 !py-1" type="button" @click="loadTraceReplay(trace)">回放</button></td>
             </tr>
-            <tr v-if="!filteredTraces.length"><td colspan="5" class="py-3 text-[color:var(--ink-3)]">{{ traceRequestIdFilter ? '该 requestId 没有追踪记录' : '暂无编排追踪' }}</td></tr>
+            <tr v-if="!filteredTraces.length"><td colspan="5" class="text-center py-4 text-[color:var(--ink-3)]">{{ traceRequestIdFilter ? '该 requestId 没有追踪记录' : '暂无编排追踪' }}</td></tr>
           </tbody>
         </table>
       </div>
@@ -324,21 +356,21 @@ onBeforeUnmount(stopTimer);
 
     <SectionCard title="配置版本与回滚" hint="每次保存记录变更路径与版本快照；回滚会重新校验、热重载并写入审计" class="mb-4">
       <div class="overflow-x-auto max-h-[280px]">
-        <table class="w-full text-xs">
-          <thead class="text-[color:var(--ink-3)] border-b border-[color:var(--hairline-2)]">
-            <tr><th class="text-left py-2 pr-3">版本</th><th class="text-left py-2 pr-3">保存时间</th><th class="text-left py-2 pr-3">变更路径</th><th class="text-left py-2">操作</th></tr>
+        <table class="data-tbl text-xs">
+          <thead>
+            <tr><th class="th">版本</th><th class="th">保存时间</th><th class="th">变更路径</th><th class="th">操作</th></tr>
           </thead>
           <tbody>
-            <tr v-for="item in [...configVersions].reverse()" :key="item.version" class="border-b border-[color:var(--hairline-2)]/60">
-              <td class="py-2 pr-3 mono">v{{ item.version }} / rev {{ item.revision }}</td>
-              <td class="py-2 pr-3">{{ String(item.savedAt || '').slice(0, 19).replace('T', ' ') }}</td>
-              <td class="py-2 pr-3 max-w-[520px] truncate">{{ (item.changedPaths || []).join(', ') || '初始配置' }}</td>
-              <td class="py-2">
+            <tr v-for="item in [...configVersions].reverse()" :key="item.version">
+              <td class="mono whitespace-nowrap">v{{ item.version }} / rev {{ item.revision }}</td>
+              <td class="whitespace-nowrap">{{ String(item.savedAt || '').slice(0, 19).replace('T', ' ') }}</td>
+              <td class="max-w-[520px] truncate" :title="(item.changedPaths || []).join(', ')">{{ (item.changedPaths || []).join(', ') || '初始配置' }}</td>
+              <td>
                 <span v-if="item.current" class="text-[color:var(--ink-3)]">当前</span>
                 <button v-else class="btn-outline !px-2 !py-1" type="button" @click="rollbackConfigVersion(item.version)">回滚</button>
               </td>
             </tr>
-            <tr v-if="!configVersions.length"><td colspan="4" class="py-3 text-[color:var(--ink-3)]">暂无版本记录</td></tr>
+            <tr v-if="!configVersions.length"><td colspan="4" class="text-center py-4 text-[color:var(--ink-3)]">暂无版本记录</td></tr>
           </tbody>
         </table>
       </div>
@@ -346,18 +378,18 @@ onBeforeUnmount(stopTimer);
 
     <SectionCard title="待补全任务" hint="规划器追问后保存的 pendingJob；用户下一条消息会自动合并补充信息并重新规划" class="mb-4">
       <div class="overflow-x-auto max-h-[280px]">
-        <table class="w-full text-xs">
-          <thead class="text-[color:var(--ink-3)] border-b border-[color:var(--hairline-2)]">
-            <tr><th class="text-left py-2 pr-3">会话</th><th class="text-left py-2 pr-3">原始请求</th><th class="text-left py-2 pr-3">提问</th><th class="text-left py-2">过期时间</th></tr>
+        <table class="data-tbl text-xs">
+          <thead>
+            <tr><th class="th">会话</th><th class="th">原始请求</th><th class="th">提问</th><th class="th">过期时间</th></tr>
           </thead>
           <tbody>
-            <tr v-for="job in pendingJobs" :key="job.key" class="border-b border-[color:var(--hairline-2)]/60">
-              <td class="py-2 pr-3 mono">{{ job.key }}</td>
-              <td class="py-2 pr-3 max-w-[360px] truncate">{{ job.originalText }}</td>
-              <td class="py-2 pr-3 max-w-[360px] truncate">{{ job.question }}</td>
-              <td class="py-2">{{ String(job.expiresAt || '').slice(0, 19).replace('T', ' ') }}</td>
+            <tr v-for="job in pendingJobs" :key="job.key">
+              <td class="mono whitespace-nowrap">{{ job.key }}</td>
+              <td class="max-w-[360px] truncate" :title="job.originalText">{{ job.originalText }}</td>
+              <td class="max-w-[360px] truncate" :title="job.question">{{ job.question }}</td>
+              <td class="whitespace-nowrap">{{ String(job.expiresAt || '').slice(0, 19).replace('T', ' ') }}</td>
             </tr>
-            <tr v-if="!pendingJobs.length"><td colspan="4" class="py-3 text-[color:var(--ink-3)]">暂无待补全任务</td></tr>
+            <tr v-if="!pendingJobs.length"><td colspan="4" class="text-center py-4 text-[color:var(--ink-3)]">暂无待补全任务</td></tr>
           </tbody>
         </table>
       </div>

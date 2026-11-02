@@ -310,7 +310,7 @@ watch(previewCapability, syncPreviewCapability);
           <span v-if="permissionPreview" class="text-xs">
             结果：<strong class="mono">{{ permissionPreview.decision }}</strong>
             <span class="text-[color:var(--ink-3)]">命中 {{ permissionPreview.matchedRule || 'fallback' }}；{{ permissionPreview.reason }}</span>
-            <span v-if="permissionPreview.hardDenied" class="text-rose-500 ml-2">硬拒绝优先</span>
+            <span v-if="permissionPreview.hardDenied" class="status-crit ml-2">硬拒绝优先</span>
           </span>
         </div>
       </div>
@@ -391,7 +391,7 @@ watch(previewCapability, syncPreviewCapability);
               <td class="py-2 pr-3 mono">{{ item.version || '-' }}</td>
               <td class="py-2 pr-3">{{ item.riskLevel || 'medium' }}</td>
               <td class="py-2 pr-3">{{ item.mode || 'sync' }}</td>
-              <td class="py-2 pr-3"><span :class="item.health?.status === 'ok' ? 'text-emerald-500' : item.health?.status === 'disabled' ? 'text-amber-500' : 'text-rose-500'">{{ item.health?.status || 'unknown' }}</span><div class="text-[color:var(--ink-3)]">{{ item.health?.detail }}</div></td>
+              <td class="py-2 pr-3"><span :class="item.health?.status === 'ok' ? 'status-good' : item.health?.status === 'disabled' ? 'status-warn' : 'status-crit'">{{ item.health?.status || 'unknown' }}</span><div class="text-[color:var(--ink-3)]">{{ item.health?.detail }}</div></td>
               <td class="py-2"><button class="btn-outline !px-2 !py-1" type="button" @click="toggleCapability(item, 'approvalRequired')">{{ item.approvalRequired ? '需要' : '否' }}</button></td>
               <td class="py-2 space-y-1"><button class="btn-outline !px-2 !py-1" type="button" @click="toggleCapability(item, 'enabled')">{{ item.enabled ? '启用' : '停用' }}</button><div class="flex flex-wrap gap-1"><button class="btn-outline !px-2 !py-1" type="button" @click="testCapability(item, 'validate')">校验</button><button class="btn-outline !px-2 !py-1" type="button" @click="testCapability(item, 'dry_run')">干跑</button><button class="btn-outline !px-2 !py-1" type="button" @click="testCapability(item, 'live')">实跑</button></div><div v-if="capabilityTestResults[item.id]" class="text-[color:var(--ink-3)]">{{ capabilityTestResults[item.id].status }}: {{ capabilityTestResults[item.id].detail }}</div></td>
             </tr>

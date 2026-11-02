@@ -326,5 +326,43 @@ function removeExposure(id: string) {
         <FormField label="超时 (ms)"><input v-model.number="huggingFace.timeoutMs" type="number" min="5000" class="input-field" /></FormField>
       </div>
     </SectionCard>
+
+    <!-- ═══ 旧引擎参数（agent.mode=off 时生效；RoutingPage 下线后在此恢复编辑入口）═══ -->
+    <SectionCard v-if="config" title="旧引擎参数" hint="agent.mode = off 时走旧链路，以下参数才生效；enforce/shadow 下仅作保留" class="mb-4">
+      <details class="fold-group">
+        <summary>自由模式规划（freeMode · @bot 直接说话）</summary>
+        <div class="fold-body grid grid-cols-1 md:grid-cols-3 gap-4">
+          <FormField label="规划超时 (ms)" hint="min 30000"><input v-model.number="config.freeMode.timeoutMs" type="number" min="30000" step="30000" class="input-field" /></FormField>
+          <FormField label="最多输入图" hint="0-12"><input v-model.number="config.freeMode.maxInputImages" type="number" min="0" max="12" class="input-field" /></FormField>
+          <FormField label="最多输出图" hint="1-4"><input v-model.number="config.freeMode.maxOutputImages" type="number" min="1" max="4" class="input-field" /></FormField>
+          <div class="flex items-end"><ToggleField v-model="config.freeMode.includeQuotedMessage" label="读取被引用的消息" /></div>
+          <div class="flex items-end md:col-span-2"><ToggleField v-model="config.freeMode.preferEditWhenImagePresent" label="有图时优先按改图处理" /></div>
+          <FormField label="规划提示词" hint="旧引擎规划模板；Agent 提示词在「提示词注册表」" class="md:col-span-3">
+            <textarea v-model="config.freeMode.plannerPromptTemplate" rows="4" class="input-field font-mono text-xs"></textarea>
+          </FormField>
+        </div>
+      </details>
+
+      <details class="fold-group mt-3">
+        <summary>自然语言意图识别（intentRecognition · 旧引擎命令分流）</summary>
+        <div class="fold-body grid grid-cols-1 md:grid-cols-3 gap-4">
+          <FormField label="超时 (ms)" hint="3000-60000"><input v-model.number="config.intentRecognition.timeoutMs" type="number" min="3000" max="60000" step="1000" class="input-field" /></FormField>
+          <FormField label="maxTokens"><input v-model.number="config.intentRecognition.maxTokens" type="number" min="1" max="200000" step="10" class="input-field" /></FormField>
+          <FormField label="最低置信度" hint="0-1，低于则不执行"><input v-model.number="config.intentRecognition.minConfidence" type="number" min="0" max="1" step="0.05" class="input-field" /></FormField>
+          <FormField label="意图识别提示词" class="md:col-span-3">
+            <textarea v-model="config.intentRecognition.promptTemplate" rows="4" class="input-field font-mono text-xs"></textarea>
+          </FormField>
+        </div>
+      </details>
+
+      <details class="fold-group mt-3">
+        <summary>旧引擎会话限制（llm · 会话轮数 / 字符 / 有效期）</summary>
+        <div class="fold-body grid grid-cols-1 md:grid-cols-3 gap-4">
+          <FormField label="历史上限轮数" hint="maxConversationRounds"><input v-model.number="config.llm.maxConversationRounds" type="number" min="1" class="input-field" /></FormField>
+          <FormField label="历史字符上限" hint="maxConversationChars"><input v-model.number="config.llm.maxConversationChars" type="number" min="500" class="input-field" /></FormField>
+          <FormField label="会话有效期（分钟）" hint="sessionTtlMinutes，0-1440"><input v-model.number="config.llm.sessionTtlMinutes" type="number" min="0" max="1440" class="input-field" /></FormField>
+        </div>
+      </details>
+    </SectionCard>
   </div>
 </template>

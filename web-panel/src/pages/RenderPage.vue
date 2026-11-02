@@ -18,7 +18,7 @@ const config = computed(() => configStore.config);
       </p>
     </header>
 
-    <div class="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-[color:var(--ink-2)] mb-4">
+    <div class="rounded-lg border px-3 py-2 text-xs text-[color:var(--ink-2)] mb-4" style="border-color: color-mix(in srgb, var(--warning) 35%, transparent); background: var(--warning-soft);">
       当前服务器是 1C2G：建议保持最大并发为 1、队列 3，并确认 Chromium 已安装。任务超时会自动关闭页面、上下文和浏览器进程。
     </div>
 

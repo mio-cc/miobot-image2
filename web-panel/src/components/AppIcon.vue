@@ -59,6 +59,10 @@ defineProps<{ name: string; size?: number }>();
     <template v-else-if="name === 'moon'">
       <path d="M12.6 8.9A5.6 5.6 0 1 1 5.8 2a4.5 4.5 0 0 0 6.8 6.9z" />
     </template>
+    <template v-else-if="name === 'sparkle'">
+      <path d="M7.5 2.2l1.1 3 3 1.1-3 1.1-1.1 3-1.1-3-3-1.1 3-1.1z" />
+      <path d="M11.8 9.6l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7z" />
+    </template>
     <template v-else-if="name === 'logout'">
       <path d="M5.8 2.5H3.2a1.2 1.2 0 0 0-1.2 1.2v7.6a1.2 1.2 0 0 0 1.2 1.2h2.6M9.5 10.5L12.5 7.5 9.5 4.5M12.5 7.5H5.5" />
     </template>

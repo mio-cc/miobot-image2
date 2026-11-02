@@ -157,7 +157,7 @@ export interface BotRuntimeOptions {
    * 不注入时所有埋点都是空操作。
    */
   metrics?: {
-    record(event: 'message' | 'command' | 'chat' | 'image' | 'video' | 'audio' | 'voice' | 'error' | 'agent_failure' | 'agent_unavailable', count?: number): void;
+    record(event: 'message' | 'command' | 'chat' | 'image' | 'video' | 'audio' | 'voice' | 'error' | 'agent_failure' | 'agent_unavailable', count?: number, dims?: { session?: string; model?: string }): void;
     recordDuration(key: string, ms: number): void;
     durationAverage?(key: string): number | undefined;
   };
@@ -877,6 +877,9 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
   };
   const processedEvents = new Map<string, number>();
   const processedEventTtlMs = 5 * 60 * 1000;
+  /** metrics 模型维度反查缓存（kind → 模型名；60s 过期，见 handleMessageEvent 内 metricsModel）。 */
+  const metricsModelCache = new Map<string, string>();
+  let metricsModelCacheAt = 0;
   async function handleMessageEvent(event: NapcatMessageEvent): Promise<BotRuntimeResult> {
     let progressMessagesSent = 0;
     if (event.post_type && event.post_type !== 'message') return { handled: false, reason: 'not-a-message' };
@@ -891,6 +894,24 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const baseAudios = extractAudios(event);
     const userId = event.user_id ?? event.sender?.user_id;
     const sessionId = chatType === 'group' ? `group:${event.group_id}:${userId}` : `private:${userId}`;
+    // 总览面板维度（metrics dims）：会话 key 用群号/私聊 QQ（比 sessionId 粗一级），
+    // 模型名按结果 kind 从能力绑定反查；60s TTL 缓存防每次 record 查表 + 兼容热重载换模型。
+    const metricsSession = chatType === 'group' ? `group:${event.group_id ?? ''}` : `private:${userId ?? ''}`;
+    const metricsDims = (model?: string) => (model ? { session: metricsSession, model } : { session: metricsSession });
+    const metricsModel = (kind: string): string | undefined => {
+      const now = Date.now();
+      if (!metricsModelCacheAt || now - metricsModelCacheAt > 60_000) { metricsModelCache.clear(); metricsModelCacheAt = now; }
+      const cached = metricsModelCache.get(kind);
+      if (cached !== undefined) return cached || undefined;
+      const c = cfg as any;
+      let model = '';
+      if (kind === 'chat') model = c.agent?.mainModel || c.llm?.chatModel || '';
+      else if (kind === 'image.generate' || kind === 'image.edit') model = c.llm?.imageModel || '';
+      else if (kind === 'video.generate') model = c.llm?.videoModel || '';
+      else if (kind === 'audio.music.generate') model = c.orchestration?.suno?.model || '';
+      metricsModelCache.set(kind, model);
+      return model || undefined;
+    };
     // 全流程阶段计时：入口即起表（此前 startedAt 在编排之后才起算，chat 均值不含前置阶段）。
     const messageEntryAt = Date.now();
     const stageStarts: Record<string, number> = {};
@@ -1733,14 +1754,14 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     }
 
     const metrics = options.metrics;
-    metrics?.record('message');
-    if (decision.kind === 'command') metrics?.record('command');
+    metrics?.record('message', 1, metricsDims());
+    if (decision.kind === 'command') metrics?.record('command', 1, metricsDims());
     const startedAt = Date.now();
 
     try {
       if (result) { /* 新链路已产出结果，跳过旧意图链 */ } else if (agentEnforceFailed) {
         // 不允许把固定失败文案发给用户；只做管理员上报和指标记录。
-        metrics?.record('agent_failure');
+        metrics?.record('agent_failure', 1, metricsDims());
         await reportProblem('agent-enforce-failed', 'Agent Runtime did not produce a handled result', { intent: decision.kind });
         logTiming('agent-enforce-failed');
         return { handled: true, kind: 'agent-enforce-failed' };
@@ -1894,7 +1915,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           const lastNotify = agentUnavailableNotifyAt.get(notifyKey) || 0;
           if (now - lastNotify >= 60_000) {
             agentUnavailableNotifyAt.set(notifyKey, now);
-            metrics?.record('agent_unavailable');
+            metrics?.record('agent_unavailable', 1, metricsDims());
             await reportProblem('agent-unavailable', `自然语言消息未处理：Agent 运行于 shadow 模式。验收后请切换 enforce。`, { intent: decision.kind, agentMode });
           }
           logTiming('agent-shadow-unavailable');
@@ -1955,12 +1976,12 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     });
     // 按时际产出的能力计数，总览页的四张卡和 24 小时图就是靠这里。
     const elapsed = Date.now() - startedAt;
-    if (result.kind === 'chat') { metrics?.record('chat'); metrics?.recordDuration('chat', elapsed); }
+    if (result.kind === 'chat') { metrics?.record('chat', 1, metricsDims(metricsModel('chat'))); metrics?.recordDuration('chat', elapsed); }
     else if (result.kind === 'image.generate' || result.kind === 'image.edit') {
-      metrics?.record('image', (result as { images?: string[] }).images?.length || 1);
+      metrics?.record('image', (result as { images?: string[] }).images?.length || 1, metricsDims(metricsModel(result.kind)));
       metrics?.recordDuration('image', elapsed);
-    } else if (result.kind === 'video.generate') { metrics?.record('video'); metrics?.recordDuration('video', elapsed); }
-    else if ((result as any).kind === 'audio.music.generate') { metrics?.record('audio'); metrics?.recordDuration('audio', elapsed); }
+    } else if (result.kind === 'video.generate') { metrics?.record('video', 1, metricsDims(metricsModel('video.generate'))); metrics?.recordDuration('video', elapsed); }
+    else if ((result as any).kind === 'audio.music.generate') { metrics?.record('audio', 1, metricsDims(metricsModel('audio.music.generate'))); metrics?.recordDuration('audio', elapsed); }
     else if (result.kind === 'image.interrogate') { metrics?.recordDuration('interrogate', elapsed); }
 
     // 只回最新：chat 文本是对话性的，被同会话更新消息取代后不再迟到刷屏；
