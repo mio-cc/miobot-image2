@@ -89,26 +89,9 @@ async function fetchLogs(showLoading = true) {
 }
 
 /**
- * 「复制筛选结果 / 下载」用：按 offset 分页拉全当前筛选条件下的所有日志（不只当前页）。
- * 服务端已返回真实 total（命中数），逐页向前翻到取完；设上限防误点拖垮面板。
+ * 复制/下载口径（用户拍板）：只作用于**当前显示的 N 条**（= fetchLogs 的 limit 截断结果），
+ * 不再分页拉全所有命中。服务端 /logs 是末尾分页（limit 取最新 N 条），entries 即屏幕所见。
  */
-async function fetchAllFilteredLogs(cap = 10000): Promise<LogEntry[]> {
-  const pageSize = Math.min(500, Math.max(1, limit.value));
-  const collected: LogEntry[] = [];
-  const params: Record<string, unknown> = {};
-  if (level.value !== 'all') params.level = level.value;
-  if (search.value.trim()) params.contains = search.value.trim();
-  let offset = 0;
-  // 服务端 items 为时间正序；各页直接拼接即完整正序，最后统一 reverse。
-  for (;;) {
-    const res = await client.get(basePath.value, { params: { ...params, limit: pageSize, offset } });
-    const items: LogEntry[] = res.data.items || [];
-    collected.push(...items);
-    offset += items.length;
-    if (!items.length || items.length < pageSize || offset >= cap) break;
-  }
-  return collected.reverse();
-}
 
 async function clearLogs() {
   if (!window.confirm(`确定清空${source.value === 'canvas' ? '画布' : '运行'}日志吗？`)) return;
@@ -179,25 +162,29 @@ function levelClass(value: string) {
   return 'status-good';
 }
 
-/** 复制当前筛选结果（分页拉全量；回执 N = 实际取到的条数）。 */
-async function copyAllFiltered() {
-  const all = await fetchAllFilteredLogs();
-  await copyText(all.map(formatEntry).join('\n\n'), `已复制 ${all.length} 条（当前筛选结果）`);
+/** 复制当前显示的 N 条（屏幕所见即所得；toast 写实际复制的条数，不写筛选命中数）。 */
+async function copyDisplayedLogs() {
+  const shown = entries.value;
+  if (!shown.length) { copyStatus.value = '当前没有显示中的日志可复制'; return; }
+  await copyText(shown.map(formatEntry).join('\n\n'), `已复制 ${shown.length} 条（当前显示）`);
 }
 
-/** 下载当前筛选结果为 .log（分页拉全量，N 取服务端真实命中数）。 */
+/** 下载当前显示的 N 条为 .log（与界面所见同口径，文件名带条数避免与全量混淆）。 */
 async function downloadLogs() {
-  const all = await fetchAllFilteredLogs();
-  const text = all.map(formatEntry).join('\n\n') || '（无匹配日志）';
+  const shown = entries.value;
+  if (!shown.length) { copyStatus.value = '当前没有显示中的日志可下载'; return; }
+  const text = shown.map(formatEntry).join('\n\n');
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `miobot-${source.value}-logs-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.log`;
+  const now = new Date();
+  const date = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  a.download = `miobot-${source.value}-logs-${shown.length}-${date}.log`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(a.href);
-  copyStatus.value = `已下载 ${all.length} 条日志`;
+  copyStatus.value = `已下载 ${shown.length} 条（当前显示）`;
   window.setTimeout(() => { if (copyStatus.value.startsWith('已下载')) copyStatus.value = ''; }, 1800);
 }
 
@@ -285,19 +272,23 @@ onBeforeUnmount(stopTimer);
         <label class="flex items-center gap-1.5 text-xs text-[color:var(--ink-3)]">
           <input type="checkbox" v-model="autoRefresh" />自动刷新
         </label>
-        <span class="text-xs text-[color:var(--ink-3)] ml-auto whitespace-nowrap" title="当前筛选命中的条数（服务端口径，不受分页截断）/ 该日志源的总条数">命中 {{ filteredTotal }} / 共 {{ grandTotal }} 条</span>
+        <span class="text-xs text-[color:var(--ink-3)] ml-auto whitespace-nowrap" title="命中 = 当前筛选条件的总命中数（服务端口径，不受显示条数截断）；显示 = 屏幕上实际展示的条数；共 = 该日志源的全量条数">命中 {{ filteredTotal }} · 显示 {{ entries.length }} / 共 {{ grandTotal }} 条</span>
         <button class="btn-outline text-xs" :disabled="loading" @click="fetchLogs()">{{ loading ? '刷新中...' : '刷新' }}</button>
-        <button class="btn-outline text-xs" :disabled="!filteredTotal"
-          :title="`复制当前筛选命中的 ${filteredTotal} 条（级别：${level === 'all' ? '全部' : level}${search.trim() ? '；关键字：' + search.trim() : ''}），不是全部历史`"
-          @click="copyAllFiltered">复制筛选结果 · {{ filteredTotal }} 条</button>
-        <button class="btn-outline text-xs" :disabled="!filteredTotal"
-          :title="`下载当前筛选命中的 ${filteredTotal} 条为 .log 文件`"
-          @click="downloadLogs">下载 .log</button>
+        <button class="btn-outline text-xs" :disabled="!entries.length"
+          :title="`复制屏幕上显示的 ${entries.length} 条（级别：${level === 'all' ? '全部' : level}${search.trim() ? '；关键字：' + search.trim() : ''}；显示条数：${limit}），不包含未显示的更早命中`"
+          @click="copyDisplayedLogs">复制当前 {{ entries.length }} 条</button>
+        <button class="btn-outline text-xs" :disabled="!entries.length"
+          :title="`下载屏幕上显示的 ${entries.length} 条为 .log（与界面所见同口径，文件名带条数）`"
+          @click="downloadLogs">下载 .log · {{ entries.length }} 条</button>
         <button class="btn-danger text-xs" :disabled="loading" @click="clearLogs">清空</button>
       </div>
 
       <p v-if="logError" class="status-crit text-xs mb-2">{{ logError }}</p>
       <p v-if="copyStatus" class="status-good text-xs mb-2">{{ copyStatus }}</p>
+      <!-- 截断显式提示：命中数超出显示条数时，明示屏幕上不是全部，复制/下载只作用于显示部分 -->
+      <p v-if="!loading && entries.length && filteredTotal > entries.length" class="text-xs text-[color:var(--ink-3)] mb-2">
+        仅显示最新 {{ entries.length }} 条（命中 {{ filteredTotal }} 条）；复制与下载只作用于显示的 {{ entries.length }} 条，调大「显示条数」可取更多。
+      </p>
 
       <div v-if="loading && !entries.length" class="empty-state">
         <div class="empty-title">正在加载日志…</div>

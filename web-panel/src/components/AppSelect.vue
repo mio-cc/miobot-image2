@@ -448,7 +448,12 @@ function labelSegments(row: Row): Array<{ text: string; hit: boolean }> {
             </button>
           </div>
 
-          <ul :id="listboxId" class="app-select-list" role="listbox" :aria-label="placeholder || '选项'">
+          <!-- @mousedown.prevent：点击选项不移动焦点（焦点留在搜索框/触发器）。否则 mousedown 的
+               浏览器默认行为会把焦点夺到 body，搜索框 blur → 面板 @focusout 误判「焦点已出面板」
+               立即 close 卸载，mouseup/click 落在已移除的选项上——鼠标点击选不中（键盘不经
+               mousedown 故正常）。这也是 ARIA combobox 模式的推荐交互：鼠标交互不移焦点。
+               preventDefault 不影响随后派发的 mouseup/click，也不影响触摸合成点击与触摸滚动。 -->
+          <ul :id="listboxId" class="app-select-list" role="listbox" :aria-label="placeholder || '选项'" @mousedown.prevent>
             <template v-for="item in groupedRows" :key="item.key">
               <li v-if="item.type === 'group'" class="app-select-group" aria-hidden="true">{{ item.label }}</li>
               <li v-else :id="`${listboxId}-opt-${item.index}`" role="option" :aria-selected="item.row.selected"
