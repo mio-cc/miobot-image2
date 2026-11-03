@@ -5,6 +5,14 @@ import { useConfigStore } from '../stores/config';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import AppSelect from '../components/AppSelect.vue';
+
+/* P1 最后一批·下拉收尾：好友请求处理模式选项（与原 <option> 一一对应）。 */
+const friendRequestModeOptions = [
+    { value: 'ignore', label: 'ignore 忽略' },
+    { value: 'accept', label: 'accept 自动通过' },
+    { value: 'notify', label: 'notify 私聊通知 owner' },
+];
 
 /**
  * 接入与准入页（用户层）。
@@ -277,11 +285,7 @@ const DEFAULT_POKE_REPLIES = ['戳我干嘛呀', '别戳啦，在的呢', '收�
           <input v-model.number="config.bot.welcome.cooldownSec" type="number" min="0" max="3600" class="input-field" :disabled="!config.bot.welcome.enabled" />
         </FormField>
         <FormField label="好友请求处理">
-          <select v-model="config.bot.friendRequest.mode" class="input-field">
-            <option value="ignore">ignore 忽略</option>
-            <option value="accept">accept 自动通过</option>
-            <option value="notify">notify 私聊通知 owner</option>
-          </select>
+          <AppSelect v-model="config.bot.friendRequest.mode" :options="friendRequestModeOptions" />
         </FormField>
         <FormField label="好友请求通知文案" hint="占位符 {user}、{qq}">
           <input v-model="config.bot.friendRequest.notifyText" class="input-field" />

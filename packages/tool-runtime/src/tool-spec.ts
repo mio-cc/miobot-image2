@@ -178,6 +178,12 @@ export const DOMAIN_TOOL_NAMES = [
   'file.generate',
   'code.render',
   'capability.catalog',
+  // P0 装配修复：模型目录此前未进任何静态名单 → 推导为 searchable，
+  // 在 toolSearchEnabled=false（默认）时永远进不了 agent loadout——
+  // "目录可见（capability.catalog 列出）、工具不可调"的直接成因之一。
+  'model.catalog.list',
+  // P1 7b：模型切换工具——对所有人可见（模型可发现），执行层 isOwner 校验非 owner 结构化拒绝。
+  'model.binding.switch',
   'web.fetch',
   'job.cancel',
   'report.render',
@@ -333,7 +339,8 @@ function inferIdempotency(sideEffects: ToolSideEffect[]): ToolIdempotency {
   return 'none';
 }
 
-function inferExposure(name: string, enabled: boolean, risk: ToolRiskLevel): ToolExposure {
+/** 按名字规则推导 exposure：owner./config./permission. 类与 session.clear 恒 hidden，critical 恒 hidden。P0 装配修复后导出供目录过滤同源使用。 */
+export function inferExposure(name: string, enabled: boolean, risk: ToolRiskLevel): ToolExposure {
   if (!enabled || risk === 'critical') return 'hidden';
   if (name === 'session.clear' || name.startsWith('owner.') || name.startsWith('config.') || name.startsWith('permission.')) return 'hidden';
   if (CORE.has(name)) return 'core';

@@ -6,6 +6,7 @@ import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import AppIcon from '../components/AppIcon.vue';
+import AppSelect from '../components/AppSelect.vue';
 
 const configStore = useConfigStore();
 const config = computed(() => configStore.config);
@@ -16,6 +17,17 @@ const convertStatus = ref('');
 const titleLoading = ref<Record<string, boolean>>({});
 const collapsed = ref<Record<string, boolean>>({});
 const search = ref('');
+
+/* P1 最后一批·下拉收尾：prompts.chat 搜索类型（空值「全部」；绑定保持
+   config.promptsChat.searchType 原样，仅换组件不改变语义）。 */
+const searchTypeOptions = [
+    { value: '', label: '全部' },
+    { value: 'IMAGE', label: 'IMAGE' },
+    { value: 'TEXT', label: 'TEXT' },
+    { value: 'STRUCTURED', label: 'STRUCTURED' },
+    { value: 'VIDEO', label: 'VIDEO' },
+    { value: 'AUDIO', label: 'AUDIO' },
+];
 
 const templates = computed(() => config.value?.bot?.promptTemplates || []);
 const filteredTemplates = computed(() => {
@@ -158,10 +170,7 @@ const statusIsError = computed(() => /失败|为空|请先/.test(convertStatus.v
           <input v-model="config.promptsChat.apiKey" type="password" class="input-field font-mono" />
         </FormField>
         <FormField label="搜索类型">
-          <select v-model="config.promptsChat.searchType" class="input-field">
-            <option value="">全部</option><option value="IMAGE">IMAGE</option><option value="TEXT">TEXT</option>
-            <option value="STRUCTURED">STRUCTURED</option><option value="VIDEO">VIDEO</option><option value="AUDIO">AUDIO</option>
-          </select>
+          <AppSelect v-model="config.promptsChat.searchType" :options="searchTypeOptions" />
         </FormField>
         <FormField label="QQ 展示条数">
           <input v-model.number="config.promptsChat.displayLimit" type="number" min="1" max="10" class="input-field" />

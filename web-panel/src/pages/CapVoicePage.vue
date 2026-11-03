@@ -6,6 +6,7 @@ import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import ModelPicker from '../components/ModelPicker.vue';
+import AppSelect from '../components/AppSelect.vue';
 
 /**
  * 语音能力页（tts.speak + voice.*）。
@@ -33,6 +34,27 @@ const TTS_MODEL_OPTIONS = [
     's2.1-pro-free', 's2.1-pro', 's2-pro', 's1',
     'gpt-4o-mini-tts', 'tts-1', 'tts-1-hd',
 ];
+
+/* P1 第五批·下拉收尾第一批：AppSelect 选项常量（与原 <option> 列表一一对应，文案零变更）。 */
+const ttsProviderOptions = [
+    { value: 'fish-audio', label: 'Fish Audio' },
+    { value: 'openai-compatible', label: 'OpenAI 兼容 /audio/speech' },
+];
+const ttsFormatOptions = [
+    { value: 'mp3', label: 'mp3' },
+    { value: 'wav', label: 'wav' },
+    { value: 'opus', label: 'opus' },
+];
+const ttsLatencyOptions = [
+    { value: 'normal', label: 'normal' },
+    { value: 'balanced', label: 'balanced' },
+    { value: 'low', label: 'low' },
+];
+const voiceScopeOptions = [
+    { value: 'both', label: '私聊和群聊' },
+    { value: 'private', label: '仅私聊' },
+    { value: 'group', label: '仅群聊' },
+];
 </script>
 
 <template>
@@ -55,10 +77,7 @@ const TTS_MODEL_OPTIONS = [
       <div v-if="tts" class="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div class="flex items-end"><ToggleField v-model="tts.enabled" label="启用语音回复" /></div>
         <FormField label="服务商" hint="不同服务商的字段含义不同，切换后请检查下面各项">
-          <select v-model="tts.provider" class="input-field">
-            <option value="fish-audio">Fish Audio</option>
-            <option value="openai-compatible">OpenAI 兼容 /audio/speech</option>
-          </select>
+          <AppSelect v-model="tts.provider" :options="ttsProviderOptions" />
         </FormField>
         <FormField label="API 地址">
           <input v-model="tts.apiUrl" class="input-field font-mono"
@@ -83,9 +102,7 @@ const TTS_MODEL_OPTIONS = [
           </p>
         </FormField>
         <FormField label="音频格式">
-          <select v-model="tts.format" class="input-field">
-            <option value="mp3">mp3</option><option value="wav">wav</option><option value="opus">opus</option>
-          </select>
+          <AppSelect v-model="tts.format" :options="ttsFormatOptions" />
         </FormField>
         <div v-if="isFish" class="md:col-span-3">
           <FormField label="备用音色 ID" hint="多个用逗号分隔；主音色不可用时依次尝试">
@@ -157,9 +174,7 @@ const TTS_MODEL_OPTIONS = [
           <input v-model.number="tts.volume" type="number" min="-20" max="20" step="1" class="input-field" />
         </FormField>
         <FormField label="延迟模式" hint="low 更快但音质略降">
-          <select v-model="tts.latency" class="input-field">
-            <option value="normal">normal</option><option value="balanced">balanced</option><option value="low">low</option>
-          </select>
+          <AppSelect v-model="tts.latency" :options="ttsLatencyOptions" />
         </FormField>
       </div>
     </template>
@@ -171,7 +186,7 @@ const TTS_MODEL_OPTIONS = [
           <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.voice.userCanChange" label="允许用户修改音色" /></div>
           <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.voice.licensedOnly" label="只展示已授权音色" /></div>
           <FormField label="允许场景">
-            <select v-model="orch.voice.allowedScopes" class="input-field"><option value="both">私聊和群聊</option><option value="private">仅私聊</option><option value="group">仅群聊</option></select>
+            <AppSelect v-model="orch.voice.allowedScopes" :options="voiceScopeOptions" />
           </FormField>
           <FormField label="最大候选数"><input v-model.number="orch.voice.maxCandidates" type="number" min="1" max="10" class="input-field" /></FormField>
           <FormField label="候选有效期 (ms)"><input v-model.number="orch.voice.candidateTtlMs" type="number" min="60000" class="input-field" /></FormField>

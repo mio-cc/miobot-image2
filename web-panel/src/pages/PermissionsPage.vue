@@ -6,6 +6,7 @@ import { useCapabilityStore } from '../stores/capabilities';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import AppSelect from '../components/AppSelect.vue';
 
 /**
  * 权限与审批页（治理平面）。
@@ -46,6 +47,33 @@ const auditRecords = ref<any[]>([]);
 const capabilityTestResults = ref<Record<string, any>>({});
 const permissionScopes = ['global', 'provider', 'capability', 'role', 'group', 'user'] as const;
 const permissionModes = ['allow', 'ask_admin', 'deny'] as const;
+
+/* P1 第四批·下拉第二批：AppSelect 选项常量（与原 <option> 列表一一对应，文案零变更）。
+   previewCapability 的选项由注册表动态拉取（~64 项），AppSelect 自动开搜索。 */
+const permissionModeOptions = permissionModes.map((mode) => ({ value: mode, label: mode }));
+const permissionScopeOptions = permissionScopes.map((scope) => ({ value: scope, label: scope }));
+const previewRoleOptions = [
+    { value: 'guest', label: 'guest' },
+    { value: 'user', label: 'user' },
+    { value: 'admin', label: 'admin' },
+    { value: 'owner', label: 'owner' },
+];
+const previewRiskOptions = [
+    { value: 'low', label: 'low' },
+    { value: 'medium', label: 'medium' },
+    { value: 'high', label: 'high' },
+    { value: 'critical', label: 'critical' },
+];
+const quorumOptions = [
+    { value: 'any', label: '任一管理员' },
+    { value: 'all', label: '全部管理员' },
+    { value: 'owner', label: '仅 owner' },
+];
+const approvalFallbackOptions = [
+    { value: 'deny', label: '拒绝' },
+    { value: 'cancel', label: '取消' },
+];
+const previewCapabilityOptions = computed(() => capabilities.value.map((cap: any) => ({ value: cap.id, label: cap.id })));
 const previewUserQq = ref('');
 const previewRole = ref('user');
 const previewGroupId = ref('');
@@ -235,10 +263,10 @@ watch(previewCapability, syncPreviewCapability);
 
     <SectionCard title="三态权限默认值" hint="owner 全权限、admin 高风险审批、普通用户高风险拒绝" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <FormField label="低风险"><select v-model="orch.permissions.defaultLow" class="input-field"><option value="allow">allow</option><option value="ask_admin">ask_admin</option><option value="deny">deny</option></select></FormField>
-        <FormField label="中风险"><select v-model="orch.permissions.defaultMedium" class="input-field"><option value="allow">allow</option><option value="ask_admin">ask_admin</option><option value="deny">deny</option></select></FormField>
-        <FormField label="高风险"><select v-model="orch.permissions.defaultHigh" class="input-field"><option value="allow">allow</option><option value="ask_admin">ask_admin</option><option value="deny">deny</option></select></FormField>
-        <FormField label="严重风险"><select v-model="orch.permissions.defaultCritical" class="input-field"><option value="allow">allow</option><option value="ask_admin">ask_admin</option><option value="deny">deny</option></select></FormField>
+        <FormField label="低风险"><AppSelect v-model="orch.permissions.defaultLow" :options="permissionModeOptions" /></FormField>
+        <FormField label="中风险"><AppSelect v-model="orch.permissions.defaultMedium" :options="permissionModeOptions" /></FormField>
+        <FormField label="高风险"><AppSelect v-model="orch.permissions.defaultHigh" :options="permissionModeOptions" /></FormField>
+        <FormField label="严重风险"><AppSelect v-model="orch.permissions.defaultCritical" :options="permissionModeOptions" /></FormField>
       </div>
       <div class="mt-3">
         <ToggleField v-model="orch.permissions.hardDenyEnabled" label="启用系统硬拒绝" hint="保护密钥、审计关闭等不可逆安全操作" />
@@ -272,18 +300,15 @@ watch(previewCapability, syncPreviewCapability);
           <tbody>
             <tr v-for="(rule, index) in (orch.permissions.rules || [])" :key="rule.id || index" class="border-b border-[color:var(--hairline-2)]/60">
               <td class="py-2 pr-2">
-                <select v-model="rule.scope" class="input-field !py-1" @change="onRuleScopeChange(rule)">
-                  <option v-for="scope in permissionScopes" :key="scope" :value="scope">{{ scope }}</option>
-                </select>
+                <!-- @change 联动保留：切换作用域后清空目标（AppSelect 在 update:modelValue 后 emit change） -->
+                <AppSelect v-model="rule.scope" :options="permissionScopeOptions" trigger-class="!py-1" @change="onRuleScopeChange(rule)" />
               </td>
               <td class="py-2 pr-2 min-w-[150px]">
                 <span v-if="rule.scope === 'global'" class="mono text-[color:var(--ink-3)]">*</span>
                 <input v-else :value="ruleTarget(rule)" class="input-field !py-1 font-mono" :placeholder="rule.scope === 'role' ? 'user,admin,owner' : rule.scope + ' ID'" @input="onRuleTargetInput(rule, $event)" />
               </td>
               <td class="py-2 pr-2">
-                <select v-model="rule.mode" class="input-field !py-1">
-                  <option v-for="mode in permissionModes" :key="mode" :value="mode">{{ mode }}</option>
-                </select>
+                <AppSelect v-model="rule.mode" :options="permissionModeOptions" trigger-class="!py-1" />
               </td>
               <td class="py-2 pr-2 min-w-[130px]">
                 <input :value="ruleRiskText(rule)" class="input-field !py-1 font-mono" placeholder="low,high" @blur="onRuleRiskBlur(rule, $event)" />
@@ -303,11 +328,12 @@ watch(previewCapability, syncPreviewCapability);
         <h3 class="text-sm font-semibold mb-3">最终策略预览</h3>
         <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3">
           <FormField label="用户 QQ"><input v-model="previewUserQq" class="input-field font-mono" placeholder="可选" /></FormField>
-          <FormField label="角色"><select v-model="previewRole" class="input-field"><option value="guest">guest</option><option value="user">user</option><option value="admin">admin</option><option value="owner">owner</option></select></FormField>
+          <FormField label="角色"><AppSelect v-model="previewRole" :options="previewRoleOptions" /></FormField>
           <FormField label="群 ID"><input v-model="previewGroupId" class="input-field font-mono" placeholder="私聊留空" /></FormField>
-          <FormField label="能力"><select v-model="previewCapability" class="input-field"><option v-for="cap in capabilities" :key="cap.id" :value="cap.id">{{ cap.id }}</option></select></FormField>
+          <!-- 动态选项：注册表能力目录（~64 项）→ AppSelect 自动开搜索；watch(previewCapability) 联动 provider/risk 保留 -->
+          <FormField label="能力"><AppSelect v-model="previewCapability" :options="previewCapabilityOptions" /></FormField>
           <FormField label="Provider"><input v-model="previewProvider" class="input-field font-mono" /></FormField>
-          <FormField label="风险级别"><select v-model="previewRisk" class="input-field"><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="critical">critical</option></select></FormField>
+          <FormField label="风险级别"><AppSelect v-model="previewRisk" :options="previewRiskOptions" /></FormField>
         </div>
         <div class="flex items-center gap-3 mt-3">
           <button class="btn-primary !px-3 !py-1" type="button" @click="previewPermission">预览最终策略</button>
@@ -325,13 +351,11 @@ watch(previewCapability, syncPreviewCapability);
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.approval.enabled" label="启用审批" /></div>
         <FormField label="Quorum">
-          <select v-model="orch.approval.quorum" class="input-field">
-            <option value="any">任一管理员</option><option value="all">全部管理员</option><option value="owner">仅 owner</option>
-          </select>
+          <AppSelect v-model="orch.approval.quorum" :options="quorumOptions" />
         </FormField>
         <FormField label="超时 (ms)"><input v-model.number="orch.approval.timeoutMs" type="number" min="1000" class="input-field" /></FormField>
         <FormField label="超时处理">
-          <select v-model="orch.approval.fallback" class="input-field"><option value="deny">拒绝</option><option value="cancel">取消</option></select>
+          <AppSelect v-model="orch.approval.fallback" :options="approvalFallbackOptions" />
         </FormField>
         <FormField label="最大待审批/用户"><input v-model.number="orch.approval.maxPendingPerUser" type="number" min="1" class="input-field" /></FormField>
         <FormField label="最大待审批/全局"><input v-model.number="orch.approval.maxPendingGlobal" type="number" min="1" class="input-field" /></FormField>

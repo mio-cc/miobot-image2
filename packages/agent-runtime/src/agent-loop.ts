@@ -842,15 +842,20 @@ export class AgentRuntime implements AgentLoop {
 
   private resolveTools(input: AgentTurnInput): ToolSpec[] {
     const requested = input.availableToolNames ? new Set(input.availableToolNames) : undefined;
+    // P0 装配修复：owner 会话显式追加 hidden 的 owner.model.list（loadout 侧仅豁免 exposure，
+    // 执行层仍有 isOwner 校验兜底）；非 owner 会话不追加——owner 类工具对普通用户保持不可见。
+    const isOwnerContext = String((input.metadata as Record<string, unknown> | undefined)?.userRole || '') === 'owner';
+    const ownerExtraTools = isOwnerContext ? ['owner.model.list'] : undefined;
     const exposed = this.deps.toolRegistry
       ? this.deps.toolRegistry.resolveLoadout({
         exposures: this.deps.toolSearchEnabled ? ['core', 'domain', 'searchable'] : ['core', 'domain'],
+        ...(ownerExtraTools ? { extraToolNames: ownerExtraTools } : {}),
         ...(requested ? { enabledToolNames: [...requested] } : {}),
         ...(input.availableContext ? { availableContext: input.availableContext } : {}),
         maxTools: this.limits.maxToolsPerTurn,
         maxSchemaBytes: this.limits.maxToolSchemaBytes,
       }).tools
-      : (this.deps.toolSpecs || []).filter((spec) => spec.enabled !== false && spec.exposure !== 'hidden');
+      : (this.deps.toolSpecs || []).filter((spec) => spec.enabled !== false && (spec.exposure !== 'hidden' || ownerExtraTools?.includes(spec.name)));
     const byName = new Map<string, ToolSpec>();
     for (const spec of exposed) byName.set(spec.name, spec);
     const builtins: ToolSpec[] = [ASK_USER_TOOL_SPEC, REPLY_PRESENTATION_TOOL_SPEC];

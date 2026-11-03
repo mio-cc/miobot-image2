@@ -6,6 +6,9 @@ export function builtinCapabilityDescriptors(): CapabilityDescriptor[] {
     { ...base, id: 'chat.reply', name: '自然语言对话', description: '直接回答、解释、判断、写作或对话，输出文本。', provider: 'model', mode: 'stream', riskLevel: 'low', mergeable: true, outputKinds: ['text'], inputSchema: { type: 'object', properties: { prompt: { type: 'string' }, question: { type: 'string' } }, additionalProperties: true } },
     { ...base, id: 'help', name: '帮助', description: '返回 Miobot 的完整帮助文本。', provider: 'builtin', mode: 'sync', riskLevel: 'low', mergeable: true, outputKinds: ['text'] },
     { ...base, id: 'model.catalog.list', name: '模型目录', provider: 'builtin', mode: 'sync', riskLevel: 'low', mergeable: true, outputKinds: ['text'] },
+    // P1 7b：模型切换工具——仅主人（owner）；非 owner 调用返回结构化拒绝（工具对所有人可见，执行层校验）。
+    // P1 第三批：新增 action=lock/unlock 手动档位锁（备用模型状态机，方案 §6.3）。
+    { ...base, id: 'model.binding.switch', name: '模型切换', description: '切换某个用途绑定的模型，或手动锁定主/备档位（仅主人可用；非主人调用会被拒绝并记录）。用途 purpose 可选值：main（主对话）/image（图片生成）/edit（图片编辑）/interrogate（图片反推）/suno（作曲）/video（视频）/codeRender（代码渲染）/comfyui（参数转化）/tts（语音前处理）/trigger（触发判定）/memory（记忆摘要）。action=switch（默认）切换模型：slot 选 primary（主模型，默认）或 secondary（备用模型，目前仅 main 支持）。action=lock 锁定档位：target 填 备/secondary 锁定备用（自动切换让位）或 主/primary 锁定主模型；action=unlock 解除锁定并清零失败计数。scope 当前仅支持 persistent（持久生效，直接改配置）。用户只说厂商/系列名（如"切 DeepSeek"）而未说明用途时：不要猜，直接不带 purpose 调用本工具，会返回各用途当前绑定的候选清单，由你向用户追问确认后再带 purpose 重新调用。切换成功后下一轮对话生效。', provider: 'builtin', mode: 'sync', riskLevel: 'medium', permissions: ['owner'], mergeable: false, outputKinds: ['text'], inputSchema: { type: 'object', properties: { target: { type: 'string', description: 'action=switch 时为目标模型名（支持模糊匹配，多候选时返回候选清单）；action=lock 时为 主/备（primary/secondary）' }, purpose: { type: 'string', description: '用途 key（可选；缺省时返回歧义清单供追问）' }, slot: { type: 'string', enum: ['primary', 'secondary'], description: '主模型或备用模型（默认 primary）' }, scope: { type: 'string', enum: ['persistent'], description: '生效范围（当前仅持久切换）' }, action: { type: 'string', enum: ['switch', 'lock', 'unlock'], description: 'switch=切换模型（默认）；lock=锁定主/备档位（target 填 主 或 备）；unlock=解除锁定' } }, additionalProperties: false } },
     { ...base, id: 'session.clear', name: '新对话', provider: 'builtin', mode: 'sync', riskLevel: 'low', mergeable: true, outputKinds: ['text'] },
     // R16/5.3：链接正文读取——静态页 readability 式抽取；动态页降级建议截图；B 站 adapter 拿元数据+简介。
     { ...base, id: 'web.fetch', name: '网页读取', description: '读取一个网页链接的正文文本（标题+主要内容，自动剥离脚本样式）。用户发来链接让你看内容、总结、找信息时使用；B 站视频链接会返回标题/UP 主/简介/时长/数据统计。返回过短或为空时会建议改用网页截图工具；正文超长自动截断。搜索信息优先用搜索工具，本工具用于读取已知链接。', provider: 'builtin', mode: 'sync', riskLevel: 'low', mergeable: true, outputKinds: ['text'], inputSchema: { type: 'object', properties: { url: { type: 'string', description: '要读取的完整 http/https 链接' }, maxChars: { type: 'number', description: '正文最多返回字符数（可选，默认 12000）' } }, required: ['url'], additionalProperties: true } },
@@ -58,6 +61,7 @@ export function builtinCapabilityDescriptors(): CapabilityDescriptor[] {
     'chat.reply': 'answer',
     'help': 'answer',
     'model.catalog.list': 'retrieve',
+    'model.binding.switch': 'mutate',
     'session.clear': 'control',
     'owner.recall': 'delete',
     'owner.model.list': 'retrieve',
@@ -110,6 +114,7 @@ export function builtinCapabilityDescriptors(): CapabilityDescriptor[] {
     'chat.reply': '直接回答、解释、判断、写作或对话，输出文本。',
     'help': '返回 Miobot 的完整帮助文本。',
     'model.catalog.list': '列出当前配置可用的模型及能力信息。',
+    'model.binding.switch': '切换某个用途绑定的模型（仅主人）。',
     'session.clear': '清空当前会话上下文，开始新的对话。',
     'owner.recall': '撤回当前会话中机器人最近发送的消息。',
     'owner.model.list': '列出当前配置的模型节点和模型。',
@@ -169,6 +174,7 @@ export function builtinCapabilityDescriptors(): CapabilityDescriptor[] {
   const ttsPolicies: Record<string, CapabilityDescriptor['ttsPolicy']> = {
     help: 'skip',
     'model.catalog.list': 'skip',
+    'model.binding.switch': 'skip',
     'session.clear': 'skip',
     'owner.recall': 'skip',
     'owner.model.list': 'skip',
@@ -196,6 +202,7 @@ export function builtinCapabilityDescriptors(): CapabilityDescriptor[] {
     'chat.reply': 'low',
     'help': 'free',
     'model.catalog.list': 'free',
+    'model.binding.switch': 'free',
     'session.clear': 'free',
     'owner.recall': 'free',
     'owner.model.list': 'free',

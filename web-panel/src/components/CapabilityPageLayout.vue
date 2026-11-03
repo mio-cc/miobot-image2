@@ -5,6 +5,7 @@ import { useConfigStore } from '../stores/config';
 import SectionCard from './SectionCard.vue';
 import FormField from './FormField.vue';
 import ToggleField from './ToggleField.vue';
+import AppSelect from './AppSelect.vue';
 
 /**
  * 能力页统一骨架（§2.6.3）：状态头 / 启用与配额 / 模型与节点 / 提示词 /
@@ -265,9 +266,7 @@ onMounted(() => {
           </div>
         </FormField>
         <FormField label="群聊触发方式" hint="只影响显式命令">
-          <select v-model="featureSetting.groupActivation" class="input-field" :disabled="!hasScope(featureSetting, 'group')">
-            <option v-for="opt in ACTIVATION_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-          </select>
+          <AppSelect v-model="featureSetting.groupActivation" :options="ACTIVATION_OPTIONS" :disabled="!hasScope(featureSetting, 'group')" />
         </FormField>
       </div>
       <div v-if="limitFields.length" class="mt-4 pt-3 border-t border-[color:var(--hairline-2)]">

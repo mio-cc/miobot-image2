@@ -13,6 +13,7 @@ import type {
   ToolCall as ModelToolCall,
 } from '../../../packages/model/src/index.js';
 import { isToolErrorCode, makeToolError, type ToolError } from '../../../packages/tool-runtime/src/index.js';
+import { isFailoverWorthyError, type ModelFallbackController } from './model-fallback.js';
 
 export interface AgentModelPortOptions {
   defaultNodeIndex?: number;
@@ -20,6 +21,14 @@ export interface AgentModelPortOptions {
   reasoningEffort?: ReasoningEffort;
   fallbackNodeIndex?: number;
   fallbackModel?: string;
+  /**
+   * P1 第三批：备用模型状态机（方案 §6）。传入后接管有备用场景的切换决策
+   * （计数/粘滞/冷却试探/override 优先级）；无备用时整体旁路，行为与不传时一致。
+   * 不传时保留旧的无状态朴素重试（兼容既有调用方与测试）。
+   */
+  fallback?: ModelFallbackController;
+  /** 状态机管理的用途键（主对话链 = 'main'）。 */
+  fallbackPurpose?: string;
 }
 
 /**
@@ -28,6 +37,7 @@ export interface AgentModelPortOptions {
  * agent loop's structured validation contract.
  */
 export function createAgentModelPort(client: Pick<ModelClient, 'chat'>, options: AgentModelPortOptions = {}): AgentModelPort {
+  const fallbackPurpose = options.fallbackPurpose || 'main';
   return {
     async chat(request: AgentModelRequest): Promise<AgentModelResponse> {
       const messages: ChatMessage[] = request.messages.map(toModelMessage);
@@ -53,6 +63,13 @@ export function createAgentModelPort(client: Pick<ModelClient, 'chat'>, options:
         }),
       };
       const primaryNode = request.nodeIndex ?? options.defaultNodeIndex ?? 0;
+
+      // ── P1 第三批：状态机接管（有 controller 时） ──
+      if (options.fallback) {
+        return chatWithStateMachine(options.fallback, request, chatRequest, primaryNode, timeoutMs);
+      }
+
+      // ── 旧路径：无状态朴素重试（无 controller 的调用方兼容） ──
       try {
         return toAgentResponse(await chatWithAbort(client, primaryNode, chatRequest, request.signal));
       } catch (error) {
@@ -65,6 +82,38 @@ export function createAgentModelPort(client: Pick<ModelClient, 'chat'>, options:
     },
 
   };
+
+  /** 状态机版调用流程：对 agent-loop 透明（模型/节点选择在档位决策后覆写）。 */
+  async function chatWithStateMachine(
+    controller: ModelFallbackController,
+    request: AgentModelRequest,
+    chatRequest: ChatRequest,
+    primaryNode: number,
+    timeoutMs: number | undefined,
+  ): Promise<AgentModelResponse> {
+    const decision = controller.selectSlot(fallbackPurpose, request.purpose === 'turn');
+    if (decision.mode !== 'bypass' && decision.slot === 'secondary' && decision.secondary) {
+      // 锁定备 / 粘滞 / 跟随粘滞：直接用备，失败按现行为抛出（不切不计数）。
+      return toAgentResponse(await chatWithAbort(client, decision.secondary.nodeIndex, { ...chatRequest, model: decision.secondary.model }, request.signal));
+    }
+    // 主档位（auto / probe / locked-primary / follow / bypass）。
+    // probe：借本次真实调用试探主模型——短超时封顶，失败不计数。
+    const primaryRequest = decision.mode === 'probe' && decision.probeTimeoutMs
+      ? { ...chatRequest, timeoutMs: Math.min(decision.probeTimeoutMs, timeoutMs || decision.probeTimeoutMs) }
+      : chatRequest;
+    try {
+      const result = await chatWithAbort(client, primaryNode, primaryRequest, request.signal);
+      controller.onPrimarySuccess(decision);
+      return toAgentResponse(result);
+    } catch (error) {
+      if (request.signal?.aborted) throw error;
+      if (!decision.secondary || !isFailoverWorthyError(error)) throw error;
+      const { retryWithSecondary } = controller.onPrimaryFailure(decision, error);
+      if (!retryWithSecondary) throw error;
+      // 立即切备用重试**本次请求**（由备产生回答；备也失败则按现行为抛出）。
+      return toAgentResponse(await chatWithAbort(client, decision.secondary.nodeIndex, { ...chatRequest, model: decision.secondary.model }, request.signal));
+    }
+  }
 }
 
 async function chatWithAbort(client: Pick<ModelClient, 'chat'>, nodeIndex: number, request: ChatRequest, signal?: AbortSignal) {

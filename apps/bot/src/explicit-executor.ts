@@ -101,7 +101,11 @@ export class ExplicitExecutor implements RuntimeExplicitEngine {
       }
 
       if (kind === 'video.generate') {
-        if (!cfg.llm.videoEnabled || !this.options.registry().can(cfg.llm.videoModel, 'video.generate')) {
+        // P1 问题二：videoModel 空 = 继承主对话模型（can 判定不支持则自动降级为文字回复）——
+        // 与其他模型位"空=跟随"语义一致，消费时解析而非 normalize 物化。
+        const videoModel = String(cfg.llm.videoModel || '').trim() || cfg.llm.chatModel;
+        const videoNodeIndex = String(cfg.llm.videoModel || '').trim() ? cfg.llm.videoNodeIndex : cfg.llm.chatNodeIndex;
+        if (!cfg.llm.videoEnabled || !this.options.registry().can(videoModel, 'video.generate')) {
           const fallback = await this.options.deps.chat({
             model: cfg.llm.chatModel,
             text: prompt,
@@ -115,7 +119,7 @@ export class ExplicitExecutor implements RuntimeExplicitEngine {
           return { kind: 'chat', decision, text: fallback.text, handled: true };
         }
         const result = await this.options.deps.generateVideo({
-          model: cfg.llm.videoModel,
+          model: videoModel,
           prompt,
           imageUrl: input.images?.[0],
           duration: Number((params as Record<string, unknown>).duration) || undefined,

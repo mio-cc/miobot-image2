@@ -4,6 +4,9 @@ import { readFileSync } from 'node:fs';
 
 const capabilities = readFileSync('web-panel/src/pages/CapabilitiesPage.vue', 'utf8');
 const models = readFileSync('web-panel/src/pages/ModelsPage.vue', 'utf8');
+// P1 UI 组件化：ROLES 表自 ModelsPage 抽到 shared/roles.ts（节点模型展开的「当前用于」反查共用），
+// 触发/续话用途的定义随迁；ModelsPage 仍按 ROLES 渲染用途行。
+const sharedRoles = readFileSync('web-panel/src/shared/roles.ts', 'utf8');
 const tools = readFileSync('web-panel/src/pages/ToolsPage.vue', 'utf8');
 const router = readFileSync('web-panel/src/router/index.ts', 'utf8');
 
@@ -17,7 +20,9 @@ test('R22 capability grid paginates cards', () => {
 });
 
 test('R22 trigger/continue role binds editable model fields', () => {
-  assert.match(models, /key: 'trigger'[\s\S]*section: 'bot\.keywordTrigger'[\s\S]*nodeField: 'intentNodeIndex'[\s\S]*modelField: 'intentModel'/);
+  assert.match(sharedRoles, /key: 'trigger'[\s\S]*section: 'bot\.keywordTrigger'[\s\S]*nodeField: 'intentNodeIndex'[\s\S]*modelField: 'intentModel'/);
+  // ModelsPage 必须仍在消费这份表（防止抽离后页面改用第二套定义）。
+  assert.match(models, /import \{ ROLES[\s\S]*from '\.\.\/shared\/roles'/);
 });
 
 test('R23 tools page exposes the model tool loadout budget', () => {

@@ -5,6 +5,15 @@ import { useConfigStore } from '../stores/config';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import AppSelect from '../components/AppSelect.vue';
+
+/* P1 最后一批·下拉收尾：画布日志级别选项（与原 <option> 一一对应）。 */
+const canvasLogLevelOptions = [
+    { value: 'debug', label: 'debug' },
+    { value: 'info', label: 'info' },
+    { value: 'warn', label: 'warn' },
+    { value: 'error', label: 'error' },
+];
 
 /**
  * 观测中心：日志（主+画布双源，自 LogsPage 迁入）+ 编排 trace 回放 +
@@ -334,10 +343,7 @@ onBeforeUnmount(stopTimer);
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
           <ToggleField v-model="config.canvas.logs.enabled" label="记录画布日志" />
           <FormField label="最低级别">
-            <select v-model="config.canvas.logs.level" class="input-field">
-              <option value="debug">debug</option><option value="info">info</option>
-              <option value="warn">warn</option><option value="error">error</option>
-            </select>
+            <AppSelect v-model="config.canvas.logs.level" :options="canvasLogLevelOptions" />
           </FormField>
           <FormField label="内存上限">
             <input v-model.number="config.canvas.logs.maxMemoryEntries" type="number" min="100" max="5000" step="100" class="input-field" />

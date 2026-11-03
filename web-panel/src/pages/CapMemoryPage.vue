@@ -6,6 +6,7 @@ import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import ModelPicker from '../components/ModelPicker.vue';
+import AppSelect from '../components/AppSelect.vue';
 
 /**
  * 记忆与上下文中心（Harness Memory Layer）。
@@ -26,6 +27,21 @@ const memoryUserId = ref('');
 const memoryQuery = ref('');
 const memoryDryRun = ref(true);
 const memoryActionResult = ref<any>(null);
+
+/* P1 最后一批·下拉收尾：AppSelect 选项（memoryActionType/memoryChatType 均为本地 UI 状态，
+   非配置字段；memoryActionType 驱动下方表单条件渲染，v-model 绑定 ref 原样保留）。 */
+const memoryActionOptions = [
+    { value: 'list', label: '列出 namespace' },
+    { value: 'search', label: '检索测试' },
+    { value: 'clear_group', label: '清理群记忆' },
+    { value: 'clear_user', label: '清理用户记忆' },
+    { value: 'retention_now', label: '立即执行保留清理' },
+    { value: 'observer_stats', label: '观察/清理状态' },
+];
+const memoryChatTypeOptions = [
+    { value: 'group', label: '群聊' },
+    { value: 'private', label: '私聊' },
+];
 
 async function runMemoryAction() {
     try {
@@ -116,20 +132,13 @@ async function runMemoryAction() {
     <SectionCard title="记忆管理与内部技能状态" hint="管理员检索、清理和压缩 Orama 物理索引；清理群会同时删除该群的 personal 索引；内部技能 memory.search 只对 Agent 暴露" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         <FormField label="操作">
-          <select v-model="memoryActionType" class="input-field">
-            <option value="list">列出 namespace</option>
-            <option value="search">检索测试</option>
-            <option value="clear_group">清理群记忆</option>
-            <option value="clear_user">清理用户记忆</option>
-            <option value="retention_now">立即执行保留清理</option>
-            <option value="observer_stats">观察/清理状态</option>
-          </select>
+          <AppSelect v-model="memoryActionType" :options="memoryActionOptions" />
         </FormField>
         <FormField v-if="memoryActionType === 'retention_now'" label="试运行 (dry-run)" hint="只统计将被删除的条数，不实际删除">
           <ToggleField v-model="memoryDryRun" label="dry-run" />
         </FormField>
         <FormField label="Bot QQ"><input v-model="memoryBotId" class="input-field font-mono" placeholder="默认当前 bot" /></FormField>
-        <FormField v-if="memoryActionType === 'search' || memoryActionType === 'list'" label="会话类型"><select v-model="memoryChatType" class="input-field"><option value="group">群聊</option><option value="private">私聊</option></select></FormField>
+        <FormField v-if="memoryActionType === 'search' || memoryActionType === 'list'" label="会话类型"><AppSelect v-model="memoryChatType" :options="memoryChatTypeOptions" /></FormField>
         <FormField v-if="memoryActionType === 'search' || memoryActionType === 'clear_group' || memoryActionType === 'list'" label="群号"><input v-model="memoryGroupId" class="input-field font-mono" /></FormField>
         <FormField v-if="memoryActionType === 'search' || memoryActionType === 'clear_user'" label="用户 QQ"><input v-model="memoryUserId" class="input-field font-mono" /></FormField>
         <FormField v-if="memoryActionType === 'search'" label="检索语义"><input v-model="memoryQuery" class="input-field" placeholder="例如：和泉纱雾海报" /></FormField>

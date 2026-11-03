@@ -5,6 +5,23 @@ import CapabilityPageLayout from '../components/CapabilityPageLayout.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import ModelPicker from '../components/ModelPicker.vue';
+import AppSelect from '../components/AppSelect.vue';
+
+/* P1 最后一批·下拉收尾：Suno 参数选项（与原 <option> 一一对应，文案零变更）。 */
+const sunoRequestModeOptions = [
+    { value: 'v6', label: 'SunoAPI V6' },
+    { value: 'legacy', label: 'Legacy Poll API' },
+];
+const sunoVocalGenderOptions = [
+    { value: 'auto', label: 'auto / 不指定' },
+    { value: 'm', label: '男声 m' },
+    { value: 'f', label: '女声 f' },
+];
+const sunoFormatOptions = [
+    { value: 'mp3', label: 'mp3' },
+    { value: 'wav', label: 'wav' },
+    { value: 'flac', label: 'flac' },
+];
 
 /**
  * 音乐能力页（audio.music.generate，Suno 官方 API）。
@@ -25,7 +42,7 @@ const sunoKeyVisible = ref(false);
       <div v-if="orch" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.suno.enabled" label="启用 Suno" /></div>
         <FormField label="Provider"><input v-model="orch.suno.provider" class="input-field font-mono" readonly /></FormField>
-        <FormField label="API 版本"><select v-model="orch.suno.requestMode" class="input-field"><option value="v6">SunoAPI V6</option><option value="legacy">Legacy Poll API</option></select></FormField>
+        <FormField label="API 版本"><AppSelect v-model="orch.suno.requestMode" :options="sunoRequestModeOptions" /></FormField>
         <FormField label="Callback URL" hint="V6 创建任务必填；完整地址需包含 /api/orchestration/suno/callback/&lt;Callback Secret&gt;"><input v-model="orch.suno.callbackUrl" class="input-field font-mono" placeholder="https://bot.example/api/orchestration/suno/callback/&lt;secret&gt;" /></FormField>
         <FormField label="Callback Secret" hint="用于校验回调；留空则 V6 回调不可用"><input v-model="orch.suno.callbackSecret" type="password" class="input-field font-mono" /></FormField>
         <FormField label="Composer 节点与模型" hint="把用户请求改写成 Suno 生成参数的模型">
@@ -39,7 +56,7 @@ const sunoKeyVisible = ref(false);
         <FormField label="Composer 覆盖提示词" hint="留空使用内置 Suno V2；可用 {{userText}}、{{supplied}}、{{schema}}、{{model}}、{{defaultVocalGender}}、{{defaultLanguage}}">
           <textarea v-model="orch.suno.composerPromptTemplate" rows="5" class="input-field font-mono text-xs"></textarea>
         </FormField>
-        <FormField label="默认人声性别" hint="auto 由模型决定；m/f 仅在 customMode 下传给 Suno，且官方说明只是偏好、不保证命中"><select v-model="orch.suno.defaultVocalGender" class="input-field"><option value="auto">auto / 不指定</option><option value="m">男声 m</option><option value="f">女声 f</option></select></FormField>
+        <FormField label="默认人声性别" hint="auto 由模型决定；m/f 仅在 customMode 下传给 Suno，且官方说明只是偏好、不保证命中"><AppSelect v-model="orch.suno.defaultVocalGender" :options="sunoVocalGenderOptions" /></FormField>
         <FormField label="默认歌词语言" hint="留空或 auto 跟随用户；例如 中文、日语、English。Suno 没有独立 language 字段，会写入 prompt/style/lyrics"><input v-model="orch.suno.defaultLanguage" class="input-field" placeholder="auto" /></FormField>
         <div class="flex items-end"><ToggleField v-model="orch.suno.sendLyricsWithMusic" label="同步发送歌词" hint="使用 Suno 返回的真实 lyrics，走合并转发；需要 reply.maxMessages ≥ 2" /></div>
         <FormField label="歌曲历史保留" hint="每个会话/用户最多保留多少首"><input v-model.number="orch.suno.historyMaxRecords" type="number" min="1" max="1000" class="input-field" /></FormField>
@@ -59,7 +76,7 @@ const sunoKeyVisible = ref(false);
         <FormField label="任务等待超时 (ms)" hint="Suno 是远程异步生成，通常需要数分钟；最低 10 分钟，不是单次 HTTP 超时"><input v-model.number="orch.suno.timeoutMs" type="number" min="600000" step="30000" class="input-field" /></FormField>
         <FormField label="轮询间隔 (ms)"><input v-model.number="orch.suno.pollIntervalMs" type="number" min="500" class="input-field" /></FormField>
         <FormField label="最大时长 (秒)"><input v-model.number="orch.suno.maxDurationSeconds" type="number" min="5" class="input-field" /></FormField>
-        <FormField label="格式"><select v-model="orch.suno.format" class="input-field"><option value="mp3">mp3</option><option value="wav">wav</option><option value="flac">flac</option></select></FormField>
+        <FormField label="格式"><AppSelect v-model="orch.suno.format" :options="sunoFormatOptions" /></FormField>
         <FormField label="最大并发"><input v-model.number="orch.suno.maxConcurrent" type="number" min="1" class="input-field" /></FormField>
         <FormField label="队列上限"><input v-model.number="orch.suno.maxQueue" type="number" min="1" class="input-field" /></FormField>
         <FormField label="最大重试"><input v-model.number="orch.suno.maxRetries" type="number" min="0" max="10" class="input-field" /></FormField>

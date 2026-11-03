@@ -8,7 +8,7 @@ import { createBotApp } from './app.js';
 import { createAgentHost } from './agent-host.js';
 import { createCapabilityToolBinding, inferCapabilityToolExposure, STATEFUL_CAPABILITY_TOOLS } from './capability-tool-adapter.js';
 import { createAgentToolPreflight } from './agent-tool-policy.js';
-import { FileToolIdempotencyStore, makeToolError, toolFailure, toolPending, toolSuccess, type ToolResult } from '../../../packages/tool-runtime/src/index.js';
+import { FileToolIdempotencyStore, inferExposure, makeToolError, toolFailure, toolPending, toolSuccess, type ToolResult } from '../../../packages/tool-runtime/src/index.js';
 import { ToolJobRuntime, type ToolJobRecord } from './tool-job-runtime.js';
 import { resolveAsyncJobTimeoutMs } from './async-job-timeout.js';
 import { ReplyPreferenceStore } from './reply-preference-store.js';
@@ -53,6 +53,12 @@ import { McpClient, McpToolCapabilityHandler, mcpToolToDescriptor } from './mcp-
 import { RuntimeAdapterCapabilityHandler, executionFromBotResult } from './capability-runtime-adapters.js';
 import { ImageStitchCapabilityHandler } from './capability-image.js';
 import { CanvasGalleryCapabilityHandler } from './capability-canvas.js';
+// P0 装配修复：owner.model.list 执行体（isOwner 纵深防御）+ capability.catalog 目录过滤纯函数。
+import { OwnerModelListCapabilityHandler, ModelBindingSwitchCapabilityHandler, filterCatalogDescriptors } from './capability-basic.js';
+import { isOwner } from './owner.js';
+// P1 7a/7b：模型绑定同源服务（/切换 命令与 model.binding.switch 工具共用）。
+import { createModelBindingService, MODEL_BINDING_PURPOSES } from './model-binding.js';
+import { createModelFallbackController } from './model-fallback.js';
 import { SunoSongHistoryStore } from './suno-song-history.js';
 import { CanvasStore } from '../../../packages/canvas-service/src/index.js';
 import type { CapabilityHandler, CapabilityInvocation, ExecutionResult } from '../../../packages/orchestration/src/index.js';
@@ -124,6 +130,18 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // 这样面板保存后，bot 进程下一条消息就用上新配置，不需要重动——
   // 否则 web 和 bot 是两个进程，面板那句「无需重动」对机器人是假的。
   const getConfig = (): AppConfig => (store ? store.loadIfChanged() : config);
+
+  // P1 第三批：备用模型状态机（方案 §6）——进程级单例，按用途独立计数/粘滞。
+  // 状态在内存（重启归零，不落盘：避免重启后粘在坏模型上）；绑定/override 每次调用实时读配置。
+  const modelFallback = createModelFallbackController({ getConfig, logger });
+  // 命令/工具/面板三处共用同一份 ModelBindingService 装配：手动切换模型或档位 → 清零状态机计数（同源联动）。
+  const buildBindingService = () => createModelBindingService({
+    getConfig,
+    store,
+    logger,
+    onBindingChanged: (purpose) => modelFallback.reset(purpose),
+    runtimeStateText: (purpose) => modelFallback.describe(purpose),
+  });
 
   const logImageRoutingSnapshot = (cfg: AppConfig) => {
     const imageNode = cfg.llm.apiKeys?.[cfg.llm.imageNodeIndex];
@@ -795,7 +813,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     const action = String(invocation.step.args?.ownerAction || '');
     if (!allowedActions.has(action)) return handlerFailure(invocation, '配置/权限操作失败：不支持的 action');
     let command: OwnerCommand | null = null;
-    if (action === 'switchModel') command = { command: 'switchModel', code: String(invocation.step.args?.code || '') };
+    if (action === 'switchModel') command = { command: 'switchModel', code: String(invocation.step.args?.code || ''), purpose: String(invocation.step.args?.purpose || 'main'), slot: invocation.step.args?.slot === 'secondary' ? 'secondary' : 'primary' };
     else if (action === 'ttsOn') command = { command: 'ttsOn' };
     else if (action === 'ttsOff') command = { command: 'ttsOff' };
     else if (action === 'switchTtsVoice') command = { command: 'switchTtsVoice', index: Math.max(1, Math.trunc(Number(invocation.step.args?.index) || 1)) };
@@ -806,7 +824,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       chatType: invocation.request.chat.type,
       groupId: invocation.request.chat.groupId,
       userId: invocation.request.user.qq,
-    }, { getConfig, store });
+    }, { getConfig, store, logger, fallback: modelFallback });
     if (!text) return handlerFailure(invocation, '主人命令执行失败：没有返回结果');
     return {
       jobId: invocation.plan.planId,
@@ -815,19 +833,27 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       outputs: [{ kind: 'text' as const, text, priority: 10, mergeable: true }],
     };
   };
-  orchestrationHandlers.set('owner.model.list', new RuntimeAdapterCapabilityHandler(async (invocation) => {
-    const text = await handleOwnerCommand({ command: 'modelList' }, {
-      chatType: invocation.request.chat.type,
-      groupId: invocation.request.chat.groupId,
-      userId: invocation.request.user.qq,
-    }, { getConfig, store });
-    if (!text) return handlerFailure(invocation, '模型列表失败：不可用');
-    return {
-      jobId: invocation.plan.planId,
-      stepId: invocation.step.id,
-      status: 'success' as const,
-      outputs: [{ kind: 'text' as const, text, priority: 10, mergeable: true }],
-    };
+  // P0 装配修复：owner.model.list 执行体换成带 isOwner 纵深防御的实现——
+  // owner 会话经 agent-loop 的 extraToolNames 装配后可调；非 owner 即使意外拿到工具也会在执行层被拒。
+  orchestrationHandlers.set('owner.model.list', new OwnerModelListCapabilityHandler({
+    getConfig,
+    isOwnerUser: (userId) => isOwner(userId, getConfig().bot.ownerQQs),
+    buildText: async () => {
+      const text = await handleOwnerCommand({ command: 'modelList' }, {
+        chatType: 'private',
+        groupId: undefined,
+        userId: undefined,
+      }, { getConfig, store, logger, fallback: modelFallback });
+      return text || '模型列表不可用。';
+    },
+    logger,
+  }));
+  // P1 7b：模型切换工具——与 /切换 命令共用同一个 ModelBindingService（同一份校验/写入/审计）。
+  // 工具对所有人可见（模型可发现），执行层 isOwner 校验：非 owner 得到 permission_denied 结构化拒绝 + 审计。
+  orchestrationHandlers.set('model.binding.switch', new ModelBindingSwitchCapabilityHandler({
+    isOwnerUser: (userId) => isOwner(userId, getConfig().bot.ownerQQs),
+    service: buildBindingService(),
+    logger,
   }));
   orchestrationHandlers.set('config.update', new RuntimeAdapterCapabilityHandler(async (invocation) => (
     runOwnerPlan(invocation, new Set(['switchModel', 'ttsOn', 'ttsOff', 'switchTtsVoice']))
@@ -948,9 +974,25 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       ['输入', /^(session|reply|tts)/],
     ];
     const categoryOf = (key: string) => CATEGORY_PATTERNS.find(([, re]) => re.test(key))?.[0] || '其他';
-    let descriptors = orchestrationEnforcer.listCapabilities();
-    // 内部能力（memory.search 等）不对目录暴露：Agent 经 toolSpecs 直接持有，无需目录发现。
-    descriptors = descriptors.filter((d) => !d.internal);
+    // P0 装配修复（模型实证 2026-11-03："目录里登记了、工具里没有调用入口"）：
+    // 目录只列"装配链完整且对当前上下文可见"的能力——无 handler、hidden（owner/config/permission/
+    // session.clear）、searchable 未开检索（chat.reply/help/file.delete）、有意不装配的（tts.speak）
+    // 一律不列，与 agent loadout 同源（例外：owner 上下文放行只读的 owner.model.list）。
+    const allCapabilities = orchestrationEnforcer.listCapabilities();
+    const isOwnerContext = isOwner(invocation.request.user.qq, getConfig().bot.ownerQQs);
+    let descriptors = filterCatalogDescriptors(allCapabilities, {
+      hasHandler: (id) => Boolean(orchestrationEnforcer.getCapabilityHandler(id)),
+      isHiddenFromModel: (id) => {
+        const descriptor = allCapabilities.find((item) => item.id === id);
+        const configuredExposure = getConfig().toolRegistry?.exposure?.[id] as 'core' | 'domain' | 'searchable' | 'hidden' | undefined;
+        const exposure = inferCapabilityToolExposure(descriptor || ({ id } as any), configuredExposure)
+          ?? inferExposure(id, descriptor?.enabled !== false, (descriptor?.riskLevel as 'low' | 'medium' | 'high' | 'critical') || 'low');
+        if (exposure === 'hidden') return true;
+        // searchable 且未开工具检索 = 默认 loadout 拿不到，目录同样不列（chat.reply/help/file.delete 等）。
+        return exposure === 'searchable' && getConfig().toolRegistry?.toolSearchEnabled !== true;
+      },
+      isOwnerContext,
+    });
     if (category) descriptors = descriptors.filter((d) => categoryOf(String(d.id)) === category);
     if (keyword) {
       descriptors = descriptors.filter((d) =>
@@ -1627,6 +1669,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     spillDir: path.join(dataDir, 'tool-results'),
     toolBindings: agentToolBindings,
     preflightToolCall: agentPreflightToolCall,
+    // P1 第三批：备用模型状态机接管 agent 主对话链的档位决策（方案 §6；无备用时整体旁路）。
+    fallback: modelFallback,
   });
 
   const runtime = createBotMessageRuntime({
@@ -1901,7 +1945,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     },
     owner: {
       ownerQQs: () => getConfig().bot.ownerQQs,
-      handle: (command, ownerCtx) => handleOwnerCommand(command, ownerCtx, { getConfig, store }),
+      handle: (command, ownerCtx) => handleOwnerCommand(command, ownerCtx, { getConfig, store, logger, fallback: modelFallback }),
     },
   });
   // P0-1（R9 修复）：旧自然语言链路已物理删除，Agent 是唯一主运行时。
@@ -2309,7 +2353,13 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
  * store.save 是**整文件覆盖**，拿动动快照去写等于把用户此后在面板上做的
  * 所有改动静默回滚掉，而且回滚发生在 bot 进程里，面板上完全看不出来。
  */
-interface OwnerHandlerDeps { getConfig: () => AppConfig; store?: ConfigStore<AppConfig> }
+interface OwnerHandlerDeps {
+  getConfig: () => AppConfig;
+  store?: ConfigStore<AppConfig>;
+  logger?: StructuredLogger;
+  /** P1 第三批：备用模型状态机——手动切换/锁定后清零计数，状态页显示粘滞/锁定。 */
+  fallback?: import('./model-fallback.js').ModelFallbackController;
+}
 
 async function handleOwnerCommand(
   command: OwnerCommand,
@@ -2319,6 +2369,16 @@ async function handleOwnerCommand(
   const { store } = deps;
   // 每条指令都从当前磁盘配置起步，改完再整份写回。
   const config = deps.getConfig();
+  // 命令路径的 binding service：与工具/面板同源（手动切换 → 状态机计数清零 + 运行时状态展示）。
+  const bindingService = () => createModelBindingService({
+    getConfig: deps.getConfig,
+    store,
+    logger: deps.logger,
+    ...(deps.fallback ? {
+      onBindingChanged: (purpose) => deps.fallback?.reset(purpose),
+      runtimeStateText: (purpose) => deps.fallback?.describe(purpose) || '',
+    } : {}),
+  });
   // T2.6：落盘前重读磁盘最新配置并重放同一变更——消除与 Web 面板并发保存的
   // 互相覆盖竞态（此前 owner 保存会把面板刚保存的改动静默回滚，反之亦然）。
   // 变更闭包均为可重放（set 字段 / 去重 push）。
@@ -2338,14 +2398,34 @@ async function handleOwnerCommand(
   };
   switch (command.command) {
     case 'modelList':
-      return await buildModelListText(config);
-    case 'switchModel':
-      return persistMutation((c) => {
-        const found = findModel(c, command.code);
-        if (!found) return `未找到模型: ${command.code}`;
-        c.llm.chatModel = found;
-        return `已切换 chat 模型为: ${found}`;
+      // 模型列表尾部追加各用途绑定状态（/模型 与 /切换 状态 同源，ModelBindingService 单一真源）。
+      return await buildModelListText(config) + '\n\n' + bindingService().getStatusText();
+    case 'switchModelStatus':
+      return bindingService().getStatusText();
+    case 'switchModelLock': {
+      // P1 第三批（方案 §6.3）：手动档位锁——锁定备 / 解锁（锁主）。
+      // 与 setBinding 同一写入路径与审计；slot='primary' 表示切回主（清 override + 清零计数）。
+      const result = bindingService().setOverride({ slot: command.slot, source: 'command', actorId: String(ctx.userId ?? '') });
+      return result.ok ? result.reply : result.error;
+    }
+    case 'switchModel': {
+      // 7a 修复：经 ModelBindingService 同源写入 agent.mainModel（+双写 llm.chatModel 兼容）与节点索引——
+      // 旧实现只写 llm.chatModel，agent enforce 下被 agent.mainModel 短路，切了等于没切。
+      if (!command.code) {
+        return '用法：/切换 {模型名}（主对话）｜/切换 {用途} {模型名}｜/切换 {用途} 备 {模型名}（备用，仅主对话）｜/切换 锁定 备|主｜/切换 解锁｜/切换 状态 查看当前绑定。'
+          + '用途词：主对话、图片、改图、反推、音乐、视频、代码、参数、语音、触发、记忆。';
+      }
+      const result = bindingService().setBinding({
+        purpose: command.purpose, slot: command.slot, target: command.code, scope: 'persistent',
+        source: 'command', actorId: String(ctx.userId ?? ''),
       });
+      if (!result.ok) {
+        return result.candidates?.length
+          ? `${result.error}\n候选：\n- ${result.candidates.join('\n- ')}`
+          : result.error;
+      }
+      return result.reply;
+    }
     case 'ttsOn':
       return persistMutation((c) => {
         c.bot.tts.enabled = true;

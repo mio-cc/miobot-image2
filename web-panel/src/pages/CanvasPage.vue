@@ -5,6 +5,14 @@ import { useConfigStore } from '../stores/config';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import AppSelect from '../components/AppSelect.vue';
+
+/* P1 最后一批·下拉收尾：画布访问模式选项（与原 <option> 一一对应）。 */
+const canvasAccessOptions = [
+    { value: 'public', label: '公开（任何人可用）' },
+    { value: 'local-only', label: '仅本机 / 内网' },
+    { value: 'admin', label: '仅管理员（需登录后台）' },
+];
 
 const configStore = useConfigStore();
 const config = computed(() => configStore.config);
@@ -61,11 +69,7 @@ onMounted(loadCards);
     <SectionCard title="访问控制" hint="画布前台没有登录态，这里决定谁能调它的生图接口" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
         <FormField label="访问模式" hint="公开模式下任何能访问端口的人都能消耗你的额度">
-          <select v-model="config.canvas.access" class="input-field">
-            <option value="public">公开（任何人可用）</option>
-            <option value="local-only">仅本机 / 内网</option>
-            <option value="admin">仅管理员（需登录后台）</option>
-          </select>
+          <AppSelect v-model="config.canvas.access" :options="canvasAccessOptions" />
         </FormField>
         <FormField label="每来源每分钟上限" hint="0 表示不限制；管理员不受限流约束">
           <input v-model.number="config.canvas.rateLimitPerMinute" type="number" min="0" step="5" class="input-field" />

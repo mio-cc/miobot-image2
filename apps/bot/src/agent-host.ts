@@ -20,6 +20,7 @@ import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { ModelClient } from '../../../packages/model/src/index.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 import { createAgentModelPort } from './agent-model-port.js';
+import type { ModelFallbackController } from './model-fallback.js';
 import { buildReplyPlan, resolveReplyPolicy, textCharsOf, type ExecutionOutput, type ReplyPlan } from '../../../packages/orchestration/src/index.js';
 import { ARTIFACT_CAPABILITY_TOOLS, MIGRATED_CAPABILITY_TOOLS, READ_ONLY_CAPABILITY_TOOLS, SIDE_EFFECT_CAPABILITY_TOOLS, type CapabilityToolBinding } from './capability-tool-adapter.js';
 
@@ -80,6 +81,8 @@ export interface AgentHostOptions {
   isMigratedTool?: (name: string) => boolean;
   spillDir?: string;
   clock?: () => Date;
+  /** P1 第三批：备用模型状态机（方案 §6）。进程级单例，由 start.ts 注入；host 每次请求重建 port 但共享该状态。 */
+  fallback?: ModelFallbackController;
 }
 export function createAgentHost(options: AgentHostOptions): (input: AgentHostInput) => Promise<AgentHostOutcome> {
   const sessions = options.sessions || new InMemoryAgentSessionManager({ clock: options.clock });
@@ -142,8 +145,14 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
     const modelPort = createAgentModelPort(options.client, {
       timeoutMs: cfg.agent.timeoutMs,
       reasoningEffort: cfg.agent.reasoningEffort as any,
-      ...(cfg.agent.fallbackNodeIndex !== undefined ? { fallbackNodeIndex: cfg.agent.fallbackNodeIndex } : {}),
-      ...(cfg.agent.fallbackModel ? { fallbackModel: cfg.agent.fallbackModel } : {}),
+      // P1 第三批：状态机接管后，备用绑定/override 由 controller 每次调用实时读配置
+      // （热重载即时生效），不再用请求级快照；无 controller 的调用方仍走旧朴素重试分支。
+      ...(options.fallback
+        ? { fallback: options.fallback }
+        : {
+            ...(cfg.agent.fallbackNodeIndex !== undefined ? { fallbackNodeIndex: cfg.agent.fallbackNodeIndex } : {}),
+            ...(cfg.agent.fallbackModel ? { fallbackModel: cfg.agent.fallbackModel } : {}),
+          }),
     });
     const promptRegistry = new PromptRegistry();
     promptRegistry.register({

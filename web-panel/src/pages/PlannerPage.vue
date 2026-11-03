@@ -6,6 +6,7 @@ import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import ModelPicker from '../components/ModelPicker.vue';
+import AppSelect from '../components/AppSelect.vue';
 
 /**
  * 规划器页（识别层配置）。
@@ -28,6 +29,32 @@ const plannerCapabilityDescriptionsJson = computed({
 });
 
 const roleKeys = ['planner', 'retriever', 'specialist', 'critic', 'safety', 'composer'] as const;
+
+/* P1 第五批·下拉收尾第一批：AppSelect 选项常量（与原 <option> 列表一一对应，文案零变更）。 */
+const orchModeOptions = [
+    { value: 'shadow', label: 'shadow 影子模式（只规划，不执行）' },
+    { value: 'enforce', label: 'enforce 执行模式' },
+];
+const failurePolicyOptions = [
+    { value: 'stop', label: '停止' },
+    { value: 'continue', label: '继续' },
+    { value: 'ask', label: '询问用户' },
+];
+const optimizationScopeOptions = [
+    { value: 'task', label: '任务级' },
+    { value: 'all', label: '全部' },
+];
+const promptStatusOptions = [
+    { value: 'draft', label: 'draft' },
+    { value: 'canary', label: 'canary' },
+    { value: 'active', label: 'active' },
+    { value: 'retired', label: 'retired' },
+];
+/** 评估版本下拉：空值「请选择」+ 动态候选（提示词版本数组）。 */
+const evalVersionOptions = computed(() => [
+    { value: '', label: '请选择' },
+    ...(orch.value?.promptOptimization?.versions || []).map((item: any) => ({ value: item.id, label: item.id })),
+]);
 
 const externalProvidersText = ref('');
 
@@ -103,6 +130,12 @@ async function evaluatePromptVersion() {
 
 <template>
   <div v-if="config && orch">
+    <!-- P1 第五批·孤儿页对齐：迁移提示（编排模式/规划器绑定等仍是唯一编辑入口，不进侧栏） -->
+    <div class="mb-4 bg-[color:var(--accent-soft)] border border-[color:var(--accent-line)] rounded-xl px-4 py-2.5 text-xs text-[color:var(--ink-2)] leading-relaxed">
+      <strong class="text-[color:var(--ink)]">本页的执行预算 / 审批 / 外部 Provider / 旧引擎参数已并入「Agent 与工具」</strong>——
+      <RouterLink to="/agent" class="underline underline-offset-2 text-[color:var(--accent)]">前往 Agent 与工具</RouterLink>。
+      此直达链接保留 Agent 页未覆盖的配置：<b>编排运行模式（orchestration.mode）、Planner 节点与提示词、多角色协作、澄清策略、失败策略、提示词版本与优化</b>，待迁入对应页面后本页将移除。
+    </div>
     <header class="mb-4">
       <h1 class="page-title mb-0.5">规划器</h1>
       <p class="text-[color:var(--ink-3)] text-xs">
@@ -116,10 +149,7 @@ async function evaluatePromptVersion() {
           <ToggleField v-model="orch.enabled" label="启用智能编排" hint="关闭时继续使用现有 v2 路由" />
         </div>
         <FormField label="模式">
-          <select v-model="orch.mode" class="input-field">
-            <option value="shadow">shadow 影子模式（只规划，不执行）</option>
-            <option value="enforce">enforce 执行模式</option>
-          </select>
+          <AppSelect v-model="orch.mode" :options="orchModeOptions" />
         </FormField>
         <div class="flex items-end"><ToggleField v-model="orch.externalProviders.enabled" label="启用外部 Provider" hint="默认关闭；仅允许白名单 provider" /></div>
         <FormField label="外部 Provider 白名单" hint="逗号分隔；为空表示允许全部已启用外部 provider">
@@ -194,9 +224,7 @@ async function evaluatePromptVersion() {
         <FormField label="最大候选能力 TopK"><input v-model.number="orch.planner.capabilityTopK" type="number" min="1" max="100" class="input-field" /></FormField>
         <FormField label="最低置信度"><input v-model.number="orch.planner.minConfidence" type="number" min="0" max="1" step="0.01" class="input-field" /></FormField>
         <FormField label="失败策略">
-          <select v-model="orch.execution.failurePolicy" class="input-field">
-            <option value="stop">停止</option><option value="continue">继续</option><option value="ask">询问用户</option>
-          </select>
+          <AppSelect v-model="orch.execution.failurePolicy" :options="failurePolicyOptions" />
         </FormField>
         <div class="flex items-end"><ToggleField v-model="orch.execution.loopDetection" label="环路检测" hint="检测步骤间循环依赖并提前终止" /></div>
       </div>
@@ -213,7 +241,7 @@ async function evaluatePromptVersion() {
     <SectionCard title="提示词优化" hint="系统提示词修改必须评估、灰度和审批" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         <div class="xl:col-span-1"><ToggleField v-model="orch.promptOptimization.enabled" label="启用自动优化" /></div>
-        <FormField label="优化范围"><select v-model="orch.promptOptimization.scope" class="input-field"><option value="task">任务级</option><option value="all">全部</option></select></FormField>
+        <FormField label="优化范围"><AppSelect v-model="orch.promptOptimization.scope" :options="optimizationScopeOptions" /></FormField>
         <FormField label="Canary 百分比"><input v-model.number="orch.promptOptimization.canaryPercent" type="number" min="0" max="100" class="input-field" /></FormField>
         <FormField label="最低样本数"><input v-model.number="orch.promptOptimization.minSamples" type="number" min="1" class="input-field" /></FormField>
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.promptOptimization.requireOwnerApproval" label="系统提示词需要 owner 审批" /></div>
@@ -230,7 +258,7 @@ async function evaluatePromptVersion() {
           <div class="grid grid-cols-1 md:grid-cols-4 gap-2">
             <FormField label="版本 ID"><input v-model="item.id" class="input-field font-mono !py-1" /></FormField>
             <FormField label="名称"><input v-model="item.name" class="input-field !py-1" /></FormField>
-            <FormField label="状态"><select v-model="item.status" class="input-field !py-1"><option value="draft">draft</option><option value="canary">canary</option><option value="active">active</option><option value="retired">retired</option></select></FormField>
+            <FormField label="状态"><AppSelect v-model="item.status" :options="promptStatusOptions" trigger-class="!py-1" /></FormField>
             <div class="flex items-end gap-2">
               <button class="btn-outline !px-2 !py-1" type="button" @click="loadPromptDiff(item)">查看差异</button>
               <button class="btn-outline !px-2 !py-1" type="button" @click="applyPromptVersion(item, 'canary')">保存并设为 Canary</button>
@@ -247,7 +275,7 @@ async function evaluatePromptVersion() {
         <div class="border-t border-[color:var(--hairline-2)] pt-3 mt-3">
           <h3 class="text-sm font-semibold mb-2">候选版本评估</h3>
           <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-2">
-            <FormField label="版本"><select v-model="evalVersionId" class="input-field"><option value="">请选择</option><option v-for="item in (orch.promptOptimization.versions || [])" :key="item.id" :value="item.id">{{ item.id }}</option></select></FormField>
+            <FormField label="版本"><AppSelect v-model="evalVersionId" :options="evalVersionOptions" /></FormField>
             <FormField label="样本数"><input v-model.number="evalSamples" type="number" min="0" class="input-field" /></FormField>
             <FormField label="成功率"><input v-model.number="evalSuccessRate" type="number" min="0" max="1" step="0.01" class="input-field" /></FormField>
             <FormField label="平均分"><input v-model.number="evalAverageScore" type="number" min="0" max="1" step="0.01" class="input-field" /></FormField>

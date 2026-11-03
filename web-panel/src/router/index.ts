@@ -39,6 +39,15 @@ const routes: RouteRecordRaw[] = [
         redirect: '/agent',
     },
     {
+        // P1 第五批·孤儿页对齐：PlannerPage 与 AgentPage 对照后存在实质缺口
+        // （orchestration.enabled/mode、planner 绑定与提示词、多角色协作 roles、澄清策略、
+        // 提示词版本管理、failurePolicy 等均为唯一编辑入口，后端 orchestration-enforce 活跃消费）。
+        // 直达路由保留（不进侧栏），页面顶部有迁移提示。
+        path: '/legacy/planner',
+        name: 'legacy-planner',
+        component: () => import('../pages/PlannerPage.vue'),
+    },
+    {
         path: '/permissions',
         name: 'permissions',
         component: () => import('../pages/PermissionsPage.vue'),
@@ -104,9 +113,27 @@ const routes: RouteRecordRaw[] = [
         redirect: '/models',
     },
     {
+        // P1 第四批·孤儿页对齐：NodesPage 与 ModelsPage 节点池对照后存在实质缺口
+        // （节点类型 kind / 协议方言 provider / 自定义请求头 headers / ComfyUI 连接参数 /
+        // 延迟检测 / 批量拉取），只读化会让这些活配置失去唯一编辑入口——
+        // 保留可编辑的直达路由（不设 meta.title → 不进侧栏），页面顶部有迁移提示。
+        path: '/legacy/nodes',
+        name: 'legacy-nodes',
+        component: () => import('../pages/NodesPage.vue'),
+    },
+    {
         // R16/4.1：RoutingPage 也重定向到模型页（用途分配替代了 Routing 的模型分工）
         path: '/routing',
         redirect: '/models',
+    },
+    {
+        // P1 第四批·孤儿页对齐：RoutingPage 的用途绑定已被 ModelsPage 取代，但
+        // freeMode / intentRecognition / promptsChat 绑定、llm.capabilityOverrides（模型能力覆盖）、
+        // 对话参数（reasoningEffort 等）与 video/comfyuiTransform 专属参数仍是唯一编辑入口——
+        // 直达路由保留（不进侧栏），页面顶部有迁移提示。
+        path: '/legacy/routing',
+        name: 'legacy-routing',
+        component: () => import('../pages/RoutingPage.vue'),
     },
     {
         path: '/agent',

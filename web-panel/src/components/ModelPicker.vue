@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, watch } from 'vue';
 import { useConfigStore } from '../stores/config';
 import { useCapabilityStore } from '../stores/capabilities';
+import AppSelect, { type AppSelectOption } from './AppSelect.vue';
 
 /**
  * 「节点 + 模型」二选一组件。
@@ -9,6 +10,11 @@ import { useCapabilityStore } from '../stores/capabilities';
  * 这段组合在配置里出现十几次，而且下拉列表对生图和对话返回同一份模型——
  * 用户完全可以把 gpt-image-2 填进「日常对话」，然后收获一个看不懂的 400。
  * 这里支持按能力过滤，并把识别到的能力以徽标展示出来。
+ *
+ * 内部实现（P1 UI 组件化）：节点/模型两个下拉统一换成 AppSelect——
+ * 触发器与 .input-field 同形态，面板 portal 挂 body，内置 §3.3 模糊搜索
+ * （子序列 / 词首 / 拼音首字母），移动端自动切底部抽屉。
+ * 对外契约（props / update:nodeIndex / update:model）保持不变。
  */
 
 const props = defineProps<{
@@ -30,7 +36,20 @@ const emit = defineEmits<{
 const configStore = useConfigStore();
 const capabilityStore = useCapabilityStore();
 
-const listId = `models-${Math.random().toString(36).slice(2, 9)}`;
+/** 节点下拉：启用中的节点；当前指向的节点若被停用也保留（否则触发器会显示成空）。 */
+const nodeOptions = computed<AppSelectOption[]>(() => {
+    const list: AppSelectOption[] = configStore.nodeOptions.map(({ node, idx }: any) => ({
+        value: idx,
+        label: node.name || `节点 ${idx + 1}`,
+        alias: String(node.baseUrl || ''),
+    }));
+    if (!list.some(o => String(o.value) === String(props.nodeIndex))) {
+        const node = configStore.config?.llm?.apiKeys?.[Number(props.nodeIndex) || 0];
+        const idx = Number(props.nodeIndex) || 0;
+        list.unshift({ value: idx, label: node?.name || `节点 ${idx + 1}` });
+    }
+    return list;
+});
 
 const models = computed(() => {
     const all = configStore.modelsForNode(props.nodeIndex, props.model, props.extraModels || []);
@@ -43,6 +62,8 @@ const models = computed(() => {
         return !caps.length || caps.includes(props.capability as string);
     });
 });
+
+const modelOptions = computed<AppSelectOption[]>(() => models.value.map(m => ({ value: m, label: m })));
 
 const detected = computed(() => capabilityStore.capabilitiesOf(props.model));
 
@@ -67,21 +88,22 @@ onBeforeUnmount(() => { if (resolveTimer) window.clearTimeout(resolveTimer); });
 
 <template>
   <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,150px)_minmax(0,1fr)] gap-2">
-    <select class="input-field" :disabled="disabled"
-      :value="nodeIndex"
-      @change="emit('update:nodeIndex', Number(($event.target as HTMLSelectElement).value))">
-      <option v-for="item in configStore.nodeOptions" :key="item.idx" :value="item.idx">
-        {{ item.node.name || `节点 ${item.idx + 1}` }}
-      </option>
-    </select>
+    <AppSelect
+      :model-value="nodeIndex"
+      :options="nodeOptions"
+      :disabled="disabled"
+      @update:model-value="(v: string | number) => emit('update:nodeIndex', Number(v))" />
     <div class="min-w-0">
-      <input class="input-field font-mono" :list="listId" :disabled="disabled"
+      <!-- allowCustom：保留旧 input+datalist 的自由输入能力（ComfyUI profile id、中转自定义模型名） -->
+      <AppSelect
+        :model-value="model"
+        :options="modelOptions"
+        :disabled="disabled"
+        searchable
+        allow-custom
+        mono
         :placeholder="placeholder || 'gpt-4o-mini'"
-        :value="model"
-        @input="emit('update:model', ($event.target as HTMLInputElement).value)" />
-      <datalist :id="listId">
-        <option v-for="m in models" :key="m" :value="m" />
-      </datalist>
+        @update:model-value="(v: string | number) => emit('update:model', String(v))" />
       <div v-if="detected.length" class="flex flex-wrap gap-1 mt-1.5">
         <span v-for="cap in detected" :key="cap" class="tag">
           {{ capabilityStore.labels[cap] || cap }}

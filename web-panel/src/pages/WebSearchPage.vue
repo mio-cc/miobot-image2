@@ -5,6 +5,7 @@ import { useConfigStore } from '../stores/config';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import AppSelect from '../components/AppSelect.vue';
 
 const configStore = useConfigStore();
 const config = computed(() => configStore.config);
@@ -36,6 +37,16 @@ const autoModes = [
   { value: 'always', label: '每次都搜索' },
   { value: 'off', label: '关闭自动搜索（只执行显式搜索命令）' },
 ];
+
+/* P1 第五批·下拉收尾第一批：AppSelect 选项（providers/fetchProviders 复用原数组，仅去掉非选项字段；
+   兜底服务商带「不兜底」空值项并动态排除当前主服务商）。 */
+const providerOptions = computed(() => providers.map(({ value, label }) => ({ value, label })));
+const fallbackProviderOptions = computed(() => [
+  { value: '', label: '不兜底' },
+  ...providers.filter((p) => p.value !== config.value?.search?.provider).map(({ value, label }) => ({ value, label })),
+]);
+const fetchProviderOptions = fetchProviders.map(({ value, label }) => ({ value, label }));
+const autoModeOptions = autoModes;
 
 function providerChanged() {
   const current = providers.find((item) => item.value === config.value?.search?.provider);
@@ -80,20 +91,14 @@ function formatDate(value?: string) {
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
         <ToggleField v-model="config.search.enabled" label="启用联网搜索" hint="关闭后不会自动搜索，也不执行搜索命令" />
         <FormField label="服务商">
-          <select v-model="config.search.provider" class="input-field" @change="providerChanged">
-            <option v-for="item in providers" :key="item.value" :value="item.value">{{ item.label }}</option>
-          </select>
+          <!-- @change 联动保留：切换服务商自动填充已知默认 API 地址（AppSelect 在 update:modelValue 后 emit change） -->
+          <AppSelect v-model="config.search.provider" :options="providerOptions" @change="providerChanged" />
         </FormField>
         <FormField label="自动搜索">
-          <select v-model="config.search.autoMode" class="input-field">
-            <option v-for="item in autoModes" :key="item.value" :value="item.value">{{ item.label }}</option>
-          </select>
+          <AppSelect v-model="config.search.autoMode" :options="autoModeOptions" />
         </FormField>
         <FormField label="兜底服务商" hint="T3.5：主服务商空结果时（改写查询重试后）用它兜底；凭据不齐会自动跳过">
-          <select v-model="config.search.fallbackProvider" class="input-field">
-            <option value="">不兜底</option>
-            <option v-for="item in providers.filter((p) => p.value !== config.search.provider)" :key="item.value" :value="item.value">{{ item.label }}</option>
-          </select>
+          <AppSelect v-model="config.search.fallbackProvider" :options="fallbackProviderOptions" />
         </FormField>
         <FormField label="API 地址" hint="DeepSeek 填 https://api.deepseek.com；其他服务可填自定义代理地址">
           <input v-model="config.search.apiUrl" class="input-field font-mono" placeholder="https://api.deepseek.com" />
@@ -124,9 +129,7 @@ function formatDate(value?: string) {
         <ToggleField v-model="config.search.needContent" label="搜索时请求正文" hint="DeepSeek/Tavily/Exa 可直接在搜索结果返回正文" />
         <ToggleField v-model="config.search.fetchContent" label="对缺失正文的结果再抓取" />
         <FormField label="正文抓取方式">
-          <select v-model="config.search.fetchProvider" class="input-field">
-            <option v-for="item in fetchProviders" :key="item.value" :value="item.value">{{ item.label }}</option>
-          </select>
+          <AppSelect v-model="config.search.fetchProvider" :options="fetchProviderOptions" />
         </FormField>
         <FormField label="Jina Reader 地址">
           <input v-model="config.search.jinaBaseUrl" class="input-field font-mono" placeholder="https://r.jina.ai" />

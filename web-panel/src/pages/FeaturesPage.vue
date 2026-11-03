@@ -5,6 +5,7 @@ import { useConfigStore } from '../stores/config';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import AppSelect from '../components/AppSelect.vue';
 
 interface FeatureDefinition {
   id: string;
@@ -253,9 +254,7 @@ onMounted(loadFeatures);
             </FormField>
 
             <FormField label="群聊触发方式" hint="只影响显式命令；自然语言仍受 FreeMode 开关控制">
-              <select v-model="setting.groupActivation" class="input-field" :disabled="!def.implemented || !hasScope(setting, 'group')">
-                <option v-for="opt in ACTIVATION_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-              </select>
+              <AppSelect v-model="setting.groupActivation" :options="ACTIVATION_OPTIONS" :disabled="!def.implemented || !hasScope(setting, 'group')" />
             </FormField>
 
             <FormField v-if="def.intentKind" label="旧 FreeMode 识别" hint="只影响原 FreeMode planner；新自然语言意图路由由能力分工中的总开关控制">

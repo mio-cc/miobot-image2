@@ -11,6 +11,12 @@ export interface ToolLoadoutRequest {
   maxTools?: number;
   maxSchemaBytes?: number;
   includeHidden?: boolean;
+  /**
+   * P0 装配修复：按调用上下文显式追加的工具名（绕过 exposure 闸门，如 owner 会话追加
+   * hidden 的 owner.model.list）。仅豁免 exposure 判定——enabled=false / disabled /
+   * context 缺失 / 预算限制照常生效；执行层的权限校验仍是最后一道闸。
+   */
+  extraToolNames?: string[];
 }
 
 export interface ToolLoadoutResult {
@@ -29,6 +35,7 @@ const EXPOSURE_RANK: Record<ToolExposure, number> = {
 export function resolveToolLoadout(specs: ToolSpec[], request: ToolLoadoutRequest = {}): ToolLoadoutResult {
   const exposures = new Set<ToolExposure>(request.exposures || ['core', 'domain']);
   if (request.includeHidden) exposures.add('hidden');
+  const extras = new Set(request.extraToolNames || []);
   const enabled = request.enabledToolNames ? new Set(request.enabledToolNames) : undefined;
   const disabled = new Set(request.disabledToolNames || []);
   const context = request.availableContext ? new Set(request.availableContext) : undefined;
@@ -42,7 +49,7 @@ export function resolveToolLoadout(specs: ToolSpec[], request: ToolLoadoutReques
       continue;
     }
     const exposure = spec.exposure || 'domain';
-    if (!exposures.has(exposure)) {
+    if (!exposures.has(exposure) && !extras.has(spec.name)) {
       omitted.push({ name: spec.name, reason: 'exposure' });
       continue;
     }

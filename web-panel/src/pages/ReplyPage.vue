@@ -4,6 +4,7 @@ import { useConfigStore } from '../stores/config';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import AppSelect from '../components/AppSelect.vue';
 
 /**
  * 回复与发送页（输出层）。
@@ -45,6 +46,36 @@ const strategyOptions = [
 ];
 const textOptions = strategyOptions;
 const nonTextOptions = strategyOptions.filter((opt) => !opt.textOnly);
+
+/* P1 第四批·下拉第二批：AppSelect 选项常量（与原 <option> 列表一一对应，文案零变更）。 */
+const overflowPolicyOptions = [
+    { value: 'forward', label: '打包为第二个合并转发' },
+    { value: 'truncate', label: '截断' },
+    { value: 'link', label: '链接' },
+    { value: 'zip', label: 'ZIP' },
+    { value: 'reject', label: '拒绝' },
+];
+const textFallbackOptions = [
+    { value: 'always', label: 'always（始终直发首段）' },
+    { value: 'on_forward_fail', label: 'on_forward_fail（转发失败才补发）' },
+    { value: 'off', label: 'off（关闭）' },
+];
+const voiceStrategyOptions = [
+    { value: 'auto', label: 'auto' },
+    { value: 'on', label: 'on' },
+    { value: 'off', label: 'off' },
+];
+const groupReplyModeOptions = [
+    { value: 'auto', label: 'auto（跟随全局）' },
+    { value: 'forward', label: '合并转发' },
+    { value: 'quote', label: '引用原消息' },
+    { value: 'plain', label: '普通消息' },
+];
+const groupVoiceOptions = [
+    { value: 'auto', label: 'auto（跟随全局）' },
+    { value: 'on', label: 'on（该群默认语音）' },
+    { value: 'off', label: 'off（该群默认文字）' },
+];
 </script>
 
 <template>
@@ -59,44 +90,28 @@ const nonTextOptions = strategyOptions.filter((opt) => !opt.textOnly);
     <SectionCard title="回复方式（v2 直发链路）" hint="按内容类型选择回复方式；编排链路（enforce）走下方消息预算" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4">
         <FormField label="纯文本回复" hint="语音回复 = 文本合成 TTS 后以语音消息发送（需在「语音」页启用 TTS），TTS 不可用自动回退文本">
-          <select v-model="config.bot.replyStrategies.text" class="input-field">
-            <option v-for="opt in textOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-          </select>
+          <AppSelect v-model="config.bot.replyStrategies.text" :options="textOptions" />
         </FormField>
         <FormField label="单图回复">
-          <select v-model="config.bot.replyStrategies.image" class="input-field">
-            <option v-for="opt in nonTextOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-          </select>
+          <AppSelect v-model="config.bot.replyStrategies.image" :options="nonTextOptions" />
         </FormField>
         <FormField label="多图回复" hint="推荐合并转发，避免刷屏">
-          <select v-model="config.bot.replyStrategies.multiImage" class="input-field">
-            <option v-for="opt in nonTextOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-          </select>
+          <AppSelect v-model="config.bot.replyStrategies.multiImage" :options="nonTextOptions" />
         </FormField>
         <FormField label="单视频">
-          <select v-model="config.bot.replyStrategies.video" class="input-field">
-            <option v-for="opt in nonTextOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-          </select>
+          <AppSelect v-model="config.bot.replyStrategies.video" :options="nonTextOptions" />
         </FormField>
         <FormField label="多视频" hint="推荐合并转发">
-          <select v-model="config.bot.replyStrategies.multiVideo" class="input-field">
-            <option v-for="opt in nonTextOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-          </select>
+          <AppSelect v-model="config.bot.replyStrategies.multiVideo" :options="nonTextOptions" />
         </FormField>
         <FormField label="单文件">
-          <select v-model="config.bot.replyStrategies.file" class="input-field">
-            <option v-for="opt in nonTextOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-          </select>
+          <AppSelect v-model="config.bot.replyStrategies.file" :options="nonTextOptions" />
         </FormField>
         <FormField label="多文件" hint="推荐合并转发">
-          <select v-model="config.bot.replyStrategies.multiFile" class="input-field">
-            <option v-for="opt in nonTextOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-          </select>
+          <AppSelect v-model="config.bot.replyStrategies.multiFile" :options="nonTextOptions" />
         </FormField>
         <FormField label="图文视频混排" hint="推荐合并转发">
-          <select v-model="config.bot.replyStrategies.mixed" class="input-field">
-            <option v-for="opt in nonTextOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-          </select>
+          <AppSelect v-model="config.bot.replyStrategies.mixed" :options="nonTextOptions" />
         </FormField>
       </div>
 
@@ -138,14 +153,10 @@ const nonTextOptions = strategyOptions.filter((opt) => !opt.textOnly);
         <FormField label="嵌套最大节点数"><input v-model.number="orch.reply.nestedMaxNodes" type="number" min="1" class="input-field" /></FormField>
         <FormField label="嵌套最大深度"><input v-model.number="orch.reply.nestedMaxDepth" type="number" min="1" max="5" class="input-field" /></FormField>
         <FormField label="超出预算">
-          <select v-model="orch.reply.overflowPolicy" class="input-field">
-            <option value="forward">打包为第二个合并转发</option><option value="truncate">截断</option><option value="link">链接</option><option value="zip">ZIP</option><option value="reject">拒绝</option>
-          </select>
+          <AppSelect v-model="orch.reply.overflowPolicy" :options="overflowPolicyOptions" />
         </FormField>
         <FormField label="保底首段直发" hint="always=多内容转发前首块文本先直发；转发失败也不丢核心内容">
-          <select v-model="orch.reply.textFallback" class="input-field">
-            <option value="always">always（始终直发首段）</option><option value="on_forward_fail">on_forward_fail（转发失败才补发）</option><option value="off">off（关闭）</option>
-          </select>
+          <AppSelect v-model="orch.reply.textFallback" :options="textFallbackOptions" />
         </FormField>
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.reply.preferNestedForward" label="优先嵌套合并转发" /></div>
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.reply.countProgressInBudget" label="进度消息计入预算" /></div>
@@ -162,9 +173,7 @@ const nonTextOptions = strategyOptions.filter((opt) => !opt.textOnly);
       </div>
       <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4">
         <FormField label="默认语音策略">
-          <select v-model="replyPolicy.defaultVoice" class="input-field">
-            <option value="auto">auto</option><option value="on">on</option><option value="off">off</option>
-          </select>
+          <AppSelect v-model="replyPolicy.defaultVoice" :options="voiceStrategyOptions" />
         </FormField>
         <FormField label="强制转发阈值" hint="文本达到该字符数即强制合并转发（auto/direct/plain/forward 全部模式生效，模型请求 direct 也不可绕过）">
           <input v-model.number="replyPolicy.forcedForwardThreshold" type="number" min="1" max="100000" class="input-field" />
@@ -257,19 +266,10 @@ const nonTextOptions = strategyOptions.filter((opt) => !opt.textOnly);
               <span class="font-mono text-sm">{{ gid }}</span>
             </FormField>
             <FormField label="回复方式">
-              <select v-model="entry.replyMode" class="input-field">
-                <option value="auto">auto（跟随全局）</option>
-                <option value="forward">合并转发</option>
-                <option value="quote">引用原消息</option>
-                <option value="plain">普通消息</option>
-              </select>
+              <AppSelect v-model="entry.replyMode" :options="groupReplyModeOptions" />
             </FormField>
             <FormField label="语音">
-              <select v-model="entry.voice" class="input-field">
-                <option value="auto">auto（跟随全局）</option>
-                <option value="on">on（该群默认语音）</option>
-                <option value="off">off（该群默认文字）</option>
-              </select>
+              <AppSelect v-model="entry.voice" :options="groupVoiceOptions" />
             </FormField>
             <FormField label="群人设名" hint="留空=用全局人设">
               <input v-model="entry.personaName" class="input-field" placeholder="如：群A专属" />

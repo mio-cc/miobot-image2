@@ -6,6 +6,8 @@ import { useCapabilityStore } from '../stores/capabilities';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import AppIcon from '../components/AppIcon.vue';
+import AppSelect, { type AppSelectOption } from '../components/AppSelect.vue';
+import { roleUsageHint } from '../shared/roles';
 
 /**
  * 节点列表。一行一个节点，展开才是详细表单。
@@ -192,6 +194,17 @@ function hostOf(url: string) {
     try { return new URL(raw).host; } catch { return raw.replace(/^https?:\/\//, '').split('/')[0]; }
 }
 
+/** 模型列浏览（问题四）：数字可点，展开浏览该节点全部模型，复用同一套模糊搜索；
+    每项带能力徽标与「当前用于」反查（ROLES 来自 shared/roles.ts，与 ModelsPage 同源）。 */
+function nodeModelOptions(node: any): AppSelectOption[] {
+    return (node.models || []).map((m: string) => ({
+        value: m,
+        label: m,
+        badges: capabilities.capabilitiesOf(m).slice(0, 3).map(c => (capabilities.labels as Record<string, string>)[c] || c),
+        hint: roleUsageHint(config.value, m),
+    }));
+}
+
 function formatTime(value: string) {
     if (!value) return '';
     try { return new Date(value).toLocaleString('zh-CN', { hour12: false }); } catch { return value; }
@@ -254,6 +267,13 @@ async function runLatencyTest() {
 
 <template>
   <div v-if="config">
+    <!-- P1 第四批·孤儿页对齐：迁移提示（本页保留模型页暂缺的节点级配置，不进侧栏） -->
+    <div class="mb-4 bg-[color:var(--accent-soft)] border border-[color:var(--accent-line)] rounded-xl px-4 py-2.5 text-xs text-[color:var(--ink-2)] leading-relaxed">
+      <strong class="text-[color:var(--ink)]">本页已并入「模型与节点」的节点池视图</strong>——
+      <RouterLink to="/models" class="underline underline-offset-2 text-[color:var(--accent)]">前往模型与节点</RouterLink>
+      进行日常配置（增删节点、密钥、拉取模型、查看模型明细）。
+      此直达链接仅保留模型页暂缺的节点级配置：<b>节点类型 / 协议方言 / 自定义请求头 / ComfyUI 连接参数 / 延迟检测 / 批量拉取</b>，待迁入模型页后本页将移除。
+    </div>
     <header class="mb-4 flex flex-wrap items-end justify-between gap-3">
       <div>
         <h1 class="page-title mb-0.5">API 节点</h1>
@@ -334,7 +354,14 @@ async function runLatencyTest() {
                 <span :class="latencyOf(idx)?.failCount ? 'status-crit' : 'text-[color:var(--ink-2)]'">{{ latencyLabel(idx) }}</span>
               </td>
               <td class="px-3 py-2 cursor-pointer text-right mono" @click="toggleRow(idx)">
-                <span :class="(node.models || []).length ? '' : 'text-[color:var(--ink-3)]'">{{ (node.models || []).length }}</span>
+                <!-- 问题四：模型数可点，展开浏览全部模型（AppSelect 浏览模式，带搜索/能力徽标/用途反查） -->
+                <span class="inline-flex items-center" @click.stop>
+                  <AppSelect browse :options="nodeModelOptions(node)">
+                    <template #trigger>
+                      <span :class="(node.models || []).length ? 'text-[color:var(--accent)]' : 'text-[color:var(--ink-3)]'">{{ (node.models || []).length }}</span>
+                    </template>
+                  </AppSelect>
+                </span>
               </td>
               <td class="px-3 py-2">
                 <input v-model.number="node.concurrency" type="number" min="0" max="256" step="1"
@@ -362,14 +389,10 @@ async function runLatencyTest() {
                 <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
                   <FormField label="节点名称"><input v-model="node.name" class="input-field" placeholder="My Node" /></FormField>
                   <FormField label="节点类型">
-                    <select v-model="node.kind" class="input-field">
-                      <option v-for="k in NODE_KINDS" :key="k.value" :value="k.value">{{ k.label }}</option>
-                    </select>
+                    <AppSelect v-model="node.kind" :options="NODE_KINDS" />
                   </FormField>
                   <FormField label="协议方言" hint="决定端点/请求体形态与原生 tool calling 适配：openai/anthropic/gemini 用原生工具调用，其余自动 JSON fallback">
-                    <select v-model="node.provider" class="input-field">
-                      <option v-for="p in PROVIDERS" :key="p.value" :value="p.value">{{ p.label }}</option>
-                    </select>
+                    <AppSelect v-model="node.provider" :options="PROVIDERS" />
                   </FormField>
                   <div class="md:col-span-2">
                     <FormField label="Base URL" hint="例如 https://api.example.com/v1 或 http://127.0.0.1:8317/v1">

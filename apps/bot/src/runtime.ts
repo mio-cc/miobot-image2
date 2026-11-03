@@ -6,7 +6,7 @@ import { FEATURE_DEFINITIONS, type FeatureSetting } from '../../../packages/shar
 import { createSentMessageTracker, createTrackingReplyClient, partitionRecallEntries, sentChatKey, type SentMessageTracker } from './sent-messages.js';
 import { createReplyStrategyEngine, type ReplyClient, type ReplyContext, type ReplyStrategyConfig } from '../../../packages/reply/src/index.js';
 import { dedupeImageUrls, dedupeVideoUrls } from '../../../packages/napcat/src/index.js';
-import { toGroupContextConfig } from './config-bridge.js';
+import { toGroupContextConfig, toMainModelSelection } from './config-bridge.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { RuntimeResult as BotEngineResult } from './runtime-types.js';
 import type { BotApp } from './app.js';
@@ -1202,6 +1202,16 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         }
         return { handled: true, kind: `owner:${oc.command}` };
       }
+    } else {
+      // P1 7a：非主人使用主人模型命令（/切换、/模型）→ 明确拒绝 + warn 审计，
+      // 而不是落入普通路由被模型猜测（模型无权替非 owner 切换）。
+      const maybeOwnerCommand = parseOwnerCommand(stripNonTextCqSegments(rawMessage), { chatType, mentions: extractMentions(event), botId: options.selfId?.() ?? cfg.bot.botQqId });
+      if (maybeOwnerCommand && (maybeOwnerCommand.command === 'switchModel' || maybeOwnerCommand.command === 'switchModelStatus' || maybeOwnerCommand.command === 'modelList')) {
+        log?.warn('主人模型命令被非 owner 使用，已拒绝', { userId: String(userId ?? ''), command: maybeOwnerCommand.command, chatType, groupId: event.group_id });
+        const denyReply = createReplyStrategyEngine(options.reply, toReplyStrategyConfig(cfg));
+        await denyReply.replyText({ chatType, groupId: event.group_id, userId, senderId: userId, botName: options.botName || 'Miobot' }, '模型切换/查看命令仅限主人（owner）使用。');
+        return { handled: true, kind: 'owner:denied' };
+      }
     }
 
     // 引用消息富化:get_msg 拉取被回复的消息 → 取其图片/转发内容,并判定是否回复的是 bot("回复 bot"触发依赖此判定)。
@@ -1838,10 +1848,16 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
             let legacyIntent: import('./intent-recognition.js').IntentClassification;
             if (legacyText && !legacyText.startsWith('你正在分析用户上传的文件') && !legacyText.startsWith('用户请求读取文件')) {
               stageBegin('intent');
+              // P1 问题二：意图模型位空 = 继承主对话（消费时解析，不在 normalize 物化——
+              // 保留继承关系跟随主模型变化的能力）。此前 normalize 把空回填成 freeMode 模型。
+              const intentCfg = options.getConfig().intentRecognition;
+              const inheritedIntent = String(intentCfg.model || '').trim()
+                ? intentCfg
+                : { ...intentCfg, model: toMainModelSelection(cfg).model, nodeIndex: toMainModelSelection(cfg).nodeIndex };
               legacyIntent = await classifyNaturalLanguageIntent({
                 client: options.app.client,
                 text: legacyText,
-                config: options.getConfig().intentRecognition,
+                config: inheritedIntent,
                 catalog: availableIntentCatalog(cfg),
                 context: { chatType, hasImages: modelImages.length > 0, hasFiles },
                 fallback: fallbackIntent(legacyText, hasFiles, cfg, options),

@@ -6,6 +6,29 @@ import CapabilityPageLayout from '../components/CapabilityPageLayout.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import ModelPicker from '../components/ModelPicker.vue';
+import AppSelect from '../components/AppSelect.vue';
+
+/* P1 最后一批·下拉收尾：画布默认参数选项（与原 <option> 一一对应，文案零变更）。
+   defaultCount 为数值选项——option.value 用 number，AppSelect 选中后原样回传，
+   写回 config 的 typeof 保持 'number'，等价于原生 select 数值修饰符的语义。 */
+const canvasQualityOptions = [
+    { value: 'auto', label: 'auto' },
+    { value: 'low', label: 'low' },
+    { value: 'medium', label: 'medium' },
+    { value: 'high', label: 'high' },
+];
+const canvasFormatOptions = [
+    { value: 'png', label: 'png' },
+    { value: 'jpeg', label: 'jpeg' },
+    { value: 'webp', label: 'webp' },
+];
+const canvasCountOptions = [
+    { value: 1, label: '1 张' },
+    { value: 2, label: '2 张' },
+    { value: 4, label: '4 张' },
+    { value: 8, label: '8 张' },
+    { value: 16, label: '16 张' },
+];
 
 /**
  * 图片生成能力页（image.generate）。
@@ -75,6 +98,20 @@ const comfyBuiltinRevision = ref('');
 const comfyCurrentNode = computed(() => comfyWorkflowNodes.value.find((item) => Number(item.nodeIndex) === Number(comfyNodeIndex.value)));
 const comfyNodeConfig = computed(() => (config.value?.llm?.apiKeys?.[Number(comfyNodeIndex.value)] as any)?.comfyui);
 const comfyCurrentProfiles = computed(() => comfyCurrentNode.value?.profiles || []);
+
+/* AppSelect 选项（模型/节点绑定相关下拉统一换自绘组件，方案 §3.6 D7 首批）。 */
+const EDIT_REQUEST_MODES = [
+    { value: 'auto', label: 'auto（按模型自动选择）' },
+    { value: 'json-images', label: 'json-images' },
+    { value: 'json-image', label: 'json-image' },
+    { value: 'multipart', label: 'multipart' },
+];
+const CANVAS_EDIT_REQUEST_MODES = EDIT_REQUEST_MODES.map(m => (m.value === 'auto' ? { value: 'auto', label: 'auto' } : m));
+const comfyNodeOptions = computed(() => comfyWorkflowNodes.value.map((n: any) => ({ value: Number(n.nodeIndex), label: `${n.nodeIndex} · ${n.name}` })));
+const comfyProfileOptions = computed(() => [
+    { value: '', label: '新建 / 手动 ID' },
+    ...comfyCurrentProfiles.value.map((p: any) => ({ value: String(p.id), label: `${p.id} · ${p.name}` })),
+]);
 const comfyParameterRows = computed(() => {
     try {
         const map = JSON.parse(comfyParameterMapJson.value || '{}');
@@ -244,12 +281,7 @@ onMounted(loadComfyWorkflows);
             <input v-model.number="config.llm.imageCount" type="number" min="1" max="4" class="input-field" />
           </FormField>
           <FormField label="改图请求格式" hint="auto 会按模型自动排序：官方 gpt-image 只认 multipart，xAI 只认 JSON，多数中转认 json-images">
-            <select v-model="config.llm.imageEditRequestMode" class="input-field">
-              <option value="auto">auto（按模型自动选择）</option>
-              <option value="json-images">json-images</option>
-              <option value="json-image">json-image</option>
-              <option value="multipart">multipart</option>
-            </select>
+            <AppSelect v-model="config.llm.imageEditRequestMode" :options="EDIT_REQUEST_MODES" />
           </FormField>
           <FormField label="超时 (ms)"><input v-model.number="config.llm.imageTimeoutMs" type="number" min="30000" step="30000" class="input-field" /></FormField>
           <FormField label="失败重试"><input v-model.number="config.llm.imageRetryCount" type="number" min="0" max="10" class="input-field" /></FormField>
@@ -303,10 +335,7 @@ onMounted(loadComfyWorkflows);
         </div>
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
           <FormField label="画布改图请求格式" hint="auto 会按模型自动排序">
-            <select v-model="config.canvas.imageEditRequestMode" class="input-field">
-              <option value="auto">auto</option><option value="json-images">json-images</option>
-              <option value="json-image">json-image</option><option value="multipart">multipart</option>
-            </select>
+            <AppSelect v-model="config.canvas.imageEditRequestMode" :options="CANVAS_EDIT_REQUEST_MODES" />
           </FormField>
           <FormField label="请求超时 (ms)">
             <input v-model.number="config.canvas.imageTimeoutMs" type="number" min="30000" step="30000" class="input-field" />
@@ -318,21 +347,14 @@ onMounted(loadComfyWorkflows);
             <input v-model.number="config.canvas.imageRetryDelayMs" type="number" min="0" step="500" class="input-field" />
           </FormField>
           <FormField label="默认质量">
-            <select v-model="config.canvas.defaultQuality" class="input-field">
-              <option value="auto">auto</option><option value="low">low</option>
-              <option value="medium">medium</option><option value="high">high</option>
-            </select>
+            <AppSelect v-model="config.canvas.defaultQuality" :options="canvasQualityOptions" />
           </FormField>
           <FormField label="默认格式">
-            <select v-model="config.canvas.defaultOutputFormat" class="input-field">
-              <option value="png">png</option><option value="jpeg">jpeg</option><option value="webp">webp</option>
-            </select>
+            <AppSelect v-model="config.canvas.defaultOutputFormat" :options="canvasFormatOptions" />
           </FormField>
           <FormField label="默认数量">
-            <select v-model.number="config.canvas.defaultCount" class="input-field">
-              <option :value="1">1 张</option><option :value="2">2 张</option><option :value="4">4 张</option>
-              <option :value="8">8 张</option><option :value="16">16 张</option>
-            </select>
+            <!-- 数值语义：选项 value 为 number、AppSelect 原样回传，写回 typeof 保持 'number'。 -->
+            <AppSelect v-model="config.canvas.defaultCount" :options="canvasCountOptions" />
           </FormField>
           <FormField label="历史上限">
             <input v-model.number="config.canvas.maxHistory" type="number" min="1" max="500" class="input-field" />
@@ -384,15 +406,10 @@ onMounted(loadComfyWorkflows);
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
         <FormField label="ComfyUI 节点">
-          <select v-model.number="comfyNodeIndex" class="input-field" @change="loadComfyWorkflowProfile()">
-            <option v-for="node in comfyWorkflowNodes" :key="node.nodeIndex" :value="node.nodeIndex">{{ node.nodeIndex }} · {{ node.name }}</option>
-          </select>
+          <AppSelect v-model="comfyNodeIndex" :options="comfyNodeOptions" @change="loadComfyWorkflowProfile()" />
         </FormField>
         <FormField label="已有 Profile">
-          <select v-model="comfyProfileId" class="input-field" @change="loadComfyWorkflowProfile()">
-            <option value="">新建 / 手动 ID</option>
-            <option v-for="profile in comfyCurrentProfiles" :key="profile.id" :value="profile.id">{{ profile.id }} · {{ profile.name }}</option>
-          </select>
+          <AppSelect v-model="comfyProfileId" :options="comfyProfileOptions" @change="loadComfyWorkflowProfile()" />
         </FormField>
         <FormField label="Profile ID"><input v-model="comfyProfileId" class="input-field font-mono" placeholder="moss-image-sft" /></FormField>
         <FormField label="显示名称"><input v-model="comfyProfileName" class="input-field" /></FormField>

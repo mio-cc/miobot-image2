@@ -164,7 +164,8 @@ export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConf
         if (expanded) headers[name] = expanded;
       }
       if (key && !Object.keys(headers).some((name) => ['authorization', 'x-api-key'].includes(name.toLowerCase()))) headers.Authorization = `Bearer ${key}`;
-      const res = await fetch(joinUrl(baseUrl, '/models'), { headers });
+      // P0：上游无响应时 Node fetch 默认可挂到浏览器 axios 的 120s 超时——面板体验为"点了没动静"。
+      const res = await fetch(joinUrl(baseUrl, '/models'), { headers, signal: AbortSignal.timeout(15_000) });
       if (!res.ok) {
         const hint = !key && res.status === 401 ? '（该节点还没有密钥）' : '';
         return fail(502, `获取模型列表失败: HTTP ${res.status}${hint}${await upstreamDetail(res)}`);

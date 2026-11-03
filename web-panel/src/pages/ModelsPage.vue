@@ -2,9 +2,11 @@
 import { computed, onMounted, ref } from 'vue';
 import { useConfigStore } from '../stores/config';
 import { useCapabilityStore } from '../stores/capabilities';
-import client from '../api/client';
+import client, { errorMessage } from '../api/client';
 import ModelPicker from '../components/ModelPicker.vue';
 import FormField from '../components/FormField.vue';
+import AppSelect, { type AppSelectOption } from '../components/AppSelect.vue';
+import { ROLES, isRoleInherit, getRoleNode as getRoleNodeOf, getRoleModel as getRoleModelOf, setRoleValue as setRoleValueOf, roleUsageHint } from '../shared/roles';
 
 /**
  * R19 模型与节点 · 统一管理（R21-f 视觉精化）。
@@ -22,7 +24,6 @@ const view = ref<'nodes' | 'roles'>('roles');
 
 /* ── 节点池 ── */
 const search = ref('');
-const probing = ref(false);
 
 const nodes = computed(() => config.value?.llm?.apiKeys || []);
 const rows = computed(() => {
@@ -84,85 +85,74 @@ function removeNode(idx: number) {
         }
     }
 }
+/* 拉取模型列表：P0 修复静默失败——per-node 状态、错误翻译（限流/鉴权/超时/协议错）、
+   成功带 diff 摘要；上游 200 但解析不出模型时保留原列表（与 NodesPage 同语义）。 */
+const fetchingNode = ref<number | null>(null);
+const fetchErrors = ref<Record<number, string>>({});
+const fetchSummaries = ref<Record<number, string>>({});
+
+function translateFetchError(error: any): string {
+    const raw = errorMessage(error, '获取模型列表失败');
+    if (/HTTP 429|tpm|rpm|限流/i.test(raw)) return `${raw}（上游限流，稍等片刻再试）`;
+    if (/HTTP 401|HTTP 403|鉴权|密钥/i.test(raw)) return `${raw}（密钥无效或缺失，检查节点 API Key）`;
+    if (/timeout|超时|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|fetch failed/i.test(raw)) return `${raw}（网络不通或上游无响应）`;
+    if (/HTTP 5\d\d/.test(raw)) return `${raw}（上游服务错误）`;
+    return raw;
+}
+
 async function fetchModels(idx: number) {
     const node = nodes.value[idx] as any;
-    if (!node?.baseUrl) return;
-    probing.value = true;
+    if (!node?.baseUrl) {
+        fetchErrors.value = { ...fetchErrors.value, [idx]: `「${node?.name || idx + 1}」还没填 Base URL` };
+        return;
+    }
+    fetchingNode.value = idx;
+    const startedAt = Date.now();
+    // 后端要明文 key；面板上是打码值，仅在用户刚改过（不含圆点）时才带上（与 NodesPage 同语义）。
+    const key = String(node.key || '').includes('••••') ? '' : node.key;
+    const keyRef = Number.isInteger((node as any).keyRef) ? (node as any).keyRef : idx;
     try {
-        const res = await client.post('/fetch-models', { baseUrl: node.baseUrl, key: node.key, keyRef: idx, headers: node.headers || {}, nodeIndex: idx });
-        if (res.data?.models) { node.models = res.data.models; node.modelsFetchedAt = new Date().toISOString(); }
-    } catch { /* 错误已在 client 层展示 */ } finally { probing.value = false; }
+        const res = await client.post('/fetch-models', { baseUrl: node.baseUrl, key, keyRef, nodeIndex: keyRef, headers: node.headers || {} });
+        const fetched: string[] = res.data?.models || [];
+        if (!fetched.length && res.data?.warning) {
+            // 上游 200 但解析不出：保留原列表，提示 warning，不当成功。
+            fetchErrors.value = { ...fetchErrors.value, [idx]: `「${node.name || idx + 1}」${res.data.warning}` };
+            return;
+        }
+        const previous = node.models || [];
+        const added = fetched.filter((m) => !previous.includes(m));
+        const removed = previous.filter((m: string) => !fetched.includes(m));
+        node.models = fetched;
+        node.modelsFetchedAt = new Date().toISOString();
+        const parts = [`新增 ${added.length}`, `消失 ${removed.length}`, `未变 ${fetched.length - added.length}`];
+        fetchSummaries.value = { ...fetchSummaries.value, [idx]: `拉取成功 · ${parts.join(' · ')} · 耗时 ${((Date.now() - startedAt) / 1000).toFixed(1)}s` };
+        fetchErrors.value = { ...fetchErrors.value, [idx]: '' };
+        capabilityStore.refresh();
+    } catch (error: any) {
+        fetchErrors.value = { ...fetchErrors.value, [idx]: `「${node.name || idx + 1}」${translateFetchError(error)}` };
+    } finally {
+        fetchingNode.value = null;
+    }
 }
 
 /* ── 用途分配 ── */
+/* ROLES 表与反查已抽到 shared/roles.ts（节点模型展开的「当前用于」提示共用同一份）。 */
 
-interface RoleDef {
-    key: string;
-    title: string;
-    desc: string;
-    /** config 路径（section + nodeField + modelField）；null=跟随主对话（无独立字段）。 */
-    section: string | null;
-    nodeField: string | null;
-    modelField: string | null;
-    /** 该用途推荐的能力过滤 */
-    capability?: string;
-    /** 是否允许退回继承（主对话不允许） */
-    inheritable: boolean;
-}
-
-const ROLES: RoleDef[] = [
-    { key: 'main', title: 'Agent 主对话', desc: '全站默认 · 所有"跟随"的用途继承它', section: 'agent', nodeField: 'mainNodeIndex', modelField: 'mainModel', capability: 'chat', inheritable: false },
-    { key: 'image', title: '图片生成', desc: 'image.generate · ComfyUI 工作流或多模态直生', section: 'llm', nodeField: 'imageNodeIndex', modelField: 'imageModel', capability: 'image.generate', inheritable: true },
-    { key: 'edit', title: '图片编辑', desc: 'image.edit · 多模态原生理解', section: 'llm', nodeField: 'editNodeIndex', modelField: 'editModel', capability: 'image.edit', inheritable: true },
-    { key: 'interrogate', title: '图片反推', desc: 'image.interrogate', section: 'llm', nodeField: 'interrogateNodeIndex', modelField: 'interrogateModel', capability: 'image.interrogate', inheritable: true },
-    { key: 'suno', title: 'Suno 作曲', desc: '歌词与参数规划（Composer）', section: 'orchestration.suno', nodeField: 'composerNodeIndex', modelField: 'composerModel', capability: 'chat', inheritable: true },
-    { key: 'video', title: '视频生成', desc: 'video.generate', section: 'llm', nodeField: 'videoNodeIndex', modelField: 'videoModel', capability: 'video.generate', inheritable: true },
-    { key: 'codeRender', title: '代码渲染', desc: 'code.render · HTML/SVG/Canvas/Three', section: 'codeRender', nodeField: 'nodeIndex', modelField: 'model', capability: 'chat', inheritable: true },
-    { key: 'comfyui', title: 'ComfyUI 参数转化', desc: '自然语言 → workflow JSON', section: 'comfyuiTransform', nodeField: 'nodeIndex', modelField: 'model', capability: 'chat', inheritable: true },
-    { key: 'tts', title: 'TTS 前处理', desc: '朗读前改写', section: 'bot.tts.preprocess', nodeField: 'nodeIndex', modelField: 'model', capability: 'chat', inheritable: true },
-    { key: 'trigger', title: '触发 / 续话判定', desc: '轻量判定 · 建议选快模型；触发与续话共用', section: 'bot.keywordTrigger', nodeField: 'intentNodeIndex', modelField: 'intentModel', capability: 'chat', inheritable: true },
-    { key: 'memory', title: '记忆摘要 / 评分', desc: 'memory.* 二级任务', section: 'orchestration.memory', nodeField: 'embeddingNodeIndex', modelField: 'embeddingModel', capability: 'chat', inheritable: true },
-];
+type RoleDef = (typeof ROLES)[number];
 
 /** 判断某用途当前是否在"继承"态（字段为空/未设置）。 */
 function isInherit(role: RoleDef): boolean {
-    if (!role.inheritable || !role.section) return false;
-    const cfg: any = config.value;
-    const parts = role.section.split('.');
-    let obj = cfg;
-    for (const part of parts) { if (!obj) return true; obj = obj[part]; }
-    if (!obj || !role.modelField) return true;
-    const model = String(obj[role.modelField] || '').trim();
-    return !model;
+    return isRoleInherit(config.value, role);
 }
 /** 获取某用途的 nodeIndex / model 值。 */
 function getRoleNode(role: RoleDef): number {
-    if (!role.section || !role.nodeField) return 0;
-    const cfg: any = config.value;
-    const parts = role.section.split('.');
-    let obj = cfg;
-    for (const part of parts) { if (!obj) return 0; obj = obj[part]; }
-    return Number(obj?.[role.nodeField]) || 0;
+    return getRoleNodeOf(config.value, role);
 }
 function getRoleModel(role: RoleDef): string {
-    if (!role.section || !role.modelField) return '';
-    const cfg: any = config.value;
-    const parts = role.section.split('.');
-    let obj = cfg;
-    for (const part of parts) { if (!obj) return ''; obj = obj[part]; }
-    return String(obj?.[role.modelField] || '');
+    return getRoleModelOf(config.value, role);
 }
 function setRoleValue(role: RoleDef, nodeIndex: number, model: string) {
-    if (!role.section || !role.nodeField || !role.modelField) return;
-    const cfg: any = config.value;
-    const parts = role.section.split('.');
-    let obj = cfg;
-    for (const part of parts) {
-        if (!obj[part]) obj[part] = {};
-        obj = obj[part];
-    }
-    obj[role.nodeField] = nodeIndex;
-    obj[role.modelField] = model;
+    setRoleValueOf(config.value, role, nodeIndex, model);
 }
 /** 自定义→继承切换。 */
 function makeInherit(role: RoleDef) {
@@ -182,6 +172,16 @@ function makeCustom(role: RoleDef) {
 }
 /** 角色行点击自定义展开。 */
 const editingRole = ref<string | null>(null);
+
+/** 节点模型浏览（问题四）：卡片「+N 查看」打开 AppSelect 浏览模式，复用同一套搜索。 */
+function nodeModelOptions(node: any): AppSelectOption[] {
+    return (node.models || []).map((m: string) => ({
+        value: m,
+        label: m,
+        badges: capabilityStore.capabilitiesOf(m).slice(0, 3).map(c => capabilityStore.labels[c] || c),
+        hint: roleUsageHint(config.value, m),
+    }));
+}
 
 /* 主对话模型（继承源显示用） */
 const mainModel = computed(() => {
@@ -273,13 +273,14 @@ onMounted(() => { void capabilityStore.refresh(); });
 
           <!-- 选择器区域 -->
           <div class="flex-1 min-w-[240px]">
-            <!-- 继承态（虚线框 · 点击自定义） -->
+            <!-- 继承态（虚线框 · 点击自定义）：P1 修复双重误导——明确"未选择 → 回落"关系，
+                 而不是看起来像自动选了主对话模型（用户刚清空的值瞬间变回一个模型名）。 -->
             <button v-if="isInherit(role) && editingRole !== role.key" type="button"
               class="inline-flex items-center gap-2.5 px-3.5 py-2 border border-dashed border-[color:var(--hairline-3)] rounded-[10px] bg-[color:var(--page)] text-[13px] text-left cursor-pointer transition-colors duration-150 group hover:border-[color:var(--ink-3)] max-w-full"
-              :title="`当前跟随主对话（${mainModel.model || '未设置'}），点击自定义`"
+              :title="`未单独选择，回落使用主对话模型（${mainModel.model || '未设置'}），点击自定义`"
               @click="makeCustom(role); editingRole = role.key">
-              <span class="text-[10px] font-bold tracking-wide bg-[color:var(--off-soft)] text-[color:var(--ink-3)] rounded-md px-1.5 py-0.5 flex-none">跟随</span>
-              <span class="font-medium text-[color:var(--ink-2)] truncate">{{ mainModel.model || '（未设置）' }}</span>
+              <span class="text-[10px] font-bold tracking-wide bg-[color:var(--off-soft)] text-[color:var(--ink-3)] rounded-md px-1.5 py-0.5 flex-none">未选择</span>
+              <span class="font-medium text-[color:var(--ink-3)] truncate">回落主对话：{{ mainModel.model || '（未设置）' }}</span>
               <span class="text-[color:var(--accent)] text-[11px] font-medium opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">自定义 →</span>
             </button>
 
@@ -336,18 +337,34 @@ onMounted(() => { void capabilityStore.refresh(); });
           <!-- Base URL -->
           <div class="text-[11px] text-[color:var(--ink-3)] font-mono truncate mb-2.5">{{ node.baseUrl || '（未配置 URL）' }}</div>
 
-          <!-- 模型标签 -->
+          <!-- 模型标签（问题四：+N 可点击，展开浏览该节点全部模型，复用同一套搜索） -->
           <div class="flex flex-wrap gap-1 mb-3 min-h-[22px] content-center">
             <span v-for="m in (node.models || []).slice(0, 4)" :key="m" class="text-[10.5px] bg-[color:var(--off-soft)] text-[color:var(--ink-2)] rounded-md px-1.5 py-0.5 font-mono">{{ m }}</span>
-            <span v-if="(node.models || []).length > 4" class="text-[10.5px] text-[color:var(--ink-3)] self-center">+{{ (node.models || []).length - 4 }}</span>
+            <AppSelect v-if="(node.models || []).length > 4" browse :options="nodeModelOptions(node)" class="self-center">
+              <template #trigger>
+                <span class="text-[10.5px] text-[color:var(--ink-2)] bg-[color:var(--off-soft)] hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--accent)] rounded-md px-1.5 py-0.5 font-medium transition-colors duration-150">
+                  +{{ (node.models || []).length - 4 }} 查看
+                </span>
+              </template>
+            </AppSelect>
             <span v-if="!(node.models || []).length" class="text-[10.5px] text-[color:var(--ink-3)] self-center">（点下方"拉取"获取模型列表）</span>
+          </div>
+
+          <!-- 拉取反馈：P0 修复静默失败——成功 diff 摘要 / 失败原因 + 重试（宣纸 token） -->
+          <div v-if="fetchSummaries[idx]" class="status-good text-[10.5px] bg-[color:var(--off-soft)] border border-[color:var(--hairline-2)] rounded-md px-2 py-1 mb-2 leading-relaxed">{{ fetchSummaries[idx] }}</div>
+          <div v-if="fetchErrors[idx]" class="flex items-start gap-2 text-[10.5px] status-crit bg-[color:var(--critical-soft)] border border-[color:var(--hairline-2)] rounded-md px-2 py-1 mb-2 leading-relaxed">
+            <span class="min-w-0 flex-1">{{ fetchErrors[idx] }}</span>
+            <button class="flex-none underline underline-offset-2 hover:opacity-70 transition-opacity" :disabled="fetchingNode === idx" @click="fetchModels(idx)">重试</button>
           </div>
 
           <!-- 操作行 -->
           <div class="flex items-center gap-1.5 text-[11px] text-[color:var(--ink-3)] border-t border-[color:var(--hairline)] pt-2.5">
-            <span class="mr-auto">{{ (node.models || []).length }} 个模型</span>
-            <button class="border border-[color:var(--hairline-3)] rounded-lg px-2.5 py-1 text-[color:var(--ink-2)] hover:border-[color:var(--accent)] hover:text-[color:var(--accent)] transition-colors duration-150 disabled:opacity-50" :disabled="probing"
-              @click="fetchModels(idx)">拉取</button>
+            <span class="mr-auto">
+              {{ (node.models || []).length }} 个模型
+              <span v-if="node.modelsFetchedAt" class="ml-1" :title="node.modelsFetchedAt">· 上次拉取 {{ new Date(node.modelsFetchedAt).toLocaleTimeString('zh-CN', { hour12: false }) }}</span>
+            </span>
+            <button class="border border-[color:var(--hairline-3)] rounded-lg px-2.5 py-1 text-[color:var(--ink-2)] hover:border-[color:var(--accent)] hover:text-[color:var(--accent)] transition-colors duration-150 disabled:opacity-50" :disabled="fetchingNode === idx"
+              @click="fetchModels(idx)">{{ fetchingNode === idx ? '拉取中…' : '拉取' }}</button>
             <button class="border border-[color:var(--hairline-3)] rounded-lg px-2.5 py-1 text-[color:var(--ink-2)] hover:border-[color:var(--ink-3)] transition-colors duration-150"
               @click="node.enabled = node.enabled === false ? true : false">{{ node.enabled === false ? '启用' : '停用' }}</button>
             <button class="btn-danger !px-2.5 !py-1 !rounded-lg"

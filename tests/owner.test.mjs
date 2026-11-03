@@ -23,8 +23,9 @@ test('parseOwnerCommand: 私聊各命令', () => {
   assert.deepEqual(p('/plch 8'), { command: 'recall', count: 8 });
   assert.equal(p('plch 8'), undefined);
   assert.deepEqual(p('/模型列表'), { command: 'modelList' });
-  assert.deepEqual(p('/切换 gpt-4o'), { command: 'switchModel', code: 'gpt-4o' });
-  assert.deepEqual(p('/q gpt_image_2'), { command: 'switchModel', code: 'gpt.image.2' });
+  // P1 7a：switchModel 扩展 purpose/slot（旧语法 /切换 X = 主对话 primary，行为不变，字段显式化）。
+  assert.deepEqual(p('/切换 gpt-4o'), { command: 'switchModel', code: 'gpt-4o', purpose: 'main', slot: 'primary' });
+  assert.deepEqual(p('/q gpt_image_2'), { command: 'switchModel', code: 'gpt.image.2', purpose: 'main', slot: 'primary' });
   assert.deepEqual(p('/ttsk'), { command: 'ttsOn' });
   assert.deepEqual(p('/ttsg'), { command: 'ttsOff' });
   assert.deepEqual(p('/tts.2'), { command: 'switchTtsVoice', index: 2 });

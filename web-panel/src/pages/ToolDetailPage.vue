@@ -5,6 +5,7 @@ import client, { errorMessage } from '../api/client';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import AppSelect from '../components/AppSelect.vue';
 
 const route = useRoute();
 const toolId = computed(() => decodeURIComponent(String(route.params.id || '')));
@@ -28,6 +29,17 @@ interface CapabilityItem {
 
 const capability = ref<CapabilityItem | null>(null);
 const exposure = ref<Record<string, string>>({});
+
+/* P1 最后一批·下拉收尾：暴露级别选项（与原 <option> 一一对应，文案零变更）。
+   非 v-model 受控形态：@change 单一 handler → saveExposure 只发一次保存请求；
+   保存失败时 exposure ref 不变，触发器显示随 modelValue 自动回滚。 */
+const exposureOptions = [
+    { value: '', label: '跟随推导（默认）' },
+    { value: 'core', label: 'core（核心）' },
+    { value: 'domain', label: 'domain（领域）' },
+    { value: 'searchable', label: 'searchable（可检索）' },
+    { value: 'hidden', label: 'hidden（隐藏）' },
+];
 const loading = ref(false);
 const error = ref('');
 const saved = ref(false);
@@ -106,17 +118,12 @@ onMounted(() => { void loadTool(); void loadExposure(); });
 
       <SectionCard title="暴露级别（toolRegistry.exposure）" hint="后台覆盖优先于推导；hidden 不进入 Agent loadout" class="mb-4">
         <div class="flex flex-wrap gap-3 items-center">
-          <select
-            class="input-field !w-auto"
-            :value="exposure[toolId] || ''"
-            @change="saveExposure(($event.target as HTMLSelectElement).value || undefined)"
-          >
-            <option value="">跟随推导（默认）</option>
-            <option value="core">core（核心）</option>
-            <option value="domain">domain（领域）</option>
-            <option value="searchable">searchable（可检索）</option>
-            <option value="hidden">hidden（隐藏）</option>
-          </select>
+          <AppSelect
+            trigger-class="!w-auto"
+            :model-value="exposure[toolId] || ''"
+            :options="exposureOptions"
+            @change="(value: string | number) => saveExposure(String(value) || undefined)"
+          />
           <span v-if="saved" class="tag status-good">已保存</span>
         </div>
       </SectionCard>

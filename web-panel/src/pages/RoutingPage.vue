@@ -6,6 +6,15 @@ import SectionCard from '../components/SectionCard.vue';
 import ModelPicker from '../components/ModelPicker.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import AppSelect from '../components/AppSelect.vue';
+
+/* P1 最后一批·下拉收尾：对话推理强度选项（legacy 页 /legacy/routing）。 */
+const reasoningEffortOptions = [
+    { value: 'low', label: 'low' },
+    { value: 'medium', label: 'medium' },
+    { value: 'high', label: 'high' },
+    { value: 'xhigh', label: 'xhigh' },
+];
 // 体检快照 vs 实时配置的取舍规则抽在这里，好单测。
 import { isBindingFresh, resolveNodeName, resolveRowStatus } from '../../../packages/web-panel/src/routing-binding';
 
@@ -193,6 +202,13 @@ onMounted(() => {
 
 <template>
   <div v-if="config">
+    <!-- P1 第四批·孤儿页对齐：迁移提示（用途绑定已迁至模型页，此处保留独占配置，不进侧栏） -->
+    <div class="mb-4 bg-[color:var(--accent-soft)] border border-[color:var(--accent-line)] rounded-xl px-4 py-2.5 text-xs text-[color:var(--ink-2)] leading-relaxed">
+      <strong class="text-[color:var(--ink)]">本页的用途分配已迁至「模型与节点」</strong>——
+      <RouterLink to="/models" class="underline underline-offset-2 text-[color:var(--accent)]">前往模型与节点</RouterLink>
+      配置各用途的节点与模型（含继承链）。
+      此直达链接仅保留模型页未覆盖的配置：<b>自由模式 / 意图识别 / 远程模板库绑定、模型能力覆盖、对话参数、视频与 ComfyUI 转化参数</b>，待迁入对应页面后本页将移除。
+    </div>
     <header class="mb-4 flex flex-wrap items-end justify-between gap-3">
       <div>
         <h1 class="page-title mb-0.5">能力分工</h1>
@@ -286,10 +302,7 @@ onMounted(() => {
                 <!-- 各能力的专属参数 -->
                 <div v-if="row.key === 'chat'" class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
                   <FormField label="推理强度" hint="仅推理模型生效；不支持的模型会自动不发送该参数">
-                    <select v-model="config.llm.reasoningEffort" class="input-field">
-                      <option value="low">low</option><option value="medium">medium</option>
-                      <option value="high">high</option><option value="xhigh">xhigh</option>
-                    </select>
+                    <AppSelect v-model="config.llm.reasoningEffort" :options="reasoningEffortOptions" />
                   </FormField>
                   <FormField label="最大轮数" hint="按用户发言轮数计，建议 6-12">
                     <input v-model.number="config.llm.maxConversationRounds" type="number" min="1" max="100" class="input-field" />

@@ -13,7 +13,14 @@ test('panel R11 IA: routing redirects to models, planner remains a redirect', ()
   assert.match(routerSource, /path:\s*'\/routing',[\s\S]*?redirect:\s*'\/models'/);
   assert.match(routerSource, /path:\s*'\/models',[\s\S]*?name:\s*'models',[\s\S]*?ModelsPage\.vue/);
   assert.match(routerSource, /path:\s*'\/orchestration',\s*redirect:\s*'\/agent'/);
-  assert.equal(/component:\s*\(\)\s*=>\s*import\('\.\.\/pages\/PlannerPage\.vue'\)/.test(routerSource), false);
+  // P1 第五批（孤儿页对齐拍板）：PlannerPage/NodesPage/RoutingPage 存在实质缺口（编排模式/
+  // planner 提示词/多角色协作等唯一编辑入口），保留 /legacy/* 直达路由且**不进侧栏**
+  // （不设 meta.title → navRoutes 过滤掉）。若未来删除孤儿页，请连同本断言与路由一起删。
+  for (const legacy of ['legacy/planner', 'legacy/nodes', 'legacy/routing']) {
+    const routeMatch = routerSource.match(new RegExp(`path:\\s*'/${legacy}',[\\s\\S]*?component:`));
+    assert.ok(routeMatch, `legacy 路由 /${legacy} 应注册`);
+    assert.equal(/meta:\s*\{\s*title/.test(routeMatch[0]), false, `legacy 路由 /${legacy} 不得带 meta.title（会进侧栏）`);
+  }
 });
 
 test('panel R10 IA: new tools/jobs/prompts pages registered', () => {

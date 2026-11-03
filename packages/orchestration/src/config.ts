@@ -577,7 +577,7 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
         enabled: bool(m.enabled, d.memory.enabled),
         dataDir: String(m.dataDir || d.memory.dataDir).trim(),
         embeddingNodeIndex: numberIn(m.embeddingNodeIndex, d.memory.embeddingNodeIndex, 0, 10000),
-        embeddingModel: String(m.embeddingModel || d.memory.embeddingModel).trim(),
+        embeddingModel: m.embeddingModel === undefined || m.embeddingModel === null ? d.memory.embeddingModel : String(m.embeddingModel).trim().slice(0, 200),
         embeddingDimensions: numberIn(m.embeddingDimensions, d.memory.embeddingDimensions, 1, 16384),
         recentTurns: numberIn(m.recentTurns, d.memory.recentTurns, 0, 20),
         summarizeEvery: numberIn(m.summarizeEvery, d.memory.summarizeEvery, 2, 500),

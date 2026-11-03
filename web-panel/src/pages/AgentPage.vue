@@ -6,6 +6,7 @@ import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import ModelPicker from '../components/ModelPicker.vue';
+import AppSelect from '../components/AppSelect.vue';
 
 const configStore = useConfigStore();
 const config = computed(() => configStore.config);
@@ -45,6 +46,33 @@ function commitAllowlist() {
 const exposureEntries = computed(() => Object.entries(tools.value?.exposure || {}) as Array<[string, string]>);
 const newExposureId = ref('');
 const newExposureMode = ref('searchable');
+
+/* P1 第五批·下拉收尾第一批：AppSelect 选项常量（与原 <option> 列表一一对应，文案零变更）。 */
+const agentModeOptions = [
+    { value: 'off', label: 'off' },
+    { value: 'shadow', label: 'shadow' },
+    { value: 'enforce', label: 'enforce' },
+];
+const toolChoiceOptions = [
+    { value: 'auto', label: 'auto' },
+    { value: 'required', label: 'required' },
+    { value: 'none', label: 'none' },
+];
+const exposureModeOptions = [
+    { value: 'core', label: 'core' },
+    { value: 'domain', label: 'domain' },
+    { value: 'searchable', label: 'searchable' },
+    { value: 'hidden', label: 'hidden' },
+];
+const approvalFallbackOptions = [
+    { value: 'reject', label: '拒绝（安全）' },
+    { value: 'allow', label: '放行' },
+];
+const hfRequestModeOptions = [
+    { value: 'openai-chat', label: 'openai-chat' },
+    { value: 'router-chat', label: 'router-chat' },
+    { value: 'legacy-inference', label: 'legacy-inference' },
+];
 
 interface ReplyPreferenceRecord {
     scope: 'session' | 'user';
@@ -115,18 +143,10 @@ function removeExposure(id: string) {
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
         <ToggleField v-model="agent.enabled" label="启用 Agent Runtime" hint="关闭时旧链路已删除：bot 启动会被配置阻断，请先在后台切到 enforce" />
         <FormField label="运行模式" hint="shadow 只记录，不发送也不执行工具">
-          <select v-model="agent.mode" class="input-field" :disabled="!agent.enabled">
-            <option value="off">off</option>
-            <option value="shadow">shadow</option>
-            <option value="enforce">enforce</option>
-          </select>
+          <AppSelect v-model="agent.mode" :options="agentModeOptions" :disabled="!agent.enabled" />
         </FormField>
         <FormField label="工具选择策略">
-          <select v-model="agent.toolChoice" class="input-field">
-            <option value="auto">auto</option>
-            <option value="required">required</option>
-            <option value="none">none</option>
-          </select>
+          <AppSelect v-model="agent.toolChoice" :options="toolChoiceOptions" />
         </FormField>
         <FormField label="主模型" hint="Agent 的主推理模型" class="md:col-span-2">
           <ModelPicker v-model:node-index="agent.mainNodeIndex" v-model:model="agent.mainModel" capability="chat" />
@@ -186,9 +206,7 @@ function removeExposure(id: string) {
             <input v-model="newExposureId" class="input-field font-mono" placeholder="例如 image.generate" @keyup.enter="addExposure" />
           </FormField>
           <FormField label="暴露级别">
-            <select v-model="newExposureMode" class="input-field">
-              <option value="core">core</option><option value="domain">domain</option><option value="searchable">searchable</option><option value="hidden">hidden</option>
-            </select>
+            <AppSelect v-model="newExposureMode" :options="exposureModeOptions" />
           </FormField>
           <button class="btn-outline" :disabled="!newExposureId.trim()" @click="addExposure">添加覆盖</button>
         </div>
@@ -196,9 +214,8 @@ function removeExposure(id: string) {
           <div v-for="[id] in exposureEntries" :key="id" class="field-box">
             <span class="font-mono text-xs min-w-0 truncate">{{ id }}</span>
             <div class="flex items-center gap-2">
-              <select v-model="tools.exposure[id]" class="input-field !w-auto">
-                <option value="core">core</option><option value="domain">domain</option><option value="searchable">searchable</option><option value="hidden">hidden</option>
-              </select>
+              <!-- 行内紧凑：!w-auto 保持原有自适应宽度 -->
+              <AppSelect v-model="tools.exposure[id]" :options="exposureModeOptions" trigger-class="!w-auto" />
               <button class="btn-outline !px-2" title="删除覆盖" @click="removeExposure(id)">×</button>
             </div>
           </div>
@@ -273,9 +290,7 @@ function removeExposure(id: string) {
         <FormField label="法定人数"><input v-model.number="orchestration.approval.quorum" type="number" min="1" class="input-field" /></FormField>
         <FormField label="审批超时 (ms)"><input v-model.number="orchestration.approval.timeoutMs" type="number" min="5000" class="input-field" /></FormField>
         <FormField label="超时策略">
-          <select v-model="orchestration.approval.fallback" class="input-field">
-            <option value="reject">拒绝（安全）</option><option value="allow">放行</option>
-          </select>
+          <AppSelect v-model="orchestration.approval.fallback" :options="approvalFallbackOptions" />
         </FormField>
         <ToggleField v-model="orchestration.approval.allowGroupReply" label="允许群内审批" />
         <FormField label="每用户待审上限"><input v-model.number="orchestration.approval.maxPendingPerUser" type="number" min="1" class="input-field" /></FormField>
@@ -317,11 +332,7 @@ function removeExposure(id: string) {
         <FormField label="Token"><input v-model="huggingFace.token" type="password" class="input-field font-mono" placeholder="hf_…" /></FormField>
         <FormField label="Base URL"><input v-model="huggingFace.baseUrl" class="input-field font-mono" /></FormField>
         <FormField label="请求模式">
-          <select v-model="huggingFace.requestMode" class="input-field">
-            <option value="openai-chat">openai-chat</option>
-            <option value="router-chat">router-chat</option>
-            <option value="legacy-inference">legacy-inference</option>
-          </select>
+          <AppSelect v-model="huggingFace.requestMode" :options="hfRequestModeOptions" />
         </FormField>
         <FormField label="超时 (ms)"><input v-model.number="huggingFace.timeoutMs" type="number" min="5000" class="input-field" /></FormField>
       </div>

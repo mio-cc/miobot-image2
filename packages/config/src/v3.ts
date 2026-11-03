@@ -17,6 +17,8 @@ export interface AgentConfigV3 {
   mainModel: string;
   fallbackNodeIndex?: number;
   fallbackModel?: string;
+  /** P1 第三批（方案 §6.3）：手动档位锁——'secondary'=锁定备用，'primary'=锁定主；缺省 = 自动切换。 */
+  modelOverride?: 'primary' | 'secondary';
   toolChoice: AgentToolChoice;
   maxModelRounds: number;
   maxToolRounds: number;
@@ -222,9 +224,13 @@ export function normalizeAgentConfigV3(input: unknown): AgentConfigV3 {
     enabled,
     mode: enabled ? pick(raw.mode, ['off', 'shadow', 'enforce'] as const, d.mode) : pick(raw.mode, ['off', 'shadow', 'enforce'] as const, 'off'),
     mainNodeIndex: intIn(raw.mainNodeIndex, d.mainNodeIndex, 0, 10_000),
-    mainModel: str(raw.mainModel, d.mainModel).trim().slice(0, 200) || d.mainModel,
+    // 空值保留（显式空态 = 用户清空/继承语义），仅缺键（undefined/null）才用默认值——
+    // 修复"删除模型后静默回填默认名"（v3 normalize 此前无条件回落 d.mainModel）。
+    mainModel: mainModelKeepEmpty(raw.mainModel, d.mainModel),
     ...(hasValue(raw.fallbackNodeIndex) ? { fallbackNodeIndex: intIn(raw.fallbackNodeIndex, 0, 0, 10_000) } : {}),
     ...(str(raw.fallbackModel, '').trim() ? { fallbackModel: str(raw.fallbackModel, '').trim().slice(0, 200) } : {}),
+    // 手动档位锁（方案 §6.3）：仅接受 primary/secondary；非法值静默清除（= 自动切换）。
+    ...(raw.modelOverride === 'primary' || raw.modelOverride === 'secondary' ? { modelOverride: raw.modelOverride } : {}),
     toolChoice: pick(raw.toolChoice, ['auto', 'required', 'none'] as const, d.toolChoice),
     maxModelRounds: intIn(raw.maxModelRounds, d.maxModelRounds, 1, 100),
     maxToolRounds: intIn(raw.maxToolRounds, d.maxToolRounds, 0, 200),
@@ -321,6 +327,7 @@ export const CONFIG_V3_FIELD_METADATA: readonly ConfigFieldMetadata[] = [
   field('agent.mainModel', '主模型', 'string', 'gpt-4o-mini', global, nextTurn),
   field('agent.fallbackNodeIndex', '备用节点', 'number', undefined, global, nextTurn, { min: 0, max: 10_000 }),
   field('agent.fallbackModel', '备用模型', 'string', '', global, nextTurn),
+  field('agent.modelOverride', '手动档位锁', 'string', undefined, global, nextTurn),
   field('agent.toolChoice', '工具选择策略', 'enum', 'auto', global, nextTurn, { enumValues: ['auto', 'required', 'none'] }),
   field('agent.maxModelRounds', '最大模型轮次', 'number', 8, global, nextTurn, { min: 1, max: 100 }),
   field('agent.streaming', '流式输出（不适用：Napcat 只接受完整回复）', 'boolean', false, global, nextTurn),
@@ -398,6 +405,12 @@ function bool(value: unknown, fallback: boolean): boolean {
 
 function str(value: unknown, fallback: string): string {
   return typeof value === 'string' ? value : fallback;
+}
+
+/** 空值保留：仅缺键（undefined/null）用默认，显式空串保留为空（继承/未选择语义），不静默回填默认。 */
+function mainModelKeepEmpty(value: unknown, fallback: string): string {
+  if (value === undefined || value === null) return fallback;
+  return String(value).trim().slice(0, 200);
 }
 
 function hasValue(value: unknown): boolean {
