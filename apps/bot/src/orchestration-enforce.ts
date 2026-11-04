@@ -46,6 +46,7 @@ import {
 import { ModelCapabilityHandler, type ModelCapabilityKind } from './capability-model.js';
 import { VoiceCurrentCapabilityHandler, VoicePreviewCapabilityHandler, VoiceSearchCapabilityHandler, VoiceSelectCapabilityHandler, type FishAudioVoiceService } from './voice-service.js';
 import { SunoPromptComposer } from './suno-composer.js';
+import type { ModelFallbackController } from './model-fallback.js';
 import { SunoCapabilityHandler } from './capability-suno.js';
 import type { SunoSongHistoryStore } from './suno-song-history.js';
 import { SunoHistoryCapabilityHandler, SunoReplayCapabilityHandler, SunoReplaceSectionCapabilityHandler, SunoVariantCapabilityHandler } from './capability-suno-library.js';
@@ -141,6 +142,8 @@ export class OrchestrationEnforcer {
     voiceService?: FishAudioVoiceService;
     logger?: StructuredLogger;
     sunoHistory?: SunoSongHistoryStore;
+    /** P2(方案 6-P2)：用途级备用状态机（suno composer 接 purpose = 'suno'）；不传保持原直调。 */
+    fallback?: ModelFallbackController;
     /** T0.2：能力级限流闸（冷却/日限额/并发），dispatcher 对全部能力统一执行。 */
     featureGate?: CapabilityRateGate;
     trace?: (trace: OrchestrationTrace) => void;
@@ -174,7 +177,7 @@ export class OrchestrationEnforcer {
       const handler = this.options.handlers?.get(kind) || new ModelCapabilityHandler(this.options.app, kind);
       this.dispatcher.registerHandler(kind, handler);
     }
-    const sunoComposer = new SunoPromptComposer(this.options.client, this.options.getConfig, this.options.logger);
+    const sunoComposer = new SunoPromptComposer(this.options.client, this.options.getConfig, this.options.logger, this.options.fallback);
     const suno = this.options.handlers?.get('audio.music.generate') || new SunoCapabilityHandler({ getConfig: this.options.getConfig, logger: this.options.logger, history: this.options.sunoHistory, compose: (args, request) => sunoComposer.compose(args, request), composeSafeFallback: (args, request) => sunoComposer.composeSafeFallback(args, request), registerLateDelivery: this.options.registerSunoLateDelivery });
     this.dispatcher.registerHandler('audio.music.generate', suno);
     if (this.options.sunoHistory) {

@@ -126,9 +126,12 @@ test('service.setBinding：错误分支——未找到 / 歧义（禁止猜）/ 
   assert.equal(ambiguousFuzzy.ok, false);
   assert.equal(ambiguousFuzzy.kind, 'ambiguous_model');
 
-  const secondary = service.setBinding({ purpose: 'image', slot: 'secondary', target: 'deepseek-chat', scope: 'persistent', source: 'command', actorId: '1' });
-  assert.equal(secondary.ok, false);
-  assert.equal(secondary.kind, 'unsupported_secondary');
+  // P2（方案 6-P2）：全部用途都支持备用——旧的「仅主对话」拒绝分支已废止。
+  // 非 main 用途的备用现在应写入用途容器自己的 fallback 字段。
+  const secondary = service.setBinding({ purpose: 'image', slot: 'secondary', target: 'claude-3-5', scope: 'persistent', source: 'command', actorId: '1' });
+  assert.equal(secondary.ok, true, 'P2 起 image 备用必须可写');
+  assert.equal(cfg.llm.fallbackImageModel, 'claude-3-5', '写入 llm 容器的用途级 fallback 字段');
+  assert.equal(cfg.llm.fallbackImageNodeIndex, 1, 'claude-3-5 在节点B（下标 1）');
 
   const once = service.setBinding({ purpose: 'main', slot: 'primary', target: 'deepseek-chat', scope: 'once', source: 'command', actorId: '1' });
   assert.equal(once.ok, false);

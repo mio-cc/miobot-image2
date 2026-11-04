@@ -78,6 +78,9 @@ export interface OrchestrationConfig {
     dataDir: string;
     embeddingNodeIndex: number;
     embeddingModel: string;
+    /** 用途级备用（方案 6-P2）：空串/缺键 = 无备用。 */
+    fallbackEmbeddingNodeIndex?: number;
+    fallbackEmbeddingModel?: string;
     embeddingDimensions: number;
     // topK/minScore/maxContextChars 曾与 contextPolicy.memory* 双真源并存，已收口删除——
     // 检索预算唯一真源 contextPolicy.memoryTopK/memoryMinScore/memoryMaxChars。
@@ -199,6 +202,9 @@ export interface OrchestrationConfig {
     callbackSecret: string;
     composerNodeIndex?: number;
     composerModel?: string;
+    /** 用途级备用（方案 6-P2）：空串/缺键 = 无备用。 */
+    fallbackComposerNodeIndex?: number;
+    fallbackComposerModel?: string;
     composerPromptTemplate: string;
     composerMaxTokens: number;
     composerTemperature: number;
@@ -578,6 +584,11 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
         dataDir: String(m.dataDir || d.memory.dataDir).trim(),
         embeddingNodeIndex: numberIn(m.embeddingNodeIndex, d.memory.embeddingNodeIndex, 0, 10000),
         embeddingModel: m.embeddingModel === undefined || m.embeddingModel === null ? d.memory.embeddingModel : String(m.embeddingModel).trim().slice(0, 200),
+        // 用途级备用（方案 6-P2）：model 空串/缺键不落盘 = 无备用。
+        ...(String(m.fallbackEmbeddingModel || '').trim() ? {
+          fallbackEmbeddingModel: String(m.fallbackEmbeddingModel).trim().slice(0, 200),
+          fallbackEmbeddingNodeIndex: numberIn(m.fallbackEmbeddingNodeIndex, 0, 0, 10000),
+        } : {}),
         embeddingDimensions: numberIn(m.embeddingDimensions, d.memory.embeddingDimensions, 1, 16384),
         recentTurns: numberIn(m.recentTurns, d.memory.recentTurns, 0, 20),
         summarizeEvery: numberIn(m.summarizeEvery, d.memory.summarizeEvery, 2, 500),
@@ -710,6 +721,11 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       callbackSecret: String(suno.callbackSecret || d.suno.callbackSecret).trim(),
       composerNodeIndex: suno.composerNodeIndex === undefined ? undefined : numberIn(suno.composerNodeIndex, d.suno.composerNodeIndex ?? 0, 0, 10000),
       composerModel: suno.composerModel === undefined ? undefined : String(suno.composerModel || '').trim(),
+      // 用途级备用（方案 6-P2）：model 空串/缺键不落盘 = 无备用。
+      ...(String(suno.fallbackComposerModel || '').trim() ? {
+        fallbackComposerModel: String(suno.fallbackComposerModel).trim().slice(0, 200),
+        fallbackComposerNodeIndex: numberIn(suno.fallbackComposerNodeIndex, 0, 0, 10000),
+      } : {}),
       composerPromptTemplate: String(suno.composerPromptTemplate || ''),
         composerMaxTokens: numberIn(suno.composerMaxTokens, d.suno.composerMaxTokens, 1),
         composerTemperature: numberIn(suno.composerTemperature, d.suno.composerTemperature, 0),

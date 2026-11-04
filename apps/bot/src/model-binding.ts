@@ -22,28 +22,33 @@ export interface PurposeDef {
   section: string | null;
   nodeField: string;
   modelField: string;
-  /** 第二模型（备用）结构是否已就绪——本轮仅主对话（agent.fallbackModel 已在 v3 schema 预留）。 */
+  /** 备用绑定落点（同容器内字段名；方案 6-P2：11 用途各配一个，字段见各段 normalize）。 */
+  fallbackNodeField: string;
+  fallbackModelField: string;
+  /** 第二模型（备用）结构是否已就绪——P2 起全部用途就绪。 */
   supportsSecondary: boolean;
 }
 
 export const MODEL_BINDING_PURPOSES: PurposeDef[] = [
-  { key: 'main', label: '主对话', keywords: ['主对话', '主模型', 'main', '聊天', '对话'], section: 'agent', nodeField: 'mainNodeIndex', modelField: 'mainModel', supportsSecondary: true },
-  { key: 'image', label: '图片生成', keywords: ['图片', '生图', '画图', 'image'], section: 'llm', nodeField: 'imageNodeIndex', modelField: 'imageModel', supportsSecondary: false },
-  { key: 'edit', label: '图片编辑', keywords: ['改图', '编辑', 'edit'], section: 'llm', nodeField: 'editNodeIndex', modelField: 'editModel', supportsSecondary: false },
-  { key: 'interrogate', label: '图片反推', keywords: ['反推', '看图', 'interrogate'], section: 'llm', nodeField: 'interrogateNodeIndex', modelField: 'interrogateModel', supportsSecondary: false },
-  { key: 'suno', label: 'Suno 作曲', keywords: ['音乐', '作曲', 'suno'], section: 'orchestration.suno', nodeField: 'composerNodeIndex', modelField: 'composerModel', supportsSecondary: false },
-  { key: 'video', label: '视频生成', keywords: ['视频', 'video'], section: 'llm', nodeField: 'videoNodeIndex', modelField: 'videoModel', supportsSecondary: false },
-  { key: 'codeRender', label: '代码渲染', keywords: ['代码', '代码渲染', 'code'], section: 'codeRender', nodeField: 'nodeIndex', modelField: 'model', supportsSecondary: false },
-  { key: 'comfyui', label: 'ComfyUI 参数转化', keywords: ['参数', '参数转化', 'comfyui'], section: 'comfyuiTransform', nodeField: 'nodeIndex', modelField: 'model', supportsSecondary: false },
-  { key: 'tts', label: 'TTS 前处理', keywords: ['语音', 'tts'], section: 'bot.tts.preprocess', nodeField: 'nodeIndex', modelField: 'model', supportsSecondary: false },
-  { key: 'trigger', label: '触发判定', keywords: ['触发', '触发判定', 'trigger'], section: 'bot.keywordTrigger', nodeField: 'intentNodeIndex', modelField: 'intentModel', supportsSecondary: false },
-  { key: 'memory', label: '记忆摘要', keywords: ['记忆', 'memory'], section: 'orchestration.memory', nodeField: 'embeddingNodeIndex', modelField: 'embeddingModel', supportsSecondary: false },
+  { key: 'main', label: '主对话', keywords: ['主对话', '主模型', 'main', '聊天', '对话'], section: 'agent', nodeField: 'mainNodeIndex', modelField: 'mainModel', fallbackNodeField: 'fallbackNodeIndex', fallbackModelField: 'fallbackModel', supportsSecondary: true },
+  { key: 'enhance', label: '提示词润色', keywords: ['润色', '提示词润色', 'enhance'], section: 'llm', nodeField: 'enhanceNodeIndex', modelField: 'enhanceModel', fallbackNodeField: 'fallbackEnhanceNodeIndex', fallbackModelField: 'fallbackEnhanceModel', supportsSecondary: true },
+  { key: 'image', label: '图片生成', keywords: ['图片', '生图', '画图', 'image'], section: 'llm', nodeField: 'imageNodeIndex', modelField: 'imageModel', fallbackNodeField: 'fallbackImageNodeIndex', fallbackModelField: 'fallbackImageModel', supportsSecondary: true },
+  { key: 'edit', label: '图片编辑', keywords: ['改图', '编辑', 'edit'], section: 'llm', nodeField: 'editNodeIndex', modelField: 'editModel', fallbackNodeField: 'fallbackEditNodeIndex', fallbackModelField: 'fallbackEditModel', supportsSecondary: true },
+  { key: 'interrogate', label: '图片反推', keywords: ['反推', '看图', 'interrogate'], section: 'llm', nodeField: 'interrogateNodeIndex', modelField: 'interrogateModel', fallbackNodeField: 'fallbackInterrogateNodeIndex', fallbackModelField: 'fallbackInterrogateModel', supportsSecondary: true },
+  { key: 'suno', label: 'Suno 作曲', keywords: ['音乐', '作曲', 'suno'], section: 'orchestration.suno', nodeField: 'composerNodeIndex', modelField: 'composerModel', fallbackNodeField: 'fallbackComposerNodeIndex', fallbackModelField: 'fallbackComposerModel', supportsSecondary: true },
+  { key: 'video', label: '视频生成', keywords: ['视频', 'video'], section: 'llm', nodeField: 'videoNodeIndex', modelField: 'videoModel', fallbackNodeField: 'fallbackVideoNodeIndex', fallbackModelField: 'fallbackVideoModel', supportsSecondary: true },
+  { key: 'codeRender', label: '代码渲染', keywords: ['代码', '代码渲染', 'code'], section: 'codeRender', nodeField: 'nodeIndex', modelField: 'model', fallbackNodeField: 'fallbackNodeIndex', fallbackModelField: 'fallbackModel', supportsSecondary: true },
+  { key: 'comfyui', label: 'ComfyUI 参数转化', keywords: ['参数', '参数转化', 'comfyui'], section: 'comfyuiTransform', nodeField: 'nodeIndex', modelField: 'model', fallbackNodeField: 'fallbackNodeIndex', fallbackModelField: 'fallbackModel', supportsSecondary: true },
+  { key: 'tts', label: 'TTS 前处理', keywords: ['语音', 'tts'], section: 'bot.tts.preprocess', nodeField: 'nodeIndex', modelField: 'model', fallbackNodeField: 'fallbackNodeIndex', fallbackModelField: 'fallbackModel', supportsSecondary: true },
+  { key: 'trigger', label: '触发判定', keywords: ['触发', '触发判定', 'trigger'], section: 'bot.keywordTrigger', nodeField: 'intentNodeIndex', modelField: 'intentModel', fallbackNodeField: 'fallbackIntentNodeIndex', fallbackModelField: 'fallbackIntentModel', supportsSecondary: true },
+  { key: 'memory', label: '记忆摘要', keywords: ['记忆', 'memory'], section: 'orchestration.memory', nodeField: 'embeddingNodeIndex', modelField: 'embeddingModel', fallbackNodeField: 'fallbackEmbeddingNodeIndex', fallbackModelField: 'fallbackEmbeddingModel', supportsSecondary: true },
 ];
 
 export function findPurposeByKeyOrAlias(input: string): PurposeDef | undefined {
   const key = String(input || '').trim().toLowerCase();
   if (!key) return undefined;
-  return MODEL_BINDING_PURPOSES.find((p) => p.key === key || p.keywords.some((w) => w.toLowerCase() === key));
+  // 键比较同样走小写：camelCase 键（codeRender）必须能被工具层按原样命中（P2 表驱动全用途通）。
+  return MODEL_BINDING_PURPOSES.find((p) => p.key.toLowerCase() === key || p.keywords.some((w) => w.toLowerCase() === key));
 }
 
 export interface ModelCandidate {
@@ -119,15 +124,13 @@ export function createModelBindingService(options: {
   };
 
   function currentBinding(purpose: PurposeDef, slot: BindingSlot): { model: string; nodeIndex: number } {
-    const config = getConfig() as unknown as Record<string, unknown>;
-    if (purpose.key === 'main' && slot === 'secondary') {
-      const agent = (config as any).agent || {};
-      return { model: String(agent.fallbackModel || ''), nodeIndex: Number(agent.fallbackNodeIndex ?? 0) || 0 };
-    }
+    // P2 通用化：备用与主绑定同容器读写（main 的备用落点 = agent.fallback*，与旧特判逐字节等价）。
     const obj = sectionOf(getConfig(), purpose.section);
+    const nodeField = slot === 'secondary' ? purpose.fallbackNodeField : purpose.nodeField;
+    const modelField = slot === 'secondary' ? purpose.fallbackModelField : purpose.modelField;
     return {
-      model: String(obj?.[purpose.modelField] || ''),
-      nodeIndex: Number(obj?.[purpose.nodeField] ?? 0) || 0,
+      model: String(obj?.[modelField] || ''),
+      nodeIndex: Number(obj?.[nodeField] ?? 0) || 0,
     };
   }
 
@@ -147,7 +150,8 @@ export function createModelBindingService(options: {
       return { ok: false, kind: 'unsupported_once', error: '「仅本次」切换依赖备用模型状态机（方案 6-P1），尚未实现；请使用持久切换（默认）。' };
     }
     if (slot === 'secondary' && !purpose.supportsSecondary) {
-      return { ok: false, kind: 'unsupported_secondary', error: `「${purpose.label}」暂不支持第二模型（备用模型本轮仅主对话就绪，其余用途见方案 6-P2）。` };
+      // P2 起 11 用途全部支持备用；分支保留作为未来用途扩展的防御位。
+      return { ok: false, kind: 'unsupported_secondary', error: `「${purpose.label}」暂不支持第二模型（备用）。` };
     }
 
     const config = getConfig();
@@ -181,13 +185,12 @@ export function createModelBindingService(options: {
     // 变更闭包可重放：与面板并发保存时按磁盘最新配置重放同一变更（T2.6 防竞态模式）。
     const mutate = (c: AppConfig): string => {
       const root = c as unknown as Record<string, unknown>;
-      if (purpose.key === 'main' && slot === 'secondary') {
-        const agent = (root.agent = (root.agent as Record<string, unknown>) || {});
-        agent.fallbackModel = best.model;
-        agent.fallbackNodeIndex = targetNodeIndex;
+      const obj = sectionOf(c, purpose.section);
+      if (!obj) return `配置路径 ${purpose.section || '(root)'} 不存在，切换失败。`;
+      if (slot === 'secondary') {
+        obj[purpose.fallbackNodeField] = targetNodeIndex;
+        obj[purpose.fallbackModelField] = best.model;
       } else {
-        const obj = sectionOf(c, purpose.section);
-        if (!obj) return `配置路径 ${purpose.section || '(root)'} 不存在，切换失败。`;
         obj[purpose.nodeField] = targetNodeIndex;
         obj[purpose.modelField] = best.model;
         if (purpose.key === 'main') {
@@ -291,7 +294,7 @@ export function createModelBindingService(options: {
         lines.push(`- ${purpose.label}：${primaryText}`);
       }
     }
-    lines.push('提示：/切换 {用途} {模型名} 切换主模型；/切换 {用途} 备 {模型名} 设备用（仅主对话）；/切换 锁定 备|主 或 /切换 解锁 手动档位；/切换 状态 查看本页。');
+    lines.push('提示：/切换 {用途} {模型名} 切换主模型；/切换 {用途} 备 {模型名} 设备用；/切换 锁定 备|主 或 /切换 解锁 手动档位（仅主对话）；/切换 状态 查看本页。');
     return lines.join('\n');
   }
 

@@ -5,6 +5,7 @@ import { count, create, insert, remove, search, type AnyOrama } from '@orama/ora
 import { persistToFile, restoreFromFile } from '@orama/plugin-data-persistence/server';
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
+import { withPurposeFallback, type ModelFallbackController } from './model-fallback.js';
 
 export interface EmbeddingProvider {
   readonly model: string;
@@ -26,6 +27,8 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   constructor(
     private readonly getConfig: () => AppConfig,
     private readonly logger?: StructuredLogger,
+    /** P2(方案 6-P2)：用途级备用状态机；不传保持原直调（测试兼容）。 */
+    private readonly fallback?: ModelFallbackController,
   ) {}
 
   async embed(texts: string[]): Promise<number[][]> {
@@ -33,30 +36,40 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     if (!clean.length) return [];
     const cfg = this.getConfig();
     const memory = cfg.orchestration.memory;
-    const node = cfg.llm.apiKeys[Number(memory.embeddingNodeIndex) || 0];
-    if (!node || !node.enabled) throw new Error('embedding_node_unavailable');
-    if (!String(memory.embeddingModel || '').trim()) throw new Error('embedding_model_missing');
-    const response = await fetch(nodeEmbeddingUrl(node.baseUrl), {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${String(node.key || '')}`,
-        'content-type': 'application/json',
-        ...(node.headers || {}),
-      },
-      body: JSON.stringify({ model: memory.embeddingModel, input: clean }),
-      signal: AbortSignal.timeout(30000),
-    });
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      throw new Error(`embedding_http_${response.status}:${body.slice(0, 200)}`);
-    }
-    const body = await response.json() as { data?: Array<{ embedding?: unknown }> };
-    const embeddings = (body.data || []).map((item) => Array.isArray(item.embedding) ? item.embedding.map(Number) : []);
-    if (!embeddings.length || embeddings.some((item) => item.length !== memory.embeddingDimensions)) {
-      throw new Error('embedding_dimension_mismatch');
-    }
-    this.logger?.info('memory embedding completed', { model: this.model, count: embeddings.length, dimensions: memory.embeddingDimensions });
-    return embeddings;
+    // 单次 embedding HTTP（节点/模型由 target 决定；维度校验留在每次调用内——
+    // 备用模型维度与 embeddingDimensions 不一致时按既有 dimension_mismatch 失败，保护向量库不被脏向量污染）。
+    const embedOnce = async (nodeIndex: number, model: string): Promise<number[][]> => {
+      const node = cfg.llm.apiKeys[Number(nodeIndex) || 0];
+      if (!node || !node.enabled) throw new Error('embedding_node_unavailable');
+      if (!String(model || '').trim()) throw new Error('embedding_model_missing');
+      const response = await fetch(nodeEmbeddingUrl(node.baseUrl), {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${String(node.key || '')}`,
+          'content-type': 'application/json',
+          ...(node.headers || {}),
+        },
+        body: JSON.stringify({ model, input: clean }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        throw new Error(`embedding_http_${response.status}:${body.slice(0, 200)}`);
+      }
+      const body = await response.json() as { data?: Array<{ embedding?: unknown }> };
+      const embeddings = (body.data || []).map((item) => Array.isArray(item.embedding) ? item.embedding.map(Number) : []);
+      if (!embeddings.length || embeddings.some((item) => item.length !== memory.embeddingDimensions)) {
+        throw new Error('embedding_dimension_mismatch');
+      }
+      this.logger?.info('memory embedding completed', { model, count: embeddings.length, dimensions: memory.embeddingDimensions });
+      return embeddings;
+    };
+    // P2 接入点：purpose = 'memory'（常量显式）。备用取 orchestration.memory.fallbackEmbedding*；
+    // 无 controller 时保持原直调。30s 超时/维度校验等管线逻辑全部留在 embedOnce 内，包装不吞不改。
+    if (!this.fallback) return embedOnce(Number(memory.embeddingNodeIndex) || 0, String(memory.embeddingModel || ''));
+    return withPurposeFallback(this.fallback, 'memory',
+      { nodeIndex: Number(memory.embeddingNodeIndex) || 0, model: String(memory.embeddingModel || '') },
+      (target) => embedOnce(target.nodeIndex, target.model));
   }
 }
 
@@ -188,12 +201,14 @@ export class ChatMemoryService {
     rootDir: string | (() => string);
     getConfig: () => AppConfig;
     embedding?: EmbeddingProvider;
+    /** P2(方案 6-P2)：用途级备用状态机；默认 embedding provider 接 purpose = 'memory'。 */
+    fallback?: ModelFallbackController;
     summarize?: MemorySummarizer;
     /** T3.4：夜间巩固用 LLM 批量重要性评分（0-10，与 documents 等长返回）。 */
     scoreImportance?: (input: { documents: MemoryDocument[] }) => Promise<number[]>;
     logger?: StructuredLogger;
   }) {
-    this.embedding = options.embedding || new OpenAIEmbeddingProvider(options.getConfig, options.logger);
+    this.embedding = options.embedding || new OpenAIEmbeddingProvider(options.getConfig, options.logger, options.fallback);
   }
 
   private rootPath(): string {

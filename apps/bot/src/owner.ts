@@ -30,6 +30,7 @@ export function isOwner(userId: string | number | undefined, ownerQQs: Array<str
 /** /切换 命令的用途触发词（与 model-binding.ts MODEL_BINDING_PURPOSES 的 keywords 同源子集，解析层独立于服务层）。 */
 export const MODEL_SWITCH_PURPOSE_WORDS = [
   '主对话', '主模型', 'main', '聊天', '对话',
+  '润色', '提示词润色', 'enhance',
   '图片', '生图', '画图', 'image',
   '改图', '编辑', 'edit',
   '反推', '看图', 'interrogate',
@@ -80,7 +81,7 @@ export function parseOwnerCommand(text: string, ctx: OwnerParseContext): OwnerCo
   //   /切换 X                        → 主对话主模型（旧语法兼容，默认用途）
   //   /切换 备 X                     → 主对话备用模型（agent.fallbackModel）
   //   /切换 {用途} X                  → 指定用途主模型（用途词见 MODEL_SWITCH_PURPOSE_WORDS）
-  //   /切换 {用途} 备 X               → 指定用途备用模型（本轮仅主对话支持）
+  //   /切换 {用途} 备 X               → 指定用途备用模型（P2 起全部用途支持；档位锁定仍仅主对话）
   //   /切换 锁定 备|主 / /切换 解锁    → 手动档位锁（P1 第三批，仅主对话；锁主/解锁 = 清零计数回自动）
   const switchMatch = t.match(/(?:^|\s)\/\s*(?:切换|q)\s+(.+?)\s*$/i);
   if (switchMatch) {

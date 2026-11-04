@@ -4,6 +4,7 @@ import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 import type { UserRequest } from '../../../packages/orchestration/src/index.js';
 import { extractJsonObject } from '../../../packages/orchestration/src/index.js';
 import type { ModelClient } from '../../../packages/model/src/index.js';
+import { withPurposeFallback, type ModelFallbackController } from './model-fallback.js';
 
 export interface SunoComposedSpec {
   customMode: boolean;
@@ -265,6 +266,8 @@ const SUNO_COMPOSER_OVERRIDE = [
     private readonly client: Pick<ModelClient, 'chat'>,
     private readonly getConfig: () => AppConfig,
     private readonly logger?: StructuredLogger,
+    /** P2(方案 6-P2)：用途级备用状态机；不传保持原直调（测试兼容）。 */
+    private readonly fallback?: ModelFallbackController,
   ) {}
 
   async compose(args: Record<string, unknown>, request: UserRequest): Promise<SunoComposedSpec> {
@@ -275,6 +278,10 @@ const SUNO_COMPOSER_OVERRIDE = [
     const mainModel = toMainModelSelection(cfg);
     const nodeIndex = Number(suno.composerNodeIndex ?? mainModel.nodeIndex);
     const model = String(suno.composerModel || mainModel.model || '');
+    // P2 接入点：purpose = 'suno'（常量显式）。invoke = 既有「两轮 JSON 纠错重试」循环整体——
+    // 主档位两轮都失败（含 no_json 内容失败）由状态机计数并切备重试本轮；循环/超时/纠错语义原样保留。
+    // messages 在 invoke 内构建：切备重试时备用模型拿到干净会话（不带主模型的失败纠错轮）。
+    const attemptLoop = async (target: { nodeIndex: number; model: string }): Promise<SunoComposedSpec> => {
     // 免费档模型对复杂 JSON 输出不稳定——重试一次（带纠错提示），失败才走 safe fallback。
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
       { role: 'system', content: 'You are a strict JSON Suno prompt planner. Never output markdown.' },
@@ -282,8 +289,8 @@ const SUNO_COMPOSER_OVERRIDE = [
     ];
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        const response = await this.client.chat(nodeIndex, {
-          model,
+        const response = await this.client.chat(target.nodeIndex, {
+          model: target.model,
           messages,
           temperature: Number(cfg.orchestration.suno.composerTemperature ?? 0.6),
           maxTokens: Number(cfg.orchestration.suno.composerMaxTokens ?? 6000),
@@ -331,6 +338,9 @@ const SUNO_COMPOSER_OVERRIDE = [
       }
     }
     throw new Error('suno_composer_exhausted');
+    };
+    if (!this.fallback) return attemptLoop({ nodeIndex, model });
+    return withPurposeFallback(this.fallback, 'suno', { nodeIndex, model }, attemptLoop);
   }
 
   /** safe fallback：用用户原文直传 Suno，不做模型编排。 */

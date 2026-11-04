@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
  * 时钟注入（fake clock）驱动 120s 冷却窗口；client 脚本化驱动成败序列。
  */
 
-const { createModelFallbackController, isFailoverWorthyError } = await import('../dist/apps/bot/src/model-fallback.js');
+const { createModelFallbackController, isFailoverWorthyError, fallbackBindingOf, withPurposeFallback } = await import('../dist/apps/bot/src/model-fallback.js');
 const { createAgentModelPort } = await import('../dist/apps/bot/src/agent-model-port.js');
 const { createModelBindingService } = await import('../dist/apps/bot/src/model-binding.js');
 const { parseOwnerCommand } = await import('../dist/apps/bot/src/owner.js');
@@ -313,4 +313,135 @@ test('fallback: v3 normalize keeps valid modelOverride and drops invalid', () =>
   assert.equal(cleared.agent.modelOverride, undefined);
   const absent = normalizeConfig(base);
   assert.equal(absent.agent.modelOverride, undefined);
+});
+
+/* ═══ P2：全部 11 用途的用途级备用（方案 6-P2）═══ */
+
+/* ── 16. 反例红线：用途主/备都空时，绝不回落到主对话的备用 ── */
+test('purpose fallback: empty purpose fallback must NOT inherit agent.fallbackModel', () => {
+  const cfg = {
+    agent: { mainModel: 'p', fallbackModel: 'main-backup', fallbackNodeIndex: 1 },
+    llm: { imageModel: '', imageNodeIndex: 0 }, // image 主模型为空（继承态）、备用也为空
+  };
+  const image = fallbackBindingOf(cfg, 'image');
+  assert.equal(image.secondary, null, 'image 备用为空 → 必须 bypass，绝不回落 agent.fallbackModel');
+  assert.equal(image.override, undefined, '手动档位锁不泄漏到其他用途');
+});
+
+/* ── 17. 用途主模型空但备用非空 → 备用独立生效 ── */
+test('purpose fallback: purpose-owned fallback works even when primary inherits main', () => {
+  const cfg = {
+    agent: { mainModel: 'p' },
+    llm: { imageModel: '', fallbackImageModel: 'img-backup', fallbackImageNodeIndex: 2 },
+  };
+  const image = fallbackBindingOf(cfg, 'image');
+  assert.deepEqual(image.secondary, { model: 'img-backup', nodeIndex: 2 }, '备用独立生效，不依赖主模型是否继承');
+});
+
+/* ── 18. 11 用途表驱动：每个用途读自己容器里的备用字段 ── */
+test('purpose fallback: binding table resolves each purpose from its own container', () => {
+  const cfg = {
+    agent: { mainModel: 'p', fallbackModel: 'fb-main', fallbackNodeIndex: 1 },
+    llm: {
+      fallbackEnhanceModel: 'fb-enh', fallbackEnhanceNodeIndex: 1,
+      fallbackImageModel: 'fb-img', fallbackImageNodeIndex: 1,
+      fallbackEditModel: 'fb-edit', fallbackEditNodeIndex: 1,
+      fallbackInterrogateModel: 'fb-int', fallbackInterrogateNodeIndex: 1,
+      fallbackVideoModel: 'fb-vid', fallbackVideoNodeIndex: 1,
+    },
+    orchestration: {
+      suno: { fallbackComposerModel: 'fb-suno', fallbackComposerNodeIndex: 1 },
+      memory: { fallbackEmbeddingModel: 'fb-mem', fallbackEmbeddingNodeIndex: 1 },
+    },
+    codeRender: { fallbackModel: 'fb-code', fallbackNodeIndex: 1 },
+    comfyuiTransform: { fallbackModel: 'fb-comfy', fallbackNodeIndex: 1 },
+    bot: {
+      tts: { preprocess: { fallbackModel: 'fb-tts', fallbackNodeIndex: 1 } },
+      keywordTrigger: { fallbackIntentModel: 'fb-trig', fallbackIntentNodeIndex: 1 },
+    },
+  };
+  const expect = {
+    main: 'fb-main', enhance: 'fb-enh', image: 'fb-img', edit: 'fb-edit',
+    interrogate: 'fb-int', video: 'fb-vid', suno: 'fb-suno', codeRender: 'fb-code',
+    comfyui: 'fb-comfy', tts: 'fb-tts', trigger: 'fb-trig', memory: 'fb-mem',
+  };
+  for (const [purpose, model] of Object.entries(expect)) {
+    const binding = fallbackBindingOf(cfg, purpose);
+    assert.equal(binding.secondary?.model, model, `${purpose} 必须读自己容器里的备用（接串检测）`);
+  }
+  assert.equal(fallbackBindingOf(cfg, 'nope').secondary, null, '未知用途 → 无备用');
+});
+
+/* ── 19. main 路径与 P1 逐字节等价（红线回归） ── */
+test('purpose fallback: main binding stays byte-equal with P1 semantics', () => {
+  const cfg = { agent: { mainModel: 'p', fallbackModel: '  backup  ', fallbackNodeIndex: 2, modelOverride: 'secondary' } };
+  const b = fallbackBindingOf(cfg, 'main');
+  assert.deepEqual(b.secondary, { model: 'backup', nodeIndex: 2 }, 'trim 与 ?? 0 语义保持');
+  assert.equal(b.override, 'secondary');
+  assert.equal(fallbackBindingOf({ agent: {} }, 'main').secondary, null);
+  assert.equal(fallbackBindingOf({ agent: {} }, 'main').override, undefined);
+  assert.equal(fallbackBindingOf({}, 'main').secondary, null, 'agent 缺失 → 无备用不崩');
+  // 全局手动锁不泄漏到其他用途
+  assert.equal(fallbackBindingOf(cfg, 'image').override, undefined);
+});
+
+/* ── 20. 双用途独立计数：同一失败序列打到两个用途，计数不串 ── */
+test('purpose fallback: per-purpose counters stay isolated through withPurposeFallback', async () => {
+  const config = {
+    agent: { mainModel: 'p' },
+    llm: {
+      imageModel: 'img-primary', imageNodeIndex: 0, fallbackImageModel: 'img-backup', fallbackImageNodeIndex: 1,
+      videoModel: 'vid-primary', videoNodeIndex: 0, fallbackVideoModel: 'vid-backup', fallbackVideoNodeIndex: 1,
+    },
+  };
+  const controller = createModelFallbackController({ getConfig: () => config });
+  const calls = [];
+  const invoke = async (target) => {
+    calls.push(target.model);
+    if (target.model.endsWith('-primary')) throw Object.assign(new Error('HTTP 503'), { status: 503 });
+    return `ok:${target.model}`;
+  };
+  for (let i = 0; i < 2; i++) {
+    const out = await withPurposeFallback(controller, 'image', { nodeIndex: 0, model: 'img-primary' }, invoke);
+    assert.equal(out, 'ok:img-backup');
+  }
+  assert.equal(controller.snapshot('image').consecutivePrimaryFailures, 2, 'image 计数 2');
+  assert.equal(controller.snapshot('video').consecutivePrimaryFailures, 0, 'video 是全新状态（不串）');
+  await withPurposeFallback(controller, 'video', { nodeIndex: 0, model: 'vid-primary' }, invoke);
+  assert.equal(controller.snapshot('video').consecutivePrimaryFailures, 1, 'video 自己计 1');
+  assert.equal(controller.snapshot('image').consecutivePrimaryFailures, 2, 'video 的失败不影响 image 计数');
+});
+
+/* ── 21. reset 通用化：任意用途都能清零自己的状态 ── */
+test('purpose fallback: reset clears any purpose state', async () => {
+  const config = { llm: { imageModel: 'img-primary', fallbackImageModel: 'img-backup' } };
+  const controller = createModelFallbackController({ getConfig: () => config });
+  const invoke = async (target) => {
+    if (target.model.endsWith('-primary')) throw Object.assign(new Error('HTTP 503'), { status: 503 });
+    return 'ok';
+  };
+  await withPurposeFallback(controller, 'image', { nodeIndex: 0, model: 'img-primary' }, invoke);
+  assert.equal(controller.snapshot('image').consecutivePrimaryFailures, 1);
+  controller.reset('image'); // P1 时代非 main 直接 return；P2 必须真的清零
+  assert.equal(controller.snapshot('image').consecutivePrimaryFailures, 0, '任意用途 reset 都要清零自己的状态');
+});
+
+/* ── 22. withPurposeFallback：bypass 直通 / turn=false 不决策不计数 ── */
+test('purpose fallback: bypass passthrough and turn=false follow semantics', async () => {
+  // 22a. 无备用 → 整体直通（失败直接抛，不产生第二次调用、不计数）。
+  const bypassCfg = { llm: { imageModel: 'img-primary' } };
+  const c1 = createModelFallbackController({ getConfig: () => bypassCfg });
+  const calls1 = [];
+  const invoke1 = async (t) => { calls1.push(t.model); throw Object.assign(new Error('HTTP 503'), { status: 503 }); };
+  await assert.rejects(() => withPurposeFallback(c1, 'image', { nodeIndex: 0, model: 'img-primary' }, invoke1), /HTTP 503/);
+  assert.deepEqual(calls1, ['img-primary'], '无备用绝不产生第二次调用');
+  assert.equal(c1.snapshot('image').consecutivePrimaryFailures, 0, 'bypass 不计数');
+  // 22b. turn=false（管线内重试/修复类调用）：跟随档位、失败不切备不计数。
+  const cfg2 = { llm: { imageModel: 'img-primary', fallbackImageModel: 'img-backup' } };
+  const c2 = createModelFallbackController({ getConfig: () => cfg2 });
+  const calls2 = [];
+  const invoke2 = async (t) => { calls2.push(t.model); throw Object.assign(new Error('HTTP 503'), { status: 503 }); };
+  await assert.rejects(() => withPurposeFallback(c2, 'image', { nodeIndex: 0, model: 'img-primary' }, invoke2, { turn: false }), /HTTP 503/);
+  assert.deepEqual(calls2, ['img-primary'], 'follow 态主失败不切备');
+  assert.equal(c2.snapshot('image').consecutivePrimaryFailures, 0, 'follow 态不计数');
 });

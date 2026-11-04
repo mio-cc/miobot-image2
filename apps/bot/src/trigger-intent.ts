@@ -1,5 +1,6 @@
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
+import { withPurposeFallback, type ModelFallbackController } from './model-fallback.js';
 
 export interface TriggerIntentClient {
   chat(nodeIndex: number, req: { model: string; messages: Array<{ role: string; content: string }>; maxTokens?: number; temperature?: number; timeoutMs?: number }): Promise<{ text: string }>;
@@ -9,6 +10,8 @@ export interface TriggerIntentOptions {
   getConfig: () => AppConfig;
   client: TriggerIntentClient;
   logger?: StructuredLogger;
+  /** P2(方案 6-P2)：用途级备用状态机；不传保持原直调（测试兼容）。 */
+  fallback?: ModelFallbackController;
   /** trace 回调（与 enforce 共用同一 trace 通道，面板可观测性页可见）。 */
   trace?: (trace: { id: string; timestamp: string; requestId: string; stage: string; summary: string; data: Record<string, unknown> }) => void;
   /** 当前 requestId（由 runtime 传入，用于 trace 关联）。 */
@@ -67,13 +70,18 @@ export class TriggerIntentChecker {
     });
     const t0 = Date.now();
     try {
-      const result = await this.options.client.chat(nodeIndex, {
-        model,
+      // P2 接入点：purpose = 'trigger'（常量显式）。备用取 bot.keywordTrigger.fallbackIntent*；
+      // 主/备都失败仍按原语义静默（catch → 默认触发），不改变 fail-closed 行为。
+      const call = (target: { nodeIndex: number; model: string }) => this.options.client.chat(target.nodeIndex, {
+        model: target.model,
         messages: [{ role: 'user', content: prompt }],
         maxTokens: 400,
         temperature: 0,
         timeoutMs: Math.max(1000, Math.trunc(Number(kt.triggerTimeoutMs) || 5000)),
       });
+      const result = this.options.fallback
+        ? await withPurposeFallback(this.options.fallback, 'trigger', { nodeIndex, model }, call)
+        : await call({ nodeIndex, model });
       const raw = String(result.text || '');
       const intent = extractBoolean(raw, 'intent');
       // 模型调用 trace（面板 → 可观测性 → 按 requestId 查看）。
@@ -140,14 +148,19 @@ export class TriggerIntentChecker {
     });
     const t0 = Date.now();
     try {
-      const result = await this.options.client.chat(nodeIndex, {
-        model,
+      // P2 接入点：purpose = 'trigger'（常量显式；延续判定与关键词触发共用同一用途绑定）。
+      // 主/备都失败仍按原语义静默（catch → 返回 false），不改变 fail-closed 行为。
+      const call = (target: { nodeIndex: number; model: string }) => this.options.client.chat(target.nodeIndex, {
+        model: target.model,
         messages: [{ role: 'user', content: prompt }],
         maxTokens: 400,
         temperature: 0,
         // 400 token 思维链 + JSON 输出，超时跟后台配置（默认 8s，原为硬编码）。
         timeoutMs: Math.max(1000, Math.trunc(Number(ac.continueTimeoutMs) || 8000)),
       });
+      const result = this.options.fallback
+        ? await withPurposeFallback(this.options.fallback, 'trigger', { nodeIndex, model }, call)
+        : await call({ nodeIndex, model });
       const cont = extractBoolean(String(result.text || ''), 'continue');
       this.options.trace?.({
         id: `trace_cont_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,

@@ -1,16 +1,21 @@
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
+import { MODEL_BINDING_PURPOSES, type PurposeDef } from './model-binding.js';
 
 /**
- * 备用模型状态机（方案 §6，P1 第三批）：主失败 → 立即切备重试本次 → 下次回主；
- * 连续两个请求级主失败 → 粘滞到备；粘滞解除 = 主模型一次成功即回切 + 120s 冷却窗口
- * 借真实请求试探（试探失败不计数）。优先级：手动 override > sticky > 自动。
+ * 备用模型状态机（方案 §6，P1 第三批；P2 起扩展到全部 11 用途）：主失败 → 立即切备重试本次
+ * → 下次回主；连续两个请求级主失败 → 粘滞到备；粘滞解除 = 主模型一次成功即回切 + 120s 冷却窗口
+ * 借真实请求试探（试探失败不计数）。优先级：手动 override（仅 main）> sticky > 自动。
+ *
+ * P2 目标解析：fallbackBindingOf 按用途表（MODEL_BINDING_PURPOSES）查各用途自己容器里的
+ * fallback 字段——**绝不跨用途继承**：某用途备用为空 = 关闭该用途的备用（bypass），
+ * 不会回落到主对话的备用（agent.fallbackModel）。main 的读取路径与 P1 逐字节等价。
  *
  * 计数口径：按用途（purpose）独立、进程级内存态——故障是"节点+模型"级的，不是会话级的；
  * 跨会话/群共享同一份状态，重启归零（不落盘：避免重启后粘在坏模型上）。
  *
  * 与 ModelBindingService 同源：手动切换模型 / 档位锁定经 onBindingChanged 回调清零计数，
- * 自动逻辑永远不写配置（切备是请求级的，agent.mainModel 不动）。
+ * 自动逻辑永远不写配置（切备是请求级的，配置里的主绑定不动）。
  */
 
 export const FALLBACK_STICKY_THRESHOLD = 2;
@@ -74,16 +79,39 @@ export function isFailoverWorthyError(error: unknown): boolean {
   return true;
 }
 
-/** 读取某用途的备用绑定与手动档位锁（实时读配置——热重载后下一请求即生效）。 */
+/** 用途表索引（fallbackBindingOf 查表用；键 = MODEL_BINDING_PURPOSES.key）。 */
+const FALLBACK_PURPOSE_MAP = new Map<string, PurposeDef>(
+  MODEL_BINDING_PURPOSES.map((def) => [def.key, def]),
+);
+
+function purposeContainerOf(config: AppConfig, section: string | null): Record<string, unknown> | null {
+  let obj: unknown = config;
+  if (section !== null) {
+    for (const part of section.split('.')) {
+      if (!obj || typeof obj !== 'object') return null;
+      obj = (obj as Record<string, unknown>)[part];
+    }
+  }
+  return obj && typeof obj === 'object' ? (obj as Record<string, unknown>) : null;
+}
+
+/** 读取某用途的备用绑定与手动档位锁（实时读配置——热重载后下一请求即生效）。
+ *  P2 通用化：按用途表查本用途容器内的 fallback 字段；main 仍读 agent.fallback*（与 P1 逐字节等价），
+ *  手动档位锁（modelOverride）保持仅对 main 生效。未知用途 → 无备用。 */
 export function fallbackBindingOf(config: AppConfig, purpose: string): {
   secondary: FallbackSecondaryBinding | null;
   override: ModelOverrideValue | undefined;
 } {
-  if (purpose !== 'main') return { secondary: null, override: undefined };
-  const agent = (config as { agent?: { fallbackModel?: unknown; fallbackNodeIndex?: unknown; modelOverride?: unknown } }).agent || {};
-  const model = String(agent.fallbackModel || '').trim();
-  const nodeIndex = Number(agent.fallbackNodeIndex ?? 0) || 0;
-  const override = agent.modelOverride === 'primary' || agent.modelOverride === 'secondary' ? agent.modelOverride : undefined;
+  const def = FALLBACK_PURPOSE_MAP.get(purpose);
+  if (!def) return { secondary: null, override: undefined };
+  const container = purposeContainerOf(config, def.section);
+  const model = String(container?.[def.fallbackModelField] || '').trim();
+  const nodeIndex = Number(container?.[def.fallbackNodeField] ?? 0) || 0;
+  let override: ModelOverrideValue | undefined;
+  if (def.key === 'main') {
+    const agent = (config as { agent?: { modelOverride?: unknown } }).agent || {};
+    override = agent.modelOverride === 'primary' || agent.modelOverride === 'secondary' ? agent.modelOverride : undefined;
+  }
   return { secondary: model ? { model, nodeIndex } : null, override };
 }
 
@@ -202,9 +230,9 @@ export function createModelFallbackController(options: {
     return { retryWithSecondary: true };
   }
 
-  /** 手动切换模型 / 档位锁定 / 解锁时清零（ModelBindingService onBindingChanged 回调）。 */
+  /** 手动切换模型 / 档位锁定 / 解锁时清零（ModelBindingService onBindingChanged 回调）。
+   *  P2 起任意用途都可清零自己的状态；不传 purpose 清全部。 */
   function reset(purpose?: string): void {
-    if (purpose && purpose !== 'main') return; // 本轮仅主对话链有状态
     if (purpose) {
       states.delete(purpose);
     } else {
@@ -246,3 +274,41 @@ export function createModelFallbackController(options: {
 }
 
 export type ModelFallbackController = ReturnType<typeof createModelFallbackController>;
+
+/**
+ * 通用备用包装（方案 6-P2）：非 main 管线的模型调用点接入状态机的标准入口——
+ * 与 agent-model-port.chatWithStateMachine 同一决策/计数/切备语义（main 链保持 port 现状，
+ * **不走本包装**）。管线接入时显式传 purpose 常量；管线内部的重试/修复类调用传 turn=false（follow）。
+ *
+ * invoke 收到实际调用的目标（节点+模型；probe 试探时附带封顶短超时提示，管线可自行采用，
+ * 不采用也不会破坏既有超时语义）。管线自身的超时/重试逻辑全部保留在 invoke 内，包装不吞不改。
+ */
+export async function withPurposeFallback<T>(
+  controller: ModelFallbackController,
+  purpose: string,
+  primary: { nodeIndex: number; model: string },
+  invoke: (target: { nodeIndex: number; model: string; probeTimeoutMs?: number }) => Promise<T>,
+  options?: { turn?: boolean; timeoutMs?: number },
+): Promise<T> {
+  const decision = controller.selectSlot(purpose, options?.turn ?? true);
+  if (decision.mode !== 'bypass' && decision.slot === 'secondary' && decision.secondary) {
+    // 锁定备 / 粘滞 / 跟随粘滞：直接用备，失败按现状抛出（不切不计数）。
+    return invoke({ nodeIndex: decision.secondary.nodeIndex, model: decision.secondary.model });
+  }
+  // 主档位（auto / probe / locked-primary / follow / bypass）。
+  // probe：借本次真实调用试探主模型——短超时封顶，失败不计数。
+  const probeTimeoutMs = decision.mode === 'probe' && decision.probeTimeoutMs
+    ? Math.min(decision.probeTimeoutMs, options?.timeoutMs || decision.probeTimeoutMs)
+    : undefined;
+  try {
+    const result = await invoke(probeTimeoutMs ? { ...primary, probeTimeoutMs } : primary);
+    controller.onPrimarySuccess(decision);
+    return result;
+  } catch (error) {
+    if (!decision.secondary || !isFailoverWorthyError(error)) throw error;
+    const { retryWithSecondary } = controller.onPrimaryFailure(decision, error);
+    if (!retryWithSecondary) throw error;
+    // 立即切备用重试**本次请求**（由备产生结果；备也失败则按现状抛出）。
+    return invoke({ nodeIndex: decision.secondary.nodeIndex, model: decision.secondary.model });
+  }
+}

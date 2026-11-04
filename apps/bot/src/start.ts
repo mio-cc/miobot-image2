@@ -58,7 +58,7 @@ import { OwnerModelListCapabilityHandler, ModelBindingSwitchCapabilityHandler, f
 import { isOwner } from './owner.js';
 // P1 7a/7b：模型绑定同源服务（/切换 命令与 model.binding.switch 工具共用）。
 import { createModelBindingService, MODEL_BINDING_PURPOSES } from './model-binding.js';
-import { createModelFallbackController } from './model-fallback.js';
+import { createModelFallbackController, withPurposeFallback } from './model-fallback.js';
 import { SunoSongHistoryStore } from './suno-song-history.js';
 import { CanvasStore } from '../../../packages/canvas-service/src/index.js';
 import type { CapabilityHandler, CapabilityInvocation, ExecutionResult } from '../../../packages/orchestration/src/index.js';
@@ -366,6 +366,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   const memoryService = new ChatMemoryService({
     rootDir: memoryRootDir,
     getConfig,
+    // P2(方案 6-P2)：embedding 出口接 purpose = 'memory' 的用途级备用。
+    fallback: modelFallback,
     logger,
     summarize: async ({ namespace, messages }) => {
       const cfg = getConfig();
@@ -465,6 +467,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   const app = createBotApp({
     getConfig,
     client,
+    // P2(方案 6-P2)：用途级备用状态机——enhance 等管线经 pipeline 接入（main 链在 agentHost 单独注入）。
+    fallback: modelFallback,
     search: searchService,
     log: logger,
     beforeDispatch: async (decision, input) => {
@@ -1196,6 +1200,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     pendingJobs: pendingJobStore,
     voiceService,
       sunoHistory: sunoSongHistory,
+    // P2(方案 6-P2)：suno composer 出口接 purpose = 'suno' 的用途级备用。
+    fallback: modelFallback,
     logger,
     featureGate,
     handlers: orchestrationHandlers,
@@ -1676,6 +1682,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   const runtime = createBotMessageRuntime({
     app,
     reply: adapter,
+    // P2(方案 6-P2)：代码画图出口接 purpose = 'codeRender' 的用途级备用。
+    fallback: modelFallback,
     getConfig: () => { syncNapcat(); return getConfig(); },
     // 追问等待中的会话：用户后续无触发消息（含纯图答案）转入澄清合并，不再被忽略。
     hasPendingClarification: ({ chatType, groupId, userId }) => orchestrationEnforcer.hasPendingClarification(chatType, groupId, userId) || hasPendingAgentClarification(agentSessions, { chatType, groupId, userId }),
@@ -1686,6 +1694,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     triggerIntentChecker: new TriggerIntentChecker({
       getConfig,
       client,
+      // P2(方案 6-P2)：触发/延续判定出口接 purpose = 'trigger' 的用途级备用。
+      fallback: modelFallback,
       logger,
       trace: (entry) => traceWriter.append(entry as any),
       getRequestId: () => orchestrationEnforcer?.currentRequestId || '',
@@ -1900,7 +1910,10 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       if (pre?.enabled && String(pre.model || '').trim()) {
         try {
           const rendered = renderTtsPreprocessPrompt(String(pre.promptTemplate || ''), text);
-          const res = await client.chat(pre.nodeIndex, { model: pre.model, messages: [{ role: 'user', content: rendered }] });
+          // P2 接入点：purpose = 'tts'（常量显式）。备用取 bot.tts.preprocess.fallback*；
+          // 主/备都失败仍按原语义处理（fallbackToOriginal ? 用原文合成 : 放弃语音）。
+          const preprocessCall = (target: { nodeIndex: number; model: string }) => client.chat(target.nodeIndex, { model: target.model, messages: [{ role: 'user', content: rendered }] });
+          const res = await withPurposeFallback(modelFallback, 'tts', { nodeIndex: pre.nodeIndex, model: pre.model }, preprocessCall);
           const out = String(res.text || '').trim();
           if (out) {
             speakText = out.slice(0, Math.max(1, Number(pre.maxOutputChars || 1000)));
@@ -2412,8 +2425,8 @@ async function handleOwnerCommand(
       // 7a 修复：经 ModelBindingService 同源写入 agent.mainModel（+双写 llm.chatModel 兼容）与节点索引——
       // 旧实现只写 llm.chatModel，agent enforce 下被 agent.mainModel 短路，切了等于没切。
       if (!command.code) {
-        return '用法：/切换 {模型名}（主对话）｜/切换 {用途} {模型名}｜/切换 {用途} 备 {模型名}（备用，仅主对话）｜/切换 锁定 备|主｜/切换 解锁｜/切换 状态 查看当前绑定。'
-          + '用途词：主对话、图片、改图、反推、音乐、视频、代码、参数、语音、触发、记忆。';
+        return '用法：/切换 {模型名}（主对话）｜/切换 {用途} {模型名}｜/切换 {用途} 备 {模型名}（设备用，全部用途支持）｜/切换 锁定 备|主｜/切换 解锁｜/切换 状态 查看当前绑定。'
+          + '用途词：主对话、润色、图片、改图、反推、音乐、视频、代码、参数、语音、触发、记忆。';
       }
       const result = bindingService().setBinding({
         purpose: command.purpose, slot: command.slot, target: command.code, scope: 'persistent',

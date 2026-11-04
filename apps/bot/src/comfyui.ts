@@ -3,11 +3,14 @@ import type { ImageArtifact, ImageResult, ModelClient } from '../../../packages/
 import { ComfyUiError, runComfyUiWorkflow, validateComfyUiProfile } from '../../../packages/comfyui/src/index.js';
 import { stitchImages } from '../../../packages/image-compose/src/index.js';
 import { runInComfyUiQueue } from './comfyui-queue.js';
+import { withPurposeFallback, type ModelFallbackController } from './model-fallback.js';
 import { reportExternalTaskFromHandler } from '../../../packages/orchestration/src/external-task-context.js';
 
 export interface ComfyUiGenerateOptions {
   getConfig: () => AppConfig;
   client: ModelClient;
+  /** P2(方案 6-P2)：用途级备用状态机（参数转化接 purpose = 'comfyui'）；不传保持原直调。 */
+  fallback?: ModelFallbackController;
   logger?: { info(message: string, data?: Record<string, unknown>): void; warn(message: string, data?: Record<string, unknown>): void };
 }
 
@@ -289,35 +292,47 @@ async function enhancePrompt(options: ComfyUiGenerateOptions, profile: ComfyUiPr
   if (!raw) return { prompt: '', source: 'fallback' };
   if (!transform.enabled || !transform.model) return { prompt: raw, source: 'fallback' };
   const renderedPrompt = renderPromptTemplate(transform.promptTemplate, profile, raw);
-  let lastError = '';
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    try {
-      const result = await options.client.chat(transform.nodeIndex, {
-        model: transform.model,
-        messages: [{ role: 'user', content: renderedPrompt }],
-        timeoutMs: transform.timeoutMs,
-        maxTokens: transform.maxTokens,
-      });
-      const enhanced = sanitizePromptText(normalizePromptOutput(result.text), promptPolicyFor(profile));
-      if (!enhanced) throw new Error('ComfyUI prompt enhancement returned empty text');
-      return { prompt: enhanced, source: 'model' };
-    } catch (error) {
-      lastError = String((error as Error)?.message || error);
-      options.logger?.warn('ComfyUI prompt enhancement attempt failed', {
-        attempt,
-        error: lastError,
-        rawPromptPreview: raw.slice(0, 180),
-        nodeIndex: transform.nodeIndex,
-        model: transform.model,
-      });
+  // P2 接入点：purpose = 'comfyui'（常量显式）。invoke = 既有「两轮重试」循环整体——
+  // 主档位两轮都失败由状态机计数并切备重试本轮；循环结束后仍失败 → 按原语义回退 raw prompt（不抛出）。
+  const attemptLoop = async (target: { nodeIndex: number; model: string }): Promise<PromptEnhancementResult> => {
+    let lastError = '';
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        const result = await options.client.chat(target.nodeIndex, {
+          model: target.model,
+          messages: [{ role: 'user', content: renderedPrompt }],
+          timeoutMs: transform.timeoutMs,
+          maxTokens: transform.maxTokens,
+        });
+        const enhanced = sanitizePromptText(normalizePromptOutput(result.text), promptPolicyFor(profile));
+        if (!enhanced) throw new Error('ComfyUI prompt enhancement returned empty text');
+        return { prompt: enhanced, source: 'model' };
+      } catch (error) {
+        lastError = String((error as Error)?.message || error);
+        options.logger?.warn('ComfyUI prompt enhancement attempt failed', {
+          attempt,
+          error: lastError,
+          rawPromptPreview: raw.slice(0, 180),
+          nodeIndex: target.nodeIndex,
+          model: target.model,
+        });
+      }
     }
+    throw new Error(lastError || 'comfyui_transform_failed');
+  };
+  const binding = { nodeIndex: Number(transform.nodeIndex) || 0, model: String(transform.model) };
+  try {
+    return options.fallback
+      ? await withPurposeFallback(options.fallback, 'comfyui', binding, attemptLoop)
+      : await attemptLoop(binding);
+  } catch (error) {
+    options.logger?.warn('ComfyUI prompt enhancement failed; using raw prompt', {
+      error: String((error as Error)?.message || error),
+      attempts: 2,
+      rawPromptPreview: raw.slice(0, 240),
+    });
+    return { prompt: raw, source: 'fallback' };
   }
-  options.logger?.warn('ComfyUI prompt enhancement failed; using raw prompt', {
-    error: lastError,
-    attempts: 2,
-    rawPromptPreview: raw.slice(0, 240),
-  });
-  return { prompt: raw, source: 'fallback' };
 }
 
 function comfyQueueKey(baseUrl: string): string {

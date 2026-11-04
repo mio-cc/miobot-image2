@@ -8,7 +8,7 @@ import FormField from '../components/FormField.vue';
 import { type AppSelectOption } from '../components/AppSelect.vue';
 import NodeCard from '../components/NodeCard.vue';
 import NodeEditDrawer from '../components/NodeEditDrawer.vue';
-import { ROLES, isRoleInherit, getRoleNode as getRoleNodeOf, getRoleModel as getRoleModelOf, setRoleValue as setRoleValueOf, roleUsageHint } from '../shared/roles';
+import { ROLES, isRoleInherit, getRoleNode as getRoleNodeOf, getRoleModel as getRoleModelOf, setRoleValue as setRoleValueOf, getRoleFallback as getRoleFallbackOf, setRoleFallbackValue as setRoleFallbackValueOf, clearRoleFallbackValue as clearRoleFallbackValueOf, roleUsageHint, type RoleDef } from '../shared/roles';
 
 /**
  * R19 模型与节点 · 统一管理（R21-f 视觉精化）。
@@ -250,8 +250,6 @@ async function fetchModels(idx: number) {
 /* ── 用途分配 ── */
 /* ROLES 表与反查已抽到 shared/roles.ts（节点模型展开的「当前用于」提示共用同一份）。 */
 
-type RoleDef = (typeof ROLES)[number];
-
 /** 判断某用途当前是否在"继承"态（字段为空/未设置）。 */
 function isInherit(role: RoleDef): boolean {
     return isRoleInherit(config.value, role);
@@ -304,33 +302,53 @@ const mainModel = computed(() => {
     return { nodeIndex, model, nodeName };
 });
 
-/* ═══ 第二模型（备用，agent.fallback*）：唯一编辑入口在本页主对话卡 ═══
-   状态机 model-fallback.ts:83 fallbackBindingOf 只认 main 链，实时读配置（热重载即生效）：
-   fallbackModel 为空 → secondary=null → mode='bypass'（不自动回退，行为与未配置完全一致）。
-   空值语义：为空 = 关闭备用，**不继承主模型**；normalize v3.ts:230-231 空串/缺键不落盘
-   → 清除后字段从配置里真的消失。触发口径：连续失败 2 次（FALLBACK_STICKY_THRESHOLD）
-   粘滞到备用，120s 冷却后借真实请求试探，主模型一次成功即回切。 */
-const fallbackBinding = computed(() => ({
-    nodeIndex: Number((config.value as any)?.agent?.fallbackNodeIndex) || 0,
-    model: String((config.value as any)?.agent?.fallbackModel || ''),
-}));
+/* ═══ 第二模型（备用）· P2 全用途折叠胶囊（方案 6-P2）═══
+   12 用途（含主对话）统一交互：行尾胶囊（未配灰 / 已配松绿）一眼可辨，点击展开编辑层，
+   默认全部收起；展开状态是本地 UI 态（Set），不写 config、不触发脏标记。
+   字段落点：各用途同容器内的 fallback* 字段（roles.ts 表 ↔ bot 侧 MODEL_BINDING_PURPOSES 同源）。
+   语义红线（防跨用途继承）：某用途备用为空 = 该用途关闭回退（状态机 bypass），
+   绝不回落到主对话的备用。清除时 model 置空串 → normalize 剔键，nodeIndex 置 0
+   （保存链路 deepMerge 数字删键无法传播）。触发口径：主模型连续失败 2 次切备，
+   一次成功即回切；档位锁定（modelOverride）仅主对话支持。 */
 
-function setFallback(nodeIndex: number, model: string) {
-    const agent = (config.value as any)?.agent;
-    if (!agent) return;
-    agent.fallbackNodeIndex = nodeIndex;
-    agent.fallbackModel = model;
+/** 展开中的备用编辑层（role.key 集合）。纯 UI 状态：不写配置、不影响脏标记。 */
+const expandedFallbacks = ref(new Set<string>());
+
+function isFallbackExpanded(key: string): boolean {
+    return expandedFallbacks.value.has(key);
+}
+/** 胶囊点击：切换展开/收起（多行可同时展开）。 */
+function toggleFallback(key: string) {
+    const next = new Set(expandedFallbacks.value);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    expandedFallbacks.value = next;
+}
+function collapseAllFallbacks() {
+    expandedFallbacks.value = new Set();
 }
 
-function clearFallback() {
-    const agent = (config.value as any)?.agent;
-    if (!agent) return;
-    // 保存链路是 deepMerge（web-api index.ts:431，缺键保留旧值），数字字段删键无法传播，
-    // 置 0 归零而非残留旧节点；model 置空串 → normalize v3.ts:231 剔键，落盘后字段消失。
-    // 状态机 fallbackBindingOf 只认 fallbackModel：model 空 → secondary=null → bypass，nodeIndex 不参与。
-    agent.fallbackModel = '';
-    agent.fallbackNodeIndex = 0;
-    configStore.saveStatus = '已清除备用模型，保存后生效';
+/** 读某用途备用绑定；mainRole 让主对话首卡共用同一套胶囊。 */
+const mainRole = ROLES.find(r => r.key === 'main')!;
+
+function getFallback(role: RoleDef): { nodeIndex: number; model: string } {
+    return getRoleFallbackOf(config.value, role);
+}
+function setFallbackBinding(role: RoleDef, nodeIndex: number, model: string) {
+    setRoleFallbackValueOf(config.value, role, nodeIndex, model);
+    configStore.saveStatus = `已更新「${role.title}」备用模型，保存后生效`;
+}
+function clearFallbackBinding(role: RoleDef) {
+    clearRoleFallbackValueOf(config.value, role);
+    configStore.saveStatus = `已清除「${role.title}」备用模型，保存后生效`;
+}
+
+/** 展开层 hint：未配写明不跨用途继承；已配写触发/回切口径（档位锁定仅主对话）。 */
+function fallbackHint(role: RoleDef): string {
+    const binding = getFallback(role);
+    if (!binding.model) return '未配置备用模型时不会自动回退（也不会拿主对话备用顶替）。';
+    return role.key === 'main'
+        ? '主模型连续失败 2 次切到备用，一次成功即回切；/切换 命令可手动锁定主/备档位。'
+        : '主模型连续失败 2 次切到备用，一次成功即回切；备用可用「/切换」命令改绑（档位锁定仅主对话支持）。';
 }
 
 /* ── 保存 ── */
@@ -400,31 +418,51 @@ onMounted(() => { void capabilityStore.refresh(); });
           </div>
         </div>
 
-        <!-- 第二模型（备用）：agent.fallback* 的唯一编辑入口。字段直写 agent 对象，保存后热重载即生效。 -->
+        <!-- 第二模型（备用）胶囊（P2 折叠化）：与用途行同款交互，12 行视觉一致。
+             字段直写 agent.fallback*（roles 表 main 行），保存后热重载即生效；默认收起。 -->
         <div class="border-t border-[color:var(--accent-line)] bg-[color:var(--page)]">
-          <div class="flex items-center gap-4 px-5 py-3.5 flex-wrap">
-            <div class="w-[200px] flex-none">
-              <div class="text-[13px] font-semibold text-[color:var(--ink)] leading-tight">第二模型（备用）</div>
-              <div class="text-[11px] text-[color:var(--ink-3)] mt-0.5">主模型连续失败自动切备 · 留空不启用</div>
-            </div>
-            <div class="flex-1 min-w-[240px]">
-              <ModelPicker capability="chat"
-                :node-index="fallbackBinding.nodeIndex" :model="fallbackBinding.model"
-                placeholder="留空 = 不启用备用"
-                @update:node-index="(v: number) => setFallback(v, fallbackBinding.model)"
-                @update:model="(v: string) => setFallback(fallbackBinding.nodeIndex, v)" />
-            </div>
-            <button v-if="fallbackBinding.model" class="btn-outline text-xs flex-none" @click="clearFallback">清除备用</button>
+          <div class="flex items-center gap-3 px-5 py-2 flex-wrap">
+            <span class="text-[11px] text-[color:var(--ink-3)] flex-none">备用模型</span>
+            <button type="button"
+              :class="getFallback(mainRole).model
+                ? 'fb-pill fb-pill-on'
+                : 'fb-pill'"
+              :title="getFallback(mainRole).model ? `备用：${getFallback(mainRole).model}（点击收起/展开）` : '未配置备用（点击展开配置）'"
+              @click="toggleFallback(mainRole.key)">
+              <span class="font-bold">备</span><span class="opacity-40">·</span>
+              <span v-if="getFallback(mainRole).model" class="truncate max-w-[260px] font-medium">{{ getFallback(mainRole).model }}</span>
+              <span v-else class="font-medium">未配置</span>
+            </button>
           </div>
-          <p class="px-5 pb-3 text-[11px] text-[color:var(--ink-3)] leading-relaxed">
-            <template v-if="fallbackBinding.model">主模型连续失败 2 次切到备用，一次成功即回切；/切换 命令可手动锁定主/备档位。</template>
-            <template v-else>未配置备用模型时不会自动回退（也不会拿主模型顶替）。</template>
-          </p>
+          <!-- 展开层：单列堆叠，无横向溢出 -->
+          <div v-if="isFallbackExpanded(mainRole.key)" class="px-5 pb-3.5">
+            <div class="rounded-[10px] border border-[color:var(--hairline-2)] bg-[color:var(--surface)] px-3.5 py-3">
+              <ModelPicker capability="chat"
+                :node-index="getFallback(mainRole).nodeIndex" :model="getFallback(mainRole).model"
+                placeholder="留空 = 不启用备用"
+                @update:node-index="(v: number) => setFallbackBinding(mainRole, v, getFallback(mainRole).model)"
+                @update:model="(v: string) => setFallbackBinding(mainRole, getFallback(mainRole).nodeIndex, v)" />
+              <div class="flex items-center gap-2.5 mt-2.5 flex-wrap">
+                <button v-if="getFallback(mainRole).model" class="btn-outline text-xs" @click="clearFallbackBinding(mainRole)">清除备用</button>
+                <p class="text-[11px] text-[color:var(--ink-3)] leading-relaxed flex-1 min-w-[200px]">{{ fallbackHint(mainRole) }}</p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- 用途行（继承 / 覆盖） -->
+      <!-- 用途行（继承 / 覆盖 + 备用胶囊） -->
       <div class="bg-[color:var(--surface)] border border-[color:var(--hairline-2)] rounded-[16px] shadow-[var(--sh-1)] overflow-hidden">
+        <!-- 表头：备用胶囊说明 + 全部收起（仅在存在展开行时出现） -->
+        <div class="flex items-center gap-3 px-5 py-2 border-b border-[color:var(--hairline-2)] bg-[color:var(--page)] flex-wrap">
+          <span class="text-[11px] text-[color:var(--ink-3)] leading-relaxed flex-1 min-w-[200px]">
+            行尾「备」胶囊配置各用途独立的备用模型（主模型故障时切备救场；未配 = 该用途不自动回退，也不会拿主对话备用顶替）。
+          </span>
+          <button v-if="expandedFallbacks.size > 0" type="button"
+            class="text-[11px] text-[color:var(--ink-3)] hover:text-[color:var(--ink)] border border-[color:var(--hairline-2)] rounded-md px-2 py-1 transition-colors"
+            @click="collapseAllFallbacks">全部收起</button>
+        </div>
+
         <div v-for="role in ROLES.filter(r => r.key !== 'main')" :key="role.key"
           class="flex items-center gap-4 px-5 py-3 border-b border-[color:var(--hairline)] last:border-b-0 hover:bg-[color:var(--page)] transition-colors duration-150 flex-wrap">
 
@@ -459,6 +497,34 @@ onMounted(() => { void capabilityStore.refresh(); });
               <button v-if="role.inheritable" class="text-[11px] text-[color:var(--ink-3)] hover:text-[color:var(--accent)] transition-colors duration-150 whitespace-nowrap" @click="makeInherit(role); editingRole = null;">
                 ↩ 恢复跟随
               </button>
+            </div>
+          </div>
+
+          <!-- 备用胶囊（P2）：折叠态一眼可辨已配/未配；点击展开行内编辑层。默认收起。 -->
+          <button type="button"
+            :class="getFallback(role).model ? 'fb-pill fb-pill-on' : 'fb-pill'"
+            :title="getFallback(role).model ? `备用：${getFallback(role).model}（点击收起/展开）` : '未配置备用（点击展开配置）'"
+            @click="toggleFallback(role.key)">
+            <span class="font-bold">备</span><span class="opacity-40">·</span>
+            <span v-if="getFallback(role).model" class="truncate max-w-[180px] sm:max-w-[220px] font-medium">{{ getFallback(role).model }}</span>
+            <span v-else class="font-medium">未配置</span>
+          </button>
+
+          <!-- 备用展开层：单列堆叠、无横向溢出（w-full 占据 wrap 后整行）。 -->
+          <div v-if="isFallbackExpanded(role.key)" class="w-full">
+            <div class="rounded-[10px] border border-[color:var(--hairline-2)] bg-[color:var(--page)] px-3.5 py-3 mt-1">
+              <ModelPicker
+                :node-index="getFallback(role).nodeIndex"
+                :model="getFallback(role).model"
+                :capability="role.capability"
+                :placeholder="'留空 = 不启用备用'"
+                @update:node-index="(v: number) => setFallbackBinding(role, v, getFallback(role).model)"
+                @update:model="(v: string) => setFallbackBinding(role, getFallback(role).nodeIndex, v)"
+              />
+              <div class="flex items-center gap-2.5 mt-2.5 flex-wrap">
+                <button v-if="getFallback(role).model" class="btn-outline text-xs" @click="clearFallbackBinding(role)">清除备用</button>
+                <p class="text-[11px] text-[color:var(--ink-3)] leading-relaxed flex-1 min-w-[200px]">{{ fallbackHint(role) }}</p>
+              </div>
             </div>
           </div>
         </div>

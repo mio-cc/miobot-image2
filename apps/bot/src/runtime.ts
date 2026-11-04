@@ -24,6 +24,7 @@ import { DEFAULT_FILE_PARSE_LIMITS, PendingFileIndex, parseFile, formatParsedFil
 import { DEFAULT_FILEGEN_LIMITS, generateFile, generatedFileSpecFromJson, type GeneratedFileSpec, type GeneratedFileType } from '../../../packages/filegen/src/index.js';
 import { FeatureLimitError, type FeatureGate } from './feature-gate.js';
 import { sanitizeModelImageReferences } from './deps.js';
+import { withPurposeFallback, type ModelFallbackController } from './model-fallback.js';
 import { renderTextToImage } from '../../../packages/image-compose/src/index.js';
 import type { BrowserRenderService, RenderedImage } from '../../../packages/browser-render/src/index.js';
 import { createImageProgress, type ImageProgressKind, type ImageProgressHandle } from './image-progress.js';
@@ -60,6 +61,8 @@ export interface BotRuntimeOptions {
   /** NapcatAdapter 结构上即是 ReplyClient(发送各类消息)。 */
   reply: ReplyClient;
   getConfig: () => AppConfig;
+  /** P2(方案 6-P2)：用途级备用状态机（代码画图接 purpose = 'codeRender'）；不传保持原直调。 */
+  fallback?: ModelFallbackController;
   /** 机器人自身 QQ(用于 mention 判定);不给则用 config.bot.botQqId。 */
   selfId?: () => string | number | undefined;
   botName?: string;
@@ -528,6 +531,11 @@ export async function handleCodeRenderRequest(
     if (!candidates.some((item) => item.nodeIndex === candidate.nodeIndex && item.model === candidate.model)) candidates.push(candidate);
   };
   addCandidate(codeNodeIndex, cfg.codeRender?.model);
+  // P2 接入点：purpose = 'codeRender'（常量显式）。主模型未配置但备用已配置 → 备用独立生效：
+  // 直接作为首选候选插入（不进状态机——本用途主绑定为空，避免与既有兜底链双重重试）。
+  if (!String(cfg.codeRender?.model || '').trim()) {
+    addCandidate(cfg.codeRender?.fallbackNodeIndex, cfg.codeRender?.fallbackModel);
+  }
   // 代码模型可能按量/按 key 限流或返回空文本；Agent 主模型是合理的兜底，
   // 但只在 primary 失败时使用，不能改变正常的代码画图模型路由。
   addCandidate(cfg.agent?.mainNodeIndex, cfg.agent?.mainModel);
@@ -566,12 +574,27 @@ export async function handleCodeRenderRequest(
     const fallbackModelTimeoutMs = Math.max(primaryModelTimeoutMs, Number(cfg.agent?.timeoutMs) || 0);
     const codeModelMaxTokens = Math.max(32_768, Math.max(0, Number(cfg.codeRender.maxTokens) || 0));
     const primaryKey = `${codeNodeIndex}:${String(cfg.codeRender.model || '').trim()}`;
-    const chat = async (candidate: { nodeIndex: number; model: string }, content: string) => options.app.client.chat(candidate.nodeIndex, {
+    const rawChat = async (candidate: { nodeIndex: number; model: string }, content: string) => options.app.client.chat(candidate.nodeIndex, {
       model: candidate.model,
       messages: [{ role: 'user', content }],
       timeoutMs: `${candidate.nodeIndex}:${candidate.model}` === primaryKey ? primaryModelTimeoutMs : fallbackModelTimeoutMs,
       maxTokens: codeModelMaxTokens,
     });
+    // P2 接入点：purpose = 'codeRender'（常量显式）。状态机只接管「配置主模型 ↔ 用户备用」这一档
+    // （invoke = 单候选尝试，成败归因到主模型本身）；既有兜底候选链（agent.main → chat）与
+    // 逐候选超时/空文本重试/解析修复语义原样保留。管线内重试/修复类调用传 turn=false（follow 当前档位）。
+    const codeRenderModel = String(cfg.codeRender?.model || '').trim();
+    const codeRenderPrimaryConfigured = Boolean(options.fallback)
+      && codeRenderModel !== ''
+      && candidates[0]?.nodeIndex === codeNodeIndex
+      && candidates[0]?.model === codeRenderModel;
+    const chat = async (candidate: { nodeIndex: number; model: string }, content: string, turn = true) => {
+      if (!codeRenderPrimaryConfigured || candidate !== candidates[0]) return rawChat(candidate, content);
+      return withPurposeFallback(options.fallback!, 'codeRender',
+        { nodeIndex: candidate.nodeIndex, model: candidate.model },
+        (target) => rawChat(target, content),
+        { turn });
+    };
     let artifact: unknown;
     let lastError = '';
     for (const candidate of candidates) {
@@ -587,7 +610,8 @@ export async function handleCodeRenderRequest(
         lastText = String(first.text || '').trim();
         if (!lastText) {
           options.logger?.warn('代码画图模型返回空文本，重试一次', { nodeIndex: candidate.nodeIndex, model: candidate.model });
-          const retry = await chat(candidate, prompt);
+          // 修复类调用 → turn=false（follow 当前档位，不切不计数）。
+          const retry = await chat(candidate, prompt, false);
           if (retry.truncated === true || String(retry.finishReason || '').toLowerCase() === 'length') throw new Error('代码模型输出被 token 上限截断（推理模型需要更大输出预算）');
           lastText = String(retry.text || '').trim();
         }
@@ -610,7 +634,8 @@ export async function handleCodeRenderRequest(
             '【质量要求】如果是榜单/表格/长列表，输出完整数据看板并设置 fullPage:true；否则必须是一张完整、主体清晰、有分层上色和背景的插图。',
             lastText ? ('上一次输出：' + lastText.slice(0, 6000)) : '上一次输出为空。',
           ].join('\n\n');
-          const repaired = await chat(candidate, repairPrompt);
+          // 修复类调用 → turn=false（follow 当前档位，不切不计数）。
+          const repaired = await chat(candidate, repairPrompt, false);
           lastText = String(repaired.text || '').trim();
           artifact = parseRenderArtifact(lastText);
           break;

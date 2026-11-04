@@ -14,6 +14,9 @@ export interface RoleDef {
     section: string;
     nodeField: string;
     modelField: string;
+    /** P2（方案 6-P2）：本用途备用绑定字段（同容器内；与 bot 侧 MODEL_BINDING_PURPOSES 同源对齐）。 */
+    fallbackNodeField: string;
+    fallbackModelField: string;
     /** 该用途推荐的能力过滤 */
     capability?: string;
     /** 是否允许退回继承（主对话不允许） */
@@ -21,18 +24,18 @@ export interface RoleDef {
 }
 
 export const ROLES: RoleDef[] = [
-    { key: 'main', title: 'Agent 主对话', desc: '全站默认 · 所有"跟随"的用途继承它', section: 'agent', nodeField: 'mainNodeIndex', modelField: 'mainModel', capability: 'chat', inheritable: false },
-    { key: 'enhance', title: '提示词润色', desc: 'image.enhance · 生图前结构化改写', section: 'llm', nodeField: 'enhanceNodeIndex', modelField: 'enhanceModel', capability: 'chat', inheritable: true },
-    { key: 'image', title: '图片生成', desc: 'image.generate · ComfyUI 工作流或多模态直生', section: 'llm', nodeField: 'imageNodeIndex', modelField: 'imageModel', capability: 'image.generate', inheritable: true },
-    { key: 'edit', title: '图片编辑', desc: 'image.edit · 多模态原生理解', section: 'llm', nodeField: 'editNodeIndex', modelField: 'editModel', capability: 'image.edit', inheritable: true },
-    { key: 'interrogate', title: '图片反推', desc: 'image.interrogate', section: 'llm', nodeField: 'interrogateNodeIndex', modelField: 'interrogateModel', capability: 'image.interrogate', inheritable: true },
-    { key: 'suno', title: 'Suno 作曲', desc: '歌词与参数规划（Composer）', section: 'orchestration.suno', nodeField: 'composerNodeIndex', modelField: 'composerModel', capability: 'chat', inheritable: true },
-    { key: 'video', title: '视频生成', desc: 'video.generate', section: 'llm', nodeField: 'videoNodeIndex', modelField: 'videoModel', capability: 'video.generate', inheritable: true },
-    { key: 'codeRender', title: '代码渲染', desc: 'code.render · HTML/SVG/Canvas/Three', section: 'codeRender', nodeField: 'nodeIndex', modelField: 'model', capability: 'chat', inheritable: true },
-    { key: 'comfyui', title: 'ComfyUI 参数转化', desc: '自然语言 → workflow JSON', section: 'comfyuiTransform', nodeField: 'nodeIndex', modelField: 'model', capability: 'chat', inheritable: true },
-    { key: 'tts', title: 'TTS 前处理', desc: '朗读前改写', section: 'bot.tts.preprocess', nodeField: 'nodeIndex', modelField: 'model', capability: 'chat', inheritable: true },
-    { key: 'trigger', title: '触发 / 续话判定', desc: '轻量判定 · 建议选快模型；触发与续话共用', section: 'bot.keywordTrigger', nodeField: 'intentNodeIndex', modelField: 'intentModel', capability: 'chat', inheritable: true },
-    { key: 'memory', title: '记忆摘要 / 评分', desc: 'memory.* 二级任务', section: 'orchestration.memory', nodeField: 'embeddingNodeIndex', modelField: 'embeddingModel', capability: 'chat', inheritable: true },
+    { key: 'main', title: 'Agent 主对话', desc: '全站默认 · 所有"跟随"的用途继承它', section: 'agent', nodeField: 'mainNodeIndex', modelField: 'mainModel', fallbackNodeField: 'fallbackNodeIndex', fallbackModelField: 'fallbackModel', capability: 'chat', inheritable: false },
+    { key: 'enhance', title: '提示词润色', desc: 'image.enhance · 生图前结构化改写', section: 'llm', nodeField: 'enhanceNodeIndex', modelField: 'enhanceModel', fallbackNodeField: 'fallbackEnhanceNodeIndex', fallbackModelField: 'fallbackEnhanceModel', capability: 'chat', inheritable: true },
+    { key: 'image', title: '图片生成', desc: 'image.generate · ComfyUI 工作流或多模态直生', section: 'llm', nodeField: 'imageNodeIndex', modelField: 'imageModel', fallbackNodeField: 'fallbackImageNodeIndex', fallbackModelField: 'fallbackImageModel', capability: 'image.generate', inheritable: true },
+    { key: 'edit', title: '图片编辑', desc: 'image.edit · 多模态原生理解', section: 'llm', nodeField: 'editNodeIndex', modelField: 'editModel', fallbackNodeField: 'fallbackEditNodeIndex', fallbackModelField: 'fallbackEditModel', capability: 'image.edit', inheritable: true },
+    { key: 'interrogate', title: '图片反推', desc: 'image.interrogate', section: 'llm', nodeField: 'interrogateNodeIndex', modelField: 'interrogateModel', fallbackNodeField: 'fallbackInterrogateNodeIndex', fallbackModelField: 'fallbackInterrogateModel', capability: 'image.interrogate', inheritable: true },
+    { key: 'suno', title: 'Suno 作曲', desc: '歌词与参数规划（Composer）', section: 'orchestration.suno', nodeField: 'composerNodeIndex', modelField: 'composerModel', fallbackNodeField: 'fallbackComposerNodeIndex', fallbackModelField: 'fallbackComposerModel', capability: 'chat', inheritable: true },
+    { key: 'video', title: '视频生成', desc: 'video.generate', section: 'llm', nodeField: 'videoNodeIndex', modelField: 'videoModel', fallbackNodeField: 'fallbackVideoNodeIndex', fallbackModelField: 'fallbackVideoModel', capability: 'video.generate', inheritable: true },
+    { key: 'codeRender', title: '代码渲染', desc: 'code.render · HTML/SVG/Canvas/Three', section: 'codeRender', nodeField: 'nodeIndex', modelField: 'model', fallbackNodeField: 'fallbackNodeIndex', fallbackModelField: 'fallbackModel', capability: 'chat', inheritable: true },
+    { key: 'comfyui', title: 'ComfyUI 参数转化', desc: '自然语言 → workflow JSON', section: 'comfyuiTransform', nodeField: 'nodeIndex', modelField: 'model', fallbackNodeField: 'fallbackNodeIndex', fallbackModelField: 'fallbackModel', capability: 'chat', inheritable: true },
+    { key: 'tts', title: 'TTS 前处理', desc: '朗读前改写', section: 'bot.tts.preprocess', nodeField: 'nodeIndex', modelField: 'model', fallbackNodeField: 'fallbackNodeIndex', fallbackModelField: 'fallbackModel', capability: 'chat', inheritable: true },
+    { key: 'trigger', title: '触发 / 续话判定', desc: '轻量判定 · 建议选快模型；触发与续话共用', section: 'bot.keywordTrigger', nodeField: 'intentNodeIndex', modelField: 'intentModel', fallbackNodeField: 'fallbackIntentNodeIndex', fallbackModelField: 'fallbackIntentModel', capability: 'chat', inheritable: true },
+    { key: 'memory', title: '记忆摘要 / 评分', desc: 'memory.* 二级任务', section: 'orchestration.memory', nodeField: 'embeddingNodeIndex', modelField: 'embeddingModel', fallbackNodeField: 'fallbackEmbeddingNodeIndex', fallbackModelField: 'fallbackEmbeddingModel', capability: 'chat', inheritable: true },
 ];
 
 function sectionOf(config: any, section: string): any {
@@ -73,6 +76,35 @@ export function setRoleValue(config: any, role: RoleDef, nodeIndex: number, mode
     }
     obj[role.nodeField] = nodeIndex;
     obj[role.modelField] = model;
+}
+
+/** P2：读某用途的备用绑定（model 空串/缺键 = 未配置）。 */
+export function getRoleFallback(config: any, role: RoleDef): { nodeIndex: number; model: string } {
+    const obj = sectionOf(config, role.section);
+    return {
+        nodeIndex: Number(obj?.[role.fallbackNodeField]) || 0,
+        model: String(obj?.[role.fallbackModelField] || '').trim(),
+    };
+}
+
+/** P2：写某用途的备用绑定（与主绑定同容器）。 */
+export function setRoleFallbackValue(config: any, role: RoleDef, nodeIndex: number, model: string) {
+    const parts = role.section.split('.');
+    let obj = config;
+    for (const part of parts) {
+        if (!obj[part]) obj[part] = {};
+        obj = obj[part];
+    }
+    obj[role.fallbackNodeField] = nodeIndex;
+    obj[role.fallbackModelField] = model;
+}
+
+/**
+ * P2：清除某用途的备用。保存链路是 deepMerge（缺键保留旧值），数字字段删键无法传播，
+ * 置 0 归零；model 置空串 → normalize 剔键，落盘后字段消失（状态机读作 bypass）。
+ */
+export function clearRoleFallbackValue(config: any, role: RoleDef) {
+    setRoleFallbackValue(config, role, 0, '');
 }
 
 /** 反查：显式绑定到某模型的用途标题列表（含主对话；继承态用途不计）。 */

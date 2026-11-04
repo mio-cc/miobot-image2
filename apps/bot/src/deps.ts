@@ -5,6 +5,7 @@ import type { ImagePromptPipeline } from './image-pipeline.js';
 import type { WebSearchService } from '../../../packages/search/src/index.js';
 import type { AppConfig } from '../../../packages/config/src/index.js';
 import { generateComfyUiImages } from './comfyui.js';
+import { withPurposeFallback, type ModelFallbackController } from './model-fallback.js';
 import { reportExternalTaskFromHandler } from '../../../packages/orchestration/src/external-task-context.js';
 
 /** 把 model 层的图像产物统一成可直接发送/压缩的字符串（url 原样、base64 转 data URL）。 */
@@ -48,6 +49,8 @@ export interface ModelDepsOptions {
   chatSystemPrompt?: string;
   /** 生图提示词流水线(可选)：模板渲染 + 润色 + 失败安全改写。 */
   pipeline?: ImagePromptPipeline;
+  /** P2(方案 6-P2)：用途级备用状态机；不传则四个模型出口保持无备用直调（测试兼容）。 */
+  fallback?: ModelFallbackController;
   /** 结构化日志器(可选)：记录图片被丢弃等诊断信息。 */
   /** 联网搜索服务；不传则不注入搜索结果。 */
   search?: WebSearchService;
@@ -82,7 +85,7 @@ export function sanitizeModelImageReferences(images: string[]): { images: string
 }
 
 export function createModelBackedDeps(options: ModelDepsOptions): RuntimeDeps {
-  const { client, getConfig, getRouting, sessions, chatSystemPrompt, pipeline, search, logger } = options;
+  const { client, getConfig, getRouting, sessions, chatSystemPrompt, pipeline, fallback, search, logger } = options;
   return {
     async chat(req) {
       const routing = getRouting();
@@ -166,7 +169,7 @@ export function createModelBackedDeps(options: ModelDepsOptions): RuntimeDeps {
         model: req.model,
       });
       if ((imageNode?.kind === 'comfyui' || comfyConfig) && comfyConfig) {
-        const result = await generateComfyUiImages({ getConfig: getConfig!, client, logger }, {
+        const result = await generateComfyUiImages({ getConfig: getConfig!, client, fallback, logger }, {
           nodeIndex: routing.imageNodeIndex,
           profileId: req.model,
           prompt: req.prompt,
@@ -182,20 +185,29 @@ export function createModelBackedDeps(options: ModelDepsOptions): RuntimeDeps {
         try { prompt = await pipeline.prepare({ prompt: req.prompt, templateId: req.templateId }); }
         catch { prompt = req.prompt; }
       }
+      // P2 接入点：purpose = 'image'（常量显式，不靠位置推断）。
+      // 请求级首调走状态机（主失败 → 立即切备重试本次）；安全改写重试属修复类调用 → turn=false（follow 当前档位，不再切不再计数）。
+      // ComfyUI 分支（profileId 语义）不经此包装——它的参数转化另有 purpose = 'comfyui'。
+      const callGenerate = (content: string, turn: boolean) => fallback
+        ? withPurposeFallback(fallback, 'image',
+            { nodeIndex: routing.imageNodeIndex, model: req.model },
+            (target) => client.generateImages(target.nodeIndex, {
+              model: target.model, prompt: content, size: req.size, count: req.count, quality: req.quality,
+              ...(routing.imageTimeoutMs ? { timeoutMs: routing.imageTimeoutMs } : {}),
+            }),
+            { turn })
+        : client.generateImages(routing.imageNodeIndex, {
+            model: req.model, prompt: content, size: req.size, count: req.count, quality: req.quality,
+            ...(routing.imageTimeoutMs ? { timeoutMs: routing.imageTimeoutMs } : {}),
+          });
       try {
-        const res = await client.generateImages(routing.imageNodeIndex, {
-          model: req.model, prompt, size: req.size, count: req.count, quality: req.quality,
-          ...(routing.imageTimeoutMs ? { timeoutMs: routing.imageTimeoutMs } : {}),
-        });
+        const res = await callGenerate(prompt, true);
         return { images: artifactsToStrings(res) };
       } catch (error) {
         if (pipeline) {
           const safe = await pipeline.safeRewrite(prompt);
           if (safe && safe.trim() && safe !== prompt) {
-            const res = await client.generateImages(routing.imageNodeIndex, {
-              model: req.model, prompt: safe, size: req.size, count: req.count, quality: req.quality,
-              ...(routing.imageTimeoutMs ? { timeoutMs: routing.imageTimeoutMs } : {}),
-            });
+            const res = await callGenerate(safe, false);
             return { images: artifactsToStrings(res) };
           }
         }
@@ -213,11 +225,15 @@ export function createModelBackedDeps(options: ModelDepsOptions): RuntimeDeps {
         model: req.model,
       });
       if (editNode?.kind === 'comfyui') throw new Error('ComfyUI 图生图/改图暂未开放，第一版只支持文生图。');
-      const res = await client.editImage(routing.editNodeIndex, {
-        model: req.model, prompt: req.prompt, images: req.images, size: req.size, quality: req.quality,
+      // P2 接入点：purpose = 'edit'（常量显式）。
+      const editCall = (target: { nodeIndex: number; model: string }) => client.editImage(target.nodeIndex, {
+        model: target.model, prompt: req.prompt, images: req.images, size: req.size, quality: req.quality,
         ...(routing.imageTimeoutMs ? { timeoutMs: routing.imageTimeoutMs } : {}),
         ...(routing.imageEditRequestMode ? { requestMode: routing.imageEditRequestMode } : {}),
       });
+      const res = fallback
+        ? await withPurposeFallback(fallback, 'edit', { nodeIndex: routing.editNodeIndex, model: req.model }, editCall)
+        : await editCall({ nodeIndex: routing.editNodeIndex, model: req.model });
       return { images: artifactsToStrings(res) };
     },
     async interrogate(req) {
@@ -230,17 +246,22 @@ export function createModelBackedDeps(options: ModelDepsOptions): RuntimeDeps {
         kind: interrogateNode?.kind || '',
         model: req.model,
       });
-      const res = await client.interrogate(routing.interrogateNodeIndex, {
-        model: req.model, imageUrls: req.images, prompt: req.prompt,
+      // P2 接入点：purpose = 'interrogate'（常量显式）。
+      const interrogateCall = (target: { nodeIndex: number; model: string }) => client.interrogate(target.nodeIndex, {
+        model: target.model, imageUrls: req.images, prompt: req.prompt,
         ...(routing.interrogateTimeoutMs ? { timeoutMs: routing.interrogateTimeoutMs } : {}),
       });
+      const res = fallback
+        ? await withPurposeFallback(fallback, 'interrogate', { nodeIndex: routing.interrogateNodeIndex, model: req.model }, interrogateCall)
+        : await interrogateCall({ nodeIndex: routing.interrogateNodeIndex, model: req.model });
       return { text: res.text };
     },
     async generateVideo(req) {
       const routing = getRouting();
       // ModelClient.generateVideo 内部完成异步轮询，此处只等最终 URL。
-      const res = await client.generateVideo(routing.videoNodeIndex, {
-        model: req.model,
+      // P2 接入点：purpose = 'video'（常量显式）。轮询/外部任务上报全部保留在 invoke 内，包装不吞不改。
+      const videoCall = (target: { nodeIndex: number; model: string }) => client.generateVideo(target.nodeIndex, {
+        model: target.model,
         prompt: req.prompt,
         imageUrl: req.imageUrl,
         duration: req.duration,
@@ -251,6 +272,9 @@ export function createModelBackedDeps(options: ModelDepsOptions): RuntimeDeps {
         pollIntervalMs: routing.videoPollIntervalMs,
         onExternalTask: (taskId: string) => reportExternalTaskFromHandler(taskId),
       });
+      const res = fallback
+        ? await withPurposeFallback(fallback, 'video', { nodeIndex: routing.videoNodeIndex, model: req.model }, videoCall)
+        : await videoCall({ nodeIndex: routing.videoNodeIndex, model: req.model });
       const videos = videoArtifactsToStrings(res);
       if (!videos.length) {
         throw new Error('视频生成完成但未返回可播放 URL（可能仍 pending 或上游异常）');

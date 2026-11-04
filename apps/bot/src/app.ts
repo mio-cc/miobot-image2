@@ -7,6 +7,7 @@ import { toBotRouting, toModelNodes, toCapabilityOverrides } from './config-brid
 import { createModelBackedDeps } from './deps.js';
 import type { RuntimeInput, RuntimeResult, RuntimeExplicitEngine } from './runtime-types.js';
 import { createImagePromptPipeline, type ImagePromptPipeline } from './image-pipeline.js';
+import type { ModelFallbackController } from './model-fallback.js';
 
 export const DEFAULT_CHAT_SYSTEM_PROMPT = '你是 Miobot，一个运行在 QQ/Napcat 上的中文机器人。回答要简洁、直接、有帮助。';
 
@@ -24,6 +25,8 @@ export interface BotAppOptions {
   registry?: CapabilityRegistry | (() => CapabilityRegistry);
   /** 会话记忆；不传则按 config.llm.maxConversationRounds/Chars 自动创建。 */
   sessions?: SessionStore;
+  /** P2(方案 6-P2)：用途级备用状态机；不传则管线保持无备用直调（测试兼容）。 */
+  fallback?: ModelFallbackController;
   /** chat 系统提示词。 */
   chatSystemPrompt?: string;
   /** 生图提示词流水线；不传则用 ModelClient 后端(模板渲染+润色+安全改写)。 */
@@ -75,7 +78,7 @@ export function createBotApp(options: BotAppOptions): BotApp {
     maxChars: () => options.getConfig().llm.maxConversationChars,
     ttlMs: () => Math.max(0, (options.getConfig().llm.sessionTtlMinutes ?? 0) * 60_000),
   });
-  const pipeline = options.pipeline || createImagePromptPipeline(client, options.getConfig);
+  const pipeline = options.pipeline || createImagePromptPipeline(client, options.getConfig, options.fallback);
   // 人格系统提示词：面板配置的 bot.persona 优先于硬编码默认值（每次请求现读支持热重载）。
   const effectiveChatSystemPrompt = (): string => {
     const persona = options.getConfig().bot?.persona;
@@ -93,6 +96,7 @@ export function createBotApp(options: BotAppOptions): BotApp {
     sessions,
     chatSystemPrompt: effectiveChatSystemPrompt(),
     pipeline,
+    fallback: options.fallback,
     search: options.search,
     logger: options.log,
   });
