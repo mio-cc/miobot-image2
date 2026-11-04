@@ -159,12 +159,6 @@ function removeExposure(id: string) {
         <FormField label="Temperature">
           <input v-model.number="agent.temperature" type="number" min="0" max="2" step="0.1" class="input-field" />
         </FormField>
-        <FormField label="Fallback 节点索引" hint="留空或 -1 表示未设置">
-          <input v-model.number="agent.fallbackNodeIndex" type="number" min="0" class="input-field" />
-        </FormField>
-        <FormField label="Fallback 模型" hint="主模型失败时的备用模型">
-          <input v-model="agent.fallbackModel" class="input-field font-mono" placeholder="可选" />
-        </FormField>
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">

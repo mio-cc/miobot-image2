@@ -304,6 +304,35 @@ const mainModel = computed(() => {
     return { nodeIndex, model, nodeName };
 });
 
+/* ═══ 第二模型（备用，agent.fallback*）：唯一编辑入口在本页主对话卡 ═══
+   状态机 model-fallback.ts:83 fallbackBindingOf 只认 main 链，实时读配置（热重载即生效）：
+   fallbackModel 为空 → secondary=null → mode='bypass'（不自动回退，行为与未配置完全一致）。
+   空值语义：为空 = 关闭备用，**不继承主模型**；normalize v3.ts:230-231 空串/缺键不落盘
+   → 清除后字段从配置里真的消失。触发口径：连续失败 2 次（FALLBACK_STICKY_THRESHOLD）
+   粘滞到备用，120s 冷却后借真实请求试探，主模型一次成功即回切。 */
+const fallbackBinding = computed(() => ({
+    nodeIndex: Number((config.value as any)?.agent?.fallbackNodeIndex) || 0,
+    model: String((config.value as any)?.agent?.fallbackModel || ''),
+}));
+
+function setFallback(nodeIndex: number, model: string) {
+    const agent = (config.value as any)?.agent;
+    if (!agent) return;
+    agent.fallbackNodeIndex = nodeIndex;
+    agent.fallbackModel = model;
+}
+
+function clearFallback() {
+    const agent = (config.value as any)?.agent;
+    if (!agent) return;
+    // 保存链路是 deepMerge（web-api index.ts:431，缺键保留旧值），数字字段删键无法传播，
+    // 置 0 归零而非残留旧节点；model 置空串 → normalize v3.ts:231 剔键，落盘后字段消失。
+    // 状态机 fallbackBindingOf 只认 fallbackModel：model 空 → secondary=null → bypass，nodeIndex 不参与。
+    agent.fallbackModel = '';
+    agent.fallbackNodeIndex = 0;
+    configStore.saveStatus = '已清除备用模型，保存后生效';
+}
+
 /* ── 保存 ── */
 const saving = ref(false);
 const savedFlash = ref('');
@@ -369,6 +398,28 @@ onMounted(() => { void capabilityStore.refresh(); });
               @update:model="(v: string) => { if (config) { (config as any).agent.mainModel = v; } }"
             />
           </div>
+        </div>
+
+        <!-- 第二模型（备用）：agent.fallback* 的唯一编辑入口。字段直写 agent 对象，保存后热重载即生效。 -->
+        <div class="border-t border-[color:var(--accent-line)] bg-[color:var(--page)]">
+          <div class="flex items-center gap-4 px-5 py-3.5 flex-wrap">
+            <div class="w-[200px] flex-none">
+              <div class="text-[13px] font-semibold text-[color:var(--ink)] leading-tight">第二模型（备用）</div>
+              <div class="text-[11px] text-[color:var(--ink-3)] mt-0.5">主模型连续失败自动切备 · 留空不启用</div>
+            </div>
+            <div class="flex-1 min-w-[240px]">
+              <ModelPicker capability="chat"
+                :node-index="fallbackBinding.nodeIndex" :model="fallbackBinding.model"
+                placeholder="留空 = 不启用备用"
+                @update:node-index="(v: number) => setFallback(v, fallbackBinding.model)"
+                @update:model="(v: string) => setFallback(fallbackBinding.nodeIndex, v)" />
+            </div>
+            <button v-if="fallbackBinding.model" class="btn-outline text-xs flex-none" @click="clearFallback">清除备用</button>
+          </div>
+          <p class="px-5 pb-3 text-[11px] text-[color:var(--ink-3)] leading-relaxed">
+            <template v-if="fallbackBinding.model">主模型连续失败 2 次切到备用，一次成功即回切；/切换 命令可手动锁定主/备档位。</template>
+            <template v-else>未配置备用模型时不会自动回退（也不会拿主模型顶替）。</template>
+          </p>
         </div>
       </div>
 
