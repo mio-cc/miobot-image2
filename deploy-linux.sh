@@ -465,7 +465,7 @@ backup_runtime_data() {
     [ -e "$RUNTIME_DIR/$item" ] && runtime_items+=("$item")
   done
   if [ "${#runtime_items[@]}" -gt 0 ]; then
-    tar -C "$RUNTIME_DIR" -czf "${backup_dir}/orchestration-state.${stamp}.tar.gz" "${runtime_items[@]}"
+    local archive="${backup_dir}/orchestration-state.${stamp}.tar.gz"; local tar_status=0; tar --warning=no-file-changed --ignore-failed-read -C "$RUNTIME_DIR" -czf "$archive" "${runtime_items[@]}" 2>/dev/null || tar_status=$?; if [ "$tar_status" -gt 1 ]; then fail "运行状态备份失败（tar exit ${tar_status}）：${archive}"; fi; if ! tar -tzf "$archive" >/dev/null 2>&1; then fail "运行状态备份包校验失败：${archive}"; fi; if [ "$tar_status" -eq 1 ]; then warn "运行状态备份期间有文件仍在写入；已生成可读快照"; fi
     log "已备份编排/记忆/审批运行状态：${backup_dir}/orchestration-state.${stamp}.tar.gz"
   fi
 }
