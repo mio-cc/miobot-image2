@@ -87,7 +87,13 @@ async function runMemoryAction() {
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.memory.hybridSearch" label="向量 + 全文混合检索" /></div>
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.memory.userGlobalProfileEnabled" label="允许跨群用户画像" hint="默认关闭，保持群隔离" /></div>
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.memory.memoryFirstGroupContext" label="记忆库优先（灰度）" hint="记忆命中时跳过 Napcat 群历史拉取；为空/降级仍兜底" /></div>
-        <FormField label="Embedding 节点与模型" hint="生成向量的模型；不过滤能力（embedding 模型通常不在对话清单）">
+        <FormField label="数据目录" hint="留空使用 bot dataDir/memory"><input v-model="orch.memory.dataDir" class="input-field font-mono" /></FormField>
+        <!-- 二级任务统一分组：绑定 → 参数（与朗读前改写 / Suno Composer 同构；memory 无任务级启用/超时字段，不渲染该两段） -->
+        <div class="md:col-span-2 xl:col-span-4 mt-2 pt-3 border-t border-[color:var(--hairline-2)]">
+          <span class="text-[11px] font-bold text-[color:var(--ink)]">二级任务 · 记忆摘要 / 评分</span>
+          <span class="text-[11px] text-[color:var(--ink-3)] ml-2">生成向量与滚动摘要共用的模型绑定（Roles 表同源）</span>
+        </div>
+        <FormField label="Embedding 节点与模型" hint="生成向量的模型；摘要/评分共用此绑定；不过滤能力（embedding 模型通常不在对话清单）">
           <ModelPicker
             :node-index="Number(orch.memory.embeddingNodeIndex) || 0" :model="orch.memory.embeddingModel || ''"
             placeholder="text-embedding-3-small"
@@ -95,9 +101,8 @@ async function runMemoryAction() {
             @update:model="orch.memory.embeddingModel = $event" />
         </FormField>
         <FormField label="向量维度"><input v-model.number="orch.memory.embeddingDimensions" type="number" min="1" class="input-field" /></FormField>
-        <FormField label="最近工作集条数" hint="Orama recent 窗口（orchestration.memory.recentTurns）"><input v-model.number="orch.memory.recentTurns" type="number" min="0" max="20" class="input-field" /></FormField>
         <FormField label="摘要间隔" hint="滚动摘要阈值（每 N 条生成一次）"><input v-model.number="orch.memory.summarizeEvery" type="number" min="2" class="input-field" /></FormField>
-        <FormField label="数据目录" hint="留空使用 bot dataDir/memory"><input v-model="orch.memory.dataDir" class="input-field font-mono" /></FormField>
+        <FormField label="最近工作集条数" hint="Orama recent 窗口（orchestration.memory.recentTurns）"><input v-model.number="orch.memory.recentTurns" type="number" min="0" max="20" class="input-field" /></FormField>
       </div>
       <p class="text-[color:var(--ink-3)] text-xs mt-3">
         每次回复自动注入的记忆预算（TopK / 最低分 / 字符上限 / 群上下文）唯一在「Agent」页配置（contextPolicy）；模型可在预算之上经内部技能 memory.search 自主检索更多。

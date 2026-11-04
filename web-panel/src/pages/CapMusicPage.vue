@@ -45,7 +45,12 @@ const sunoKeyVisible = ref(false);
         <FormField label="API 版本"><AppSelect v-model="orch.suno.requestMode" :options="sunoRequestModeOptions" /></FormField>
         <FormField label="Callback URL" hint="V6 创建任务必填；完整地址需包含 /api/orchestration/suno/callback/&lt;Callback Secret&gt;"><input v-model="orch.suno.callbackUrl" class="input-field font-mono" placeholder="https://bot.example/api/orchestration/suno/callback/&lt;secret&gt;" /></FormField>
         <FormField label="Callback Secret" hint="用于校验回调；留空则 V6 回调不可用"><input v-model="orch.suno.callbackSecret" type="password" class="input-field font-mono" /></FormField>
-        <FormField label="Composer 节点与模型" hint="把用户请求改写成 Suno 生成参数的模型">
+        <!-- 二级任务统一分组：绑定 → 参数（与朗读前改写 / 记忆摘要同构；suno 无任务级启用/超时字段，不渲染该两段） -->
+        <div class="md:col-span-2 xl:col-span-4 mt-2 pt-3 border-t border-[color:var(--hairline-2)]">
+          <span class="text-[11px] font-bold text-[color:var(--ink)]">二级任务 · Composer</span>
+          <span class="text-[11px] text-[color:var(--ink-3)] ml-2">把用户请求改写成 Suno 生成参数的模型任务</span>
+        </div>
+        <FormField label="Composer 节点与模型" hint="绑定负责改写的模型；留空回落主对话">
           <ModelPicker capability="chat"
             :node-index="Number(orch.suno.composerNodeIndex) || 0" :model="orch.suno.composerModel || ''"
             @update:node-index="orch.suno.composerNodeIndex = $event"

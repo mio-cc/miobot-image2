@@ -5,7 +5,9 @@ import { useCapabilityStore } from '../stores/capabilities';
 import client, { errorMessage } from '../api/client';
 import ModelPicker from '../components/ModelPicker.vue';
 import FormField from '../components/FormField.vue';
-import AppSelect, { type AppSelectOption } from '../components/AppSelect.vue';
+import { type AppSelectOption } from '../components/AppSelect.vue';
+import NodeCard from '../components/NodeCard.vue';
+import NodeEditDrawer from '../components/NodeEditDrawer.vue';
 import { ROLES, isRoleInherit, getRoleNode as getRoleNodeOf, getRoleModel as getRoleModelOf, setRoleValue as setRoleValueOf, roleUsageHint } from '../shared/roles';
 
 /**
@@ -24,6 +26,9 @@ const view = ref<'nodes' | 'roles'>('roles');
 
 /* ── 节点池 ── */
 const search = ref('');
+
+/** 正在编辑抽屉里查看/修改的节点下标（null = 抽屉关闭）。抽屉字段直写节点对象，关闭不丢改动。 */
+const editingNode = ref<number | null>(null);
 
 const nodes = computed(() => config.value?.llm?.apiKeys || []);
 const rows = computed(() => {
@@ -46,8 +51,9 @@ function addNode() {
 }
 function removeNode(idx: number) {
     if (!window.confirm('删除节点后，引用它的用途会自动落到节点 0（主对话）。确认？')) return;
+    editingNode.value = null; // 删除会引起下标重映射，先关抽屉避免引用漂移
     nodes.value.splice(idx, 1);
-    // 同步修正所有 nodeIndex（与 NodesPage 的 NODE_INDEX_FIELDS 重映射一致）
+    // 同步修正所有 nodeIndex 引用：被删节点若被引用则回落 0（主对话），高位索引前移。
     const fields: Array<[string, string]> = [
         ['llm', 'activeNodeIndex'], ['llm', 'chatNodeIndex'], ['llm', 'imageNodeIndex'],
         ['llm', 'editNodeIndex'], ['llm', 'interrogateNodeIndex'], ['llm', 'videoNodeIndex'],
@@ -85,8 +91,114 @@ function removeNode(idx: number) {
         }
     }
 }
+
+/* ═══ 节点级字段（kind/provider/headers/comfyui 六参/延迟）已随抽屉批落进
+   NodeEditDrawer.vue——点卡片主体打开右侧编辑抽屉，抽屉即唯一编辑入口。═══ */
+
+/** 节点延迟：被动统计（bot 每次真实调用记录）+ 主动「测延迟」（逐节点发最小请求计时）。 */
+const latencyStats = ref<Record<string, any>>({});
+const latencyTesting = ref(false);
+const latencyStatus = ref('');
+const latencyResults = ref<Array<any> | null>(null);
+
+async function loadLatencyStats() {
+    try {
+        const res = await client.get('/nodes/latency');
+        latencyStats.value = res.data?.nodes || {};
+    } catch { /* bot 进程未运行时静默 */ }
+}
+onMounted(loadLatencyStats);
+
+function latencyOf(idx: number) {
+    return latencyStats.value[String(idx)] || null;
+}
+
+function latencyLabel(idx: number): string {
+    const stat = latencyOf(idx);
+    if (!stat || !stat.count) return '—';
+    const fails = stat.failCount ? ` · 失败${stat.failCount}` : '';
+    return `均值 ${stat.avgMs}ms / 最近 ${stat.lastMs}ms${fails}`;
+}
+
+async function runLatencyTest() {
+    latencyTesting.value = true;
+    latencyResults.value = null;
+    latencyStatus.value = '已提交检测：逐启用节点发最小请求计时（每个最多 10 秒）…';
+    try {
+        const res = await client.post('/nodes/latency-test');
+        const testId = res.data?.testId;
+        for (let i = 0; i < 90; i += 1) {
+            await new Promise((r) => setTimeout(r, 1000));
+            try {
+                const r2 = await client.get(`/nodes/latency-test/${testId}`);
+                if (r2.data?.result) {
+                    const results = r2.data.result.results || [];
+                    latencyResults.value = results;
+                    const okCount = results.filter((r: any) => r.ok).length;
+                    latencyStatus.value = `完成：${okCount}/${results.length} 个节点可用，耗时 ${Math.round((r2.data.result.durationMs || 0) / 100) / 10}s`;
+                    loadLatencyStats();
+                    latencyTesting.value = false;
+                    return;
+                }
+            } catch { /* pending → 继续轮询 */ }
+        }
+        latencyStatus.value = '检测超时（bot 进程可能未运行或节点全部无响应）';
+    } catch (error: any) {
+        latencyStatus.value = errorMessage(error, '提交检测失败');
+    }
+    latencyTesting.value = false;
+}
+
+/** 批量拉取：逐个拉，不并发——同时打十几个上游最容易被限流，反而更慢。 */
+const bulkRunning = ref(false);
+const bulkStatus = ref('');
+
+async function fetchAllModels() {
+    bulkRunning.value = true;
+    try {
+        let ok = 0;
+        let failed = 0;
+        for (const { idx } of rows.value) {
+            const node = nodes.value[idx];
+            if (node?.enabled === false || !node?.baseUrl) continue;
+            bulkStatus.value = `正在获取「${node.name || idx + 1}」…`;
+            try {
+                await fetchModels(idx);
+                if (fetchErrors.value[idx]) { failed += 1; fetchErrors.value[idx] = ''; } else ok += 1;
+            } catch { failed += 1; }
+        }
+        bulkStatus.value = `完成：成功 ${ok} 个${failed ? `，失败 ${failed} 个` : ''}`;
+        window.setTimeout(() => { bulkStatus.value = ''; }, 5000);
+    } finally {
+        bulkRunning.value = false;
+    }
+}
+
+/* ═══ 手动指定能力（llm.capabilityOverrides 唯一编辑入口）═══
+   llm.capabilityOverrides 消费：app.ts:65 / start.ts:359（createReloadableRegistry）。 */
+const OVERRIDABLE = ['chat', 'vision', 'interrogate', 'image.generate', 'image.edit', 'video.generate'];
+const overrideModel = ref('');
+const overrideOps = ref<string[]>([]);
+
+const overrides = computed(() => config.value?.llm?.capabilityOverrides || []);
+
+function saveOverride() {
+    const model = overrideModel.value.trim();
+    if (!model) return;
+    const list = (config.value as any).llm.capabilityOverrides ||= [];
+    const idx = list.findIndex((item: any) => String(item.model) === model);
+    const entry = { model, operations: [...overrideOps.value] };
+    if (idx >= 0) list[idx] = entry; else list.push(entry);
+    configStore.saveStatus = '能力覆盖已记录，保存后生效';
+    overrideModel.value = '';
+}
+
+function removeOverride(model: string) {
+    (config.value as any).llm.capabilityOverrides = overrides.value.filter((item: any) => String(item.model) !== model);
+    configStore.saveStatus = '已清除该覆盖，保存后生效';
+}
 /* 拉取模型列表：P0 修复静默失败——per-node 状态、错误翻译（限流/鉴权/超时/协议错）、
-   成功带 diff 摘要；上游 200 但解析不出模型时保留原列表（与 NodesPage 同语义）。 */
+   成功带 diff 摘要；上游 200 但解析不出模型时保留原列表。 */
 const fetchingNode = ref<number | null>(null);
 const fetchErrors = ref<Record<number, string>>({});
 const fetchSummaries = ref<Record<number, string>>({});
@@ -108,7 +220,7 @@ async function fetchModels(idx: number) {
     }
     fetchingNode.value = idx;
     const startedAt = Date.now();
-    // 后端要明文 key；面板上是打码值，仅在用户刚改过（不含圆点）时才带上（与 NodesPage 同语义）。
+    // 后端要明文 key；面板上是打码值，仅在用户刚改过（不含圆点）时才带上。
     const key = String(node.key || '').includes('••••') ? '' : node.key;
     const keyRef = Number.isInteger((node as any).keyRef) ? (node as any).keyRef : idx;
     try {
@@ -302,17 +414,32 @@ onMounted(() => { void capabilityStore.refresh(); });
       </div>
 
       <p class="mt-3 text-[11px] text-[color:var(--ink-3)] leading-relaxed">
-        旧字段（llm.enhance/template/translation 等 6 处已无消费者的模型位）不在此页显示——由 config-lint "无消费者键不可编辑"规则隐藏。保存后下一轮对话热重载。
+        提示词润色（llm.enhance*，image-pipeline 消费）已入上方用途表；本地模板/引用模板/远程翻译（llm.template*/referencedTemplate*/translation*）为无运行时消费者的旧绑定，不在此页显示。
       </p>
     </section>
 
-    <!-- ═══ 节点池视图 ═══ -->
+    <!-- ═══ 节点池视图（节点级配置唯一编辑入口：点卡片主体打开编辑抽屉）═══ -->
     <section v-if="view === 'nodes'">
       <div class="flex flex-wrap items-center gap-2.5 mb-4">
         <input v-model="search" placeholder="搜索节点名、URL 或模型…" class="input-field !w-auto flex-1 min-w-[220px]" />
         <span class="text-xs text-[color:var(--ink-3)]">{{ stats.enabled }} / {{ stats.total }} 启用</span>
+        <button class="btn-outline text-xs" :disabled="latencyTesting" @click="runLatencyTest">{{ latencyTesting ? '检测中…' : '测延迟' }}</button>
+        <button class="btn-outline text-xs" :disabled="bulkRunning" @click="fetchAllModels">{{ bulkRunning ? '获取中…' : '批量拉取' }}</button>
         <button class="btn-outline text-xs" @click="addNode">＋ 添加节点</button>
       </div>
+
+      <p v-if="latencyStatus" class="text-xs mb-2 text-[color:var(--ink-2)]">{{ latencyStatus }}</p>
+      <div v-if="latencyResults" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2 mb-4">
+        <div v-for="r in latencyResults" :key="r.nodeIndex"
+          class="text-xs px-3 py-2 rounded border border-[color:var(--hairline-2)]"
+          :class="r.ok ? 'bg-[color:var(--surface)]' : 'bg-[color:var(--surface-2)]'">
+          <span :class="r.ok ? 'status-good' : 'status-crit'">{{ r.ok ? `✔ ${r.latencyMs}ms` : '✘ 不可用' }}</span>
+          <span class="ml-2 font-medium">{{ r.name || `节点 ${r.nodeIndex + 1}` }}</span>
+          <span class="ml-2 text-[color:var(--ink-3)] mono">{{ r.model }}</span>
+          <span v-if="r.error" class="block text-[11px] text-[color:var(--ink-3)] truncate" :title="r.error">{{ r.error }}</span>
+        </div>
+      </div>
+      <p v-if="bulkStatus" class="text-xs mb-2 text-[color:var(--ink-2)]">{{ bulkStatus }}</p>
 
       <div v-if="!rows.length" class="empty-state">
         <div class="empty-title">没有匹配的节点</div>
@@ -320,79 +447,61 @@ onMounted(() => { void capabilityStore.refresh(); });
       </div>
 
       <div v-else class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5">
-        <div v-for="{ node, idx } in rows" :key="idx"
-          class="group relative bg-[color:var(--surface)] border border-[color:var(--hairline-2)] rounded-[14px] p-4 shadow-[var(--sh-1)] transition-all duration-200 hover:-translate-y-[3px] hover:shadow-[var(--sh-2)] hover:border-[color:var(--accent-line)]">
-
-          <!-- 启用状态点（token 语义色） -->
-          <span class="absolute top-[18px] right-4 dot" :class="node.enabled !== false ? 'dot-good' : 'dot-idle'"
-            :title="node.enabled !== false ? '已启用' : '已停用'"/>
-
-          <!-- 名称 + 类型标签 -->
-          <div class="flex items-center gap-2 mb-1 pr-6">
-            <span class="text-[14px] font-bold text-[color:var(--ink)] truncate">{{ node.name || `节点 ${idx + 1}` }}</span>
-            <span v-if="node.kind === 'comfyui'" class="text-[10px] font-bold rounded-md px-1.5 py-0.5 bg-[color:var(--accent-soft)] text-[color:var(--accent)] flex-none">comfyui</span>
-            <span v-else class="text-[10px] font-bold rounded-md px-1.5 py-0.5 bg-[color:var(--off-soft)] text-[color:var(--ink-3)] flex-none">openai</span>
-          </div>
-
-          <!-- Base URL -->
-          <div class="text-[11px] text-[color:var(--ink-3)] font-mono truncate mb-2.5">{{ node.baseUrl || '（未配置 URL）' }}</div>
-
-          <!-- 模型标签（问题四：+N 可点击，展开浏览该节点全部模型，复用同一套搜索） -->
-          <div class="flex flex-wrap gap-1 mb-3 min-h-[22px] content-center">
-            <span v-for="m in (node.models || []).slice(0, 4)" :key="m" class="text-[10.5px] bg-[color:var(--off-soft)] text-[color:var(--ink-2)] rounded-md px-1.5 py-0.5 font-mono">{{ m }}</span>
-            <AppSelect v-if="(node.models || []).length > 4" browse :options="nodeModelOptions(node)" class="self-center">
-              <template #trigger>
-                <span class="text-[10.5px] text-[color:var(--ink-2)] bg-[color:var(--off-soft)] hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--accent)] rounded-md px-1.5 py-0.5 font-medium transition-colors duration-150">
-                  +{{ (node.models || []).length - 4 }} 查看
-                </span>
-              </template>
-            </AppSelect>
-            <span v-if="!(node.models || []).length" class="text-[10.5px] text-[color:var(--ink-3)] self-center">（点下方"拉取"获取模型列表）</span>
-          </div>
-
-          <!-- 拉取反馈：P0 修复静默失败——成功 diff 摘要 / 失败原因 + 重试（宣纸 token） -->
-          <div v-if="fetchSummaries[idx]" class="status-good text-[10.5px] bg-[color:var(--off-soft)] border border-[color:var(--hairline-2)] rounded-md px-2 py-1 mb-2 leading-relaxed">{{ fetchSummaries[idx] }}</div>
-          <div v-if="fetchErrors[idx]" class="flex items-start gap-2 text-[10.5px] status-crit bg-[color:var(--critical-soft)] border border-[color:var(--hairline-2)] rounded-md px-2 py-1 mb-2 leading-relaxed">
-            <span class="min-w-0 flex-1">{{ fetchErrors[idx] }}</span>
-            <button class="flex-none underline underline-offset-2 hover:opacity-70 transition-opacity" :disabled="fetchingNode === idx" @click="fetchModels(idx)">重试</button>
-          </div>
-
-          <!-- 操作行 -->
-          <div class="flex items-center gap-1.5 text-[11px] text-[color:var(--ink-3)] border-t border-[color:var(--hairline)] pt-2.5">
-            <span class="mr-auto">
-              {{ (node.models || []).length }} 个模型
-              <span v-if="node.modelsFetchedAt" class="ml-1" :title="node.modelsFetchedAt">· 上次拉取 {{ new Date(node.modelsFetchedAt).toLocaleTimeString('zh-CN', { hour12: false }) }}</span>
-            </span>
-            <button class="border border-[color:var(--hairline-3)] rounded-lg px-2.5 py-1 text-[color:var(--ink-2)] hover:border-[color:var(--accent)] hover:text-[color:var(--accent)] transition-colors duration-150 disabled:opacity-50" :disabled="fetchingNode === idx"
-              @click="fetchModels(idx)">{{ fetchingNode === idx ? '拉取中…' : '拉取' }}</button>
-            <button class="border border-[color:var(--hairline-3)] rounded-lg px-2.5 py-1 text-[color:var(--ink-2)] hover:border-[color:var(--ink-3)] transition-colors duration-150"
-              @click="node.enabled = node.enabled === false ? true : false">{{ node.enabled === false ? '启用' : '停用' }}</button>
-            <button class="btn-danger !px-2.5 !py-1 !rounded-lg"
-              @click="removeNode(idx)">删除</button>
-          </div>
-        </div>
+        <NodeCard v-for="{ node, idx } in rows" :key="idx"
+          :node="node" :idx="idx"
+          :fetching="fetchingNode === idx"
+          :summary="fetchSummaries[idx] || ''"
+          :error="fetchErrors[idx] || ''"
+          :model-options="nodeModelOptions(node)"
+          @open="editingNode = idx"
+          @fetch="fetchModels(idx)"
+          @remove="removeNode(idx)" />
       </div>
 
-      <!-- 节点详情编辑（折叠） -->
+      <!-- 节点编辑抽屉：点卡片主体打开；字段直写节点对象，关闭不丢改动，顶栏「保存并热重载」生效 -->
+      <NodeEditDrawer
+        :open="editingNode !== null"
+        :node="editingNode !== null ? nodes[editingNode] : null"
+        :idx="editingNode ?? 0"
+        :fetching="editingNode !== null && fetchingNode === editingNode"
+        :summary="editingNode !== null ? (fetchSummaries[editingNode] || '') : ''"
+        :error="editingNode !== null ? (fetchErrors[editingNode] || '') : ''"
+        :latency-label="editingNode !== null ? latencyLabel(editingNode) : ''"
+        @close="editingNode = null"
+        @fetch="editingNode !== null && fetchModels(editingNode)" />
+
+      <!-- 手动指定能力（llm.capabilityOverrides 唯一编辑入口） -->
       <details class="mt-4">
-        <summary class="cursor-pointer text-[13px] text-[color:var(--ink-3)] hover:text-[color:var(--ink)] select-none transition-colors">展开编辑节点详情（BaseURL / Key / 并发）</summary>
-        <div class="mt-3 space-y-3">
-          <div v-for="{ node, idx } in rows" :key="'edit-' + idx"
-            class="bg-[color:var(--surface)] border border-[color:var(--hairline-2)] rounded-[14px] p-4 shadow-[var(--sh-1)]">
-            <div class="text-[13px] font-bold text-[color:var(--ink)] mb-3">{{ node.name || `节点 ${idx + 1}` }}</div>
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <FormField label="Base URL">
-                <input v-model="node.baseUrl" class="input-field font-mono text-xs" placeholder="https://api.example.com/v1" />
-              </FormField>
-              <FormField label="API Key">
-                <input v-model="node.key" type="password" class="input-field font-mono text-xs" placeholder="sk-…" />
-              </FormField>
-              <FormField label="并发上限" hint="0 = 不限">
-                <input v-model.number="node.concurrency" type="number" min="0" class="input-field" />
-              </FormField>
+        <summary class="cursor-pointer text-[13px] text-[color:var(--ink-3)] hover:text-[color:var(--ink)] select-none transition-colors">手动指定能力（模型名或正则 → 能力，中转/反代识别不准时覆盖）</summary>
+        <div class="mt-3 grid grid-cols-1 lg:grid-cols-[minmax(0,280px)_minmax(0,1fr)_auto] gap-3 items-end">
+          <FormField label="模型（或正则）">
+            <input v-model="overrideModel" class="input-field font-mono" placeholder="claude-sonnet-4 或 /^my-relay-/i" />
+          </FormField>
+          <FormField label="具备的能力" hint="指定的结果优先级最高；未勾选任何能力 = 全部禁用">
+            <div class="flex flex-wrap gap-3 pt-1">
+              <label v-for="cap in OVERRIDABLE" :key="cap" class="flex items-center gap-1.5 text-xs">
+                <input type="checkbox" :value="cap" v-model="overrideOps" class="h-4 w-4" />
+                {{ capabilityStore.labels[cap] || cap }}
+              </label>
             </div>
-          </div>
+          </FormField>
+          <button class="btn-primary" :disabled="!overrideModel.trim()" @click="saveOverride">记录覆盖</button>
         </div>
+        <table v-if="overrides.length" class="w-full text-[12.5px] mt-4 border-t border-[color:var(--hairline-2)]">
+          <tbody>
+            <tr v-for="item in overrides" :key="item.model" class="border-b border-[color:var(--hairline-2)] last:border-b-0">
+              <td class="py-2.5 pr-4 mono">{{ item.model }}</td>
+              <td class="py-2.5 pr-4">
+                <span v-for="cap in item.operations || []" :key="cap" class="tag mr-1">{{ capabilityStore.labels[cap] || cap }}</span>
+                <span v-if="!(item.operations || []).length" class="text-[color:var(--ink-3)]">（未勾选任何能力 = 全部禁用）</span>
+              </td>
+              <td class="py-2.5 text-right">
+                <button class="btn-danger text-xs" @click="removeOverride(item.model)">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="text-[color:var(--ink-3)] text-xs mt-4">还没有任何覆盖，所有能力都按模型 ID 自动推断。</p>
       </details>
     </section>
   </div>

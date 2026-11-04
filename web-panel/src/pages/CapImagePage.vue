@@ -487,6 +487,14 @@ onMounted(loadComfyWorkflows);
           </table>
         </div>
       </details>
+
+      <!-- ComfyUI 参数转化（comfyuiTransform 消费：comfyui.ts:287 mergeTransformConfig；
+           提示词编辑统一在「提示词注册表」（comfyui.transform 条目）） -->
+      <div class="mt-4 pt-4 border-t border-[color:var(--hairline-2)] grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div class="flex items-end"><ToggleField v-model="config.comfyuiTransform.enabled" label="启用参数转化" hint="自然语言 → workflow 参数 JSON；模型绑定在「模型与节点」用途表" /></div>
+        <FormField label="转化超时 (ms)"><input v-model.number="config.comfyuiTransform.timeoutMs" type="number" min="3000" max="120000" step="1000" class="input-field" /></FormField>
+        <FormField label="最大输出 Token"><input v-model.number="config.comfyuiTransform.maxTokens" type="number" min="256" max="8192" step="128" class="input-field" /></FormField>
+      </div>
     </template>
   </CapabilityPageLayout>
 </template>

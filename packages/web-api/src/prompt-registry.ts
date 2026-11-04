@@ -29,6 +29,9 @@ export const PROMPT_REGISTRY: readonly PromptEntry[] = [
   { id: 'interrogate.template', title: '反推成模板', description: '图片 → 可复用提示词模板', configPath: 'canvas.interrogateTemplatePromptTemplate', category: 'generation', hotReload: 'next_turn', variables: '{{prompt}}' },
   { id: 'comfyui.transform', title: 'ComfyUI 参数转化', description: '自然语言 → ComfyUI workflow 参数 JSON', configPath: 'comfyuiTransform.promptTemplate', category: 'generation', hotReload: 'next_turn', variables: '{{userRequest}} {{profileName}} {{parameterKeys}} {{allowedEnums}} {{defaults}} {{constraints}}' },
   { id: 'code.render', title: '代码渲染', description: 'HTML/SVG/Canvas/Three.js 代码生成', configPath: 'codeRender.promptTemplate', category: 'generation', hotReload: 'next_turn', variables: '{{userContent}}' },
+  // ── P1 技术债收敛：旧引擎两条提示词自 RoutingPage 收编（原页内 textarea 为唯一入口） ──
+  { id: 'freemode.planner', title: '自由模式规划', description: '旧引擎 FreeMode 规划器（自然语言 → 生图/改图参数 JSON）', configPath: 'freeMode.plannerPromptTemplate', category: 'generation', hotReload: 'next_turn', variables: '{{userContent}}' },
+  { id: 'intent.recognize', title: '意图识别', description: '自然语言 → 命令 / 功能分类（JSON）', configPath: 'intentRecognition.promptTemplate', category: 'input', hotReload: 'next_turn', variables: '{{intents}} {{context}} {{userContent}}' },
   // ── 呈现 ──
   { id: 'tts.preprocess', title: '朗读前改写', description: 'TTS 合成前文本改写（标签穿插）', configPath: 'bot.tts.preprocess.promptTemplate', category: 'presentation', hotReload: 'next_turn', variables: '{{text}}' },
   // ── 搜索 ──

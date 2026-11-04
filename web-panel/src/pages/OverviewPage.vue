@@ -30,7 +30,7 @@ const nodeSummary = computed(() => {
     return {
         total: nodes.length,
         enabled: nodes.filter((n: any) => n.enabled !== false).length,
-        active: nodes[config.value?.llm?.activeNodeIndex ?? 0]?.name || '—',
+        active: nodes[config.value?.llm?.chatNodeIndex ?? 0]?.name || '—',
     };
 });
 

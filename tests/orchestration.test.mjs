@@ -1262,7 +1262,10 @@ test('orchestration: approval requests resend up to maxResend and stop after res
     requesterQq: '5', payload: { a: 1 }, quorum: 'any', ttlMs: 60000,
   });
   const current = runtime.getBroker().list('pending')[0];
-  await new Promise((resolve) => setTimeout(resolve, 110));
+  // P1 flaky 治理：原固定 110ms 窗口只给 20ms 定时链留 70ms 余量，全量并发抢占下不够。
+  // 改为事件驱动等待 delivered 达 3（上限 2s），断言语义不变（仍验证初始投递 + 2 次重发）。
+  const deadline = Date.now() + 2000;
+  while (delivered < 3 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
   assert.ok(delivered >= 3, 'expected initial delivery plus two resends, got ' + delivered);
   runtime.decideFromPanel(current.code, 'approve', 'panel-test');
   const outcome = await pending;

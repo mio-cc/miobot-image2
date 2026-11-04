@@ -448,7 +448,10 @@ test('napcat 事故修复: ENOENT 分类与回退——真实 file:// 消息段�
     (e) => ({ ok: false, message: String(e.message || e) }),
   );
   sockets[0].message({ echo: 'echo_send_group_msg_0', status: 'failed', retcode: 1200, wording: 'Failed to open input: No such file or directory' });
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  // P1 flaky 治理：原固定 30ms 等 base64 回退重发帧（读宿主文件 + 编码的异步链），并发下不够。
+  // 改为事件驱动等待重发帧出现（上限 2s），断言语义不变。
+  const retryDeadline = Date.now() + 2000;
+  while (!sockets[0].sent[1] && Date.now() < retryDeadline) await new Promise((resolve) => setTimeout(resolve, 5));
   const retryFrame = sockets[0].sent[1];
   assert.ok(retryFrame, '应发出 base64 回退重发帧');
   const retryFile = retryFrame.params.message[0].data.file;

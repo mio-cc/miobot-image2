@@ -34,6 +34,8 @@ const TTS_MODEL_OPTIONS = [
     's2.1-pro-free', 's2.1-pro', 's2-pro', 's1',
     'gpt-4o-mini-tts', 'tts-1', 'tts-1-hd',
 ];
+/* tts 控件归一：datalist → AppSelect（allowCustom 保留自由输入）——全站最后一个 datalist 清除。 */
+const ttsModelOptions = TTS_MODEL_OPTIONS.map(m => ({ value: m, label: m }));
 
 /* P1 第五批·下拉收尾第一批：AppSelect 选项常量（与原 <option> 列表一一对应，文案零变更）。 */
 const ttsProviderOptions = [
@@ -93,10 +95,8 @@ const voiceScopeOptions = [
           <input v-model="tts.voice" class="input-field font-mono" placeholder="alloy" />
         </FormField>
         <FormField label="模型" :hint="isFish ? 'Fish Audio 的 model 请求头。当前免费：s2.1-pro-free；付费：s2.1-pro / s2-pro / s1' : '如 gpt-4o-mini-tts / tts-1'">
-          <input v-model="tts.model" class="input-field font-mono" :placeholder="isFish ? 's2.1-pro-free' : 'tts-1'" list="tts-model-options" />
-          <datalist id="tts-model-options">
-            <option v-for="m in TTS_MODEL_OPTIONS" :key="m" :value="m" />
-          </datalist>
+          <AppSelect v-model="tts.model" :options="ttsModelOptions" :allow-custom="true" :searchable="true" mono
+            :placeholder="isFish ? 's2.1-pro-free' : 'tts-1'" />
           <p v-if="isFish" class="text-xs text-[color:var(--ink-3)] mt-1">
             实际发送的请求头 model：<span class="mono">{{ tts.model || 's2.1-pro-free' }}</span>
           </p>
@@ -114,8 +114,9 @@ const voiceScopeOptions = [
 
     <template #prompts>
       <div v-if="tts">
+        <!-- 二级任务统一段序：绑定 → 启用 → 超时 → 参数（与 Suno Composer / 记忆摘要同构） -->
         <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <FormField label="改写模型" hint="用一个便宜的小模型就够了">
+          <FormField label="改写节点与模型" hint="用一个便宜的小模型就够了">
             <ModelPicker capability="chat"
               :node-index="Number(tts.preprocess.nodeIndex) || 0" :model="tts.preprocess.model || ''"
               :disabled="!tts.preprocess.enabled"
@@ -127,12 +128,12 @@ const voiceScopeOptions = [
           </div>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
-          <FormField label="改写节点索引">
-            <input v-model.number="tts.preprocess.nodeIndex" type="number" min="0" class="input-field" :disabled="!tts.preprocess.enabled" />
-          </FormField>
           <FormField label="超时 (ms)">
             <input v-model.number="tts.preprocess.timeoutMs" type="number" min="5000" step="5000"
               :disabled="!tts.preprocess.enabled" class="input-field" />
+          </FormField>
+          <FormField label="改写节点索引">
+            <input v-model.number="tts.preprocess.nodeIndex" type="number" min="0" class="input-field" :disabled="!tts.preprocess.enabled" />
           </FormField>
           <FormField label="发送前延迟 (ms)" hint="给 QQ 留出处理间隔">
             <input v-model.number="tts.preprocess.delayMs" type="number" min="0" step="100"

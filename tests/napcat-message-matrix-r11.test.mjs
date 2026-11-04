@@ -394,7 +394,9 @@ test('QQ matrix: auto-continue checker can reject a follow-up and clear state', 
       post_type: 'message', message_type: 'group', group_id: 6004, user_id: 2204, message_id: 8602, sender: { nickname: '拒绝续话' },
       raw_message: '不相关的话', message: [{ type: 'text', data: { text: '不相关的话' } }],
     });
-    await sleep(220);
+    // P1 flaky 治理：原固定 220ms 等 auto-continue checker 异步完成，并发抢占下不够（实测 checks=0）。
+    // 改为事件驱动等待 checker 被调用（窗口 8s，与首条回复同规格），断言语义不变。
+    await waitUntil(() => checks >= 1, 8000, 'auto-continue checker invoked');
     assert.equal(checks, 1);
     assert.equal(h.inputs.length, 1);
     assert.equal(h.sim.actions.filter((action) => action.action === 'send_group_msg').length, 1);

@@ -13,13 +13,39 @@ test('panel R11 IA: routing redirects to models, planner remains a redirect', ()
   assert.match(routerSource, /path:\s*'\/routing',[\s\S]*?redirect:\s*'\/models'/);
   assert.match(routerSource, /path:\s*'\/models',[\s\S]*?name:\s*'models',[\s\S]*?ModelsPage\.vue/);
   assert.match(routerSource, /path:\s*'\/orchestration',\s*redirect:\s*'\/agent'/);
-  // P1 第五批（孤儿页对齐拍板）：PlannerPage/NodesPage/RoutingPage 存在实质缺口（编排模式/
-  // planner 提示词/多角色协作等唯一编辑入口），保留 /legacy/* 直达路由且**不进侧栏**
-  // （不设 meta.title → navRoutes 过滤掉）。若未来删除孤儿页，请连同本断言与路由一起删。
-  for (const legacy of ['legacy/planner', 'legacy/nodes', 'legacy/routing']) {
-    const routeMatch = routerSource.match(new RegExp(`path:\\s*'/${legacy}',[\\s\\S]*?component:`));
-    assert.ok(routeMatch, `legacy 路由 /${legacy} 应注册`);
-    assert.equal(/meta:\s*\{\s*title/.test(routeMatch[0]), false, `legacy 路由 /${legacy} 不得带 meta.title（会进侧栏）`);
+  // P1 技术债收敛（legacy 三页删除）：PlannerPage/NodesPage/RoutingPage 的独占字段已全部
+  // 迁入对应新页（AgentPage / ModelsPage / CapImagePage / 提示词注册表），三个页面文件与
+  // /legacy/* 直达路由一并删除，/nodes /routing /planner 旧路径仍 redirect。
+  assert.equal(/PlannerPage\.vue|NodesPage\.vue|RoutingPage\.vue/.test(routerSource), false, '三个 legacy 页面不许再被路由 import');
+  assert.equal(/path:\s*'\/legacy\//.test(routerSource), false, '/legacy/* 直达路由应随页删除');
+  for (const page of ['PlannerPage.vue', 'NodesPage.vue', 'RoutingPage.vue']) {
+    assert.equal(fs.existsSync(path.join(root, 'web-panel/src/pages', page)), false, `旧页面文件应删除: ${page}`);
+  }
+  // 迁移落点回归：AgentPage 接收编排模式/规划器/多角色/提示词版本（拆分批后落进两个面板组件，
+  // AgentPage 负责挂载）；ModelsPage 接收节点级配置/能力覆盖（节点级字段随抽屉批落进 NodeEditDrawer——
+  // 点卡片主体打开，仍是从节点池进出的唯一编辑入口）。
+  const agent = fs.readFileSync(path.join(root, 'web-panel/src/pages/AgentPage.vue'), 'utf8');
+  const models = fs.readFileSync(path.join(root, 'web-panel/src/pages/ModelsPage.vue'), 'utf8');
+  const drawer = fs.readFileSync(path.join(root, 'web-panel/src/components/NodeEditDrawer.vue'), 'utf8');
+  const orchPanel = fs.readFileSync(path.join(root, 'web-panel/src/components/OrchestrationPanel.vue'), 'utf8');
+  const legacyPanel = fs.readFileSync(path.join(root, 'web-panel/src/components/LegacyEnginePanel.vue'), 'utf8');
+  for (const needle of ['OrchestrationPanel', 'LegacyEnginePanel']) {
+    assert.ok(agent.includes(needle), `AgentPage 应挂载拆分面板: ${needle}`);
+  }
+  for (const needle of ['orchestration.mode', 'roleKeys', 'addPromptVersion']) {
+    assert.ok(orchPanel.includes(needle), `OrchestrationPanel 应包含迁移字段: ${needle}`);
+  }
+  for (const needle of ['config.llm.reasoningEffort', 'config.freeMode.enabled', 'config.llm.videoTimeoutMs']) {
+    assert.ok(legacyPanel.includes(needle), `LegacyEnginePanel 应包含迁移字段: ${needle}`);
+  }
+  for (const needle of ['runLatencyTest', 'fetchAllModels', 'saveOverride', 'NodeEditDrawer']) {
+    assert.ok(models.includes(needle), `ModelsPage 应包含迁移能力: ${needle}`);
+  }
+  for (const needle of ['NODE_KINDS', 'PROVIDERS', 'ensureComfyui', 'node.headers']) {
+    assert.ok(drawer.includes(needle), `NodeEditDrawer 应包含节点级字段: ${needle}`);
+  }
+  for (const comp of ['NodeCard.vue', 'NodeEditDrawer.vue']) {
+    assert.ok(fs.existsSync(path.join(root, 'web-panel/src/components', comp)), `missing component: ${comp}`);
   }
 });
 

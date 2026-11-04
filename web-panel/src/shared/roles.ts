@@ -2,7 +2,7 @@
  * 用途（ROLES）表 —— ModelsPage（用途分配视图）与节点模型展开（「当前用于」反查）共用。
  *
  * 从 ModelsPage 抽出为共享模块（方案 §4.3）：节点模型浏览弹层要显示
- * 「这个模型当前被哪些用途绑定」，NodesPage / ModelsPage 两处都要反查，不能各养一份表。
+ * 「这个模型当前被哪些用途绑定」，用途分配与模型浏览两处都要反查，不能各养一份表。
  * 只描述 config 结构（section + nodeField + modelField 点分路径），不含 UI 状态。
  */
 
@@ -22,6 +22,7 @@ export interface RoleDef {
 
 export const ROLES: RoleDef[] = [
     { key: 'main', title: 'Agent 主对话', desc: '全站默认 · 所有"跟随"的用途继承它', section: 'agent', nodeField: 'mainNodeIndex', modelField: 'mainModel', capability: 'chat', inheritable: false },
+    { key: 'enhance', title: '提示词润色', desc: 'image.enhance · 生图前结构化改写', section: 'llm', nodeField: 'enhanceNodeIndex', modelField: 'enhanceModel', capability: 'chat', inheritable: true },
     { key: 'image', title: '图片生成', desc: 'image.generate · ComfyUI 工作流或多模态直生', section: 'llm', nodeField: 'imageNodeIndex', modelField: 'imageModel', capability: 'image.generate', inheritable: true },
     { key: 'edit', title: '图片编辑', desc: 'image.edit · 多模态原生理解', section: 'llm', nodeField: 'editNodeIndex', modelField: 'editModel', capability: 'image.edit', inheritable: true },
     { key: 'interrogate', title: '图片反推', desc: 'image.interrogate', section: 'llm', nodeField: 'interrogateNodeIndex', modelField: 'interrogateModel', capability: 'image.interrogate', inheritable: true },
