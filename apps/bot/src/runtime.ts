@@ -12,7 +12,7 @@ import type { RuntimeResult as BotEngineResult } from './runtime-types.js';
 import type { BotApp } from './app.js';
 import { isOwner, parseOwnerCommand, type OwnerCommand } from './owner.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
-import { fetchGroupContext, senderIdentity, type GroupContextOptions, type NapcatHistoryMessage } from './group-context.js';
+import { fetchGroupContext, formatHistoryMessageText, senderIdentity, type GroupContextOptions, type NapcatHistoryMessage } from './group-context.js';
 // P0-1 方式二：off 模式保留旧自然语言意图链（R9 误删，恢复以保回滚能力）。
 import { classifyNaturalLanguageIntent, type IntentCatalogItem, type IntentFallback } from './intent-recognition.js';
 import { extractForwardIds, extractReferenceText, formatForwardMessages, isReferencedFromBot } from './message-enrichment.js';
@@ -25,6 +25,8 @@ import { DEFAULT_FILEGEN_LIMITS, generateFile, generatedFileSpecFromJson, type G
 import { FeatureLimitError, type FeatureGate } from './feature-gate.js';
 import { sanitizeModelImageReferences } from './deps.js';
 import { withPurposeFallback, type ModelFallbackController } from './model-fallback.js';
+import { CONTENT_REJECTION_PLACEHOLDER, type ContentRejectionRegistry } from './content-rejection.js';
+import { CONTENT_REJECTION_EXHAUSTED_PREFIX } from './content-repair.js';
 import { renderTextToImage } from '../../../packages/image-compose/src/index.js';
 import type { BrowserRenderService, RenderedImage } from '../../../packages/browser-render/src/index.js';
 import { createImageProgress, type ImageProgressKind, type ImageProgressHandle } from './image-progress.js';
@@ -63,6 +65,16 @@ export interface BotRuntimeOptions {
   getConfig: () => AppConfig;
   /** P2(方案 6-P2)：用途级备用状态机（代码画图接 purpose = 'codeRender'）；不传保持原直调。 */
   fallback?: ModelFallbackController;
+  /** 审核被拒治理（方案 1/2/D，2026-11-06 拍板）：登记表 + 装配处占位剥离 + 记忆清理 + 明确告知。
+   *  不传 = 整套关闭，行为与原先一致（测试兼容）。 */
+  contentRejection?: {
+    registry: ContentRejectionRegistry;
+    /** 审核拒绝后按 messageId 精确清理已入库记忆（异步尽力而为，失败不影响回复）。 */
+    purgeMemory?: (messageId: string) => Promise<number>;
+  };
+  /** 错误首诊通道（2026-11-06 二轮）：turn 失败时按分类表给用户可读说明（progress 不算错误；
+   *  鉴权/限流走规则文案；真失败首诊一次）。不传 = 失败行为与原先一致。 */
+  errorTriage?: { noticeFor(error: unknown, context?: { chatType?: 'group' | 'private'; groupId?: number | string; userId?: number | string; intentKind?: string }): Promise<string | undefined> };
   /** 机器人自身 QQ(用于 mention 判定);不给则用 config.bot.botQqId。 */
   selfId?: () => string | number | undefined;
   botName?: string;
@@ -986,6 +998,13 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       anchorMessageId: event.message_id,
       selfId: options.selfId?.() ?? cfg.bot.botQqId,
       options: ctxOptions,
+      // 方案 1（2026-11-06 拍板）：群历史命中被拒登记 → 替换为占位符（保留说话人与时序）——
+      // 否则被拒消息躺在 QQ 群记录里，每轮 get_group_msg_history 都会重新连坐。messageId 精确优先，内容 hash 兜底。
+      ...(options.contentRejection ? {
+        isRejected: (msg) => options.contentRejection!.registry.isRejected({ messageId: String(msg.message_id ?? '') })
+          || options.contentRejection!.registry.isRejected({ text: formatHistoryMessageText(msg, ctxOptions) }),
+        placeholder: CONTENT_REJECTION_PLACEHOLDER,
+      } : {}),
     });
     if (!rawContext) {
       // 拉取为空不再静默：可能是 get_group_msg_history 失败、skipForward/图片占位过滤光、或群里本来就没人说话。
@@ -1510,8 +1529,10 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         const burst = await options.collectBurst({ botId: selfIdRaw, chatType, groupId: event.group_id, userId: userId ?? '', excludeMessageId: event.message_id });
         for (const item of burst) {
           const stamp = new Date(item.at).toTimeString().slice(0, 5);
-          burstLines += `[${stamp}] ${item.authorName} [QQ:${item.userId}]: ${item.text.replace(/\s+/g, ' ').slice(0, 500)}\n`;
-          burstImageRefs.push(...item.imageRefs);
+          // 方案 1：连发窗口命中被拒登记 → 占位（保留说话人与时序），附件一并略过。
+          const masked = options.contentRejection?.registry.isRejected({ messageId: item.messageId !== undefined ? String(item.messageId) : undefined, text: item.text }) ?? false;
+          burstLines += `[${stamp}] ${item.authorName} [QQ:${item.userId}]: ${masked ? CONTENT_REJECTION_PLACEHOLDER : item.text.replace(/\s+/g, ' ').slice(0, 500)}\n`;
+          if (!masked) burstImageRefs.push(...item.imageRefs);
         }
         if (burst.length) log?.info('合并窗口收集相邻消息', { groupId: event.group_id, count: burst.length, images: burstImageRefs.length });
       } catch { /* 尽力而为，不阻塞回复 */ }
@@ -1608,6 +1629,19 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       const sessionChainTail = sessionChainPrev.catch(() => {}).then(() => sessionGate);
       agentTurnQueues.set(sessionId, sessionChainTail);
       await sessionChainPrev.catch(() => {});
+      // 方案 1/D（2026-11-06 拍板）：审核耗尽识别 + 登记钩子（原文补录 messageId，供下一轮起装配处剥离与记忆清理）。
+      const extractRejectionNotice = (message: unknown): string | undefined => {
+        const text = String(message || '');
+        if (!text.startsWith(CONTENT_REJECTION_EXHAUSTED_PREFIX)) return undefined;
+        return text.slice(CONTENT_REJECTION_EXHAUSTED_PREFIX.length) || '刚才那条消息触发了上游内容审核，未能通过；请调整措辞后再发。';
+      };
+      const registerRejectionForCurrentMessage = (reason: string): void => {
+        if (!options.contentRejection) return;
+        const messageId = event.message_id !== undefined ? String(event.message_id) : undefined;
+        options.contentRejection.registry.register({ text: stripNonTextCqSegments(rawMessage), messageId, reason });
+        if (messageId) void options.contentRejection.purgeMemory?.(messageId).catch(() => undefined);
+        log?.info('content.rejection', { event: 'registered', chatType, messageId, groupId: event.group_id, userId });
+      };
       try {
         const baseAgentContext = agentMode === 'enforce' ? (await buildChatContext()).context : undefined;
         // R15/F-2：排队后复验群级 focus 窗口新鲜度——排队等待期间窗口过期/耗尽时
@@ -1661,12 +1695,31 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         } else if (agentMode === 'enforce') {
           agentEnforceFailed = true;
           log?.warn('Agent Runtime 接管失败，禁止回退旧链路', { mode: agentMode, reason: agentOutcome.reason });
+          // 方案 1/D（2026-11-06 拍板）：内容审核耗尽（修复/剥离重试仍败）→ 登记原文 + 清记忆 + **明确告知用户**（不静默）。
+          // agent runtime 全程透传 error.message（含前缀），据此识别；不回退旧链路的语义不变——只发错误说明。
+          const exhaustedNotice = extractRejectionNotice(agentOutcome.problem?.error);
+          if (exhaustedNotice) {
+            registerRejectionForCurrentMessage(exhaustedNotice);
+            result = { kind: 'chat', decision: decision as any, handled: true, text: exhaustedNotice };
+          } else if (options.errorTriage) {
+            // 错误首诊通道（2026-11-06 二轮）：真失败给用户可读说明（progress 类不回复；规则类零调用）。
+            const triageNotice = await options.errorTriage.noticeFor(agentOutcome.problem?.error ?? `agent_turn_failed: ${agentOutcome.reason}`, { chatType, groupId: event.group_id, userId, intentKind: decision.kind });
+            if (triageNotice) result = { kind: 'chat', decision: decision as any, handled: true, text: triageNotice };
+          }
         } else if (agentOutcome.reason) {
           log?.info('Agent Runtime 未接管，回退旧链路', { mode: agentMode, reason: agentOutcome.reason });
         }
       } catch (error) {
         if (agentMode === 'enforce') agentEnforceFailed = true;
         await reportProblem('agent-runtime-error', error, { intent: decision.kind });
+        const exhaustedNotice = extractRejectionNotice(String((error as Error)?.message || ''));
+        if (agentMode === 'enforce' && exhaustedNotice) {
+          registerRejectionForCurrentMessage(exhaustedNotice);
+          result = { kind: 'chat', decision: decision as any, handled: true, text: exhaustedNotice };
+        } else if (agentMode === 'enforce' && options.errorTriage) {
+          const triageNotice = await options.errorTriage.noticeFor(error, { chatType, groupId: event.group_id, userId, intentKind: decision.kind });
+          if (triageNotice) result = { kind: 'chat', decision: decision as any, handled: true, text: triageNotice };
+        }
       } finally {
         // R15/C-1+C-2：无论成败都释放会话链与全局信号量；先放信号量再放会话链，
         // 排队的同 session 消息取出时能看到最新窗口状态（F-2 复验读的是此处释放后的链尾）。
@@ -2527,7 +2580,8 @@ async function runCommand(
     case 'webSearch':
       return app.engine.handleExplicit('chat', { ...input, forceSearch: true }, { prompt: input.text });
     default:
-      // templateLibrary/originalImage*/remotePrompt* 需要额外子系统,后续批次接入。
+      // templateLibrary/originalImage* 需要额外子系统,后续批次接入
+      // (referencedTemplateImage/remotePrompt* 已于 2026-11-06 清理:运行时无处理,命令与路由分支一并删除)。
       return null;
   }
 }

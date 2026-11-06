@@ -14,9 +14,7 @@ const props = defineProps<{ config: any }>();
 /* 桥接转发：让模板内的 config 引用与拆分前逐字一致。 */
 const config = computed(() => props.config);
 
-/* ═══ 显式命令推理强度与异步视频（旧引擎链路参数）═══
-   llm.reasoningEffort → explicit-executor.ts:40/64/117（显式命令推理强度，区别于 agent.reasoningEffort 的 Agent 循环）；
-   llm.video* → config-bridge.ts:125-127、deps.ts:249-251、async-job-timeout.ts:16（异步视频任务等待）。 */
+/* ═══ 显式命令推理强度与异步视频（旧引擎链路参数）═══ */
 const llmReasoningEffortOptions = [
     { value: 'low', label: 'low' },
     { value: 'medium', label: 'medium' },
@@ -36,7 +34,6 @@ const llmReasoningEffortOptions = [
           <FormField label="最多输出图" hint="1-4"><input v-model.number="config.freeMode.maxOutputImages" type="number" min="1" max="4" class="input-field" /></FormField>
           <div class="flex items-end"><ToggleField v-model="config.freeMode.includeQuotedMessage" label="读取被引用的消息" /></div>
           <div class="flex items-end md:col-span-2"><ToggleField v-model="config.freeMode.preferEditWhenImagePresent" label="有图时优先按改图处理" /></div>
-          <p class="md:col-span-3 text-[11px] text-[color:var(--ink-3)]">规划提示词在「提示词注册表」（freemode.planner 条目）统一编辑。</p>
         </div>
       </details>
 

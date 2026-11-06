@@ -79,6 +79,27 @@ export function isFailoverWorthyError(error: unknown): boolean {
   return true;
 }
 
+/**
+ * 内容审核类拒绝识别（方案 A②，2026-11-06 拍板）：命中 → 切备救本次，但**不计数、不推粘滞**
+ * （主模型本身没故障，跨提供商审核松紧不同，换备可能过审；但两次审核误伤不该把状态机推进粘滞）。
+ *
+ * 判定基于错误**形态**而非 category 粗分类——空 choices 的审核错误带的是 category:'upstream'（shared.ts
+ * empty_choices 分支），会从 isFailoverWorthyError 的豁免里漏过；识别口径：
+ * ① ModelError 的 code 为明确审核码：content_filtered（Gemini prompt_feedback / finish_reason=content_filter，
+ *    见 shared.ts:94/:110）、content_check_rejected（new-api 系网关审核）；
+ * ② message 含上游审核错误原文特征：new-api 系「200 + SSE error 事件」落到空 choices 后透传的
+ *    content_check_error / content_check_rejected / sensitive content 文案（2026-11-06 实测事故形态）。
+ * 识别不出来 → 保持现状（计数），宁可少改、不误伤网络类失败。
+ */
+export function isContentRejectionError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const record = error as { code?: unknown; message?: unknown };
+  const code = String(record.code || '').toLowerCase();
+  if (code === 'content_filtered' || code === 'content_check_rejected') return true;
+  const message = String(record.message || '');
+  return /content_check_error|content_check_rejected|the request contains sensitive content/i.test(message);
+}
+
 /** 用途表索引（fallbackBindingOf 查表用；键 = MODEL_BINDING_PURPOSES.key）。 */
 const FALLBACK_PURPOSE_MAP = new Map<string, PurposeDef>(
   MODEL_BINDING_PURPOSES.map((def) => [def.key, def]),
@@ -213,9 +234,33 @@ export function createModelFallbackController(options: {
     const st = state(decision.purpose);
     const reason = String((error as Error)?.message || error).slice(0, 300);
     if (decision.mode === 'probe') {
+      if (isContentRejectionError(error)) {
+        // A②：审核拒绝是上游的确定性响应 = 主模型网络已恢复 → 解除粘滞回主（计数清零）；本次仍落备完成。
+        st.stickyOnSecondary = false;
+        st.stickySince = 0;
+        st.consecutivePrimaryFailures = 0;
+        log('recover', {
+          purpose: decision.purpose,
+          viaProbe: true,
+          ...(decision.secondary ? { from: decision.secondary.model } : {}),
+          reason: 'probe_content_rejection',
+        });
+        return { retryWithSecondary: true };
+      }
       // 试探失败：不加计（防抖动），粘滞保持，冷却重新计时，落到备完成本次。
       st.stickySince = now();
       log('probe_failed', { purpose: decision.purpose, reason, retryInMs: cooldownMs });
+      return { retryWithSecondary: true };
+    }
+    if (isContentRejectionError(error)) {
+      // A②（2026-11-06 拍板）：内容审核拒绝 → 切备救本次（跨提供商审核松紧不同），但**不计数、不推粘滞**
+      // ——主模型本身没故障。实测事故：审核连击两次被推进粘滞，随后备用节点瞬时断网，整站 120s 报错。
+      log('failover_uncounted', {
+        purpose: decision.purpose,
+        ...(decision.secondary ? { to: decision.secondary.model, toNodeIndex: decision.secondary.nodeIndex } : {}),
+        reason,
+        policy: 'content_rejection',
+      });
       return { retryWithSecondary: true };
     }
     st.consecutivePrimaryFailures += 1;

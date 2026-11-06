@@ -3,8 +3,6 @@ import assert from 'node:assert/strict';
 
 import {
   CONFIG_MIGRATION_TABLE,
-  LEGACY_FREE_MODE_PROMPT_V1,
-  LEGACY_FREE_MODE_PROMPT_V2,
   LEGACY_NATURAL_INTENT_PROMPT_V1,
   CONFIG_PACKAGE,
   CONFIG_SCHEMA_VERSION,
@@ -68,11 +66,18 @@ test('config regression: prompt rewrite defaults preserve the user language', ()
   const defaults = createDefaultConfig();
   assert.match(defaults.llm.enhancePromptTemplate, /保留用户原始语言/);
   assert.match(defaults.llm.enhancePromptTemplate, /不要翻译成英文/);
-  assert.match(defaults.promptsChat.smartPromptTemplate, /must not be translated into English/);
-  // free-mode 默认模板不再教模型输出 video action（解析器不支持，会被误当生图）；
-  // 改为要求模型用文本回复并带 video 字样，交给上游视频信号链路处理。
-  assert.doesNotMatch(defaults.freeMode.plannerPromptTemplate, /"action":"video"/);
-  assert.match(defaults.freeMode.plannerPromptTemplate, /do not choose an image action/);
+  // 2026-11-06 清理：promptsChat 节已整体删除（运行时零消费）。
+  assert.equal(defaults.promptsChat, undefined);
+  // 2026-11-06 二轮清理：freeMode.plannerPromptTemplate 随旧引擎自然语言链路一并退役
+  // （app.handle 全量路由 chat 引擎，模板无任何运行时读取方），normalize 落 RETIRED_FIELDS。
+  assert.equal(defaults.freeMode.plannerPromptTemplate, undefined);
+  assert.equal(createDefaultConfig().freeMode.plannerPromptTemplate, undefined);
+  {
+    const legacy = createDefaultConfig();
+    legacy.freeMode.plannerPromptTemplate = 'STALE LEGACY PLANNER';
+    const normalized = normalizeConfig(legacy);
+    assert.equal(normalized.freeMode.plannerPromptTemplate, undefined, 'normalize 应剔除已退役的 freeMode.plannerPromptTemplate');
+  }
   assert.equal(defaults.bot.progress.imageEnabled, false);
   assert.equal(defaults.bot.progress.audioEnabled, false);
   assert.equal(defaults.bot.progress.videoEnabled, true);
@@ -85,8 +90,6 @@ test('config regression: prompt rewrite defaults preserve the user language', ()
     assert.equal(defaults.orchestration.suno.historyPromptLimit, 5, 'C8 瘦身：默认注入条数减半');
   assert.equal(defaults.intentRecognition.maxTokens, 240);
   assert.equal(defaults.orchestration.suno.defaultLanguage, '');
-  assert.match(defaults.freeMode.plannerPromptTemplate, /"images":\[/);
-  assert.match(defaults.freeMode.plannerPromptTemplate, /must not be translated into English/);
 });
 
 test('config regression: old example-like export imports with all required v2 sections', () => {
@@ -132,15 +135,14 @@ test('config regression: missing canvas backfills interrogate settings from lega
 test('config regression: enum, timeout, node index, and canvas path normalization are stable', () => {
   const result = importConfig({
     llm: { apiKeys: [legacyNodeA, legacyNodeB], activeNodeIndex: 99, chatNodeIndex: 99 },
+    // 2026-11-06 清理：旧配置里的 promptsChat 节不再进入新配置（运行时零消费，整节删除）。
     promptsChat: { searchType: 'image', requestTimeoutMs: 1, smartNodeIndex: 99 },
     canvas: { defaultQuality: 'hd', defaultOutputFormat: 'gif', maxHistory: 9999, dataDir: '  D:/canvas-data  ', imageNodeIndex: 99 },
     freeMode: { nodeIndex: 99, timeoutMs: 1 },
   });
   assert.equal(result.config.llm.activeNodeIndex, 1);
   assert.equal(result.config.llm.chatNodeIndex, 1);
-  assert.equal(result.config.promptsChat.searchType, 'IMAGE');
-  assert.equal(result.config.promptsChat.requestTimeoutMs, 5000);
-  assert.equal(result.config.promptsChat.smartNodeIndex, 1);
+  assert.equal(result.config.promptsChat, undefined, 'promptsChat 节已删除，旧配置残留应被丢弃');
   assert.equal(result.config.canvas.defaultQuality, 'high');
   assert.equal(result.config.canvas.defaultOutputFormat, 'png');
   assert.equal(result.config.canvas.maxHistory, 500);
@@ -213,13 +215,16 @@ test('config regression: 退役字段不会从旧 config.json 里漏回来', () 
     napcat: { mountOutputDir: '/root/Napcat-OmniBot/output', mountOutputContainerDir: '/app/napcat/output' },
     canvas: { dataDir: 'D:/canvas-data' },
     freeMode: { maxReferencedMessages: 33 },
-    promptsChat: { translateSearchQuery: true, translateResults: true },
+    promptsChat: { translateSearchQuery: true, translateResults: true, endpoint: 'https://x', apiKey: 'k' },
     llm: {
       autoNewConversation: false,
       templateConvertNodeIndex: 2, templateConvertModel: 'x',
       templatePromptTemplate: 'a', templateConvertPromptTemplate: 'b', templateTitlePromptTemplate: 'c',
       referencedTemplatePromptTemplate: 'd', referencedTemplateTimeoutMs: 999999,
       translationPromptTemplate: 'e',
+      templateNodeIndex: 2, templateModel: 'tm',
+      referencedTemplateNodeIndex: 1, referencedTemplateModel: 'rtm',
+      translationNodeIndex: 1, translationModel: 'trm',
     },
     bot: { imageCompression: { mergedPreviewEnabled: true, mergedPreviewScale: 0.9, mergedPreviewQuality: 90, mergedPreviewMaxWidth: 2000 } },
     huggingFace: { filters: { includePrivate: true } },
@@ -228,8 +233,7 @@ test('config regression: 退役字段不会从旧 config.json 里漏回来', () 
   const retired = [
     ['canvas.dataDir', cfg.canvas.dataDir],
     ['freeMode.maxReferencedMessages', cfg.freeMode.maxReferencedMessages],
-    ['promptsChat.translateSearchQuery', cfg.promptsChat.translateSearchQuery],
-    ['promptsChat.translateResults', cfg.promptsChat.translateResults],
+    ['promptsChat（整节已删）', cfg.promptsChat],
     ['llm.autoNewConversation', cfg.llm.autoNewConversation],
     ['llm.templateConvertNodeIndex', cfg.llm.templateConvertNodeIndex],
     ['llm.templateConvertModel', cfg.llm.templateConvertModel],
@@ -239,6 +243,12 @@ test('config regression: 退役字段不会从旧 config.json 里漏回来', () 
     ['llm.referencedTemplatePromptTemplate', cfg.llm.referencedTemplatePromptTemplate],
     ['llm.referencedTemplateTimeoutMs', cfg.llm.referencedTemplateTimeoutMs],
     ['llm.translationPromptTemplate', cfg.llm.translationPromptTemplate],
+    ['llm.templateNodeIndex', cfg.llm.templateNodeIndex],
+    ['llm.templateModel', cfg.llm.templateModel],
+    ['llm.referencedTemplateNodeIndex', cfg.llm.referencedTemplateNodeIndex],
+    ['llm.referencedTemplateModel', cfg.llm.referencedTemplateModel],
+    ['llm.translationNodeIndex', cfg.llm.translationNodeIndex],
+    ['llm.translationModel', cfg.llm.translationModel],
     ['bot.imageCompression.mergedPreviewEnabled', cfg.bot.imageCompression.mergedPreviewEnabled],
     ['bot.imageCompression.mergedPreviewScale', cfg.bot.imageCompression.mergedPreviewScale],
     ['bot.imageCompression.mergedPreviewQuality', cfg.bot.imageCompression.mergedPreviewQuality],
@@ -253,7 +263,7 @@ test('config regression: 退役字段不会从旧 config.json 里漏回来', () 
   assert.equal(cfg.bot.imageCompression.enabled, true);
   assert.equal(typeof cfg.bot.imageCompression.scale, 'number');
   assert.equal(typeof cfg.freeMode.maxInputImages, 'number');
-  assert.equal(typeof cfg.llm.templateNodeIndex, 'number');
+  assert.equal(typeof cfg.llm.enhanceNodeIndex, 'number');
   assert.equal(typeof cfg.huggingFace.filters.limit, 'number');
 });
 
@@ -261,9 +271,10 @@ test('config regression: getDefaultPrompts 只吐还能编辑的提示词', () =
   // 面板的「恢复默认」按钮按 key 取值；配置里已经没有的键继续吐出来只会让人以为还能改。
   const prompts = getDefaultPrompts();
   for (const gone of ['templatePromptTemplate', 'templateConvertPromptTemplate', 'templateTitlePromptTemplate',
-    'referencedTemplatePromptTemplate', 'translationPromptTemplate'])
+    'referencedTemplatePromptTemplate', 'translationPromptTemplate', 'freeModePromptTemplate',
+    'promptsChatSearchQueryPromptTemplate', 'promptsChatSmartPromptTemplate'])
     assert.equal(prompts[gone], undefined, `${gone} 已退役`);
-  for (const alive of ['enhancePromptTemplate', 'interrogatePromptTemplate', 'safeRewritePromptTemplate', 'freeModePromptTemplate'])
+  for (const alive of ['enhancePromptTemplate', 'interrogatePromptTemplate', 'safeRewritePromptTemplate'])
     assert.equal(typeof prompts[alive], 'string', `${alive} 还在用`);
 });
 
@@ -304,26 +315,16 @@ test('config regression: v3 orchestration settings survive export/import', () =>
   assert.equal(roundTrip.config.orchestration.permissions.hardDenyCapabilities[0], 'file.delete');
 });
 
-test('config migration: known legacy intent and freeMode prompts upgrade to effect semantics', () => {
+test('config migration: known legacy intent prompt upgrades to effect semantics', () => {
   const cfg = createDefaultConfig();
   cfg.intentRecognition.promptTemplate = LEGACY_NATURAL_INTENT_PROMPT_V1;
-  cfg.freeMode.plannerPromptTemplate = LEGACY_FREE_MODE_PROMPT_V1;
   const normalized = normalizeConfig(cfg);
   assert.match(normalized.intentRecognition.promptTemplate, /effect/);
   assert.match(normalized.intentRecognition.promptTemplate, /话题词/);
-  assert.match(normalized.freeMode.plannerPromptTemplate, /outcome effect/);
-  // 2026-10 前的默认模板教 video action，会被解析器误当生图；已知默认值必须自动升级。
-  const cfgV2 = createDefaultConfig();
-  cfgV2.freeMode.plannerPromptTemplate = LEGACY_FREE_MODE_PROMPT_V2;
-  const normalizedV2 = normalizeConfig(cfgV2);
-  assert.doesNotMatch(normalizedV2.freeMode.plannerPromptTemplate, /"action":"video"/);
-  assert.match(normalizedV2.freeMode.plannerPromptTemplate, /do not choose an image action/);
   const custom = createDefaultConfig();
   custom.intentRecognition.promptTemplate = 'MY CUSTOM INTENT';
-  custom.freeMode.plannerPromptTemplate = 'MY CUSTOM FREE';
   const normalizedCustom = normalizeConfig(custom);
   assert.equal(normalizedCustom.intentRecognition.promptTemplate, 'MY CUSTOM INTENT');
-  assert.equal(normalizedCustom.freeMode.plannerPromptTemplate, 'MY CUSTOM FREE');
 });
 
 test('config regression T0.7: reply 文本兜底与 overflow 默认值', () => {

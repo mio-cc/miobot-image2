@@ -1,7 +1,6 @@
 import { createWebApi, type ConfigRepository, type WebApi, type WebApiRequest } from '../../web-api/src/index.js';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { getDefaultPrompts } from '../../config/src/index.js';
 import type { LogQuery } from '../../logger/src/index.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
 import { COMMON_FEATURE_LIMIT_FIELDS, FEATURE_DEFINITIONS, featureAliasCollisions, type FeatureSettings } from '../../shared/src/features.js';
@@ -26,7 +25,7 @@ export interface AdminServiceOptions {
 }
 
 /**
- * 管理后台业务：在 web-api(配置仓储/登录/导入导出) 之上补齐 logs/default-prompts/test/models/templates/codex 路由。
+ * 管理后台业务：在 web-api(配置仓储/登录/导入导出) 之上补齐 logs/test/models/templates 路由。
  * 传输无关(吃 WebApiRequest 吐 AdminResponse)，外部集成全部依赖注入(未配置则 501)。
  * 取代 local-verify-server.mjs 里 handleCompatApi 那一大坨内联逻辑。
  */
@@ -57,10 +56,6 @@ export class AdminService {
     // /api/* 统一鉴权（Bearer token = derivePanelToken(passwordSeed)）。
     if (path.startsWith('/api/') && !this.repository.isAuthorized(authHeader(req.headers))) {
       return { status: 401, body: { success: false, error: 'Unauthorized' } };
-    }
-
-    if (method === 'GET' && path === '/api/default-prompts') {
-      return { status: 200, body: { success: true, prompts: getDefaultPrompts() } };
     }
 
     // 命令与意图：前端动态表单的唯一数据源，避免新增功能后后台字段漂移。
@@ -143,10 +138,9 @@ export class AdminService {
     }
 
     if (path.startsWith('/api/codex/')) {
-      // codex 未注入时返回 200 + enabled:false（而非 501）。
-      // 501 会让浏览器控制台刷红色网络错误噪音；200 让前端 codexStatus 正常拿到"未启用"状态。
-      if (!this.deps.codex) return { status: 200, body: { success: true, enabled: false, notConfigured: true } };
-      return this.deps.codex.handle(method, path, req.body);
+      // 2026-11-06 清理：Codex 桥（Python openai-codex，仅存在于旧验证脚本）生产零消费，整链已删；
+      // 端点保留为显式 404（不再吞进 501 兜底），防止旧面板缓存刷出误导性错误。
+      return { status: 404, body: { success: false, error: 'codex 已下线' } };
     }
 
     // 其余 config/import/export/auth 交给 web-api。

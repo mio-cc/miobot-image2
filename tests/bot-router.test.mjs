@@ -18,12 +18,9 @@ const commands = {
   editImage: '改图, 编辑, edit',
   interrogate: '反推, 看图, 描述, prompt',
   originalImage: '原图, original, rawpic',
-  referencedTemplateImage: '套模板, 引用模板生图, rt',
   templateLibrary: '模板库, 模板, mb',
   help: '/help, help, 帮助',
   clear: 'clear, 清空',
-  remotePromptSearch: 'pp, 远程模板',
-  remotePromptSmartImage: 'spp, 智能远程模板',
   toggleEnhance: '润色, enhance',
   forceEnhance: '强润色, force-enhance',
   disableEnhance: '原文, raw',
@@ -174,12 +171,14 @@ test('bot router: private no-command text enters chat when free mode is disabled
   assert.equal(decision.kind, 'chat');
 });
 
-test('bot router: remote prompt command strips bang separator and keeps query', () => {
+test('bot router: retired remote/template commands no longer exist as routes (pp falls through to free mode)', () => {
+  // 2026-11-06 清理：referencedTemplateImage / remotePromptSearch / remotePromptSmartImage 运行时无处理
+  // （runCommand 只认 5 种命令），命令与路由分支已删净；防复活 guard。
   const decision = routeBotMessage(group('[CQ:at,qq=10000] pp! cyberpunk cat'), config({ freeModeEnabled: true }));
-  assert.equal(decision.kind, 'command');
-  assert.equal(decision.command, 'remotePromptSearch');
-  assert.equal(decision.matchedAlias, 'pp');
-  assert.equal(decision.args, 'cyberpunk cat');
+  assert.notEqual(decision.kind, 'command');
+  assert.equal(decision.kind, 'freeMode');
+  const rt = routeBotMessage(group('[CQ:at,qq=10000] 套模板 赛博猫'), config({ freeModeEnabled: true }));
+  assert.notEqual(rt.command, 'referencedTemplateImage');
 });
 
 test('bot router: direct legacy group help command triggers without mention', () => {

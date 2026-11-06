@@ -17,7 +17,6 @@ export * from './external-task-context.js';
 export * from './approval-message.js';
 export * from './approval-broker.js';
 export * from './suno.js';
-export * from './prompt-optimizer.js';
 export * from './trace.js';
 export * from './validation.js';
 export * from './command-plan.js';

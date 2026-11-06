@@ -21,6 +21,8 @@ import type { ModelClient } from '../../../packages/model/src/index.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 import { createAgentModelPort } from './agent-model-port.js';
 import type { ModelFallbackController } from './model-fallback.js';
+import type { ContentRejectionRegistry } from './content-rejection.js';
+import { wrapModelPortWithContentRepair, type SanitizeCallOptions } from './content-repair.js';
 import { buildReplyPlan, resolveReplyPolicy, textCharsOf, type ExecutionOutput, type ReplyPlan } from '../../../packages/orchestration/src/index.js';
 import { ARTIFACT_CAPABILITY_TOOLS, MIGRATED_CAPABILITY_TOOLS, READ_ONLY_CAPABILITY_TOOLS, SIDE_EFFECT_CAPABILITY_TOOLS, type CapabilityToolBinding } from './capability-tool-adapter.js';
 
@@ -83,6 +85,15 @@ export interface AgentHostOptions {
   clock?: () => Date;
   /** P1 第三批：备用模型状态机（方案 §6）。进程级单例，由 start.ts 注入；host 每次请求重建 port 但共享该状态。 */
   fallback?: ModelFallbackController;
+  /** 方案 D（2026-11-06 拍板）：审核修复管线——包装 modelPort：审核拒绝（切备已失败后）→
+   *  修复一次（sanitize 用途）→ 重试一次 → 仍败登记+告知。不传 = 不包装，行为与原先一致。 */
+  contentRepair?: {
+    registry: ContentRejectionRegistry;
+    sanitize?: (input: string, options?: SanitizeCallOptions) => Promise<string | null>;
+    /** 二分裁切开关（llm.sanitizeBisectEnabled）：改写/占位重试仍拒时逐段二分定位元凶。 */
+    bisectEnabled?: () => boolean;
+    logger?: StructuredLogger;
+  };
 }
 export function createAgentHost(options: AgentHostOptions): (input: AgentHostInput) => Promise<AgentHostOutcome> {
   const sessions = options.sessions || new InMemoryAgentSessionManager({ clock: options.clock });
@@ -164,7 +175,16 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
       order: 10,
     });
     const runtime = new AgentRuntime({
-      model: modelPort,
+      // 方案 D（2026-11-06 拍板）：审核修复管线包装 modelPort——切备（状态机层）失败后的审核拒绝
+      // 由这里统一「修复一次 → 重试一次 → 仍败登记+告知」；不传 contentRepair 时 port 原样透传。
+      model: options.contentRepair
+        ? wrapModelPortWithContentRepair(modelPort, {
+            registry: options.contentRepair.registry,
+            ...(options.contentRepair.sanitize ? { sanitize: options.contentRepair.sanitize } : {}),
+            ...(options.contentRepair.bisectEnabled ? { bisectEnabled: options.contentRepair.bisectEnabled } : {}),
+            logger: options.contentRepair.logger,
+          })
+        : modelPort,
       sessions,
       mainModel: cfg.agent.mainModel || cfg.llm.chatModel,
       nodeIndex: cfg.agent.mainNodeIndex ?? cfg.llm.chatNodeIndex,

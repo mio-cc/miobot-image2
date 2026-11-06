@@ -121,7 +121,7 @@ Napcat (WebSocket)
 
 ## 6. 配置系统（最常改动的部分）
 
-- 全量类型在 `packages/config/src/index.ts`：`AppConfig` 是根配置对象，含 `panel / napcat / promptsChat / canvas / freeMode / huggingFace / llm / bot`。
+- 全量类型在 `packages/config/src/index.ts`：`AppConfig` 是根配置对象，含 `panel / napcat / canvas / freeMode / huggingFace / llm / bot`。
 - 默认值：`DEFAULT_CONFIG`；读取时 `normalizeConfig()` 做字段补齐、越界 clamp、枚举 pick、节点索引对齐。
 - **旧配置兼容**：`importConfig()` 识别旧导出格式（v1 wrapper、裸配置）并按 `CONFIG_MIGRATION_TABLE` 做字段改名/move（如 `napcat.websocketUrl→wsUrl`、`llm.nodes→apiKeys`、`bot.replyFormat→replyStrategies`）。
 - 加新配置字段：在 `DEFAULT_CONFIG` 加默认值 + 在 `normalizeAppConfig()` 加 clamp/pick/merge 规则；如需旧配置迁移，在 `CONFIG_MIGRATION_TABLE` 登记。

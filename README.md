@@ -301,7 +301,7 @@ http://127.0.0.1:3018/admin/
 
 - 后台导入/保存的配置会持久化到 `MIOBOT_CONFIG_PATH`，Linux 默认是 `/var/lib/miobot-v2/config.json`。
 - 请不要把真实 API Key、Token、私有域名、服务器 IP、Cookie、数据库或运行时日志提交到 Git。
-- `.runtime/`、`.codex-run/`、`node_modules/`、构建产物和本地图片等目录已在 `.gitignore` 中排除。
+- `.runtime/`、`node_modules/`、构建产物和本地图片等目录已在 `.gitignore` 中排除。
 - 如果已经泄露真实密钥，请先去上游服务商处轮换密钥，再清理 Git 历史。
 
 ## 常见问题

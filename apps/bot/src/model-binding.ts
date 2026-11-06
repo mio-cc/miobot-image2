@@ -42,6 +42,8 @@ export const MODEL_BINDING_PURPOSES: PurposeDef[] = [
   { key: 'tts', label: 'TTS 前处理', keywords: ['语音', 'tts'], section: 'bot.tts.preprocess', nodeField: 'nodeIndex', modelField: 'model', fallbackNodeField: 'fallbackNodeIndex', fallbackModelField: 'fallbackModel', supportsSecondary: true },
   { key: 'trigger', label: '触发判定', keywords: ['触发', '触发判定', 'trigger'], section: 'bot.keywordTrigger', nodeField: 'intentNodeIndex', modelField: 'intentModel', fallbackNodeField: 'fallbackIntentNodeIndex', fallbackModelField: 'fallbackIntentModel', supportsSecondary: true },
   { key: 'memory', label: '记忆摘要', keywords: ['记忆', 'memory'], section: 'orchestration.memory', nodeField: 'embeddingNodeIndex', modelField: 'embeddingModel', fallbackNodeField: 'fallbackEmbeddingNodeIndex', fallbackModelField: 'fallbackEmbeddingModel', supportsSecondary: true },
+  // 方案 D（2026-11-06 拍板）：审核修复用途——主/备绑定走既有机制；主模型空 = 不启用修复（仅占位剥离+登记）。
+  { key: 'sanitize', label: '审核修复', keywords: ['审核修复', '修复', 'sanitize'], section: 'llm', nodeField: 'sanitizeNodeIndex', modelField: 'sanitizeModel', fallbackNodeField: 'fallbackSanitizeNodeIndex', fallbackModelField: 'fallbackSanitizeModel', supportsSecondary: true },
 ];
 
 export function findPurposeByKeyOrAlias(input: string): PurposeDef | undefined {
@@ -123,15 +125,38 @@ export function createModelBindingService(options: {
     try { options.onBindingChanged?.(purpose, slot); } catch { /* 回调失败不影响切换 */ }
   };
 
-  function currentBinding(purpose: PurposeDef, slot: BindingSlot): { model: string; nodeIndex: number } {
+  /** 静态读某配置里某用途的绑定对（reconcile 对账用；currentBinding 走实时 getConfig）。 */
+  function bindingOf(config: AppConfig, purpose: PurposeDef, slot: BindingSlot): { model: string; nodeIndex: number } {
     // P2 通用化：备用与主绑定同容器读写（main 的备用落点 = agent.fallback*，与旧特判逐字节等价）。
-    const obj = sectionOf(getConfig(), purpose.section);
+    const obj = sectionOf(config, purpose.section);
     const nodeField = slot === 'secondary' ? purpose.fallbackNodeField : purpose.nodeField;
     const modelField = slot === 'secondary' ? purpose.fallbackModelField : purpose.modelField;
     return {
       model: String(obj?.[modelField] || ''),
       nodeIndex: Number(obj?.[nodeField] ?? 0) || 0,
     };
+  }
+
+  function currentBinding(purpose: PurposeDef, slot: BindingSlot): { model: string; nodeIndex: number } {
+    return bindingOf(getConfig(), purpose, slot);
+  }
+
+  /**
+   * 方案 B（2026-11-06 拍板）：外部写入（面板保存 → 热重载）后对账——某用途的主绑定或备用绑定
+   * **真的变了**，才经 onBindingChanged 通知（→ 状态机按用途清零计数，切完立即生效，不等 120s 探测）。
+   * 与 /切换 命令 / model.binding.switch 工具走**同一条通知通道**；其它字段变化不误清计数。
+   * 调用方只需在配置引用更替（loadIfChanged 返回新对象）时传入前后两份。
+   */
+  function reconcileConfigChange(previous: AppConfig, next: AppConfig): void {
+    for (const purpose of MODEL_BINDING_PURPOSES) {
+      for (const slot of ['primary', 'secondary'] as const) {
+        const before = bindingOf(previous, purpose, slot);
+        const after = bindingOf(next, purpose, slot);
+        if (before.model !== after.model || before.nodeIndex !== after.nodeIndex) {
+          notifyChanged(purpose.key, slot);
+        }
+      }
+    }
   }
 
   function setBinding(input: SetBindingInput): SetBindingResult {
@@ -302,7 +327,7 @@ export function createModelBindingService(options: {
     try { return options.runtimeStateText?.(purposeKey) || ''; } catch { return ''; }
   }
 
-  return { setBinding, setOverride, getStatusText, currentBinding };
+  return { setBinding, setOverride, getStatusText, currentBinding, reconcileConfigChange };
 }
 
 export type ModelBindingService = ReturnType<typeof createModelBindingService>;

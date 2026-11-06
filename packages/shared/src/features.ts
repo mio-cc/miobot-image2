@@ -26,9 +26,6 @@ export type FeatureLegacyCommand =
   | 'clear'
   | 'originalImage'
   | 'templateLibrary'
-  | 'referencedTemplateImage'
-  | 'remotePromptSearch'
-  | 'remotePromptSmartImage'
   | 'genImage'
   | 'editImage'
   | 'img2Img'
@@ -134,24 +131,6 @@ export const FEATURE_DEFINITIONS: FeatureDefinition[] = [
     id: 'template.library', label: '本地模板库', category: 'template', implemented: true, defaultNaturalLanguage: true,
     legacyCommand: 'templateLibrary',
     defaultAliases: ['本地模板库', '本地模板', '模板库', '模板', 'mb'],
-    defaultScopes: BOTH, defaultGroupActivation: 'direct',
-  },
-  {
-    id: 'template.referenced', label: '引用模板生图', category: 'template', implemented: false,
-    legacyCommand: 'referencedTemplateImage',
-    defaultAliases: ['套模板', '引用模板生图', '模板填充生图', 'rt'],
-    defaultScopes: BOTH, defaultGroupActivation: 'direct',
-  },
-  {
-    id: 'template.remoteSearch', label: '远程模板库', category: 'template', implemented: false,
-    legacyCommand: 'remotePromptSearch',
-    defaultAliases: ['pp', '远程模板库', '远程模板'],
-    defaultScopes: BOTH, defaultGroupActivation: 'direct',
-  },
-  {
-    id: 'template.remoteSmartImage', label: '远程模板生图', category: 'template', implemented: false,
-    legacyCommand: 'remotePromptSmartImage',
-    defaultAliases: ['spp', '远程模板生图', '智能远程模板'],
     defaultScopes: BOTH, defaultGroupActivation: 'direct',
   },
   {

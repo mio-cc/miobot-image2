@@ -130,6 +130,10 @@ export interface BuildGroupContextParams {
   anchorMessageId?: number | string;
   selfId?: number | string;
   options: GroupContextOptions;
+  /** 审核被拒剥离（方案 1，2026-11-06 拍板）：命中登记表的消息替换为占位符——保留说话人与时序，
+   *  否则被拒内容每轮重拉连坐。精确匹配 messageId 优先，回退内容 hash（防跨格式化差异）。 */
+  isRejected?: (msg: NapcatHistoryMessage) => boolean;
+  placeholder?: string;
 }
 
 /**
@@ -138,6 +142,8 @@ export interface BuildGroupContextParams {
  */
 export function buildGroupContext(params: BuildGroupContextParams): string {
   const { messages, anchorMessageId, selfId, options } = params;
+  const isRejected = params.isRejected;
+  const placeholder = params.placeholder || '[该消息因触发上游内容审核被略去]';
   const selfIdStr = selfId !== undefined ? String(selfId) : '';
   const anchorStr = anchorMessageId !== undefined ? String(anchorMessageId) : '';
 
@@ -149,6 +155,11 @@ export function buildGroupContext(params: BuildGroupContextParams): string {
     if (options.skipForward && isForwardMessage(msg)) continue;
     if (selfIdStr && String(msg.user_id ?? '') === selfIdStr) continue; // bot 自己发的
     if (anchorStr && String(msg.message_id ?? '') === anchorStr) continue; // 触发的那条
+    if (isRejected?.(msg)) {
+      // 被拒登记命中：保留说话人与时序，正文替换为占位符（不整条删除——避免时序断层误导模型）。
+      lines.push(`${senderIdentity(msg)}: ${placeholder}`);
+      continue;
+    }
     const text = formatHistoryMessageText(msg, options);
     if (!text) continue; // 空消息跳过
     lines.push(`${senderIdentity(msg)}: ${text}`);
@@ -180,6 +191,9 @@ export async function fetchGroupContext(params: {
   anchorMessageId: number | string;
   selfId?: number | string;
   options: GroupContextOptions;
+  /** 审核被拒剥离（方案 1）：见 buildGroupContext。 */
+  isRejected?: (msg: NapcatHistoryMessage) => boolean;
+  placeholder?: string;
 }): Promise<string> {
   const { fetchHistory, groupId, anchorMessageId, selfId, options } = params;
   try {
@@ -187,7 +201,7 @@ export async function fetchGroupContext(params: {
     const fetchCount = options.messageCount + 8;
     const messages = await fetchHistory(groupId, anchorMessageId, fetchCount);
     if (!Array.isArray(messages) || !messages.length) return '';
-    return buildGroupContext({ messages, anchorMessageId, selfId, options });
+    return buildGroupContext({ messages, anchorMessageId, selfId, options, ...(params.isRejected ? { isRejected: params.isRejected } : {}), ...(params.placeholder ? { placeholder: params.placeholder } : {}) });
   } catch {
     // 拉取失败不阻塞回复
     return '';

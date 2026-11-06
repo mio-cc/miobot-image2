@@ -5,7 +5,8 @@ import CapabilityPageLayout from '../components/CapabilityPageLayout.vue';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
-import ModelPicker from '../components/ModelPicker.vue';
+import ModelBindingMirror from '../components/ModelBindingMirror.vue';
+import PromptRegistryLink from '../components/PromptRegistryLink.vue';
 import AppSelect from '../components/AppSelect.vue';
 
 /**
@@ -114,26 +115,24 @@ const voiceScopeOptions = [
 
     <template #prompts>
       <div v-if="tts">
-        <!-- 二级任务统一段序：绑定 → 启用 → 超时 → 参数（与 Suno Composer / 记忆摘要同构） -->
+        <!-- 二级任务统一段序：绑定 → 启用 → 超时 → 参数（与 Suno Composer / 记忆摘要同构）。
+             绑定与提示词文本均不在本页编辑：绑定唯一入口是 ModelsPage 用途表，提示词唯一入口是提示词注册表。 -->
         <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <FormField label="改写节点与模型" hint="用一个便宜的小模型就够了">
-            <ModelPicker capability="chat"
-              :node-index="Number(tts.preprocess.nodeIndex) || 0" :model="tts.preprocess.model || ''"
-              :disabled="!tts.preprocess.enabled"
-              @update:node-index="tts.preprocess.nodeIndex = $event"
-              @update:model="tts.preprocess.model = $event" />
+          <FormField label="改写节点与模型" hint="绑定在「模型与节点」用途表统一调整；留空跟随主对话，用一个便宜的小模型就够了">
+            <ModelBindingMirror :node-index="Number(tts.preprocess.nodeIndex) || 0" :model="tts.preprocess.model || ''" purpose="朗读前改写" />
           </FormField>
           <div class="flex items-end">
-            <ToggleField v-model="tts.preprocess.enabled" label="启用改写" hint="回复里的 Markdown、链接、代码块直接念出来很难听，开启后先让模型改写成口语文本" />
+            <ToggleField v-model="tts.preprocess.enabled" label="启用改写" hint="回复里的 Markdown、链接、代码块直接念出来很难听，开启后先让模型改写成口语文本。需同时选定改写模型，模型为空时改写不会执行" />
           </div>
         </div>
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
+        <p v-if="tts.preprocess.enabled && !String(tts.preprocess.model || '').trim()"
+          class="mt-3 text-xs status-crit rounded-lg px-3 py-2" style="background: var(--critical-soft);">
+          改写模型为空：朗读前改写不会执行，语音将直接朗读原文本。请到「模型与节点」用途表为「TTS 前处理」选定模型。
+        </p>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
           <FormField label="超时 (ms)">
             <input v-model.number="tts.preprocess.timeoutMs" type="number" min="5000" step="5000"
               :disabled="!tts.preprocess.enabled" class="input-field" />
-          </FormField>
-          <FormField label="改写节点索引">
-            <input v-model.number="tts.preprocess.nodeIndex" type="number" min="0" class="input-field" :disabled="!tts.preprocess.enabled" />
           </FormField>
           <FormField label="发送前延迟 (ms)" hint="给 QQ 留出处理间隔">
             <input v-model.number="tts.preprocess.delayMs" type="number" min="0" step="100"
@@ -149,13 +148,7 @@ const voiceScopeOptions = [
             hint="关掉的话改写一失败就整条不发语音了" :disabled="!tts.preprocess.enabled" />
         </div>
         <div class="mt-4">
-          <div class="flex items-center justify-between mb-1">
-            <span class="label-sm !mb-0">改写提示词</span>
-            <button class="text-xs hover:underline"
-              @click="configStore.resetPrompt('bot.tts.preprocess.promptTemplate', 'ttsPreprocessPromptTemplate')">恢复默认</button>
-          </div>
-          <textarea v-model="tts.preprocess.promptTemplate" rows="6" class="input-field font-mono text-xs"
-            :disabled="!tts.preprocess.enabled" placeholder="占位符 {{text}}"></textarea>
+          <PromptRegistryLink prompt-id="tts.preprocess" config-path="bot.tts.preprocess.promptTemplate" label="改写提示词" />
         </div>
       </div>
     </template>

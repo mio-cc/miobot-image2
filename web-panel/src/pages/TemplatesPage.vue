@@ -3,10 +3,7 @@ import { computed, ref } from 'vue';
 import client, { errorMessage } from '../api/client';
 import { useConfigStore } from '../stores/config';
 import SectionCard from '../components/SectionCard.vue';
-import FormField from '../components/FormField.vue';
-import ToggleField from '../components/ToggleField.vue';
 import AppIcon from '../components/AppIcon.vue';
-import AppSelect from '../components/AppSelect.vue';
 
 const configStore = useConfigStore();
 const config = computed(() => configStore.config);
@@ -17,17 +14,6 @@ const convertStatus = ref('');
 const titleLoading = ref<Record<string, boolean>>({});
 const collapsed = ref<Record<string, boolean>>({});
 const search = ref('');
-
-/* P1 最后一批·下拉收尾：prompts.chat 搜索类型（空值「全部」；绑定保持
-   config.promptsChat.searchType 原样，仅换组件不改变语义）。 */
-const searchTypeOptions = [
-    { value: '', label: '全部' },
-    { value: 'IMAGE', label: 'IMAGE' },
-    { value: 'TEXT', label: 'TEXT' },
-    { value: 'STRUCTURED', label: 'STRUCTURED' },
-    { value: 'VIDEO', label: 'VIDEO' },
-    { value: 'AUDIO', label: 'AUDIO' },
-];
 
 const templates = computed(() => config.value?.bot?.promptTemplates || []);
 const filteredTemplates = computed(() => {
@@ -105,7 +91,7 @@ const statusIsError = computed(() => /失败|为空|请先/.test(convertStatus.v
   <div v-if="config">
     <header class="mb-4">
       <h1 class="page-title mb-0.5">提示词模板</h1>
-      <p class="text-[color:var(--ink-3)] text-xs">本地模板、AI 转模板与 prompts.chat 远程库。模型分工在「能力分工」页配置。</p>
+      <p class="text-[color:var(--ink-3)] text-xs">本地模板与 AI 转模板。模型分工在「能力分工」页配置。</p>
     </header>
 
     <SectionCard title="本地提示词模板" :hint="`共 ${templates.length} 个。用户在 QQ 里用 mb_1! 这样的编号套用`" class="mb-4">
@@ -155,57 +141,6 @@ const statusIsError = computed(() => /失败|为空|请先/.test(convertStatus.v
       <p v-if="convertStatus" class="text-xs mt-3" :class="statusIsError ? 'status-crit' : 'status-good'">
         {{ convertStatus }}
       </p>
-    </SectionCard>
-
-
-    <SectionCard title="prompts.chat 远程库" hint="pp 负责中文友好的远程搜索；spp 会先取候选再让模型融合">
-      <template #actions>
-        <ToggleField v-model="config.promptsChat.enabled" label="启用" />
-      </template>
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-4">
-        <FormField label="MCP Endpoint">
-          <input v-model="config.promptsChat.endpoint" class="input-field font-mono" placeholder="https://prompts.chat/api/mcp" />
-        </FormField>
-        <FormField label="API Key" hint="可留空">
-          <input v-model="config.promptsChat.apiKey" type="password" class="input-field font-mono" />
-        </FormField>
-        <FormField label="搜索类型">
-          <AppSelect v-model="config.promptsChat.searchType" :options="searchTypeOptions" />
-        </FormField>
-        <FormField label="QQ 展示条数">
-          <input v-model.number="config.promptsChat.displayLimit" type="number" min="1" max="10" class="input-field" />
-        </FormField>
-        <FormField label="搜索拉取上限">
-          <input v-model.number="config.promptsChat.searchLimit" type="number" min="1" max="50" class="input-field" />
-        </FormField>
-        <FormField label="智能搜索上限">
-          <input v-model.number="config.promptsChat.smartSearchLimit" type="number" min="3" max="50" class="input-field" />
-        </FormField>
-        <FormField label="候选模板数">
-          <input v-model.number="config.promptsChat.smartCandidateLimit" type="number" min="1" max="10" class="input-field" />
-        </FormField>
-        <FormField label="请求超时 (ms)">
-          <input v-model.number="config.promptsChat.requestTimeoutMs" type="number" min="5000" step="1000" class="input-field" />
-        </FormField>
-      </div>
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 mb-4">
-        <ToggleField v-model="config.promptsChat.queryRewriteEnabled" label="启用查询词改写" />
-        <ToggleField v-model="config.promptsChat.fallbackToRawPrompt" label="选不出模板时用原文" />
-      </div>
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <FormField label="搜索词生成提示词" hint="占位符 {{rawPrompt}}">
-          <div class="flex justify-end mb-1">
-            <button class="text-xs hover:underline" @click="configStore.resetPrompt('promptsChat.searchQueryPromptTemplate', 'promptsChatSearchQueryPromptTemplate')">恢复默认</button>
-          </div>
-          <textarea v-model="config.promptsChat.searchQueryPromptTemplate" rows="6" class="input-field font-mono text-xs"></textarea>
-        </FormField>
-        <FormField label="智能选择融合提示词" hint="占位符 {{rawPrompt}}、{{candidates}}">
-          <div class="flex justify-end mb-1">
-            <button class="text-xs hover:underline" @click="configStore.resetPrompt('promptsChat.smartPromptTemplate', 'promptsChatSmartPromptTemplate')">恢复默认</button>
-          </div>
-          <textarea v-model="config.promptsChat.smartPromptTemplate" rows="6" class="input-field font-mono text-xs"></textarea>
-        </FormField>
-      </div>
     </SectionCard>
   </div>
 </template>

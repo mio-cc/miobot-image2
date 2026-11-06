@@ -144,6 +144,8 @@ export interface MemoryHit {
   role: MemoryDocument['role'];
   text: string;
   createdAt: string;
+  /** 入库时的消息 id（QQ 消息 id 或内容 hash；方案 2 按它做被拒过滤/精确删除）。 */
+  messageId?: string;
   score: number;
   recent: boolean;
 }
@@ -206,9 +208,46 @@ export class ChatMemoryService {
     summarize?: MemorySummarizer;
     /** T3.4：夜间巩固用 LLM 批量重要性评分（0-10，与 documents 等长返回）。 */
     scoreImportance?: (input: { documents: MemoryDocument[] }) => Promise<number[]>;
+    /** 审核被拒治理（方案 2，2026-11-06 拍板）：按 messageId 判断该条记忆已因触发内容审核被拒——
+     *  检索命中、滚动摘要、重要性评分的**输入侧**一律排除（不能只事后清理：内容洗进摘要就追不回了）。 */
+    isRejectedMessageId?: (messageId: string) => boolean;
     logger?: StructuredLogger;
   }) {
     this.embedding = options.embedding || new OpenAIEmbeddingProvider(options.getConfig, options.logger, options.fallback);
+  }
+
+  /** 消息是否被审核拒绝登记（输入侧过滤统一出口）。 */
+  private rejected(messageId: string | number | undefined): boolean {
+    if (messageId === undefined || messageId === null) return false;
+    try { return Boolean(this.options.isRejectedMessageId?.(String(messageId))); } catch { return false; }
+  }
+
+  /**
+   * 方案 2（2026-11-06 拍板）：按 messageId 精确删除已入库的被拒记忆。
+   * 观察链路在触发路由**之前**入库（失败与否无关），审核拒绝后从这里反查各 namespace
+   * 单删（复用 consolidate 的 remove(db, id) 路径）；检索侧过滤（isRejectedMessageId）作双保险。
+   * 异步尽力而为：写入本身是防抖落盘，删除失败不抛错。
+   */
+  async removeByMessageId(messageId: string): Promise<number> {
+    this.syncRoot();
+    const key = String(messageId || '').trim();
+    if (!key) return 0;
+    const manifest = await this.loadManifest();
+    const keys = [...new Set<string>([...Object.keys(manifest), ...this.dbs.keys()])];
+    let removed = 0;
+    for (const nsKey of keys) {
+      const db = await this.loadDbByKey(nsKey);
+      if (!db) continue;
+      let result: any;
+      try { result = await search(db, { term: '', where: { messageId: key }, limit: 100 } as any); } catch { continue; }
+      const docs = ((result?.hits as any[]) || []).map((hit: any) => hit.document as MemoryDocument);
+      for (const doc of docs) {
+        try { await remove(db, doc.id); removed += 1; } catch { /* 已不在索引 */ }
+      }
+      if (docs.length) await this.persistKey(nsKey);
+    }
+    if (removed) this.options.logger?.info('memory rejection purge finished', { messageId: key, removed });
+    return removed;
   }
 
   private rootPath(): string {
@@ -433,6 +472,8 @@ export class ChatMemoryService {
       .filter((hit) => {
         if (seen.has(hit.id)) return false;
         seen.add(hit.id);
+        // 方案 2：被审核拒绝登记的消息不得从记忆检索回流进上下文（与删除清理互为双保险）。
+        if (this.rejected(hit.messageId)) return false;
         return true;
       })
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -529,6 +570,8 @@ export class ChatMemoryService {
       const messages = (recent.hits || [])
         .map((hit: any) => hit.document as MemoryDocument)
         .filter((doc: MemoryDocument) => !doc.id.startsWith('summary:') && (doc.role === 'user' || doc.role === 'assistant'))
+        // 方案 2：摘要输入侧排除被拒消息——内容一旦洗进摘要就追不回（不能只事后清理）。
+        .filter((doc: MemoryDocument) => !this.rejected(doc.messageId))
         .sort((a: MemoryDocument, b: MemoryDocument) => a.createdAt.localeCompare(b.createdAt));
       if (messages.length < 2) return;
       const summary = String(await this.options.summarize({ namespace: ns, messages }) || '').trim();
@@ -579,7 +622,8 @@ export class ChatMemoryService {
       if (!db) continue;
       let result: any;
       try { result = await search(db, { term: '', limit: 10000 } as any); } catch { continue; }
-      const docs = (result.hits as any[]).map((hit) => hit.document as MemoryDocument);
+      // 方案 2：巩固（评分/归并/淘汰）输入侧排除被拒消息——不再给被拒内容打分、不再归并保留。
+      const docs = ((result.hits as any[]) || []).map((hit) => hit.document as MemoryDocument).filter((doc) => !this.rejected(doc.messageId));
       stats.namespaces += 1;
       if (!docs.length) continue;
       // 1) 重要性评分（未配置 scorer 则跳过评分与低分淘汰，仅归并）

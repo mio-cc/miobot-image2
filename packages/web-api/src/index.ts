@@ -18,7 +18,7 @@ import {
 import type { PackageDescriptor } from '@miobot-v2/shared';
 import { findUnresolvedSecrets, maskConfigSecrets, unmaskConfigSecrets } from './secrets.js';
 import { PROMPT_REGISTRY, getPromptValue, setPromptValue } from './prompt-registry.js';
-import { applyCapabilityOverrides, applyRuntimeCapabilityGates, builtinCapabilityDescriptors, buildCapabilityManifest, createPermissionPolicyFromDefaults, resolvePermission, evaluatePromptPromotion, diffPromptText, type CapabilityDescriptor } from '../../orchestration/src/index.js';
+import { applyCapabilityOverrides, applyRuntimeCapabilityGates, builtinCapabilityDescriptors, buildCapabilityManifest, createPermissionPolicyFromDefaults, resolvePermission, type CapabilityDescriptor } from '../../orchestration/src/index.js';
 import { detectComfyUiPromptNodeIds, inspectComfyUiWorkflow, validateComfyUiProfile } from '../../comfyui/src/index.js';
 
 export const WEB_API_PACKAGE: PackageDescriptor = {
@@ -28,7 +28,7 @@ export const WEB_API_PACKAGE: PackageDescriptor = {
 
 export type WebApiMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 export type WebApiHeaders = Record<string, string | undefined>;
-export type WebApiStatus = 200 | 201 | 304 | 400 | 401 | 404 | 405 | 429 | 500; // 304 协商缓存；R15/N-20: 429 登录限速
+export type WebApiStatus = 200 | 201 | 304 | 400 | 401 | 404 | 405 | 409 | 429 | 500; // 304 协商缓存；R15/N-20: 429 登录限速；409 配置版本冲突
 
 export interface PanelAuthSnapshot {
   token: string;
@@ -259,7 +259,7 @@ export interface ConfigVersionRecord extends ConfigVersionSummary {
   config: AppConfig;
 }
 const CONFIG_SECTION_KEYS = new Set([
-  'panel', 'napcat', 'promptsChat', 'canvas', 'freeMode', 'intentRecognition',
+  'panel', 'napcat', 'canvas', 'freeMode', 'intentRecognition',
   'browserRender', 'codeRender', 'comfyuiTransform', 'huggingFace', 'search',
   'llm', 'bot', 'orchestration',
 ]);
@@ -968,97 +968,6 @@ export class WebApi {
           },
         });
       }
-      if (method === 'GET' && path === '/api/orchestration/prompts') {
-        const cfg = this.repository.getConfig();
-        return ok({
-          success: true,
-          prompts: {
-            enabled: cfg.orchestration.promptOptimization.enabled,
-            canaryPercent: cfg.orchestration.promptOptimization.canaryPercent,
-            activeVersionId: cfg.orchestration.promptOptimization.activeVersionId,
-            canaryVersionId: cfg.orchestration.promptOptimization.canaryVersionId,
-            versions: cfg.orchestration.promptOptimization.versions,
-          },
-        });
-      }
-      if (method === 'GET' && path.startsWith('/api/orchestration/prompts/') && path.endsWith('/diff')) {
-        const id = decodeURIComponent(path.slice('/api/orchestration/prompts/'.length, -'/diff'.length));
-        const cfg = this.repository.getConfig();
-        const versions = cfg.orchestration.promptOptimization.versions;
-        const target = versions.find((item) => item.id === id);
-        if (!target) return json(404, { success: false, error: 'prompt_version_not_found' });
-        const baseline = versions.find((item) => item.id === cfg.orchestration.promptOptimization.activeVersionId)
-          || versions.find((item) => item.status === 'active');
-        return ok({ success: true, versionId: id, baselineId: baseline?.id, diff: diffPromptText(baseline?.content || '', target.content) });
-      }
-      if (method === 'POST' && path === '/api/orchestration/prompts/evaluate') {
-        const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
-        const cfg = this.repository.getConfig();
-        const target = cfg.orchestration.promptOptimization.versions.find((item) => item.id === String(body.versionId || ''));
-        if (!target) return json(404, { success: false, error: 'prompt_version_not_found' });
-        const ownerApproved = Boolean(body.ownerApproved);
-        const decision = evaluatePromptPromotion({
-          samples: Number(body.samples) || 0,
-          successRate: Number(body.successRate) || 0,
-          averageScore: Number(body.averageScore) || 0,
-          safetyFailures: Number(body.safetyFailures) || 0,
-        }, {
-          minSamples: cfg.orchestration.promptOptimization.minSamples,
-          minSuccessRate: 0.9,
-          minAverageScore: 0.8,
-          maxSafetyFailures: 0,
-          canaryPercent: cfg.orchestration.promptOptimization.canaryPercent,
-          requireOwnerApproval: cfg.orchestration.promptOptimization.requireOwnerApproval,
-        }, ownerApproved);
-        const versions = cfg.orchestration.promptOptimization.versions.map((item) => item.id === target.id ? {
-          ...item,
-          evaluation: {
-            samples: Number(body.samples) || 0,
-            successRate: Number(body.successRate) || 0,
-            averageScore: Number(body.averageScore) || 0,
-            safetyFailures: Number(body.safetyFailures) || 0,
-            ownerApproved,
-            promote: decision.promote,
-            reason: decision.reason,
-            evaluatedAt: new Date().toISOString(),
-          },
-        } : item);
-        const saved = this.repository.saveConfig({ orchestration: { promptOptimization: { versions } } });
-        return ok({ success: true, versionId: target.id, decision, config: saved.config, revision: saved.revision });
-      }
-      if (method === 'POST' && (path === '/api/orchestration/prompts/activate' || path === '/api/orchestration/prompts/rollback')) {
-        const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
-        const cfg = this.repository.getConfig();
-        const targetId = String(body.versionId || '');
-        const target = cfg.orchestration.promptOptimization.versions.find((item) => item.id === targetId);
-        if (!target) return json(404, { success: false, error: 'prompt_version_not_found' });
-        const isRollback = path.endsWith('/rollback');
-        if (!isRollback) {
-          if (cfg.orchestration.promptOptimization.requireOwnerApproval && !target.evaluation?.ownerApproved) {
-            return json(400, { success: false, error: 'prompt_owner_approval_required' });
-          }
-          if (!target.evaluation?.promote) {
-            return json(400, { success: false, error: 'prompt_evaluation_required' });
-          }
-        }
-        const mode = isRollback ? 'active' : (String(body.mode || 'active') === 'canary' ? 'canary' : 'active');
-        const versions = cfg.orchestration.promptOptimization.versions.map((item) => {
-          if (item.id === target.id) return { ...item, status: mode === 'active' ? 'active' as const : 'canary' as const };
-          if (mode === 'active' && item.status === 'active') return { ...item, status: 'retired' as const };
-          if (mode === 'canary' && item.status === 'canary') return { ...item, status: 'draft' as const };
-          return item;
-        });
-        const saved = this.repository.saveConfig({
-          orchestration: {
-            promptOptimization: {
-              versions,
-              activeVersionId: mode === 'active' ? target.id : cfg.orchestration.promptOptimization.activeVersionId,
-              canaryVersionId: mode === 'canary' ? target.id : '',
-            },
-          },
-        });
-        return ok(saved);
-      }
       if (method === 'GET' && path === '/api/orchestration/capabilities') {
         const cfg = this.repository.getConfig();
         const descriptors = applyCapabilityOverrides(allCapabilityDescriptors(), cfg.orchestration?.capabilityOverrides || {});
@@ -1217,7 +1126,15 @@ export class WebApi {
         return ok({ success: true, config: this.repository.getMaskedConfig(), revision: this.repository.revision, auth: this.repository.getAuthSnapshot(false) });
       }
       if (method === 'POST' && path === '/api/config') {
-        const saved = this.repository.saveConfig(request.body);
+        // 乐观锁：提示词注册表 / 配置导入 / 回滚等旁路入口会直接递增 revision。
+        // 面板携带其快照 revision 提交；不匹配说明面板基于旧配置修改，deepMerge 会把
+        // 旁路改动悄悄覆盖回去（典型：注册表改完提示词，详细页再保存一次就被回滚）。
+        const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : undefined;
+        const wrapped = body && typeof body.revision === 'number' && body.config && typeof body.config === 'object';
+        if (wrapped && Number(body.revision) !== this.repository.revision) {
+          throw new WebApiError(409, `配置已被其他入口修改（面板基于 r${Number(body.revision)}，当前 r${this.repository.revision}）。请刷新面板后重新修改，避免覆盖其他入口的改动。`);
+        }
+        const saved = this.repository.saveConfig(wrapped ? body.config : body);
         return ok(isCompactRequest(request.path) ? compactConfigSaveResult(saved) : saved);
       }
       if (method === 'POST' && path === '/api/config/import') {

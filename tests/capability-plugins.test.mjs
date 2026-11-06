@@ -47,8 +47,6 @@ test('plugins T4.2: enforcer.registerCapability——注册后可被规划执行
   const cfg = createDefaultConfig();
   cfg.orchestration.enabled = true;
   cfg.orchestration.mode = 'enforce';
-  cfg.orchestration.planner.enabled = true;
-  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
   cfg.orchestration.planner.nodeIndex = 1;
   cfg.orchestration.planner.model = 'planner-test';
   const fakeApp = {
@@ -67,13 +65,13 @@ test('plugins T4.2: enforcer.registerCapability——注册后可被规划执行
     { id: 'plugin.echo', version: '1.0.0', name: '插件回声', provider: 'plugin', mode: 'sync', riskLevel: 'low', enabled: true, outputKinds: ['text'] },
     { async execute(invocation) { return { jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success', outputs: [{ kind: 'text', text: '插件回声：' + String(invocation.step.args.text || '') }] }; } },
   );
-  const result = await enforcer.handle({ text: '回声 你好', chatType: 'private', userId: '1' });
+  const result = await enforcer.handle({ text: '回声 你好', chatType: 'private', userId: '1', plan: { planId: 'p1', requestId: 'r1', goal: 'answer', steps: [{ id: 's1', capability: 'plugin.echo', args: { text: '你好' } }], budget: { maxSteps: 1 }, needsClarification: false, confidence: 0.9, source: 'command' } });
   assert.equal(result.handled, true);
   const text = (result.result?.text || '') + JSON.stringify(result.result?.replyPlan?.groups || []);
   assert.ok(text.includes('插件回声：你好'), '插件能力应被规划执行：' + text.slice(0, 200));
   // 配置热重载（fingerprint 变化触发 replaceAll）后插件能力仍存活
   cfg.orchestration.execution.maxSteps = (cfg.orchestration.execution.maxSteps || 5) + 1;
-  const result2 = await enforcer.handle({ text: '再回声一次', chatType: 'private', userId: '1' });
+  const result2 = await enforcer.handle({ text: '再回声一次', chatType: 'private', userId: '1', plan: { planId: 'p2', requestId: 'r2', goal: 'answer', steps: [{ id: 's1', capability: 'plugin.echo', args: { text: '再来' } }], budget: { maxSteps: 1 }, needsClarification: false, confidence: 0.9, source: 'command' } });
   assert.equal(result2.handled, true);
   const text2 = (result2.result?.text || '') + JSON.stringify(result2.result?.replyPlan?.groups || []);
   assert.ok(text2.includes('插件回声'), 'refreshConfig replaceAll 不得冲掉插件能力');

@@ -4,7 +4,6 @@ export {
   type AdminRequest,
   type AdminHandler,
   type AdminServiceDeps,
-  type CodexService,
   type CanvasCardsDep,
 } from './types.js';
 export {

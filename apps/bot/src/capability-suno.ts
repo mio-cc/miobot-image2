@@ -14,6 +14,15 @@ export interface SunoCapabilityOptions {
   history?: SunoSongHistoryStore;
   /** R13：等待超时但远端仍在跑时登记“迟到投递”——由装配方补投，不再丢弃任务。 */
   registerLateDelivery?: (taskId: string, input: { invocation: CapabilityInvocation; composed?: SunoComposedSpec; rawUserText: string }) => void;
+  /** 批 3（2026-11-06 拍板）：歌词审核修复——Suno 400 识别为内容审核时，用修复模型（sanitize 用途）改写歌词。
+   *  返回 null = 修复不可用/失败（明确告知用户，不再提交）。由装配方从 createSanitizeCall 构造注入。 */
+  repairLyrics?: (input: { lyrics: string; title?: string; style?: string; userText: string }) => Promise<string | null>;
+}
+
+/** Suno 400 是否为内容审核拒绝：官方 400 错误体文案未经真实上游采样，按保守特征识别——
+ *  识别不中按普通失败处理（现行为），绝不误判成普通参数错误为审核。 */
+export function isSunoModerationRejection(message: string): boolean {
+  return /suno_http_400/i.test(message) && /(敏感|审核|content|sensitive|moderation|inappropriate|policy|flagged)/i.test(message);
 }
 
 function appendLanguageHint(value: string | undefined, language: string | undefined, maxLength = 1000): string | undefined {
@@ -189,7 +198,46 @@ export class SunoCapabilityHandler implements CapabilityHandler {
     try {
       await this.acquireSlot(cfg, invocation.request.user.qq, invocation.signal);
       acquired = true;
-      const created = await this.withRetry(() => client.create(generationInput), cfg.maxRetries);
+      // 批 3（2026-11-06 拍板）：Suno 400 识别为歌词内容审核 → 修复模型改写一次 → **显式新一次提交**
+      // （不动 withRetry「4xx 不重试」的语义——修复提交不是盲目重试，是内容已变的新请求）。
+      let created: ReturnType<SunoClient['create']> extends Promise<infer T> ? T : never;
+      try {
+        created = await this.withRetry(() => client.create(generationInput), cfg.maxRetries);
+      } catch (error) {
+        const message = String((error as Error)?.message || error);
+        const repairable = isSunoModerationRejection(message) && Boolean(generationInput.lyrics) && Boolean(this.options.repairLyrics);
+        if (!repairable) throw error;
+        const moderationNotice = (stillRejected: boolean): string => stillRejected
+          ? '歌词触发了 Suno 内容审核，自动改写后仍未通过。建议换个主题，或把歌词里的敏感表达改含蓄一些再试。'
+          : '歌词触发了 Suno 内容审核，自动改写后提交仍未成功。建议稍后再试或换个主题。';
+        let rewritten: string | null = null;
+        try {
+          rewritten = await this.options.repairLyrics!({ lyrics: String(generationInput.lyrics), title: generationInput.title, style: generationInput.style, userText: rawUserText });
+        } catch (repairError) {
+          this.options.logger?.warn('content.repair', { event: 'suno_lyrics_attempt_failed', error: String((repairError as Error)?.message || repairError).slice(0, 200) });
+        }
+        if (!rewritten) {
+          this.options.logger?.info('content.repair', { event: 'suno_lyrics_exhausted' });
+          return {
+            jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'failed',
+            outputs: [{ kind: 'text' as const, text: moderationNotice(true) }],
+            error: 'suno_lyrics_moderation_rejected', diagnostics: { moderation: true }, retryable: false,
+          };
+        }
+        this.options.logger?.info('content.repair', { event: 'suno_lyrics_retry', chars: rewritten.length });
+        try {
+          created = await this.withRetry(() => client.create({ ...generationInput, lyrics: rewritten! }), cfg.maxRetries);
+        } catch (retryError) {
+          const stillRejected = isSunoModerationRejection(String((retryError as Error)?.message || retryError));
+          this.options.logger?.info('content.repair', { event: stillRejected ? 'suno_lyrics_exhausted' : 'suno_lyrics_submit_failed' });
+          return {
+            jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'failed',
+            outputs: [{ kind: 'text' as const, text: moderationNotice(stillRejected) }],
+            error: stillRejected ? 'suno_lyrics_moderation_rejected' : String((retryError as Error)?.message || retryError).slice(0, 120),
+            diagnostics: { moderation: stillRejected }, retryable: !stillRejected,
+          };
+        }
+      }
       // T2.8：提交成功即上报 taskId——崩溃恢复时才有对账依据（不重放、防双计费）。
       invocation.reportExternalTask?.(created.id);
       // R13：任务级等待跟随后台配置 orchestration.suno.timeoutMs（默认 600s）；仅设 3 分钟防呆下限，

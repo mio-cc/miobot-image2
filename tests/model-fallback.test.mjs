@@ -445,3 +445,63 @@ test('purpose fallback: bypass passthrough and turn=false follow semantics', asy
   assert.deepEqual(calls2, ['img-primary'], 'follow 态主失败不切备');
   assert.equal(c2.snapshot('image').consecutivePrimaryFailures, 0, 'follow 态不计数');
 });
+
+/* ── 23-25. A②（2026-11-06 拍板）：内容审核拒绝 → 切备救本次，但不计数、不推粘滞 ── */
+/** 实测事故形态（packages/model/src/dialects/shared.ts empty_choices 分支）：200 + SSE error 事件 →
+ *  ModelError(message 带上游审核原文, { category:'upstream', retryable:false, code:'empty_choices' })。 */
+const moderationError = () => Object.assign(
+  new Error('上游返回了空 choices："data: {\\"error\\":{\\"message\\":\\"The request contains sensitive content. Please modify your input and try again.\\",\\"type\\":\\"content_check_error\\",\\"code\\":\\"content_check_rejected\\"}}"'),
+  { category: 'upstream', retryable: false, code: 'empty_choices' },
+);
+
+test('content rejection A②: failover rescues this request but never counts toward sticky', async () => {
+  // 审核 4 连击：主、备都拒（每轮 primary+secondary 各一次审核错误），整链失败但计数恒 0。
+  const h = makeHarness({ script: Array.from({ length: 8 }, () => ({ throw: moderationError() })) });
+  for (let i = 0; i < 4; i += 1) {
+    await assert.rejects(() => h.chat(), /sensitive content/);
+  }
+  const snap = h.controller.snapshot('main');
+  assert.equal(snap.consecutivePrimaryFailures, 0, '审核拒绝不得计数（主模型没故障）');
+  assert.equal(snap.stickyOnSecondary, false, '审核连击不得推粘滞（实测事故：粘到抽风备用节点整站报错）');
+  assert.equal(h.calls.filter((c) => c.model === 'backup-model').length, 4, '每次审核拒绝仍切备救本次（跨提供商审核松紧不同）');
+  assert.ok(h.logs.some(([, d]) => d.event === 'failover_uncounted' && d.policy === 'content_rejection'), '不计数切备要有可区分的结构化日志');
+  assert.ok(!h.logs.some(([, d]) => d.event === 'failover' && d.purpose === 'main'), '不得产生计数的 failover 事件');
+});
+
+test('content rejection A②: real network failures still count and reach sticky (semantics preserved)', async () => {
+  // 回归护栏：A② 不得把「网络类失败连击 → 粘滞」的既有语义改没。
+  const h = makeHarness({ script: [
+    { throw: netError() }, { text: 'b1' },
+    { throw: netError() }, { text: 'b2' },
+    { text: 'b3' },
+  ] });
+  await h.chat(); await h.chat();
+  await h.chat();
+  assert.equal(h.controller.snapshot('main').stickyOnSecondary, true, '网络连击 2 次仍须粘滞');
+  assert.equal(h.controller.snapshot('main').consecutivePrimaryFailures, 2, '网络失败仍计数');
+});
+
+test('content rejection A②: deterministic moderation response during probe proves primary alive and clears sticky', async () => {
+  // 粘滞中试探主模型 → 上游返回审核拒绝 = 主模型网络已恢复 → 解除粘滞回主；本次仍落备完成。
+  const h = makeHarness({ script: [
+    { throw: netError() }, { throw: netError() },   // 请求1：主败(计1)→备败
+    { throw: netError() }, { throw: netError() },   // 请求2：主败(计2)→备败
+    { throw: netError() },                          // 请求3：惰性粘滞，直接备（备败）
+    { throw: moderationError() }, { text: 'backup ok' }, // 冷却期满：probe 主 → 审核拒绝（主活着）→ 落备完成
+    { text: 'primary ok' },                          // 下一轮：回到主
+  ] });
+  await assert.rejects(() => h.chat());
+  await assert.rejects(() => h.chat());
+  await assert.rejects(() => h.chat());
+  assert.equal(h.controller.snapshot('main').stickyOnSecondary, true, '前置：网络连击应粘滞');
+  h.advance(120_001);
+  const res = await h.chat();
+  assert.equal(res.assistant.text, 'backup ok', 'probe 撞审核 → 本次仍落备完成');
+  const snap = h.controller.snapshot('main');
+  assert.equal(snap.stickyOnSecondary, false, '审核拒绝是确定性响应 = 主网络已恢复 → 解除粘滞');
+  assert.equal(snap.consecutivePrimaryFailures, 0, '计数清零');
+  assert.ok(h.logs.some(([, d]) => d.event === 'recover' && d.reason === 'probe_content_rejection'), '回切日志要能区分审核路径');
+  const res2 = await h.chat();
+  assert.equal(res2.assistant.text, 'primary ok');
+  assert.equal(h.calls[7].model, 'primary-model', '下一轮回主模型');
+});

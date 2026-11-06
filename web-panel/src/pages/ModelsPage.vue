@@ -8,7 +8,7 @@ import FormField from '../components/FormField.vue';
 import { type AppSelectOption } from '../components/AppSelect.vue';
 import NodeCard from '../components/NodeCard.vue';
 import NodeEditDrawer from '../components/NodeEditDrawer.vue';
-import { ROLES, isRoleInherit, getRoleNode as getRoleNodeOf, getRoleModel as getRoleModelOf, setRoleValue as setRoleValueOf, getRoleFallback as getRoleFallbackOf, setRoleFallbackValue as setRoleFallbackValueOf, clearRoleFallbackValue as clearRoleFallbackValueOf, roleUsageHint, type RoleDef } from '../shared/roles';
+import { ROLES, isRoleInherit, getRoleNode as getRoleNodeOf, getRoleModel as getRoleModelOf, setRoleValue as setRoleValueOf, getRoleFallback as getRoleFallbackOf, setRoleFallbackValue as setRoleFallbackValueOf, clearRoleFallbackValue as clearRoleFallbackValueOf, setMainBinding, roleUsageHint, type RoleDef } from '../shared/roles';
 
 /**
  * R19 模型与节点 · 统一管理（R21-f 视觉精化）。
@@ -68,7 +68,6 @@ function removeNode(idx: number) {
         ['orchestration', 'suno', 'composerNodeIndex'],
         ['orchestration', 'memory', 'embeddingNodeIndex'],
         ['orchestration', 'memory', 'summarizeNodeIndex'],
-        ['promptsChat', 'smartNodeIndex'],
         ['bot', 'tts', 'preprocess', 'nodeIndex'],
     ];
     const cfg: any = config.value;
@@ -412,8 +411,8 @@ onMounted(() => { void capabilityStore.refresh(); });
               :node-index="mainModel.nodeIndex"
               :model="mainModel.model"
               capability="chat"
-              @update:node-index="(v: number) => { if (config) { (config as any).agent.mainNodeIndex = v; } }"
-              @update:model="(v: string) => { if (config) { (config as any).agent.mainModel = v; } }"
+              @update:node-index="(v: number) => setMainBinding(config, v, mainModel.model)"
+              @update:model="(v: string) => setMainBinding(config, mainModel.nodeIndex, v)"
             />
           </div>
         </div>
@@ -531,7 +530,7 @@ onMounted(() => { void capabilityStore.refresh(); });
       </div>
 
       <p class="mt-3 text-[11px] text-[color:var(--ink-3)] leading-relaxed">
-        提示词润色（llm.enhance*，image-pipeline 消费）已入上方用途表；本地模板/引用模板/远程翻译（llm.template*/referencedTemplate*/translation*）为无运行时消费者的旧绑定，不在此页显示。
+        提示词润色（llm.enhance*，image-pipeline 消费）已入上方用途表。
       </p>
     </section>
 

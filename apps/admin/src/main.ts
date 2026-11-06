@@ -17,7 +17,7 @@ export interface AdminAppOptions {
   /** 系统/画布日志文件；两个都给才用文件日志，否则内存日志。 */
   systemLogFile?: string;
   canvasLogFile?: string;
-  /** 注入外部集成(fetch-models / test-napcat / test-image / huggingface / codex)。 */
+  /** 注入外部集成(fetch-models / test-napcat / test-image / huggingface)。 */
   deps?: AdminServiceDeps;
   /** 画布卡片视图(跨域读 canvas 画廊/反推)；可延迟注入(闭包在请求时解析 canvas store)。 */
   canvasCards?: CanvasCardsDep;

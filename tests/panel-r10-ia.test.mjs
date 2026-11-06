@@ -32,7 +32,7 @@ test('panel R11 IA: routing redirects to models, planner remains a redirect', ()
   for (const needle of ['OrchestrationPanel', 'LegacyEnginePanel']) {
     assert.ok(agent.includes(needle), `AgentPage 应挂载拆分面板: ${needle}`);
   }
-  for (const needle of ['orchestration.mode', 'roleKeys', 'addPromptVersion']) {
+  for (const needle of ['orchestration.mode', 'roleKeys']) {
     assert.ok(orchPanel.includes(needle), `OrchestrationPanel 应包含迁移字段: ${needle}`);
   }
   for (const needle of ['config.llm.reasoningEffort', 'config.freeMode.enabled', 'config.llm.videoTimeoutMs']) {

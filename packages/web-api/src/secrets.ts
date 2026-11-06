@@ -28,7 +28,6 @@
 const SECRET_PATHS = [
   'panel.passwordSeed',
   'napcat.token',
-  'promptsChat.apiKey',
   'bot.tts.apiKey',
   'huggingFace.token',
   'search.apiKey',

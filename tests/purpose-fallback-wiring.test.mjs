@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 /**
@@ -216,4 +216,144 @@ test('command: slot lock (锁定 备/解锁) is main-scoped and reflects in runt
   const unlock = service.setOverride({ slot: 'primary', source: 'command', actorId: '10001' });
   assert.equal(unlock.ok, true);
   assert.ok(/主对话：.*（当前生效：主模型）/.test(service.getStatusText()), '解锁后恢复自动（主模型）');
+});
+
+/* ── 方案 B（2026-11-06 拍板）：面板保存 → 绑定真变了 → onBindingChanged 同源清零 ── */
+function reconcileHarness() {
+  const config = {
+    agent: { mainNodeIndex: 0, mainModel: 'primary-model', fallbackModel: 'fb-main', fallbackNodeIndex: 1 },
+    llm: { chatNodeIndex: 0, chatModel: 'primary-model', imageModel: 'img-primary', fallbackImageModel: 'fb-image', fallbackImageNodeIndex: 1, apiKeys: [
+      { name: 'N1', baseUrl: 'https://a.test', key: 'k', enabled: true, models: ['primary-model'] },
+      { name: 'N2', baseUrl: 'https://b.test', key: 'k', enabled: true, models: ['fb-main', 'new-main', 'fb-image'] },
+    ] },
+    orchestration: { suno: {}, memory: {} },
+    codeRender: {}, comfyuiTransform: {},
+    bot: { tts: { preprocess: {} }, keywordTrigger: {} },
+  };
+  const controller = createModelFallbackController({ getConfig: () => config });
+  const notifications = [];
+  const service = createModelBindingService({
+    getConfig: () => config,
+    onBindingChanged: (purpose, slot) => { notifications.push([purpose, slot]); controller.reset(purpose); },
+    runtimeStateText: (purpose) => controller.describe(purpose),
+  });
+  return { config, controller, service, notifications };
+}
+
+test('reconcile B: panel binding change routes through onBindingChanged and clears sticky immediately', async () => {
+  const { config, controller, service, notifications } = reconcileHarness();
+  // 前置：main 粘滞（3 次网络失败驱动，惰性转粘滞）。
+  const invoke = async () => { throw Object.assign(new Error('HTTP 503'), { status: 503 }); };
+  for (let i = 0; i < 3; i += 1) {
+    await withPurposeFallback(controller, 'main', { nodeIndex: 0, model: 'primary-model' }, invoke).catch(() => undefined);
+  }
+  assert.equal(controller.snapshot('main').stickyOnSecondary, true, '前置：粘滞中');
+  // 面板路径：保存热重载后 reconcile 前后两份配置（主绑定换成 new-main——双写后的形态）。
+  const next = JSON.parse(JSON.stringify(config));
+  next.agent.mainModel = 'new-main'; next.agent.mainNodeIndex = 1;
+  next.llm.chatModel = 'new-main'; next.llm.chatNodeIndex = 1;
+  service.reconcileConfigChange(config, next);
+  assert.deepEqual(notifications, [['main', 'primary']], '绑定变更应走 onBindingChanged 通道（与 /切换 同源）');
+  const snap = controller.snapshot('main');
+  assert.equal(snap.stickyOnSecondary, false, '面板切完立即解除粘滞（不等 120s 探测）');
+  assert.equal(snap.consecutivePrimaryFailures, 0);
+});
+
+test('reconcile B: non-binding field changes never clear counters; per-purpose isolation holds', async () => {
+  const { config, controller, service, notifications } = reconcileHarness();
+  // image 计数 1（一次网络失败；harness 已配 image 备用，否则 bypass 不计数）。
+  const invoke = async () => { throw Object.assign(new Error('HTTP 503'), { status: 503 }); };
+  await withPurposeFallback(controller, 'image', { nodeIndex: 0, model: 'img-primary' }, invoke).catch(() => undefined);
+  assert.equal(controller.snapshot('image').consecutivePrimaryFailures, 1, '前置：image 计数 1');
+  // 面板只改无关字段（llm.imageTimeoutMs）→ 不通知、不误清。
+  const onlyTimeout = JSON.parse(JSON.stringify(config));
+  onlyTimeout.llm.imageTimeoutMs = 90000;
+  service.reconcileConfigChange(config, onlyTimeout);
+  assert.equal(notifications.length, 0, '无关字段变化不得触发 onBindingChanged');
+  assert.equal(controller.snapshot('image').consecutivePrimaryFailures, 1, '无关字段不得误清计数');
+  // 面板只改 main 主绑定 → main 清零、image 计数保留（用途隔离）。
+  const onlyMain = JSON.parse(JSON.stringify(config));
+  onlyMain.agent.mainModel = 'new-main';
+  service.reconcileConfigChange(config, onlyMain);
+  assert.deepEqual(notifications, [['main', 'primary']]);
+  assert.equal(controller.snapshot('image').consecutivePrimaryFailures, 1, 'main 的清零不得串到 image');
+  // 面板改某用途备用（main fallback 换模型）→ ('main','secondary') 通知。
+  const onlyFallback = JSON.parse(JSON.stringify(config));
+  onlyFallback.agent.fallbackModel = 'fb-main-2';
+  service.reconcileConfigChange(config, onlyFallback);
+  assert.deepEqual(notifications.slice(-1), [['main', 'secondary']], '备用绑定变更也要通知对应用途');
+});
+
+test('reconcile B: start.ts wires hot-reload reconcile into getConfig (same channel as /切换)', () => {
+  const start = src('apps/bot/src/start.ts');
+  assert.ok(/reconcileConfigChange\(lastSyncedConfig, current\)/.test(start), 'getConfig 应在配置引用更替时调 reconcileConfigChange（面板热重载对账）');
+  assert.ok(/buildBindingService\(\)\.reconcileConfigChange/.test(start), '对账必须走 ModelBindingService（与命令同一通知通道）');
+});
+
+/* ── 方案 C（2026-11-06 拍板）：面板主卡双写 chatModel，字段集与 /切换 逐字段一致 ── */
+test('dual-write C: panel setMainBinding writes the exact field set of /切换 main+primary', () => {
+  const roles = src('web-panel/src/shared/roles.ts');
+  // 面板侧四字段（agent 双字段 + llm 双字段）。
+  for (const field of ['agent.mainNodeIndex = nodeIndex', 'agent.mainModel = model', 'llm.chatNodeIndex = nodeIndex', 'llm.chatModel = model']) {
+    assert.ok(roles.includes(field), `面板 setMainBinding 必须写 ${field}`);
+  }
+  const mb = src('apps/bot/src/model-binding.ts');
+  // 命令侧 mutate main+primary 分支同样四字段（obj[purpose.nodeField/modelField] 对 main 即 agent.main*）。
+  assert.ok(mb.includes('llm.chatModel = best.model') && mb.includes('llm.chatNodeIndex = targetNodeIndex'), '命令侧 main 双写 chatModel/chatNodeIndex');
+  assert.ok(mb.includes('obj[purpose.nodeField] = targetNodeIndex') && mb.includes('obj[purpose.modelField] = best.model'), '命令侧主绑定写 agent.main*');
+  assert.ok(!/slot === 'secondary'[\s\S]{0,200}chatModel/.test(mb), '命令切备不双写 chatModel——面板备用胶囊同口径');
+});
+
+test('dual-write C: no panel write path may set agent.main* without llm.chat* (guard against a third split)', () => {
+  // 扫描 web-panel/src：唯一允许的 agent.main* 写入点是 roles.ts 的 setMainBinding（内部四字段同写）。
+  const walk = (dir) => {
+    const out = [];
+    for (const name of readdirSync(dir)) {
+      const full = `${dir}/${name}`;
+      if (statSync(full).isDirectory()) out.push(...walk(full));
+      else if (/\.(vue|ts)$/.test(name)) out.push(full);
+    }
+    return out;
+  };
+  const panelRoot = path.join(root, 'web-panel/src');
+  const offenders = [];
+  for (const file of walk(panelRoot)) {
+    if (file.replaceAll('\\', '/').endsWith('shared/roles.ts')) continue; // setMainBinding 本体（四字段）
+    const source = readFileSync(file, 'utf8');
+    // 直写形态：v-model 双向绑定（= 写入）或赋值语句，只碰 agent.mainModel/mainNodeIndex 而不经 setMainBinding。
+    if (/v-model(?::[\w-]+)?="agent\.main(?:Model|NodeIndex)"/.test(source) || /agent\.main(?:Model|NodeIndex)\s*=/.test(source)) {
+      offenders.push(file.replaceAll('\\', '/').split('web-panel/src/')[1]);
+    }
+  }
+  assert.deepEqual(offenders, [], '面板写主绑定必须走 setMainBinding（agent.main* + llm.chat* 四字段同写）；不允许再出现只写 agent.* 的分裂入口');
+});
+
+test('dual-write C: AgentPage holds no main-binding entry (sole entry = ModelsPage main card via setMainBinding)', () => {
+  const agentPage = src('web-panel/src/pages/AgentPage.vue');
+  assert.ok(!agentPage.includes('setMainBinding'), 'AgentPage 已移除主绑定入口：不得再引用 setMainBinding');
+  assert.ok(!/v-model(?::[\w-]+)?="agent\.main/.test(agentPage), 'AgentPage 不得再用 v-model 直写 agent.main*');
+  assert.ok(!/agent\.main(?:Model|NodeIndex)\s*=/.test(agentPage), 'AgentPage 不得包含 agent.main* 赋值（重复入口，唯一来源是「模型与节点」主卡）');
+});
+
+test('dual-write C: chatModel consumers follow the panel switch (trigger fallback + prompt.enhance)', async () => {
+  const { TriggerIntentChecker } = await import('../dist/apps/bot/src/trigger-intent.js');
+  const { PromptCapabilityHandler } = await import('../dist/apps/bot/src/capability-basic.js');
+  // 面板双写后的配置形态（setMainBinding 字段集已由上锁死）：agent.mainModel === llm.chatModel === 'new-main'。
+  const cfg = {
+    agent: { mainNodeIndex: 1, mainModel: 'new-main' },
+    llm: { chatNodeIndex: 1, chatModel: 'new-main', apiKeys: [{ name: 'N2', baseUrl: 'https://b.test', key: 'k', enabled: true, models: ['new-main'] }] },
+    bot: { keywordTrigger: { intentModel: '' } },
+  };
+  const calls = [];
+  const client = { async chat(nodeIndex, req) { calls.push({ nodeIndex, model: req.model }); return { text: '{"intent": true}' }; } };
+  // ① 触发判定回落位：intentModel 空 → 读 cfg.llm.chatModel（trigger-intent.ts chatNode 回落）。
+  const checker = new TriggerIntentChecker({ getConfig: () => cfg, client });
+  await checker.checkKeywordIntent({ userText: 'hi', userName: 'u', context: '', triggerWord: 't' });
+  assert.equal(calls[0].model, 'new-main', '面板切换后，触发判定回落位必须用上新模型');
+  assert.equal(calls[0].nodeIndex, 1);
+  // ② prompt.enhance 能力：读 cfg.llm.chatModel（capability-basic.ts PromptCapabilityHandler）。
+  const handler = new PromptCapabilityHandler(client, () => cfg, 'enhance');
+  await handler.execute({ plan: { planId: 'p1' }, step: { id: 's1', args: { prompt: 'x' } }, request: { text: 'x' } });
+  assert.equal(calls[1].model, 'new-main', '面板切换后，prompt.enhance 能力必须用上新模型');
+  assert.equal(calls[1].nodeIndex, 1);
 });

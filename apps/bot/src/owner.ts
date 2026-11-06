@@ -41,6 +41,7 @@ export const MODEL_SWITCH_PURPOSE_WORDS = [
   '语音', 'tts',
   '触发', '触发判定', 'trigger',
   '记忆', 'memory',
+  '审核修复', '修复', 'sanitize',
 ];
 
 /** 解析主人命令(沿用旧脚本语义:/拉黑 /拉白 /撤回 /ttsk /ttsg /tts.N /模型 /切换X)。 */

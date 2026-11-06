@@ -47,7 +47,6 @@ test('clarification resolution failure falls back to normal chat instead of a fi
   const cfg = createDefaultConfig();
   cfg.orchestration.enabled = true;
   cfg.orchestration.mode = 'enforce';
-  cfg.orchestration.planner.enabled = true;
   cfg.orchestration.roles.planner.enabled = true;
   const store = new PendingJobStore();
   store.set({

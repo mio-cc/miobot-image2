@@ -60,8 +60,6 @@ function makeConfig(overrides = {}) {
   cfg.freeMode.enabled = false;
   cfg.orchestration.enabled = true;
   cfg.orchestration.mode = 'enforce';
-  cfg.orchestration.planner.enabled = true;
-  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
   if (overrides.bot) Object.assign(cfg.bot, overrides.bot);
   if (overrides.orchestration) Object.assign(cfg.orchestration, overrides.orchestration);
   return cfg;

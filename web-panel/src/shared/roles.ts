@@ -36,6 +36,7 @@ export const ROLES: RoleDef[] = [
     { key: 'tts', title: 'TTS 前处理', desc: '朗读前改写', section: 'bot.tts.preprocess', nodeField: 'nodeIndex', modelField: 'model', fallbackNodeField: 'fallbackNodeIndex', fallbackModelField: 'fallbackModel', capability: 'chat', inheritable: true },
     { key: 'trigger', title: '触发 / 续话判定', desc: '轻量判定 · 建议选快模型；触发与续话共用', section: 'bot.keywordTrigger', nodeField: 'intentNodeIndex', modelField: 'intentModel', fallbackNodeField: 'fallbackIntentNodeIndex', fallbackModelField: 'fallbackIntentModel', capability: 'chat', inheritable: true },
     { key: 'memory', title: '记忆摘要 / 评分', desc: 'memory.* 二级任务', section: 'orchestration.memory', nodeField: 'embeddingNodeIndex', modelField: 'embeddingModel', fallbackNodeField: 'fallbackEmbeddingNodeIndex', fallbackModelField: 'fallbackEmbeddingModel', capability: 'chat', inheritable: true },
+    { key: 'sanitize', title: '审核修复', desc: '审核拒绝时自动改写重试 · 留空不启用 · 请选与主模型不同提供商', section: 'llm', nodeField: 'sanitizeNodeIndex', modelField: 'sanitizeModel', fallbackNodeField: 'fallbackSanitizeNodeIndex', fallbackModelField: 'fallbackSanitizeModel', capability: 'chat', inheritable: false },
 ];
 
 function sectionOf(config: any, section: string): any {
@@ -105,6 +106,24 @@ export function setRoleFallbackValue(config: any, role: RoleDef, nodeIndex: numb
  */
 export function clearRoleFallbackValue(config: any, role: RoleDef) {
     setRoleFallbackValue(config, role, 0, '');
+}
+
+/**
+ * 方案 C（2026-11-06 拍板）：面板主卡切主模型的写入入口——与 /切换 命令
+ * （apps/bot/src/model-binding.ts setBinding → mutate 的 main+primary 分支）**字段集逐字段一致**：
+ * agent.mainNodeIndex/mainModel + llm.chatNodeIndex/chatModel 双写。
+ * 双写让仍读 llm.chatModel 的链路（记忆摘要/重要性评分、搜索改写、prompt.enhance/translate
+ * 能力、触发判定回落位）跟上面板切换，不再出现「agent.mainModel 已切、旧链路还跑旧模型」的错位。
+ * 备用绑定落 agent.fallback*（与命令 main+secondary 一致，命令切备不双写 chatModel，此处对齐）。
+ */
+export function setMainBinding(config: any, nodeIndex: number, model: string) {
+    if (!config) return;
+    const agent = (config.agent ||= {});
+    agent.mainNodeIndex = nodeIndex;
+    agent.mainModel = model;
+    const llm = (config.llm ||= {});
+    llm.chatNodeIndex = nodeIndex;
+    llm.chatModel = model;
 }
 
 /** 反查：显式绑定到某模型的用途标题列表（含主对话；继承态用途不计）。 */

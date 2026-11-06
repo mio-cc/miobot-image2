@@ -33,13 +33,6 @@ test('auth: 无 token 访问 /api/config 401，有 token 200', async () => {
   assert.ok(withAuth.body.config);
 });
 
-test('default-prompts: 返回内置提示词', async () => {
-  const service = createAdminService();
-  const r = await service.handle({ method: 'GET', path: '/api/default-prompts', headers: authedHeaders(service) });
-  assert.equal(r.status, 200);
-  assert.ok(r.body.prompts.enhancePromptTemplate);
-});
-
 test('logs: 追加→按 level 过滤→清空', async () => {
   const service = createAdminService();
   service.logs.system.append({ timestamp: '2026-05-27T00:00:01.000Z', level: 'info', scope: 'bot', message: 'a' });
@@ -88,17 +81,11 @@ test('注入集成: dep 抛错 → 502', async () => {
   assert.equal(r.body.success, false);
 });
 
-test('codex: 未配置 → 200 + enabled:false(避免浏览器控制台噪音)；注入后委派(带 method/path)', async () => {
-  const off = createAdminService();
-  const r1 = await off.handle({ method: 'GET', path: '/api/codex/status', headers: authedHeaders(off) });
-  assert.equal(r1.status, 200);
-  assert.equal(r1.body.enabled, false);
-  assert.equal(r1.body.notConfigured, true);
-
-  const on = createAdminService({ deps: { codex: { handle: (method, path) => ({ status: 200, body: { success: true, method, path } }) } } });
-  const r2 = await on.handle({ method: 'GET', path: '/api/codex/status', headers: authedHeaders(on) });
-  assert.equal(r2.status, 200);
-  assert.equal(r2.body.path, '/api/codex/status');
+test('codex: 桥已下线，/api/codex/* 显式 404（2026-11-06 清理：Python openai-codex 桥生产零消费）', async () => {
+  const service = createAdminService();
+  const r = await service.handle({ method: 'GET', path: '/api/codex/status', headers: authedHeaders(service) });
+  assert.equal(r.status, 404);
+  assert.equal(r.body.success, false);
 });
 
 test('config 导出委派给 web-api', async () => {

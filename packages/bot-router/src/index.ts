@@ -14,9 +14,6 @@ export type BotCommandName =
   | 'originalImage'
   | 'originalImageChoice'
   | 'templateLibrary'
-  | 'referencedTemplateImage'
-  | 'remotePromptSearch'
-  | 'remotePromptSmartImage'
   | 'genImage'
   | 'editImage'
   | 'img2Img'
@@ -51,12 +48,9 @@ export interface BotCommandAliases {
   webScreenshot?: CommandAliasInput;
   originalImage?: CommandAliasInput;
   imageCount?: CommandAliasInput;
-  referencedTemplateImage?: CommandAliasInput;
   templateLibrary?: CommandAliasInput;
   help?: CommandAliasInput;
   clear?: CommandAliasInput;
-  remotePromptSearch?: CommandAliasInput;
-  remotePromptSmartImage?: CommandAliasInput;
   toggleEnhance?: CommandAliasInput;
   forceEnhance?: CommandAliasInput;
   disableEnhance?: CommandAliasInput;
@@ -174,12 +168,9 @@ const LEGACY_DIRECT_GROUP_COMMANDS: BotCommandName[] = [
   'originalImage',
   'img2Img',
   'editImage',
-  'referencedTemplateImage',
   'templateLibrary',
   'help',
   'clear',
-  'remotePromptSearch',
-  'remotePromptSmartImage',
 ];
 
 export class BotRouter {
@@ -521,12 +512,6 @@ export function matchExplicitCommand(
   }
   const templateLibrary = commandNameMatch('templateLibrary', text, commands);
   if (templateLibrary) return templateLibrary;
-  const referencedTemplateImage = commandNameMatch('referencedTemplateImage', text, commands);
-  if (referencedTemplateImage) return referencedTemplateImage;
-  const remotePromptSearch = commandNameMatch('remotePromptSearch', text, commands, true);
-  if (remotePromptSearch) return remotePromptSearch;
-  const remotePromptSmartImage = commandNameMatch('remotePromptSmartImage', text, commands, true);
-  if (remotePromptSmartImage) return remotePromptSmartImage;
   const fileList = commandNameMatch('fileList', text, commands);
   if (fileList) return fileList;
   const fileRead = commandNameMatch('fileRead', text, commands);

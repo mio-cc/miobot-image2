@@ -1,5 +1,4 @@
 import type { ApprovalQuorum, PermissionMode, PermissionRule, RiskLevel, UserRole } from './types.js';
-import { DEFAULT_PLANNER_CAPABILITY_DESCRIPTIONS, DEFAULT_PLANNER_SYSTEM_PROMPT, DEFAULT_PLANNER_USER_PROMPT_TEMPLATE } from './planner.js';
 
 export interface CapabilityOverride {
   enabled?: boolean;
@@ -22,25 +21,7 @@ export interface ModelRoleConfig {
   promptTemplate?: string;
 }
 
-export interface PromptVersionEvaluation {
-  samples: number;
-  successRate: number;
-  averageScore: number;
-  safetyFailures: number;
-  ownerApproved: boolean;
-  promote: boolean;
-  reason: string;
-  evaluatedAt: string;
-}
 
-export interface PromptVersionConfig {
-  id: string;
-  name: string;
-  content: string;
-  status: 'draft' | 'canary' | 'active' | 'retired';
-  createdAt: string;
-  evaluation?: PromptVersionEvaluation;
-}
 export interface OrchestrationConfig {
   enabled: boolean;
   mode: 'shadow' | 'enforce';
@@ -128,23 +109,16 @@ export interface OrchestrationConfig {
     failurePolicy: 'stop' | 'continue' | 'ask';
   };
   planner: {
-    enabled: boolean;
     nodeIndex?: number;
     model?: string;
-    promptVersion: string;
-    systemPromptTemplate: string;
-    userPromptTemplate: string;
-    capabilityDescriptions: Record<string, string>;
-    actionAlignmentGuardEnabled: boolean;
-    alignmentGuardConfidenceThreshold: number;
+    /** suno 局部编辑推理 maxTokens 兜底（capability-suno-library）。 */
     alignmentReviewMaxTokens: number;
-    capabilityTopK: number;
-    minConfidence: number;
-    maxRepairAttempts: number;
+    /** 执行期（needs_input）追问次数上限（enforce 执行循环）。 */
     maxClarifications: number;
+    /** 执行期追问 pending 的过期时间。 */
     clarificationTimeoutMs: number;
   };
-  roles: Record<'planner' | 'retriever' | 'specialist' | 'critic' | 'safety' | 'composer', ModelRoleConfig>;
+  roles: { planner: ModelRoleConfig };
   help: { extraText: string };
   permissions: {
     defaultLow: PermissionMode;
@@ -180,16 +154,6 @@ export interface OrchestrationConfig {
     textFallback: 'always' | 'on_forward_fail' | 'off';
     countProgressInBudget: boolean;
     includeTruncationNotice: boolean;
-  };
-  promptOptimization: {
-    enabled: boolean;
-    scope: 'task' | 'all';
-    canaryPercent: number;
-    minSamples: number;
-    requireOwnerApproval: boolean;
-    activeVersionId: string;
-    canaryVersionId: string;
-    versions: PromptVersionConfig[];
   };
   suno: {
     enabled: boolean;
@@ -295,27 +259,12 @@ export function defaultOrchestrationConfig(): OrchestrationConfig {
       failurePolicy: 'stop',
     },
     planner: {
-      enabled: false,
-      promptVersion: 'v3-planner-1',
-      systemPromptTemplate: DEFAULT_PLANNER_SYSTEM_PROMPT,
-      userPromptTemplate: DEFAULT_PLANNER_USER_PROMPT_TEMPLATE,
-      capabilityDescriptions: { ...DEFAULT_PLANNER_CAPABILITY_DESCRIPTIONS },
-      actionAlignmentGuardEnabled: true,
-      alignmentGuardConfidenceThreshold: 0.8,
       alignmentReviewMaxTokens: 1000,
-      capabilityTopK: 12,
-      minConfidence: 0.55,
-      maxRepairAttempts: 2,
       maxClarifications: 1,
       clarificationTimeoutMs: 300000,
     },
     roles: {
       planner: { enabled: false },
-      retriever: { enabled: false },
-      specialist: { enabled: false },
-      critic: { enabled: false },
-      safety: { enabled: false },
-      composer: { enabled: false },
     },
     permissions: {
       defaultLow: 'allow',
@@ -350,16 +299,6 @@ export function defaultOrchestrationConfig(): OrchestrationConfig {
       textFallback: 'always',
       countProgressInBudget: false,
       includeTruncationNotice: true,
-    },
-    promptOptimization: {
-      enabled: false,
-      scope: 'task',
-      canaryPercent: 0,
-      minSamples: 50,
-      requireOwnerApproval: true,
-        activeVersionId: '',
-        canaryVersionId: '',
-        versions: [],
     },
     suno: {
       enabled: false,
@@ -469,39 +408,6 @@ export function normalizePermissionRules(input: unknown): PermissionRule[] {
   });
   return out;
 }
-export function normalizePromptVersions(input: unknown): PromptVersionConfig[] {
-  if (!Array.isArray(input)) return [];
-  const seen = new Set<string>();
-  const out: PromptVersionConfig[] = [];
-  for (const value of input.slice(0, 50)) {
-    const item = record(value);
-    const id = String(item.id || '').trim().slice(0, 120);
-    const content = String(item.content || '').slice(0, 50000);
-    if (!id || !content.trim() || seen.has(id)) continue;
-    seen.add(id);
-    const status = ['draft', 'canary', 'active', 'retired'].includes(String(item.status))
-      ? String(item.status) as PromptVersionConfig['status']
-      : 'draft';
-    out.push({
-      id,
-      name: String(item.name || id).trim().slice(0, 200),
-      content,
-      status,
-      createdAt: String(item.createdAt || new Date().toISOString()),
-      ...(item.evaluation && typeof item.evaluation === 'object' ? { evaluation: {
-        samples: Math.max(0, Math.trunc(Number(item.evaluation.samples) || 0)),
-        successRate: Math.min(1, Math.max(0, Number(item.evaluation.successRate) || 0)),
-        averageScore: Math.min(1, Math.max(0, Number(item.evaluation.averageScore) || 0)),
-        safetyFailures: Math.max(0, Math.trunc(Number(item.evaluation.safetyFailures) || 0)),
-        ownerApproved: Boolean(item.evaluation.ownerApproved),
-        promote: Boolean(item.evaluation.promote),
-        reason: String(item.evaluation.reason || ''),
-        evaluatedAt: String(item.evaluation.evaluatedAt || ''),
-      } } : {}),
-    });
-  }
-  return out;
-}
 export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfig {
   const d = defaultOrchestrationConfig();
   const raw = record(input);
@@ -512,7 +418,6 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
   const approval = record(raw.approval);
   const help = record(raw.help);
   const reply = record(raw.reply);
-  const promptOptimization = record(raw.promptOptimization);
   const suno = record(raw.suno);
   const audit = record(raw.audit);
   const mode = raw.mode === 'enforce' ? 'enforce' : 'shadow';
@@ -638,32 +543,17 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       failurePolicy: execution.failurePolicy === 'continue' || execution.failurePolicy === 'ask' ? execution.failurePolicy : 'stop',
     },
     planner: {
-      enabled: bool(planner.enabled, d.planner.enabled),
       nodeIndex: planner.nodeIndex === undefined ? d.planner.nodeIndex : numberIn(planner.nodeIndex, 0, 0, 10000),
       model: planner.model === undefined ? d.planner.model : String(planner.model),
-      promptVersion: String(planner.promptVersion || d.planner.promptVersion),
-      systemPromptTemplate: String(planner.systemPromptTemplate || d.planner.systemPromptTemplate),
-      userPromptTemplate: String(planner.userPromptTemplate || d.planner.userPromptTemplate),
-      capabilityDescriptions: Object.fromEntries(Object.entries(planner.capabilityDescriptions && typeof planner.capabilityDescriptions === 'object' && !Array.isArray(planner.capabilityDescriptions) ? planner.capabilityDescriptions : d.planner.capabilityDescriptions).map(([key, value]) => [String(key), String(value ?? '')]).filter(([, value]) => Boolean(value))),
-      actionAlignmentGuardEnabled: bool(planner.actionAlignmentGuardEnabled ?? planner.visualIntentGuardEnabled, d.planner.actionAlignmentGuardEnabled),
-      alignmentGuardConfidenceThreshold: numberIn(planner.alignmentGuardConfidenceThreshold, d.planner.alignmentGuardConfidenceThreshold, 0),
+      // 2026-11-06 清理：规划提示词/对齐复核/置信度门等字段随自然语言规划分支删除；
+      // 这三个字段仍被消费——执行期追问（enforce）与 suno 局部编辑推理（capability-suno-library）。
       alignmentReviewMaxTokens: numberIn(planner.alignmentReviewMaxTokens, d.planner.alignmentReviewMaxTokens, 1),
-      capabilityTopK: numberIn(planner.capabilityTopK, d.planner.capabilityTopK, 1),
-      minConfidence: numberIn(planner.minConfidence, d.planner.minConfidence, 0),
-      maxRepairAttempts: numberIn(planner.maxRepairAttempts, d.planner.maxRepairAttempts, 0),
-      // 实测 bug：面板改了最大追问轮数但不生效——归一化被 Math.min(1,...) 硬钳到 1。
-      // numberIn 的范围已从 0-1 放宽到 0-5（合理上限），去掉外层 Math.min。
       maxClarifications: numberIn(planner.maxClarifications, d.planner.maxClarifications, 0),
       clarificationTimeoutMs: numberIn(planner.clarificationTimeoutMs, d.planner.clarificationTimeoutMs, 1000, 86400000),
     },
     help: { extraText: String(help.extraText || '') },
     roles: {
       planner: normalizeRole(roles.planner, d.roles.planner),
-      retriever: normalizeRole(roles.retriever, d.roles.retriever),
-      specialist: normalizeRole(roles.specialist, d.roles.specialist),
-      critic: normalizeRole(roles.critic, d.roles.critic),
-      safety: normalizeRole(roles.safety, d.roles.safety),
-      composer: normalizeRole(roles.composer, d.roles.composer),
     },
     permissions: {
       defaultLow: pickMode(permissions.defaultLow, d.permissions.defaultLow),
@@ -699,16 +589,6 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       textFallback: reply.textFallback === 'off' || reply.textFallback === 'on_forward_fail' ? reply.textFallback : 'always',
       countProgressInBudget: bool(reply.countProgressInBudget, d.reply.countProgressInBudget),
       includeTruncationNotice: bool(reply.includeTruncationNotice, d.reply.includeTruncationNotice),
-    },
-    promptOptimization: {
-      enabled: bool(promptOptimization.enabled, d.promptOptimization.enabled),
-      scope: promptOptimization.scope === 'all' ? 'all' : 'task',
-      canaryPercent: numberIn(promptOptimization.canaryPercent, d.promptOptimization.canaryPercent, 0),
-      minSamples: numberIn(promptOptimization.minSamples, d.promptOptimization.minSamples, 1, 100000),
-      requireOwnerApproval: bool(promptOptimization.requireOwnerApproval, d.promptOptimization.requireOwnerApproval),
-      activeVersionId: String(promptOptimization.activeVersionId || ''),
-      canaryVersionId: String(promptOptimization.canaryVersionId || ''),
-      versions: normalizePromptVersions(promptOptimization.versions),
     },
     suno: {
       enabled: bool(suno.enabled, d.suno.enabled),

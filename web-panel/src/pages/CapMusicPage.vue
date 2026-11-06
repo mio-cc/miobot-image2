@@ -4,7 +4,8 @@ import { useConfigStore } from '../stores/config';
 import CapabilityPageLayout from '../components/CapabilityPageLayout.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
-import ModelPicker from '../components/ModelPicker.vue';
+import ModelBindingMirror from '../components/ModelBindingMirror.vue';
+import PromptRegistryLink from '../components/PromptRegistryLink.vue';
 import AppSelect from '../components/AppSelect.vue';
 
 /* P1 最后一批·下拉收尾：Suno 参数选项（与原 <option> 一一对应，文案零变更）。 */
@@ -50,17 +51,14 @@ const sunoKeyVisible = ref(false);
           <span class="text-[11px] font-bold text-[color:var(--ink)]">二级任务 · Composer</span>
           <span class="text-[11px] text-[color:var(--ink-3)] ml-2">把用户请求改写成 Suno 生成参数的模型任务</span>
         </div>
-        <FormField label="Composer 节点与模型" hint="绑定负责改写的模型；留空回落主对话">
-          <ModelPicker capability="chat"
-            :node-index="Number(orch.suno.composerNodeIndex) || 0" :model="orch.suno.composerModel || ''"
-            @update:node-index="orch.suno.composerNodeIndex = $event"
-            @update:model="orch.suno.composerModel = $event" />
+        <FormField label="Composer 节点与模型" hint="绑定在「模型与节点」用途表统一调整；留空跟随主对话">
+          <ModelBindingMirror :node-index="Number(orch.suno.composerNodeIndex) || 0" :model="orch.suno.composerModel || ''" purpose="Suno Composer" />
         </FormField>
         <FormField label="Composer 温度" hint="建议 0.3 到 0.8"><input v-model.number="orch.suno.composerTemperature" type="number" min="0" max="2" step="0.05" class="input-field" /></FormField>
         <FormField label="Composer maxTokens" hint="生成歌词和 JSON 的上限；复杂完整歌词建议 6000 以上"><input v-model.number="orch.suno.composerMaxTokens" type="number" min="1" max="200000" step="100" class="input-field" /></FormField>
-        <FormField label="Composer 覆盖提示词" hint="留空使用内置 Suno V2；可用 {{userText}}、{{supplied}}、{{schema}}、{{model}}、{{defaultVocalGender}}、{{defaultLanguage}}">
-          <textarea v-model="orch.suno.composerPromptTemplate" rows="5" class="input-field font-mono text-xs"></textarea>
-        </FormField>
+        <div>
+          <PromptRegistryLink prompt-id="suno.composer" config-path="orchestration.suno.composerPromptTemplate" label="Composer 覆盖提示词" />
+        </div>
         <FormField label="默认人声性别" hint="auto 由模型决定；m/f 仅在 customMode 下传给 Suno，且官方说明只是偏好、不保证命中"><AppSelect v-model="orch.suno.defaultVocalGender" :options="sunoVocalGenderOptions" /></FormField>
         <FormField label="默认歌词语言" hint="留空或 auto 跟随用户；例如 中文、日语、English。Suno 没有独立 language 字段，会写入 prompt/style/lyrics"><input v-model="orch.suno.defaultLanguage" class="input-field" placeholder="auto" /></FormField>
         <div class="flex items-end"><ToggleField v-model="orch.suno.sendLyricsWithMusic" label="同步发送歌词" hint="使用 Suno 返回的真实 lyrics，走合并转发；需要 reply.maxMessages ≥ 2" /></div>

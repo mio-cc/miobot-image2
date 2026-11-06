@@ -43,8 +43,6 @@ test('mcp T4.1: 注册进 enforcer 后（显式启用）可被规划执行', asy
   const cfg = createDefaultConfig();
   cfg.orchestration.enabled = true;
   cfg.orchestration.mode = 'enforce';
-  cfg.orchestration.planner.enabled = true;
-  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
   cfg.orchestration.planner.nodeIndex = 1;
   cfg.orchestration.planner.model = 'planner-test';
   const fakeApp = {
@@ -62,7 +60,7 @@ test('mcp T4.1: 注册进 enforcer 后（显式启用）可被规划执行', asy
   await mcp.initialize();
   const descriptor = { ...mcpToolToDescriptor('echo', { name: 'echo', description: 'Read and echo back the given text' }), enabled: true };
   enforcer.registerCapability(descriptor, new McpToolCapabilityHandler(mcp, 'echo'));
-  const result = await enforcer.handle({ text: '回声 你好', chatType: 'private', userId: '1' });
+  const result = await enforcer.handle({ text: '回声 你好', chatType: 'private', userId: '1', plan: { planId: 'p1', requestId: 'r1', goal: 'answer', steps: [{ id: 's1', capability: 'mcp.echo.echo', args: { text: '你好' } }], budget: { maxSteps: 1 }, needsClarification: false, confidence: 0.9, source: 'command' } });
   mcp.close();
   assert.equal(result.handled, true);
   const text = (result.result?.text || '') + JSON.stringify(result.result?.replyPlan?.groups || []);

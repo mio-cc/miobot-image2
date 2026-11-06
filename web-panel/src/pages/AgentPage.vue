@@ -5,7 +5,6 @@ import { useConfigStore } from '../stores/config';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
-import ModelPicker from '../components/ModelPicker.vue';
 import AppSelect from '../components/AppSelect.vue';
 import OrchestrationPanel from '../components/OrchestrationPanel.vue';
 import LegacyEnginePanel from '../components/LegacyEnginePanel.vue';
@@ -149,9 +148,6 @@ function removeExposure(id: string) {
         </FormField>
         <FormField label="工具选择策略">
           <AppSelect v-model="agent.toolChoice" :options="toolChoiceOptions" />
-        </FormField>
-        <FormField label="主模型" hint="Agent 的主推理模型" class="md:col-span-2">
-          <ModelPicker v-model:node-index="agent.mainNodeIndex" v-model:model="agent.mainModel" capability="chat" />
         </FormField>
         <FormField label="Reasoning Effort">
           <input v-model="agent.reasoningEffort" class="input-field" placeholder="high" />

@@ -59,6 +59,9 @@ import { isOwner } from './owner.js';
 // P1 7a/7b：模型绑定同源服务（/切换 命令与 model.binding.switch 工具共用）。
 import { createModelBindingService, MODEL_BINDING_PURPOSES } from './model-binding.js';
 import { createModelFallbackController, withPurposeFallback } from './model-fallback.js';
+import { createContentRejectionRegistry } from './content-rejection.js';
+import { createSanitizeCall, SUNO_LYRICS_SYSTEM_HINT } from './content-repair.js';
+import { createErrorTriage } from './error-triage.js';
 import { SunoSongHistoryStore } from './suno-song-history.js';
 import { CanvasStore } from '../../../packages/canvas-service/src/index.js';
 import type { CapabilityHandler, CapabilityInvocation, ExecutionResult } from '../../../packages/orchestration/src/index.js';
@@ -129,7 +132,18 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // 每次用配置都问一次文件；mtime 没变时 loadIfChanged 直接给缓存，代价只有一次 stat。
   // 这样面板保存后，bot 进程下一条消息就用上新配置，不需要重动——
   // 否则 web 和 bot 是两个进程，面板那句「无需重动」对机器人是假的。
-  const getConfig = (): AppConfig => (store ? store.loadIfChanged() : config);
+  let lastSyncedConfig: AppConfig = config;
+  const getConfig = (): AppConfig => {
+    const current = store ? store.loadIfChanged() : config;
+    if (current !== lastSyncedConfig) {
+      // 方案 B（2026-11-06 拍板）：面板/外部保存热重载后，某用途的主绑定或备用绑定**真的变了**才
+      // 经 ModelBindingService.reconcileConfigChange → onBindingChanged 清零该用途状态机计数——
+      // 与 /切换 命令同一条通知通道，面板切完立即生效（粘滞即刻解除，不等 120s 探测）；其它字段不误清。
+      buildBindingService().reconcileConfigChange(lastSyncedConfig, current);
+      lastSyncedConfig = current;
+    }
+    return current;
+  };
 
   // P1 第三批：备用模型状态机（方案 §6）——进程级单例，按用途独立计数/粘滞。
   // 状态在内存（重启归零，不落盘：避免重启后粘在坏模型上）；绑定/override 每次调用实时读配置。
@@ -361,6 +375,10 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   // 节点延迟被动采集：包装 chat/vision，每次真实调用按节点记录耗时/成败 → node-latency.json（面板可读）。
   const nodeLatencyRecorder = new NodeLatencyRecorder({ filePath: path.join(dataDir, 'node-latency.json'), logger });
   wrapClientWithLatency(client, nodeLatencyRecorder, (nodeIndex) => getConfig().llm.apiKeys?.[nodeIndex]?.name);
+  // 方案 1/D（2026-11-06 拍板）：内容审核被拒登记表（内存 + 落盘，TTL 7 天、上限 500 条）
+  // + 审核修复调用器（sanitize 用途，独立节点+模型+自己的备用；sanitizeModel 空 = 不启用修复，仅占位剥离）。
+  const contentRejections = createContentRejectionRegistry({ filePath: path.join(dataDir, 'content-rejections.json'), logger });
+  const sanitizeCall = createSanitizeCall(client, getConfig, modelFallback, logger);
   // 记忆数据目录：service 与观察队列共用一处（pending.jsonl 与索引同目录）。
   const memoryRootDir = (): string => getConfig().orchestration.memory.dataDir || path.join(dataDir, 'memory');
   const memoryService = new ChatMemoryService({
@@ -368,6 +386,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     getConfig,
     // P2(方案 6-P2)：embedding 出口接 purpose = 'memory' 的用途级备用。
     fallback: modelFallback,
+    // 方案 2（2026-11-06 拍板）：被拒登记的消息从检索/摘要/巩固的输入侧排除（与 removeByMessageId 清理双保险）。
+    isRejectedMessageId: (messageId) => contentRejections.isRejected({ messageId }),
     logger,
     summarize: async ({ namespace, messages }) => {
       const cfg = getConfig();
@@ -647,6 +667,16 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     sendPrivate: async (qq, text) => {
       const result = await adapter.sendPrivateText(qq, text);
       return { success: result.success, messageId: result.messageId, uncertain: result.uncertain, error: result.error };
+    },
+    logger,
+  });
+
+  // 错误首诊通道（2026-11-06 二轮）：turn 失败时按分类表给用户可读说明；副模型自身失败推管理员（problemReporter 私聊链）。
+  const errorTriage = createErrorTriage({
+    getConfig,
+    sanitize: sanitizeCall,
+    reportProblem: async (input) => {
+      await problemReporter.report({ kind: input.kind, error: input.error, chatType: 'private', message: input.message });
     },
     logger,
   });
@@ -1202,6 +1232,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       sunoHistory: sunoSongHistory,
     // P2(方案 6-P2)：suno composer 出口接 purpose = 'suno' 的用途级备用。
     fallback: modelFallback,
+    // 批 3（2026-11-06 拍板）：Suno 歌词 400 审核修复（复用 sanitize 修复模型，歌词专用提示约束）。
+    sunoRepairLyrics: async ({ lyrics }) => sanitizeCall(lyrics, { systemHint: SUNO_LYRICS_SYSTEM_HINT }),
     logger,
     featureGate,
     handlers: orchestrationHandlers,
@@ -1677,6 +1709,14 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     preflightToolCall: agentPreflightToolCall,
     // P1 第三批：备用模型状态机接管 agent 主对话链的档位决策（方案 §6；无备用时整体旁路）。
     fallback: modelFallback,
+    // 方案 D（2026-11-06 拍板）：审核修复管线包装 agent modelPort（切备失败后的审核拒绝 → 修复一次 → 重试一次）。
+    contentRepair: {
+      registry: contentRejections,
+      sanitize: sanitizeCall,
+      // 二分裁切开关（llm.sanitizeBisectEnabled）：改写/占位重试仍拒时逐段二分定位元凶（≤4 次探测）。
+      bisectEnabled: () => getConfig().llm.sanitizeBisectEnabled,
+      logger,
+    },
   });
 
   const runtime = createBotMessageRuntime({
@@ -1684,6 +1724,14 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     reply: adapter,
     // P2(方案 6-P2)：代码画图出口接 purpose = 'codeRender' 的用途级备用。
     fallback: modelFallback,
+    // 方案 1/2/D（2026-11-06 拍板）：被拒登记表（群历史/连发窗口占位剥离 + 耗尽告知）
+    // + 记忆按 messageId 精确清理。
+    contentRejection: {
+      registry: contentRejections,
+      purgeMemory: (messageId) => memoryService.removeByMessageId(messageId),
+    },
+    // 错误首诊通道：turn 失败给用户可读说明（progress 类不回复、鉴权/限流规则零调用、真失败首诊一次）。
+    errorTriage,
     getConfig: () => { syncNapcat(); return getConfig(); },
     // 追问等待中的会话：用户后续无触发消息（含纯图答案）转入澄清合并，不再被忽略。
     hasPendingClarification: ({ chatType, groupId, userId }) => orchestrationEnforcer.hasPendingClarification(chatType, groupId, userId) || hasPendingAgentClarification(agentSessions, { chatType, groupId, userId }),
@@ -1920,7 +1968,10 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
             // Harness 观测：把前置转化（fish-audio 标签）的输入输出落日志，供面板/排查查看打了什么标签。
             logger?.info('tts 前置转化输出', { originalChars: text.length, taggedChars: speakText.length, original: text.slice(0, 300), tagged: speakText.slice(0, 600) });
           } else if (!pre.fallbackToOriginal) return null;
-        } catch {
+          else logger?.warn('tts 前置转化输出为空，已回退原文合成', { originalChars: text.length });
+        } catch (error) {
+          // 此前静默回退原文，用户只听到「提示词改了没效果」，无从区分没启用/失败/输出空——补观测不改行为。
+          logger?.warn('tts 前置转化失败' + (pre.fallbackToOriginal ? '，已回退原文合成' : '，放弃语音'), { error: String((error as { message?: string })?.message || error) });
           if (!pre.fallbackToOriginal) return null;
         }
       }

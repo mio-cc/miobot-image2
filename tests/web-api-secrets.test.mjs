@@ -13,7 +13,6 @@ function makeConfig() {
   return {
     panel: { port: 3018, passwordSeed: 'super-secret-password' },
     napcat: { wsUrl: 'ws://127.0.0.1:3001', token: 'napcat-token-value' },
-    promptsChat: { apiKey: 'prompts-api-key-value' },
     llm: {
       chatModel: 'gpt-4o',
       apiKeys: [
@@ -51,7 +50,6 @@ test('GET /api/config 不再明文回传任何密钥', async () => {
   assert.ok(!text.includes('sk-real-key-bbbbbbbb5678'));
   assert.ok(!text.includes('super-secret-password'), '面板密码不应明文出现');
   assert.ok(!text.includes('napcat-token-value'));
-  assert.ok(!text.includes('prompts-api-key-value'));
 
   // 非密钥字段不受影响
   assert.equal(res.body.config.llm.chatModel, 'gpt-4o');

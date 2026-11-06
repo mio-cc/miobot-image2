@@ -17,21 +17,11 @@ import {
   buildDeterministicPlanSummary,
   executeIntentPlan,
   hashApprovalPayload,
-  planWithModel,
-  selectConfiguredPromptVersion,
-  retrieveCapabilitiesWithModel,
-  refinePlanWithModel,
-  assessPlanSafetyWithModel,
-  verifyPlanAlignmentWithModel,
-  replanWithAlignmentFeedbackWithModel,
-  composeResultTextWithModel,
-  resolveClarificationWithModel,
   generateClarificationWithModel,
   repairPlanWithValidationFeedbackWithModel,
+  resolveClarificationWithModel,
   type ModelPlanIssue,
   validateIntentPlan,
-  validatePlanContext,
-  validatePlanEffectAlignment,
   type CapabilityHandler,
   type CapabilityRateGate,
   type CapabilityDescriptor,
@@ -47,7 +37,7 @@ import { ModelCapabilityHandler, type ModelCapabilityKind } from './capability-m
 import { VoiceCurrentCapabilityHandler, VoicePreviewCapabilityHandler, VoiceSearchCapabilityHandler, VoiceSelectCapabilityHandler, type FishAudioVoiceService } from './voice-service.js';
 import { SunoPromptComposer } from './suno-composer.js';
 import type { ModelFallbackController } from './model-fallback.js';
-import { SunoCapabilityHandler } from './capability-suno.js';
+import { SunoCapabilityHandler, type SunoCapabilityOptions } from './capability-suno.js';
 import type { SunoSongHistoryStore } from './suno-song-history.js';
 import { SunoHistoryCapabilityHandler, SunoReplayCapabilityHandler, SunoReplaceSectionCapabilityHandler, SunoVariantCapabilityHandler } from './capability-suno-library.js';
 import { HelpCapabilityHandler, ModelCatalogCapabilityHandler, PromptCapabilityHandler, SearchCapabilityHandler, TemplateListCapabilityHandler, TtsCapabilityHandler } from './capability-basic.js';
@@ -144,6 +134,9 @@ export class OrchestrationEnforcer {
     sunoHistory?: SunoSongHistoryStore;
     /** P2(方案 6-P2)：用途级备用状态机（suno composer 接 purpose = 'suno'）；不传保持原直调。 */
     fallback?: ModelFallbackController;
+    /** 批 3（2026-11-06 拍板）：Suno 歌词审核修复回调——400 识别为内容审核时改写歌词再显式提交一次；
+     *  由 start.ts 从 createSanitizeCall 构造注入（sanitize 用途）。不传 = 保持现行为。 */
+    sunoRepairLyrics?: SunoCapabilityOptions['repairLyrics'];
     /** T0.2：能力级限流闸（冷却/日限额/并发），dispatcher 对全部能力统一执行。 */
     featureGate?: CapabilityRateGate;
     trace?: (trace: OrchestrationTrace) => void;
@@ -178,7 +171,7 @@ export class OrchestrationEnforcer {
       this.dispatcher.registerHandler(kind, handler);
     }
     const sunoComposer = new SunoPromptComposer(this.options.client, this.options.getConfig, this.options.logger, this.options.fallback);
-    const suno = this.options.handlers?.get('audio.music.generate') || new SunoCapabilityHandler({ getConfig: this.options.getConfig, logger: this.options.logger, history: this.options.sunoHistory, compose: (args, request) => sunoComposer.compose(args, request), composeSafeFallback: (args, request) => sunoComposer.composeSafeFallback(args, request), registerLateDelivery: this.options.registerSunoLateDelivery });
+    const suno = this.options.handlers?.get('audio.music.generate') || new SunoCapabilityHandler({ getConfig: this.options.getConfig, logger: this.options.logger, history: this.options.sunoHistory, compose: (args, request) => sunoComposer.compose(args, request), composeSafeFallback: (args, request) => sunoComposer.composeSafeFallback(args, request), registerLateDelivery: this.options.registerSunoLateDelivery, ...(this.options.sunoRepairLyrics ? { repairLyrics: this.options.sunoRepairLyrics } : {}) });
     this.dispatcher.registerHandler('audio.music.generate', suno);
     if (this.options.sunoHistory) {
       const historyHandler = this.options.handlers?.get('audio.music.history') || new SunoHistoryCapabilityHandler(this.options.sunoHistory);
@@ -376,7 +369,7 @@ export class OrchestrationEnforcer {
     this.configFingerprint = fingerprint;
   }
 
-  private roleOptions(cfg: AppConfig, role: 'planner' | 'retriever' | 'specialist' | 'critic' | 'safety' | 'composer') {
+  private roleOptions(cfg: AppConfig, role: 'planner') {
     const selected = cfg.orchestration.roles[role];
     const fallbackNode = Number(selected.fallbackNodeIndex ?? cfg.orchestration.planner.nodeIndex ?? cfg.freeMode.nodeIndex ?? 0);
     const fallbackModel = String(selected.fallbackModel || selected.model || cfg.orchestration.planner.model || cfg.freeMode.model || cfg.llm.chatModel || '');
@@ -518,6 +511,8 @@ export class OrchestrationEnforcer {
     return { ok: violations.length === 0, affected: [...affected].filter((id) => repaired.steps.some((step) => step.id === id)), violations };
   }
 
+
+  /** 执行期 iterate 步骤失败/空结果的局部重规划（T3.3，受限回炉：只许改失败步及下游）。 */
   private async repairPlanUsingModel(
     cfg: AppConfig,
     request: UserRequest,
@@ -711,6 +706,7 @@ export class OrchestrationEnforcer {
     const resumeApprovedStepIds = new Set<string>(pending?.approvedStepIds || []);
     let resumePendingStepId = pending?.pendingStepId;
     let resumedFromJob = false;
+    let clarifyingResume = false;
     // T2.8：恢复时被标记 interrupted 的步骤——executor 显式跳过，防 failed 结果被重跑（双计费）。
     const recoverySkipStepIds = new Set<string>();
 
@@ -756,8 +752,10 @@ export class OrchestrationEnforcer {
       }
     } else if (pending?.status === 'running' && pending.plan) {
       resumedFromJob = true;
-    } else if (pending?.status === 'clarifying' && pending.plan === undefined) {
-      // Planner 阶段还没有 DAG；仍保留原 requestId/jobId，后面交给 ClarificationResolver。
+    } else if (pending?.status === 'clarifying') {
+      // 追问等待中（规划期未产出 DAG，或执行期 needs_input 如 suno 点歌选序号）：
+      // 2026-11-06 清理后统一交给回答合并器产出最终计划，不再走自然语言重新规划。
+      clarifyingResume = true;
     }
     // T3.6：本请求的模型用量累计（声明必须在 appendTrace 之前——首次 'request' trace 就要带快照）。
     const usageTotals: ModelUsageTotals = { promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0, modelCalls: 0 };
@@ -774,7 +772,7 @@ export class OrchestrationEnforcer {
       });
     };
     appendTrace('request', '收到编排请求', { text: request.text.slice(0, 200), role, jobId, resumedFromJob, historyChars: String(request.history?.[0]?.content || '').length });
-    if (!input.plan && !pending && !cfg.orchestration.planner.enabled) return { handled: false, reason: 'planner_disabled' };
+    if (!input.plan && !pending) return { handled: false, reason: 'planner_disabled' };
 
     const modelAdapter = this.roleModelClient(usageTotals);
     let roleRoundsUsed = 0;
@@ -843,7 +841,8 @@ export class OrchestrationEnforcer {
             }
           }
         }
-      } else if (pending?.status === 'clarifying') {
+      } else if (clarifyingResume && pending) {
+        // 2026-11-06 清理保留项：追问回答合并（suno 点歌选序号等 needs_input 场景）。
         const question = pending.pendingQuestion || pending.question;
         const resolved = await this.runRoleWithFallback(this.roleOptions(cfg, 'planner'), (opts) => resolveClarificationWithModel(
           modelAdapter,
@@ -863,14 +862,11 @@ export class OrchestrationEnforcer {
         if (!resolved.value) {
           this.options.pendingJobs?.delete(pendingKey);
           appendTrace('plan', '追问回答仍无法合并', { jobId, error: resolved.error });
-          // 群内给用户一条引导（而非只 DM 管理员后群内静默）；问题上报照常发给管理员。
-          const routineUnresolved = /clarification_unresolved/i.test(String(resolved.error || ""));
-          // 不在群内塞固定图片引导。把当前消息交回正常聊天/旧链路：
-          // 用户可能是在结束话题、表达情绪或拒绝追问，而不是漏发图片。
+          const routineUnresolved = /clarification_unresolved/i.test(String(resolved.error || ''));
           return {
             handled: false,
-            reason: "clarification_resolution_failed",
-            ...(routineUnresolved ? {} : { problem: { kind: "clarification_resolution_failed", error: resolved.error || "模型无法将用户补充信息合并到计划" } }),
+            reason: 'clarification_resolution_failed',
+            ...(routineUnresolved ? {} : { problem: { kind: 'clarification_resolution_failed', error: resolved.error || '模型无法将用户补充信息合并到计划' } }),
           };
         }
         plan = { ...resolved.value, modelRoundsUsed: roleRoundsUsed };
@@ -878,167 +874,8 @@ export class OrchestrationEnforcer {
         resumedFromJob = true;
         appendTrace('plan', '追问回答已合并到原计划', { jobId, fallback: resolved.fallback, error: resolved.error });
       } else {
-        const maxModelRounds = Math.max(1, Number(cfg.orchestration.execution.maxModelRounds || 1));
-        catalog = this.registry.list();
-        const retriever = cfg.orchestration.roles.retriever;
-        if (retriever.enabled && maxModelRounds - roleRoundsUsed > 1) {
-          const retrieved = await this.runRoleWithFallback(this.roleOptions(cfg, 'retriever'), (opts) => retrieveCapabilitiesWithModel(modelAdapter, request, catalog, { ...opts, topK: cfg.orchestration.planner.capabilityTopK }));
-          roleRoundsUsed += retrieved.rounds;
-          if (!retrieved.fallback) {
-            // 检索器只负责把更相关的能力排在前面，Planner 仍然看到完整能力清单，避免隐藏项目功能。
-            const rank = new Map(retrieved.value.map((item, index) => [item.id, index]));
-            catalog = [...catalog].sort((a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER));
-          }
-          appendTrace('plan', 'retriever 完成', { fallback: retrieved.fallback, capabilityCount: catalog.length, error: retrieved.error });
-        }
-        const promptVersion = selectConfiguredPromptVersion(
-          cfg.orchestration.promptOptimization.versions,
-          cfg.orchestration.promptOptimization.activeVersionId,
-          cfg.orchestration.promptOptimization.canaryVersionId,
-          request.requestId,
-          cfg.orchestration.promptOptimization.enabled ? cfg.orchestration.promptOptimization.canaryPercent : 0,
-        );
-        appendTrace('plan', '选择 Planner 提示词版本', {
-          promptVersionId: promptVersion?.id,
-          promptVersionStatus: promptVersion?.status,
-          canaryPercent: cfg.orchestration.promptOptimization.canaryPercent,
-        });
-        const plannerRole = this.roleOptions(cfg, 'planner');
-        // T3.2：FC 探测缓存——节点|模型级别；首次尝试 FC，不支持则记住后续直接 JSON。
-        const plannerNodeKey = (overrides: { nodeIndex?: number; model?: string } = {}) => `${Number(overrides.nodeIndex ?? cfg.orchestration.planner.nodeIndex ?? plannerRole.nodeIndex ?? 0)}|${String(overrides.model || cfg.orchestration.planner.model || plannerRole.model || '')}`;
-        const plannerCall = (overrides: { nodeIndex?: number; model?: string } = {}) => planWithModel(modelAdapter, request, {
-          ...plannerRole,
-          useTools: !this.fcUnsupportedNodes.has(plannerNodeKey(overrides)),
-          nodeIndex: Number(overrides.nodeIndex ?? cfg.orchestration.planner.nodeIndex ?? plannerRole.nodeIndex ?? 0),
-          model: String(overrides.model || cfg.orchestration.planner.model || plannerRole.model || ''),
-          capabilityCatalog: catalog,
-          maxRepairAttempts: cfg.orchestration.planner.maxRepairAttempts,
-          maxModelRounds: Math.max(1, maxModelRounds - roleRoundsUsed),
-          maxSteps: cfg.orchestration.execution.maxSteps,
-          timeoutMs: Number(cfg.orchestration.planner.clarificationTimeoutMs || plannerRole.timeoutMs || 60000),
-          systemPrompt: promptVersion?.content || cfg.orchestration.planner.systemPromptTemplate,
-          userPromptTemplate: cfg.orchestration.planner.userPromptTemplate,
-          capabilityDescriptions: cfg.orchestration.planner.capabilityDescriptions,
-        });
-        // T2.9b：planner 主节点失败（限流/网络）时切 fallback 节点重试一次，
-        // 避免"免费档限流 → 静默回退收费 legacy 链路"的成本转移。
-        try {
-          plan = await plannerCall();
-        } catch (plannerError) {
-          const fallbackNode = Number(plannerRole.fallbackNodeIndex ?? cfg.orchestration.planner.nodeIndex ?? 0);
-          const fallbackModel = String(plannerRole.fallbackModel || cfg.orchestration.planner.model || '');
-          const primaryNode = Number(cfg.orchestration.planner.nodeIndex ?? plannerRole.nodeIndex ?? 0);
-          const primaryModel = String(cfg.orchestration.planner.model || plannerRole.model || '');
-          if (fallbackNode === primaryNode && fallbackModel === primaryModel) throw plannerError;
-          appendTrace('plan', 'planner 主节点失败，切换 fallback 节点', { error: String((plannerError as Error)?.message || plannerError), from: `${primaryNode}/${primaryModel}`, to: `${fallbackNode}/${fallbackModel}` });
-          plan = await plannerCall({ nodeIndex: fallbackNode, model: fallbackModel });
-        }
-        roleRoundsUsed += Number(plan.modelRoundsUsed || 0);
-        // T3.2：FC 探测——主/fallback 节点都没走通 FC 就记入缓存；走通则打通道标记。
-        if ((plan as any).channel !== 'function_calling') {
-          this.fcUnsupportedNodes.add(plannerNodeKey());
-        } else {
-          appendTrace('plan', '规划走 function calling 通道', { node: plannerNodeKey(), rounds: plan.modelRoundsUsed });
-        }
-        for (const reviewRole of ['specialist', 'critic'] as const) {
-          if (!cfg.orchestration.roles[reviewRole].enabled || maxModelRounds - roleRoundsUsed <= 0) continue;
-          const reviewed = await this.runRoleWithFallback(this.roleOptions(cfg, reviewRole), (opts) => refinePlanWithModel(modelAdapter, request, plan, catalog, { ...opts, role: reviewRole }));
-          roleRoundsUsed += reviewed.rounds;
-          if (!reviewed.fallback) plan = reviewed.value;
-          appendTrace('plan', reviewRole + ' 完成', { fallback: reviewed.fallback, error: reviewed.error });
-        }
-        if (cfg.orchestration.roles.safety.enabled && maxModelRounds - roleRoundsUsed > 0) {
-          const safety = await this.runRoleWithFallback(this.roleOptions(cfg, 'safety'), (opts) => assessPlanSafetyWithModel(modelAdapter, request, plan, opts));
-          roleRoundsUsed += safety.rounds;
-          if (safety.value.riskLevel === 'high' || safety.value.riskLevel === 'critical') {
-            plan = { ...plan, steps: plan.steps.map((step) => ({ ...step, approvalRequired: true })) };
-          }
-          appendTrace('plan', 'safety 完成', { fallback: safety.fallback, riskLevel: safety.value.riskLevel, reason: safety.value.reason, error: safety.error });
-        }
-        const alignmentThreshold = Number(cfg.orchestration.planner.alignmentGuardConfidenceThreshold ?? 0.8);
-        const riskyEffects = new Set(['generate', 'transform', 'mutate', 'delete', 'control', 'notify']);
-        const hasRiskyEffect = plan.steps.some((step) => riskyEffects.has(String(this.registry.get(step.capability)?.effect || 'unknown')));
-        if (
-          cfg.orchestration.planner.actionAlignmentGuardEnabled
-          && !input.plan
-          && !plan.needsClarification
-          && plan.steps.length > 0
-          && plan.source === 'model'
-          && (hasRiskyEffect || Number(plan.confidence || 0) < alignmentThreshold)
-        ) {
-          const review = await this.runRoleWithFallback(this.roleOptions(cfg, 'planner'), (opts) => verifyPlanAlignmentWithModel(
-            modelAdapter,
-            request,
-            plan,
-            catalog,
-              { ...opts, maxTokens: Number(cfg.orchestration.planner.alignmentReviewMaxTokens || opts.maxTokens || 1000), temperature: 0 },
-          ));
-          roleRoundsUsed += review.rounds;
-          if (!review.fallback && !review.value.aligned) {
-            const suggested = review.value.suggestedCapabilities || [];
-            const repaired = await this.runRoleWithFallback(this.roleOptions(cfg, 'planner'), (opts) => replanWithAlignmentFeedbackWithModel(
-              modelAdapter,
-              request,
-              catalog,
-              plan,
-              review.value,
-              { ...opts, maxSteps: cfg.orchestration.execution.maxSteps, temperature: 0 },
-            ));
-            roleRoundsUsed += repaired.rounds;
-            if (repaired.fallback) {
-              appendTrace('plan', '意图-行动一致性修复失败', { reason: review.value.reason, error: repaired.error });
-              return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'plan_repair_failed', error: repaired.error || '模型未能生成可执行计划或追问' } };
-            }
-            plan = { ...repaired.value, modelRoundsUsed: roleRoundsUsed };
-            appendTrace('plan', '意图-行动一致性复核纠正', { reason: review.value.reason, suggested, requiresClarification: Boolean(review.value.requiresClarification) });
-          } else if (review.fallback) {
-            if (hasRiskyEffect) {
-              appendTrace('plan', '副作用计划的一致性复核失败，已关闭执行', { error: review.error });
-              return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'alignment_review_failed', error: review.error || '副作用计划的一致性复核失败' } };
-            }
-            appendTrace('plan', '只读计划的一致性复核失败，保留原计划', { error: review.error });
-          }
-        }
-        plan = { ...plan, requestId: request.requestId, source: 'model', modelRoundsUsed: roleRoundsUsed };
-        appendTrace('plan', '意图理解完成', {
-          goal: plan.goal,
-          desiredOutcome: plan.understanding?.desiredOutcome || 'unknown',
-          constraints: plan.understanding?.constraints || [],
-          missingInformation: plan.understanding?.missingInformation || [],
-          confidence: plan.confidence,
-          capabilityCount: catalog.length,
-          capabilityManifestVersion: buildCapabilityManifest(catalog).version,
-          // 模型输出监控（面板 → 可观测性 → 按 requestId 查看）：
-          // 完整计划 JSON（截断 2000 字），用户能看到模型到底规划了什么。
-          planJson: JSON.stringify({ steps: plan.steps.map((s) => ({ id: s.id, capability: s.capability, args: s.args })), directReply: plan.directReply, needsClarification: plan.needsClarification }).slice(0, 2000),
-        });
-        if (!plan.needsClarification) {
-          const contextCheck = validatePlanContext(plan, this.registry.list(), request);
-          if (!contextCheck.ok) {
-            const issues: ModelPlanIssue[] = contextCheck.errors.map((item) => {
-              const parts = String(item).split(':');
-              if (parts[0] === 'missing_required_context') {
-                return { code: 'missing_required_context', stepId: parts[1], requirement: parts[2] };
-              }
-              return { code: String(parts[0] || 'plan_context_invalid'), message: String(item) };
-            });
-            const repaired = await this.repairPlanUsingModel(cfg, request, plan, catalog, modelAdapter, issues);
-            roleRoundsUsed += repaired.rounds;
-            if (!repaired.plan) {
-              appendTrace('plan', '上下文问题修复失败', { issues, error: repaired.error });
-              return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'plan_repair_failed', error: repaired.error || '模型未能生成可执行计划或追问' } };
-            }
-            plan = { ...repaired.plan, modelRoundsUsed: roleRoundsUsed };
-            if (!plan.needsClarification) {
-              const recheck = validatePlanContext(plan, this.registry.list(), request);
-              if (!recheck.ok) {
-                appendTrace('plan', '模型修复后仍缺少执行上下文', { issues, errors: recheck.errors });
-                return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'plan_context_unresolved', error: recheck.errors.join(',') } };
-              }
-            }
-            appendTrace('plan', '模型已处理执行上下文问题', { issues, needsClarification: Boolean(plan.needsClarification), question: plan.clarificationQuestion });
-          }
-        }
+        // 2026-11-06 清理：自然语言规划分支已删——唯一生产入口（commandOrchestration）恒带确定性 plan。
+        return { handled: false, reason: 'planner_disabled' };
       }
     } catch (error) {
       // T0.3/C4：这是唯一保留 legacy 回退的出口（规划期失败，尚无副作用）。
@@ -1054,133 +891,8 @@ export class OrchestrationEnforcer {
     // T1.3：voice.preview/select 未选候选时由 handler 返回 needs_input + 候选列表
     // （clarificationContext 模式，模型生成追问、用户答序号后合并回计划），
     // 此处不再需要"搜索后删掉 preview/select 步骤"的特判。
-    const minConfidence = Math.max(0, Number(cfg.orchestration.planner.minConfidence || 0));
-    if (!resumedFromJob && plan.source === 'model' && !plan.needsClarification && minConfidence > 0 && Number(plan.confidence || 0) < minConfidence) {
-      const repaired = await this.repairPlanUsingModel(cfg, request, plan, catalog, modelAdapter, [{
-        code: 'low_confidence',
-        confidence: Number(plan.confidence || 0),
-        threshold: minConfidence,
-      }]);
-      roleRoundsUsed += repaired.rounds;
-      if (!repaired.plan) {
-        appendTrace('plan', '低置信度修复失败', { error: repaired.error });
-        return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'plan_repair_failed', error: repaired.error || '模型未能生成可执行计划或追问' } };
-      }
-      plan = { ...repaired.plan, modelRoundsUsed: roleRoundsUsed };
-      if (!plan.needsClarification) {
-        const contextCheck = validatePlanContext(plan, this.registry.list(), request);
-        if (!contextCheck.ok) {
-          const generated = await this.askClarificationUsingModel(cfg, request, plan, catalog, modelAdapter, contextCheck.errors.map((item) => ({ code: 'missing_required_context', message: String(item) })));
-          roleRoundsUsed += generated.rounds;
-          if (!generated.question) {
-            appendTrace('plan', '低置信度追问生成失败', { error: generated.error, issues: contextCheck.errors });
-            return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'clarification_generation_failed', error: generated.error || '模型未能生成追问' } };
-          }
-          plan = {
-            ...plan,
-            needsClarification: true,
-            clarificationQuestion: generated.question,
-            understanding: plan.understanding ? { ...plan.understanding, missingInformation: generated.missingInformation } : plan.understanding,
-          };
-        }
-      }
-      appendTrace('plan', '低置信度已由模型修复或生成追问', { needsClarification: Boolean(plan.needsClarification), question: plan.clarificationQuestion });
-    }
-    if (plan.needsClarification && !String(plan.clarificationQuestion || '').trim()) {
-      const generated = await this.askClarificationUsingModel(cfg, request, plan, catalog, modelAdapter, [{ code: 'clarification_question_missing', goal: plan.goal, missingInformation: plan.understanding?.missingInformation || [] }]);
-      roleRoundsUsed += generated.rounds;
-      if (!generated.question) {
-        this.options.pendingJobs?.delete(pendingKey);
-        appendTrace('plan', '追问生成失败', { error: generated.error });
-        return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'clarification_generation_failed', error: generated.error || '模型未能生成追问' } };
-      }
-      plan = { ...plan, clarificationQuestion: generated.question, understanding: plan.understanding ? { ...plan.understanding, missingInformation: generated.missingInformation } : plan.understanding };
-    }
-    if (!plan.needsClarification) {
-      const effectCheck = validatePlanEffectAlignment(plan, catalog);
-      if (!effectCheck.ok) {
-        const repaired = await this.repairPlanUsingModel(cfg, request, plan, catalog, modelAdapter, effectCheck.errors.map((item) => ({
-          code: 'desired_outcome_effect_mismatch',
-          message: item,
-          desiredOutcome: plan.understanding?.desiredOutcome || 'unknown',
-        })));
-        roleRoundsUsed += repaired.rounds;
-        if (!repaired.plan) {
-          appendTrace('plan', '目标与能力效果交叉校验修复失败', { errors: effectCheck.errors, error: repaired.error });
-          return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'plan_effect_repair_failed', error: repaired.error || '模型未能修复目标与能力效果不一致' } };
-        }
-        plan = { ...repaired.plan, modelRoundsUsed: roleRoundsUsed };
-        if (!plan.needsClarification) {
-          const recheck = validatePlanEffectAlignment(plan, catalog);
-          if (!recheck.ok) {
-            const generated = await this.askClarificationUsingModel(cfg, request, plan, catalog, modelAdapter, recheck.errors.map((item) => ({ code: 'desired_outcome_effect_mismatch', message: item })));
-            roleRoundsUsed += generated.rounds;
-            if (!generated.question) {
-              appendTrace('plan', '目标与能力效果不一致且无法生成追问', { errors: recheck.errors, error: generated.error });
-              return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'plan_effect_mismatch', error: generated.error || recheck.errors.join(',') } };
-            }
-            plan = {
-              ...plan,
-              needsClarification: true,
-              clarificationQuestion: generated.question,
-              understanding: plan.understanding ? { ...plan.understanding, missingInformation: generated.missingInformation } : plan.understanding,
-            };
-          }
-        }
-        appendTrace('plan', '目标与能力效果已完成交叉校验', { errors: effectCheck.errors, needsClarification: Boolean(plan.needsClarification) });
-      }
-    }
     const validation = validateIntentPlan(plan, { maxSteps: cfg.orchestration.execution.maxSteps });
     if (!validation.ok) return { handled: false, reason: `invalid_plan:${validation.errors.join(',')}` };
-    if (plan.needsClarification) {
-      const maxClarifications = Math.max(0, Number(cfg.orchestration.planner.maxClarifications ?? 1));
-      if (clarificationCount >= maxClarifications) {
-        this.options.pendingJobs?.delete(pendingKey);
-        return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'clarification_limit_reached', error: '达到最大追问次数' } };
-      }
-      let question = String(plan.clarificationQuestion || '').trim();
-      if (!question) {
-        const generated = await this.askClarificationUsingModel(cfg, request, plan, catalog, modelAdapter, [{ code: 'clarification_question_missing', goal: plan.goal, missingInformation: plan.understanding?.missingInformation || [] }]);
-        roleRoundsUsed += generated.rounds;
-        if (!generated.question) {
-          this.options.pendingJobs?.delete(pendingKey);
-          appendTrace('plan', '追问生成失败', { error: generated.error });
-          return { handled: true, result: this.emptyEngineResult(), problem: { kind: 'clarification_generation_failed', error: generated.error || '模型未能生成追问' } };
-        }
-        question = generated.question;
-        plan = {
-          ...plan,
-          clarificationQuestion: question,
-          understanding: plan.understanding ? { ...plan.understanding, missingInformation: generated.missingInformation } : plan.understanding,
-        };
-      }
-      const now = new Date().toISOString();
-      this.options.pendingJobs?.set({
-        key: pendingKey,
-        originalText,
-        question,
-        attempts: clarificationCount + 1,
-        createdAt: pending?.createdAt || now,
-        updatedAt: now,
-        expiresAt: new Date(Date.now() + Math.max(1000, Number(cfg.orchestration.planner.clarificationTimeoutMs || 300000))).toISOString(),
-        schemaVersion: 2,
-        jobId,
-        requestId,
-        status: 'clarifying',
-        originalRequest: pending?.originalRequest || request,
-        plan: { ...plan, requestId, needsClarification: true, clarificationQuestion: question },
-        order: plan.steps.map((step) => step.id),
-        results: {},
-        approvedStepIds: [],
-        pendingStepId: undefined,
-        pendingQuestion: question,
-        clarificationUsed: true,
-        clarificationCount: clarificationCount + 1,
-        startedAt: jobStartedAt,
-      });
-      appendTrace('plan', '发起唯一一次追问', { jobId, question, clarificationCount: clarificationCount + 1 });
-      return { handled: true, result: this.messageEngineResult(question) };
-    }
     plan = { ...plan, requestId, needsClarification: false, clarificationQuestion: undefined };
     appendTrace('plan', '生成执行计划', { jobId, goal: plan.goal, steps: plan.steps.map((step) => ({ id: step.id, capability: step.capability, dependsOn: step.dependsOn || [] })), confidence: plan.confidence, resumedFromJob });
       try {
@@ -1189,40 +901,6 @@ export class OrchestrationEnforcer {
         this.options.logger?.warn('enforce progress callback failed', { error: String((error as Error)?.message || error) });
       }
 
-    // A（提速·规划即回答完全体）：planner 已带 directReply 且计划为单个 chat.reply 时，
-    // 跳过第二次模型轮（chat 能力调用）直接发送。省一轮完整模型调用（实测 2-8s）。
-    // 会话历史同步补写，保持多轮上下文与原执行路径一致；权限校验照走（chat.reply 低风险常规放行）。
-    if (
-      !resumedFromJob &&
-      !input.plan &&
-      plan.directReply &&
-      plan.steps.length === 1 &&
-      plan.steps[0].capability === 'chat.reply'
-    ) {
-      const step = plan.steps[0];
-      const authorization = this.dispatcher.authorize(request, plan, step);
-      if (!authorization.result) {
-        const replyText = plan.directReply;
-        const sessionId = request.chat.type === 'group'
-          ? 'group:' + String(request.chat.groupId ?? '') + ':' + request.user.qq
-          : 'private:' + request.user.qq;
-        try {
-          this.options.app.sessions?.append?.(sessionId, { role: 'user', content: request.text }, { role: 'assistant', content: replyText });
-        } catch { /* 会话补写失败不影响发送 */ }
-        appendTrace('reply', '规划即回答：跳过 chat 模型轮', { chars: replyText.length });
-        const outputs: ExecutionOutput[] = [{
-          kind: 'text',
-          text: replyText,
-          priority: 10,
-          mergeable: true,
-          meta: { sourceStepId: step.id, sourceCapability: 'chat.reply', directPlanner: true },
-        }];
-        const replyPlan = this.makeReplyPlan(outputs);
-        const result = this.toEngineResult(replyPlan.groups.flatMap((group) => group.outputs)) || this.emptyEngineResult();
-        result.replyPlan = replyPlan;
-        return { handled: true, result };
-      }
-    }
 
     const byId = new Map(plan.steps.map((step) => [step.id, step]));
     const approvedStepIds = new Set<string>(resumeApprovedStepIds);
@@ -1513,29 +1191,6 @@ export class OrchestrationEnforcer {
       }
 
       this.options.pendingJobs?.delete(storeKey);
-      const hasAudioOutput = outputs.some((output) => output.kind === 'audio');
-      const hasStructuredTextOutput = outputs.some((output) => output.meta?.role === 'suno_history');
-      if (!hasAudioOutput && !hasStructuredTextOutput && plan.source === 'model' && cfg.orchestration.roles.composer.enabled) {
-        const maxModelRounds = Math.max(1, Number(cfg.orchestration.execution.maxModelRounds || 1));
-        if (execution.usage.modelRounds < maxModelRounds) {
-          const composed = await this.runRoleWithFallback(this.roleOptions(cfg, 'composer'), (opts) => composeResultTextWithModel(
-            modelAdapter,
-            request,
-            outputs,
-            opts,
-          ));
-          if (composed.value) {
-            outputs.push({
-              kind: 'text',
-              text: composed.value,
-              priority: 1,
-              mergeable: true,
-              meta: { synthetic: true, role: 'composer' },
-            });
-          }
-          appendTrace('reply', 'composer 完成', { fallback: composed.fallback, hasText: Boolean(composed.value), error: composed.error });
-        }
-      }
       const musicRequested = plan.steps.some((step) => step.capability === 'audio.music.generate');
       if (musicRequested && outputs.some((output) => output.kind === 'audio')) {
         const before = outputs.length;

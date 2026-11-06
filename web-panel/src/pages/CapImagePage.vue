@@ -6,6 +6,8 @@ import CapabilityPageLayout from '../components/CapabilityPageLayout.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import ModelPicker from '../components/ModelPicker.vue';
+import ModelBindingMirror from '../components/ModelBindingMirror.vue';
+import PromptRegistryLink from '../components/PromptRegistryLink.vue';
 import AppSelect from '../components/AppSelect.vue';
 
 /* P1 最后一批·下拉收尾：画布默认参数选项（与原 <option> 一一对应，文案零变更）。
@@ -290,17 +292,14 @@ onMounted(loadComfyWorkflows);
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
           <FormField label="图片反推模型" hint="只影响 Bot 的反推命令；画布反推库在下方画布分区">
-            <ModelPicker capability="interrogate"
-              :node-index="Number(config.llm.interrogateNodeIndex) || 0" :model="config.llm.interrogateModel || ''"
-              @update:node-index="config.llm.interrogateNodeIndex = $event"
-              @update:model="config.llm.interrogateModel = $event" />
+            <ModelBindingMirror :node-index="Number(config.llm.interrogateNodeIndex) || 0" :model="config.llm.interrogateModel || ''" purpose="图片反推" />
           </FormField>
           <FormField label="反推超时 (ms)">
             <input v-model.number="config.llm.interrogateTimeoutMs" type="number" min="30000" step="30000" class="input-field" />
           </FormField>
-          <FormField label="反推提示词" class="md:col-span-2">
-            <textarea v-model="config.llm.interrogatePromptTemplate" rows="4" class="input-field font-mono text-xs"></textarea>
-          </FormField>
+          <div class="md:col-span-2">
+            <PromptRegistryLink prompt-id="image.interrogate" config-path="llm.interrogatePromptTemplate" label="反推提示词" />
+          </div>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] gap-2 mt-4 pt-4 border-t border-[color:var(--hairline-2)] items-end">
           <FormField label="测试生图" hint="用当前文生图节点与模型真实生成一张（走 /test-image，不计入配额）">
@@ -368,32 +367,28 @@ onMounted(loadComfyWorkflows);
         </div>
         <div class="grid grid-cols-1 xl:grid-cols-2 gap-5 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
           <div>
-            <div class="flex items-center justify-between mb-2">
-              <span class="text-sm font-semibold">画布原图反推</span>
-              <button class="text-xs hover:underline"
-                @click="configStore.resetPrompt('canvas.interrogatePromptTemplate', 'interrogatePromptTemplate')">恢复默认</button>
-            </div>
+            <span class="text-sm font-semibold block mb-2">画布原图反推</span>
             <ModelPicker capability="interrogate"
               :node-index="Number(config.canvas.interrogateNodeIndex) || 0" :model="config.canvas.interrogateModel || ''"
               @update:node-index="config.canvas.interrogateNodeIndex = $event"
               @update:model="config.canvas.interrogateModel = $event" />
             <input v-model.number="config.canvas.interrogateTimeoutMs" type="number" min="30000" step="30000"
               class="input-field mt-2" placeholder="超时 (ms)" />
-            <textarea v-model="config.canvas.interrogatePromptTemplate" rows="6" class="input-field font-mono text-xs mt-2"></textarea>
+            <div class="mt-2">
+              <PromptRegistryLink prompt-id="interrogate.canvas" config-path="canvas.interrogatePromptTemplate" label="画布原图反推提示词" />
+            </div>
           </div>
           <div>
-            <div class="flex items-center justify-between mb-2">
-              <span class="text-sm font-semibold">画布模板化反推</span>
-              <button class="text-xs hover:underline"
-                @click="configStore.resetPrompt('canvas.interrogateTemplatePromptTemplate', 'interrogateTemplatePromptTemplate')">恢复默认</button>
-            </div>
+            <span class="text-sm font-semibold block mb-2">画布模板化反推</span>
             <ModelPicker capability="chat"
               :node-index="Number(config.canvas.interrogateTemplateNodeIndex) || 0" :model="config.canvas.interrogateTemplateModel || ''"
               @update:node-index="config.canvas.interrogateTemplateNodeIndex = $event"
               @update:model="config.canvas.interrogateTemplateModel = $event" />
             <input v-model.number="config.canvas.interrogateTemplateTimeoutMs" type="number" min="30000" step="30000"
               class="input-field mt-2" placeholder="超时 (ms)" />
-            <textarea v-model="config.canvas.interrogateTemplatePromptTemplate" rows="6" class="input-field font-mono text-xs mt-2"></textarea>
+            <div class="mt-2">
+              <PromptRegistryLink prompt-id="interrogate.template" config-path="canvas.interrogateTemplatePromptTemplate" label="画布模板化反推提示词" />
+            </div>
           </div>
         </div>
       </div>

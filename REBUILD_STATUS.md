@@ -21,7 +21,7 @@
 
 - `scripts/miobot-service.mjs` 编排：`start('web', 'scripts/local-verify-server.mjs')` + `start('bot', 'scripts/bot-runtime-v2.mjs')`。
   - **bot 走新架构**；**web/admin/canvas 仍走旧单体**。
-- `local-verify-server.mjs`（3231 行）当前同时承载：web-panel/web-canvas 静态托管、`/api/*`（admin）、`/canvas-api/*`（canvas）、Codex、日志、模板转换、napcat/生图测试。
+- `local-verify-server.mjs` 当前同时承载：web-panel/web-canvas 静态托管、`/api/*`（admin）、`/canvas-api/*`（canvas）、日志、模板转换、napcat/生图测试。（2026-11-06：Codex 桥已整体删除——Python openai-codex 仅存于此脚本且生产零消费。）
 - 新包 `packages/admin-service`、`packages/canvas-service` 已实现并测试，但 `apps/admin`、`apps/canvas` 尚未被任何启动脚本拉起——P5/P6 的验收门禁（旧脚本退化为薄装配）未达成。
 
 ## 本轮已修（2026-06-28）
@@ -44,5 +44,5 @@
 ## 已知简化 / 待补（需运行环境或实连验证）
 
 1. **apps/bot 实时环**：napcat 连接 → bot-engine.handleAuto → reply 发送的事件循环已实现（`apps/bot/src/runtime.ts`），需 Napcat 实连验证。
-2. **admin-service 外部集成**：`fetch-models / test-napcat / test-image / huggingface / codex` 是注入接口，真实实现由 `apps/admin/src/adapters.ts` 提供；未注入时返回 501。
+2. **admin-service 外部集成**：`fetch-models / test-napcat / test-image / huggingface` 是注入接口，真实实现由 `apps/admin/src/adapters.ts` 提供；未注入时返回 501。（2026-11-06：codex 注入接口随 Codex 桥删除。）
 3. **canvas-service 资产层**：二进制资产存储 / 缩略图 / `/assets/:id/download` / 异步 job / SQLite 未实现，产物以内联 data URL 存。

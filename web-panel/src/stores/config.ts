@@ -16,7 +16,7 @@ import { useAuthStore } from './auth';
 
 const SECTION_LABELS: Record<string, string> = {
     llm: '模型', bot: 'Bot 行为', canvas: '画布', napcat: 'Napcat',
-    promptsChat: '远程模板库', freeMode: '自由模式', huggingFace: 'HuggingFace', panel: '面板',
+    freeMode: '自由模式', huggingFace: 'HuggingFace', panel: '面板',
     intentRecognition: '意图识别', browserRender: '浏览器渲染', codeRender: '代码画图',
     comfyuiTransform: 'ComfyUI 参数转化', search: '联网搜索', orchestration: '智能编排',
     agent: 'Agent 运行时', toolRegistry: '工具注册表', replyPolicy: '回复策略', contextPolicy: '上下文策略',
@@ -25,7 +25,6 @@ const SECTION_LABELS: Record<string, string> = {
 export const useConfigStore = defineStore('config', () => {
     const config = ref<any>(null);
     const savedSnapshot = ref('');
-    const defaultPrompts = ref<any>(null);
     const saveStatus = ref('');
     const saving = ref(false);
     const revision = ref(0);
@@ -81,7 +80,6 @@ export const useConfigStore = defineStore('config', () => {
         c.canvas.logs ||= {};
         c.canvas.brand ||= {};
         c.freeMode ||= {};
-        c.promptsChat ||= {};
         c.napcat ||= {};
         c.panel ||= {};
         c.huggingFace ||= {};
@@ -102,8 +100,6 @@ export const useConfigStore = defineStore('config', () => {
         c.orchestration.permissions.rules ||= [];
         c.orchestration.approval ||= {};
         c.orchestration.reply ||= {};
-        c.orchestration.promptOptimization ||= {};
-        c.orchestration.promptOptimization.versions ||= [];
         c.orchestration.suno ||= {};
         c.orchestration.audit ||= {};
         c.agent ||= {};
@@ -149,22 +145,16 @@ export const useConfigStore = defineStore('config', () => {
     async function fetchConfig() {
         const res = await client.get('/config');
         applyServerConfig(res.data);
-        if (!defaultPrompts.value) await fetchDefaultPrompts();
         return config.value;
-    }
-
-    async function fetchDefaultPrompts() {
-        try {
-            const res = await client.get('/default-prompts');
-            defaultPrompts.value = res.data?.prompts || null;
-        } catch { /* 默认提示词取不到不影响主流程 */ }
     }
 
     async function save() {
         saving.value = true;
         saveStatus.value = '保存中...';
         try {
-            const res = await client.post('/config', config.value);
+            // 带 revision 乐观锁：提示词注册表 / 导入 / 回滚等旁路保存会递增服务端 revision，
+            // 陈旧快照提交会被 409 拒绝，防止详细页保存把注册表等旁路改动悄悄覆盖回旧值。
+            const res = await client.post('/config', { revision: revision.value, config: config.value });
             applyServerConfig(res.data);
             const persisted = res.data?.persisted !== false;
             const message = res.data?.message || '已保存并热重载';
@@ -175,6 +165,11 @@ export const useConfigStore = defineStore('config', () => {
             }
             return { ok: persisted, hotReload: res.data?.hotReload };
         } catch (error: any) {
+            // 409 冲突不自动消失：提示用户刷新面板，本地改动仍保留在界面上由用户决定。
+            if (error?.response?.status === 409) {
+                saveStatus.value = `保存失败：${errorMessage(error)}`;
+                return { ok: false, hotReload: undefined, conflict: true };
+            }
             saveStatus.value = `保存失败：${errorMessage(error)}`;
             return { ok: false, hotReload: undefined };
         } finally {
@@ -221,12 +216,6 @@ export const useConfigStore = defineStore('config', () => {
         const last = keys.pop() as string;
         const parent = keys.reduce((acc: any, key) => acc?.[key], config.value);
         if (parent) parent[last] = value;
-    }
-
-    /** 把某个提示词字段恢复成后端给的默认值。 */
-    function resetPrompt(configPath: string, defaultKey: string) {
-        const value = defaultPrompts.value?.[defaultKey];
-        if (value) set(configPath, value);
     }
 
     /* ── TR.5 开关单源：能力启停 = orchestration.capabilityOverrides ──
@@ -283,8 +272,8 @@ export const useConfigStore = defineStore('config', () => {
     }
 
     return {
-        config, defaultPrompts, saveStatus, saving, revision, loaded, dirty, dirtySections,
-        nodeOptions, modelsForNode, get, set, resetPrompt, capabilityEnabled, setCapabilityEnabled,
-        fetchConfig, fetchDefaultPrompts, save, importConfig, exportConfig, reset, applyServerConfig, markSaved,
+        config, saveStatus, saving, revision, loaded, dirty, dirtySections,
+        nodeOptions, modelsForNode, get, set, capabilityEnabled, setCapabilityEnabled,
+        fetchConfig, save, importConfig, exportConfig, reset, applyServerConfig, markSaved,
     };
 });

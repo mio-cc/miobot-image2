@@ -245,35 +245,12 @@ test('web api: config versions are audited and can be rolled back', async () => 
   const after = await api.handle({ method: 'GET', path: '/api/config/versions', headers });
   assert.equal(after.body.versions[after.body.versions.length - 1].current, true);
 });
-test('web api: prompt versions can be evaluated, diffed, activated and rolled back', async () => {
+test('web api: /api/orchestration/prompts/* 已下线（2026-11-06 清理：promptOptimization 运行时零消费，API 删除）', async () => {
   const api = createWebApi();
   const login = await api.handle({ method: 'POST', path: '/api/login', body: { password: 'change-me-on-first-login' } });
   const headers = { authorization: 'Bearer ' + login.body.auth.token };
-  await api.handle({
-    method: 'POST', path: '/api/config', headers,
-    body: { orchestration: { promptOptimization: {
-      enabled: true, canaryPercent: 25, activeVersionId: 'v1', canaryVersionId: 'v2',
-      versions: [
-        { id: 'v1', name: 'stable', content: 'stable prompt', status: 'active', createdAt: '2026-01-01' },
-        { id: 'v2', name: 'candidate', content: 'candidate prompt', status: 'canary', createdAt: '2026-01-02' },
-      ],
-    } } },
-  });
-  const evaluation = await api.handle({
-    method: 'POST', path: '/api/orchestration/prompts/evaluate', headers,
-    body: { versionId: 'v2', samples: 60, successRate: 0.95, averageScore: 0.9, safetyFailures: 0, ownerApproved: true },
-  });
-  assert.equal(evaluation.status, 200);
-  assert.equal(evaluation.body.decision.promote, true);
-  const diff = await api.handle({ method: 'GET', path: '/api/orchestration/prompts/v2/diff', headers });
-  assert.equal(diff.status, 200);
-  assert.ok(diff.body.diff.some((line) => line.type === 'remove'));
   const activated = await api.handle({ method: 'POST', path: '/api/orchestration/prompts/activate', headers, body: { versionId: 'v2', mode: 'active' } });
-  assert.equal(activated.status, 200);
-  assert.equal(activated.body.config.orchestration.promptOptimization.activeVersionId, 'v2');
-  const rolled = await api.handle({ method: 'POST', path: '/api/orchestration/prompts/rollback', headers, body: { versionId: 'v1' } });
-  assert.equal(rolled.status, 200);
-  assert.equal(rolled.body.config.orchestration.promptOptimization.activeVersionId, 'v1');
+  assert.notEqual(activated.status, 200);
 });
 test('web api: capability health test and trace replay are available', async () => {
   const fs = await import('node:fs/promises');

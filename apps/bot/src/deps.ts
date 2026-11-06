@@ -247,8 +247,10 @@ export function createModelBackedDeps(options: ModelDepsOptions): RuntimeDeps {
         model: req.model,
       });
       // P2 接入点：purpose = 'interrogate'（常量显式）。
+      // 用户没给反推要求时回退到 bot 配置的默认反推提示词（llm.interrogatePromptTemplate，
+      // 提示词注册表 image.interrogate 条目）；再为空才由 ModelClient 落到内置兜底。
       const interrogateCall = (target: { nodeIndex: number; model: string }) => client.interrogate(target.nodeIndex, {
-        model: target.model, imageUrls: req.images, prompt: req.prompt,
+        model: target.model, imageUrls: req.images, prompt: req.prompt || cfg?.llm.interrogatePromptTemplate || undefined,
         ...(routing.interrogateTimeoutMs ? { timeoutMs: routing.interrogateTimeoutMs } : {}),
       });
       const res = fallback

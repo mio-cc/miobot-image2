@@ -104,7 +104,6 @@ test('模拟检测: 统一上下文启用时 planner 提示词包含对话历史
   cfg.bot.unifiedContext = { enabled: true, plannerHistoryTurns: 10, plannerHistoryChars: 4000 };
   cfg.orchestration.enabled = true;
   cfg.orchestration.mode = 'enforce';
-  cfg.orchestration.planner.enabled = true;
 
   const app = {
     handle: async () => ({ kind: 'chat', handled: true }),
@@ -277,7 +276,6 @@ test('模拟检测: enforce 模式下同用户并发消息串行处理', async (
   const cfg = makeConfig();
   cfg.orchestration.enabled = true;
   cfg.orchestration.mode = 'enforce';
-  cfg.orchestration.planner.enabled = true;
   const app = {
     handle: async (input) => {
       active += 1;

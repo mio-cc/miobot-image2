@@ -122,8 +122,6 @@ test('Suno ambiguous replay asks a model question and sends numbered history as 
   const cfg = createDefaultConfig();
   cfg.orchestration.enabled = true;
   cfg.orchestration.mode = 'enforce';
-  cfg.orchestration.planner.enabled = true;
-  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
   cfg.orchestration.suno.enabled = true;
   let clarificationCalls = 0;
   const enforcer = new OrchestrationEnforcer({
@@ -161,8 +159,6 @@ test('Suno clarification answer can resolve a song by rank using forwarded histo
   const cfg = createDefaultConfig();
   cfg.orchestration.enabled = true;
   cfg.orchestration.mode = 'enforce';
-  cfg.orchestration.planner.enabled = true;
-  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
   cfg.orchestration.suno.enabled = true;
   const prompts = [];
   let call = 0;

@@ -396,9 +396,6 @@ test('local simulation: natural language enters OrchestrationEnforcer and ReplyP
   const cfg = makeConfig();
   cfg.orchestration.enabled = true;
   cfg.orchestration.mode = 'enforce';
-  cfg.orchestration.planner.enabled = true;
-  cfg.orchestration.planner.minConfidence = 0;
-  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
   let fallbackAppCalls = 0;
   const app = makeApp(async () => {
     fallbackAppCalls += 1;
@@ -433,7 +430,8 @@ test('local simulation: natural language enters OrchestrationEnforcer and ReplyP
     botName: 'Mio',
     reportProblem: async () => true,
     agentRuntime: async (input) => {
-      const orchestrated = await enforcer.handle({ ...input, chatType: input.chatType, groupId: input.groupId, userId: input.userId, text: input.text, images: input.images || [], files: [], sessionId: input.sessionId });
+      const orchestrated = await enforcer.handle({ ...input, chatType: input.chatType, groupId: input.groupId, userId: input.userId, text: input.text, images: input.images || [], files: [], sessionId: input.sessionId,
+        plan: { planId: 'sim-plan', requestId: 'ignored', goal: 'generate image', steps: [{ id: 's1', capability: 'image.generate', args: { prompt: 'cat' } }], budget: { maxSteps: 1 }, needsClarification: false, confidence: 0.95, source: 'command' } });
       if (orchestrated.handled && orchestrated.result) {
         return { handled: true, text: orchestrated.result.text, ...(orchestrated.result.replyPlan ? { replyPlan: orchestrated.result.replyPlan } : {}) };
       }
@@ -459,9 +457,6 @@ test('local simulation: ReplyPlan enforces QQ maxMessages while keeping files/au
   const cfg = makeConfig();
   cfg.orchestration.enabled = true;
   cfg.orchestration.mode = 'enforce';
-  cfg.orchestration.planner.enabled = true;
-  cfg.orchestration.planner.minConfidence = 0;
-  cfg.orchestration.planner.actionAlignmentGuardEnabled = false;
   // R15/#9：预算唯一真源改为 replyPolicy.hardMaxMessages（orchestration.reply 不再参与合并）。
   cfg.orchestration.reply.maxMessages = 3;
   cfg.replyPolicy.enabled = true;
@@ -509,7 +504,8 @@ test('local simulation: ReplyPlan enforces QQ maxMessages while keeping files/au
     botName: 'Mio',
     reportProblem: async () => true,
     agentRuntime: async (input) => {
-      const orchestrated = await enforcer.handle({ ...input, chatType: input.chatType, groupId: input.groupId, userId: input.userId, text: input.text, images: input.images || [], files: [], sessionId: input.sessionId });
+      const orchestrated = await enforcer.handle({ ...input, chatType: input.chatType, groupId: input.groupId, userId: input.userId, text: input.text, images: input.images || [], files: [], sessionId: input.sessionId,
+        plan: { planId: 'multi-plan', requestId: 'ignored', goal: 'multi result', steps: [{ id: 's1', capability: 'image.generate', args: { prompt: 'cat' } }], budget: { maxSteps: 1 }, needsClarification: false, confidence: 0.95, source: 'command' } });
       if (orchestrated.handled && orchestrated.result) {
         return { handled: true, text: orchestrated.result.text, ...(orchestrated.result.replyPlan ? { replyPlan: orchestrated.result.replyPlan } : {}) };
       }

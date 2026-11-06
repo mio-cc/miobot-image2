@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { onMounted, ref, computed } from 'vue';
+import { useRoute } from 'vue-router';
 import client, { errorMessage } from '../api/client';
 import SectionCard from '../components/SectionCard.vue';
+import { useConfigStore } from '../stores/config';
 
 /**
  * R18 提示词注册表：全部提示词统一管理（GET/POST /api/prompts）。
  * 保存 → config.json → bot 进程 loadIfChanged → 下一轮热重载。
  * 内置模板（agent.base/memory.summarize 等）只读展示，待后续开放编辑。
+ * 保存/还原后回刷共享 config store：能力页的只读镜像与顶栏脏标记立即对齐，
+ * 不回刷的话详细页还是旧快照，下一次顶栏保存会把注册表的改动 merge 回旧值。
  */
 
 interface PromptEntry {
@@ -22,6 +26,8 @@ interface PromptEntry {
     configPath: string | null;
 }
 
+const route = useRoute();
+const configStore = useConfigStore();
 const prompts = ref<PromptEntry[]>([]);
 const loading = ref(false);
 const error = ref('');
@@ -79,9 +85,13 @@ async function saveEdit() {
     if (!editingId.value) return;
     saving.value = true;
     error.value = '';
+    // 面板里若有其他页面的未保存改动，回刷后会被服务端最新配置替换——如实提示。
+    const hadUnsaved = configStore.dirty;
     try {
         const res = await client.post('/prompts/update', { id: editingId.value, content: editingContent.value });
-        flash.value = `已保存 · r${res.data.revision} · ${res.data.hotReload === 'next_turn' ? '下一轮对话自动生效' : '需重启'}`;
+        await configStore.fetchConfig();
+        flash.value = `已保存 · r${res.data.revision} · ${res.data.hotReload === 'next_turn' ? '下一轮对话自动生效' : '需重启'}`
+            + (hadUnsaved ? '；面板其他页面的未保存改动已按服务端最新配置刷新' : '');
         editingId.value = null;
         editingContent.value = '';
         await refresh();
@@ -95,9 +105,12 @@ async function saveEdit() {
 async function resetEntry(entry: PromptEntry) {
     if (!entry.editable || !window.confirm(`确定还原「${entry.title}」为出厂默认？`)) return;
     saving.value = true;
+    const hadUnsaved = configStore.dirty;
     try {
         await client.post('/prompts/reset', { id: entry.id });
-        flash.value = `「${entry.title}」已还原出厂默认`;
+        await configStore.fetchConfig();
+        flash.value = `「${entry.title}」已还原出厂默认`
+            + (hadUnsaved ? '；面板其他页面的未保存改动已按服务端最新配置刷新' : '');
         await refresh();
     } catch (e: any) {
         error.value = errorMessage(e);
@@ -111,7 +124,12 @@ function copyContent(text: string) {
     flash.value = '已复制到剪贴板';
 }
 
-onMounted(() => { void refresh(); });
+onMounted(() => {
+    // 能力页「到提示词注册表编辑」跳转带 ?focus=<id>：预填搜索词直接定位到目标条目。
+    const focus = String(route.query.focus || '').trim();
+    if (focus) searchKeyword.value = focus;
+    void refresh();
+});
 </script>
 
 <template>

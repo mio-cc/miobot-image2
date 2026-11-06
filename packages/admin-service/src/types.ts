@@ -14,11 +14,6 @@ export type AdminRequest = WebApiRequest;
 /** 一个外部集成处理器：拿到请求体，返回完整响应（含错误码）。由 apps/admin 用 Node 能力实现。 */
 export type AdminHandler = (body: unknown) => Promise<AdminResponse> | AdminResponse;
 
-/** Codex 子系统：逻辑复杂且强外部依赖，作为可选注入服务整体接入。 */
-export interface CodexService {
-  handle(method: string, path: string, body: unknown): Promise<AdminResponse> | AdminResponse;
-}
-
 /**
  * 画布卡片视图：admin 面板要展示/删除画布画廊与反推记录(/api/canvas/cards)，
  * 但数据归属 canvas 域。由 apps 装配时注入一个共享 canvas store 的适配器；
@@ -33,7 +28,7 @@ export interface CanvasCardsDep {
 
 /**
  * admin-service 的可注入外部集成。全部可选：未提供时对应路由返回 501（未配置），
- * 而不是让整个后台崩。真实实现（fetch 上游模型、连 napcat 测试、调 ModelClient 生图测试、Codex CLI）
+ * 而不是让整个后台崩。真实实现（fetch 上游模型、连 napcat 测试、调 ModelClient 生图测试）
  * 由 apps/admin 提供。
  */
 export interface AdminServiceDeps {
@@ -43,7 +38,6 @@ export interface AdminServiceDeps {
   testImage?: AdminHandler;
   testSearch?: AdminHandler;
   templatesConvert?: AdminHandler;
-  codex?: CodexService;
   /** 画布卡片视图(跨域读 canvas 画廊/反推)。未注入 → /api/canvas/cards 返回 501。 */
   canvasCards?: CanvasCardsDep;
 }

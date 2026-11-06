@@ -102,6 +102,30 @@ test('artifactToString: base64 -> data URL, url -> passthrough', () => {
   assert.equal(artifactToString({ kind: 'url', data: 'http://x/a.png', index: 0 }), 'http://x/a.png');
 });
 
+test('deps: interrogate 无用户要求时回退 llm.interrogatePromptTemplate（注册表 image.interrogate 条目）', async () => {
+  const client = makeClient();
+  const cfg = createDefaultConfig();
+  cfg.llm.interrogatePromptTemplate = '自定义反推提示词';
+  const deps = createModelBackedDeps({
+    client,
+    getConfig: () => cfg,
+    getRouting: () => ({ chatNodeIndex: 0, imageNodeIndex: 0, editNodeIndex: 0, interrogateNodeIndex: 7, freeModeNodeIndex: 0 }),
+  });
+
+  // 用户只发图没给反推要求 → 用配置的默认反推提示词，而不是 ModelClient 内置兜底
+  await deps.interrogate({ model: 'gpt-4o', images: ['http://x/i.png'], prompt: undefined });
+  assert.equal(client.calls[0][2].prompt, '自定义反推提示词');
+
+  // 配置也为空时才落到 ModelClient 内置兜底（prompt 为 undefined 透传）
+  cfg.llm.interrogatePromptTemplate = '';
+  await deps.interrogate({ model: 'gpt-4o', images: ['http://x/i.png'], prompt: undefined });
+  assert.equal(client.calls[1][2].prompt, undefined);
+
+  // 用户显式给出反推要求时永远优先用户文本
+  await deps.interrogate({ model: 'gpt-4o', images: ['http://x/i.png'], prompt: '用英文描述这张图' });
+  assert.equal(client.calls[2][2].prompt, '用英文描述这张图');
+});
+
 test('createBotApp: end-to-end 画一只猫 -> image.generate via injected client', async () => {
   const client = makeClient();
   const app = createBotApp({ getConfig: () => createDefaultConfig(), client });

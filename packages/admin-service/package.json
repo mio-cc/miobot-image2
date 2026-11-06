@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Admin backend: config repository (web-api) + logs/default-prompts/test/models/templates/codex routing, transport-agnostic with injected integrations.",
+  "description": "Admin backend: config repository (web-api) + logs/default-prompts/test/models/templates routing, transport-agnostic with injected integrations.",
   "main": "../../dist/packages/admin-service/src/index.js",
   "types": "../../dist/packages/admin-service/src/index.d.ts",
   "exports": { ".": { "types": "../../dist/packages/admin-service/src/index.d.ts", "default": "../../dist/packages/admin-service/src/index.js" } }
