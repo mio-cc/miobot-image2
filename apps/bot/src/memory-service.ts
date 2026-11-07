@@ -133,6 +133,14 @@ export interface RetrieveMemoryInput {
   maxContextChars?: number;
   /** 作用域过滤（memory.search 内部技能用）：缺省 = 全部可见 namespace。 */
   scopeFilter?: Array<MemoryDocument['scope']>;
+  /**
+   * 跨通道互斥（P0 注入去重，2026-11-07 拍板）：本轮正在处理的消息 + 群上下文已包含的
+   * 消息 id，输入侧整条排除——观察链路在触发判定前入库，当前消息会全文命中自己；
+   * 群上下文最近 30 条与记忆命中天然重叠，同一内容不再注入两份。
+   */
+  excludeMessageIds?: Array<number | string>;
+  /** 会话历史已包含的文本（归一化匹配）：会话消息不落 messageId，按内容与记忆命中互斥。 */
+  excludeTexts?: string[];
 }
 
 export interface MemoryHit {
@@ -147,7 +155,6 @@ export interface MemoryHit {
   /** 入库时的消息 id（QQ 消息 id 或内容 hash；方案 2 按它做被拒过滤/精确删除）。 */
   messageId?: string;
   score: number;
-  recent: boolean;
 }
 
 export type MemorySummarizer = (input: { namespace: MemoryNamespace; messages: MemoryDocument[] }) => Promise<string | undefined>;
@@ -169,6 +176,25 @@ function cosineSimilarity(a: number[] | undefined, b: number[] | undefined): num
     nb += b[i] * b[i];
   }
   return na > 0 && nb > 0 ? dot / Math.sqrt(na * nb) : 0;
+}
+
+/** 跨通道文本互斥用归一化：与检索行渲染同款（空白折叠 + 500 字符截断）。 */
+function normalizeMemoryText(value: unknown): string {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
+/**
+ * 会话历史文本互斥：归一化后完全相等，或双方均 ≥8 字符时的包含关系命中
+ * （历史 user 内容可能带引用/转发拼接前缀，纯等值会漏；短文本不做包含匹配防误杀）。
+ */
+function matchesExcludeText(text: string, normalizedExcludes: string[]): boolean {
+  const normalized = normalizeMemoryText(text);
+  if (!normalized) return false;
+  for (const exclude of normalizedExcludes) {
+    if (normalized === exclude) return true;
+    if (exclude.length >= 8 && normalized.length >= 8 && (normalized.includes(exclude) || exclude.includes(normalized))) return true;
+  }
+  return false;
 }
 
 function hash(value: string): string {
@@ -315,9 +341,14 @@ export class ChatMemoryService {
     };
     if (input.chatType === 'group') {
       const groupId = String(input.groupId || '');
+      // P1 单份归属（2026-11-07 拍板）：群消息只写群索引一份（旧实现同时写 g:* 群共享与
+      // p:* 本群个人两份，doc id 不同导致去重失效，是注入重复的结构性根源）。
+      // "当前用户在本群的消息"语义由群索引超集查询天然覆盖（userId 已在 doc 上，
+      // clearUser/removeByMessageId 均按它精确过滤）；跨群个人画像仍走独立的
+      // userGlobalProfileEnabled 开关写全局个人 ns（默认关，原语义不变），与群副本的
+      // 重复注入由 retrieve 的 messageId 合并去重兜住。存量双写副本不做物理清理。
       await place({ kind: 'group', botId: input.botId, groupId }, `g:${messageId}:${input.role}`, 'group_shared');
       void this.maybeSummarize({ kind: 'group', botId: input.botId, groupId });
-      await place({ kind: 'personal', botId: input.botId, groupId, userId: String(input.userId || '') }, `p:${messageId}:${input.role}`, 'personal_group_user');
       if (memory.userGlobalProfileEnabled) {
         await place({ kind: 'personal', botId: input.botId, groupId: '', userId: String(input.userId || '') }, `p:${messageId}:${input.role}`, 'personal_group_user');
       }
@@ -386,14 +417,21 @@ export class ChatMemoryService {
     if (!memory.enabled) return { context: '', hits: [], degraded: false, namespaces: [] };
     const query = String(input.query || '').trim();
     // 检索预算唯一真源 contextPolicy（曾与 orchestration.memory.topK* 双真源并存，已收口删除）。
+    // topK 语义 = 合并去重后的全局前 K（P0 注入去重，2026-11-07 拍板）；每 namespace 每检索方式
+    // 各取 topK 只是候选生成，最终以相关性分数全局截断，不再按时间序铺开。
     const contextPolicyCfg = this.options.getConfig().contextPolicy;
     const topK = Math.max(1, Math.trunc(Number(input.topK) || contextPolicyCfg.memoryTopK));
     const minScore = Number.isFinite(Number(input.minScore)) ? Number(input.minScore) : contextPolicyCfg.memoryMinScore;
     const maxContextChars = Math.max(200, Math.trunc(Number(input.maxContextChars) || contextPolicyCfg.memoryMaxChars));
+    const excludeIds = new Set((input.excludeMessageIds || []).map((id) => String(id)).filter(Boolean));
+    const excludeTexts = (input.excludeTexts || []).map(normalizeMemoryText).filter(Boolean);
+    // P1 单份归属（2026-11-07 拍板）：群聊检索不再查"本群个人"namespace（旧双写副本）——
+    // 其内容是群索引的严格子集（同批消息、同一群），群索引超集查询已天然覆盖"当前用户"
+    // 语义；存量个人副本与其群孪生逐条同文，弃查不丢内容。跨群个人画像（userGlobalProfileEnabled，
+    // 默认关）仍按原语义查全局个人 ns，与群副本的重复由 messageId 合并去重兜住。
     const namespaces: MemoryNamespace[] = input.chatType === 'group'
       ? [
           { kind: 'group', botId: input.botId, groupId: String(input.groupId || '') },
-          { kind: 'personal', botId: input.botId, groupId: String(input.groupId || ''), userId: String(input.userId) },
           ...(memory.userGlobalProfileEnabled
             ? [{ kind: 'personal' as const, botId: input.botId, groupId: '', userId: String(input.userId) }]
             : []),
@@ -405,7 +443,7 @@ export class ChatMemoryService {
       queryVector = query ? (await this.embedding.embed([query]))[0] : undefined;
     } catch (error) {
       degraded = true;
-      this.options.logger?.warn('memory query embedding failed; falling back to recent/fulltext', { error: String((error as Error)?.message || error) });
+      this.options.logger?.warn('memory query embedding failed; falling back to fulltext', { error: String((error as Error)?.message || error) });
     }
     const all: MemoryHit[] = [];
     for (const ns of namespaces) {
@@ -431,7 +469,7 @@ export class ChatMemoryService {
           for (const hit of result.hits as any[]) {
             const doc = hit.document as MemoryDocument;
             if (Number(hit.score || 0) < minScore && doc.scope !== 'group_shared') continue;
-            all.push({ ...doc, score: Number(hit.score || 0), recent: false });
+            all.push({ ...doc, score: Number(hit.score || 0) });
           }
         } catch (error) {
           degraded = true;
@@ -448,35 +486,31 @@ export class ChatMemoryService {
           for (const hit of full.hits as any[]) {
             const doc = hit.document as MemoryDocument;
             if (ns.kind === 'personal' && String(doc.userId) !== String(input.userId)) continue;
-            all.push({ ...doc, score: Number(hit.score || 0), recent: false });
+            all.push({ ...doc, score: Number(hit.score || 0) });
           }
         } catch { /* fulltext optional */ }
       }
-      if (memory.recentTurns > 0) {
-        try {
-          const recent = await search(db, {
-            term: '',
-            where,
-            limit: Math.max(1, memory.recentTurns),
-            sortBy: { property: 'createdAt', order: 'DESC' },
-          } as any);
-          for (const hit of recent.hits as any[]) {
-            const doc = hit.document as MemoryDocument;
-            all.push({ ...doc, score: Number(hit.score || 0), recent: true });
-          }
-        } catch { /* recent optional */ }
-      }
     }
-    const seen = new Set<string>();
-    const hits = all
-      .filter((hit) => {
-        if (seen.has(hit.id)) return false;
-        seen.add(hit.id);
-        // 方案 2：被审核拒绝登记的消息不得从记忆检索回流进上下文（与删除清理互为双保险）。
-        if (this.rejected(hit.messageId)) return false;
-        return true;
-      })
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    // P0 注入去重三步（2026-11-07 拍板，实测背景：同一群消息多 namespace 副本双双入选、
+    // recentTurns 与群上下文整段重叠、当前消息全文命中自己）：
+    // 1) 输入侧互斥：本轮消息/群上下文已含的 messageId、会话历史已含的文本，整条排除；
+    // 2) 跨 namespace 按 messageId 合并——doc id 不同导致旧去重失效。P1 单份归属后此步
+    //    兜两类副本：userGlobalProfileEnabled 的全局画像副本（键带 groupId 防跨群数字 id 撞车）
+    //    与 P1 前存量的旧双写副本（若经任何路径同时入选）；
+    // 3) 合并后按相关性分数排序取全局 topK（替代旧的按时间正序铺开，无 relevance 排序）。
+    // 方案 2（保留）：被审核拒绝登记的消息不得从记忆检索回流进上下文（与删除清理互为双保险）。
+    const byKey = new Map<string, MemoryHit>();
+    for (const hit of all) {
+      if (this.rejected(hit.messageId)) continue;
+      if (hit.messageId !== undefined && excludeIds.has(String(hit.messageId))) continue;
+      if (excludeTexts.length && matchesExcludeText(hit.text, excludeTexts)) continue;
+      const key = hit.messageId !== undefined ? `m:${hit.groupId}:${hit.messageId}` : `id:${hit.id}`;
+      const prev = byKey.get(key);
+      if (!prev || hit.score > prev.score) byKey.set(key, hit);
+    }
+    const hits = [...byKey.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
     const lines: string[] = [];
     let chars = 0;
     for (const hit of hits) {

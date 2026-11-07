@@ -17,6 +17,10 @@ export interface AgentContextBuildResult {
   messages: AgentMessage[];
   includedSections: string[];
   estimatedChars: number;
+  /** 各注入段落的实际字符数（预算告警观测用；[Group context] 段含上游合并的记忆/群历史/连发消息）。 */
+  sectionChars?: Array<{ label: string; chars: number }>;
+  /** 总预算裁剪丢弃的历史消息数（0 = 未触顶；system 块永不参与裁剪）。 */
+  trimmedMessages?: number;
 }
 
 export interface AgentContextBuilder {
@@ -57,12 +61,15 @@ export class DefaultAgentContextBuilder implements AgentContextBuilder {
       });
     }
     const maxChars = input.maxChars && input.maxChars > 0 ? Math.trunc(input.maxChars) : 0;
-    if (maxChars && estimateChars(messages) > maxChars) trimToBudget(messages, maxChars, Boolean(input.compactionEnabled));
+    let trimmedMessages = 0;
+    if (maxChars && estimateChars(messages) > maxChars) trimmedMessages = trimToBudget(messages, maxChars, Boolean(input.compactionEnabled));
     const sanitized = sanitizeToolMessagePairs(messages);
     return {
       messages: sanitized,
       includedSections: sections.map(([label]) => label),
       estimatedChars: estimateChars(sanitized),
+      ...(sections.length ? { sectionChars: sections.map(([label, content]) => ({ label, chars: String(content).length })) } : {}),
+      ...(trimmedMessages ? { trimmedMessages } : {}),
     };
   }
 }
@@ -107,14 +114,14 @@ function estimateChars(messages: AgentMessage[]): number {
   return messages.reduce((total, message) => total + JSON.stringify(message).length, 0);
 }
 
-function trimToBudget(messages: AgentMessage[], maxChars: number, compactionEnabled = false): void {
+function trimToBudget(messages: AgentMessage[], maxChars: number, compactionEnabled = false): number {
   const removed: AgentMessage[] = [];
   while (messages.length > 2 && estimateChars(messages) > maxChars) {
     const removable = messages.findIndex((message, index) => index > 0 && message.role !== 'system');
     if (removable < 0) break;
     removed.push(...messages.splice(removable, 1));
   }
-  if (!compactionEnabled || !removed.length) return;
+  if (!compactionEnabled || !removed.length) return removed.length;
   const summary = removed
     .slice(-16)
     .map((message) => {
@@ -123,11 +130,12 @@ function trimToBudget(messages: AgentMessage[], maxChars: number, compactionEnab
     })
     .filter((line) => line.length > 3)
     .join('\n');
-  if (!summary) return;
+  if (!summary) return removed.length;
   const summaryMessage: AgentMessage = {
     role: 'system',
     content: `[Compacted earlier conversation]\n${summary}`,
   };
   const insertAt = messages.findIndex((message) => message.role !== 'system');
   messages.splice(insertAt < 0 ? messages.length : insertAt, 0, summaryMessage);
+  return removed.length;
 }

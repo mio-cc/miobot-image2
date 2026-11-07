@@ -139,17 +139,26 @@ export interface BuildGroupContextParams {
 /**
  * 把 napcat 历史消息数组处理为最终上下文字符串。
  * 纯函数，可独立测试：过滤转发 → 过滤 bot 自身 & 触发消息 → 格式化 → 裁剪。
+ * messageIds 只收集「正文真实进入上下文」的行（被拒占位/空消息/转发跳过不含），
+ * 供 runtime 做跨通道互斥：这些消息不再从记忆检索重复注入（P0 注入去重，2026-11-07 拍板）。
  */
-export function buildGroupContext(params: BuildGroupContextParams): string {
+export interface GroupContextResult {
+  context: string;
+  /** 已渲染进 context 的消息 id（占位行不含）。 */
+  messageIds: string[];
+}
+
+export function buildGroupContext(params: BuildGroupContextParams): GroupContextResult {
   const { messages, anchorMessageId, selfId, options } = params;
   const isRejected = params.isRejected;
   const placeholder = params.placeholder || '[该消息因触发上游内容审核被略去]';
   const selfIdStr = selfId !== undefined ? String(selfId) : '';
   const anchorStr = anchorMessageId !== undefined ? String(anchorMessageId) : '';
 
-  const lines: string[] = [];
+  // line 与 id 捆绑成 entry：占位行/截断时两者始终保持对齐。
+  const entries: Array<{ line: string; id?: string }> = [];
   // 倒序处理（最新在前），格式化后正序输出
-  for (let i = messages.length - 1; i >= 0 && lines.length < options.messageCount; i--) {
+  for (let i = messages.length - 1; i >= 0 && entries.length < options.messageCount; i--) {
     const msg = messages[i];
     if (!msg) continue;
     if (options.skipForward && isForwardMessage(msg)) continue;
@@ -157,33 +166,38 @@ export function buildGroupContext(params: BuildGroupContextParams): string {
     if (anchorStr && String(msg.message_id ?? '') === anchorStr) continue; // 触发的那条
     if (isRejected?.(msg)) {
       // 被拒登记命中：保留说话人与时序，正文替换为占位符（不整条删除——避免时序断层误导模型）。
-      lines.push(`${senderIdentity(msg)}: ${placeholder}`);
+      entries.push({ line: `${senderIdentity(msg)}: ${placeholder}` });
       continue;
     }
     const text = formatHistoryMessageText(msg, options);
     if (!text) continue; // 空消息跳过
-    lines.push(`${senderIdentity(msg)}: ${text}`);
+    entries.push({ line: `${senderIdentity(msg)}: ${text}`, id: String(msg.message_id ?? '') || undefined });
   }
 
-  if (!lines.length) return '';
+  if (!entries.length) return { context: '', messageIds: [] };
   // 反转为时间正序（旧→新）
-  lines.reverse();
+  entries.reverse();
 
-  // 裁剪：从最旧截断，保证不超 maxChars
-  let result = lines.join('\n');
-  if (result.length > options.maxChars) {
-    // 保留最新的部分
-    result = result.slice(result.length - options.maxChars);
-    // 截断后从第一个换行开始，避免半行
-    const firstNl = result.indexOf('\n');
-    if (firstNl > 0) result = result.slice(firstNl + 1);
+  // 裁剪：从最旧截断，保证不超 maxChars（保持行/id 对齐地整条丢弃）
+  while (entries.length > 1 && entries.map((entry) => entry.line).join('\n').length > options.maxChars) {
+    entries.shift();
   }
-  return result;
+  let context = entries.map((entry) => entry.line).join('\n');
+  // 单行兜底（块内上限是硬保证）：只剩一条仍超预算时保留最新部分并加省略标记——
+  // 否则单条超长消息会突破 groupContextMaxChars，而 system 注入块不参与总预算裁剪，
+  // 超长行会持续挤占会话历史。id 仍随行保留（跨通道互斥按它排除该条记忆命中）。
+  if (context.length > options.maxChars) {
+    context = '…' + context.slice(context.length - options.maxChars + 1);
+  }
+  return {
+    context,
+    messageIds: entries.map((entry) => entry.id).filter((id): id is string => Boolean(id)),
+  };
 }
 
 /**
  * 拉取群历史并构建上下文。fetchHistory 由调用方注入（封装 napcat callAction）。
- * 失败/超时返回空字符串，不抛错。
+ * 失败/超时返回空 context，不抛错。messageIds 随行返回，供 runtime 做跨通道互斥。
  */
 export async function fetchGroupContext(params: {
   fetchHistory: (groupId: number | string, anchorMessageId: number | string, count: number) => Promise<NapcatHistoryMessage[]>;
@@ -194,16 +208,16 @@ export async function fetchGroupContext(params: {
   /** 审核被拒剥离（方案 1）：见 buildGroupContext。 */
   isRejected?: (msg: NapcatHistoryMessage) => boolean;
   placeholder?: string;
-}): Promise<string> {
+}): Promise<GroupContextResult> {
   const { fetchHistory, groupId, anchorMessageId, selfId, options } = params;
   try {
     // 多取一些以补偿过滤转发后的损失
     const fetchCount = options.messageCount + 8;
     const messages = await fetchHistory(groupId, anchorMessageId, fetchCount);
-    if (!Array.isArray(messages) || !messages.length) return '';
+    if (!Array.isArray(messages) || !messages.length) return { context: '', messageIds: [] };
     return buildGroupContext({ messages, anchorMessageId, selfId, options, ...(params.isRejected ? { isRejected: params.isRejected } : {}), ...(params.placeholder ? { placeholder: params.placeholder } : {}) });
   } catch {
     // 拉取失败不阻塞回复
-    return '';
+    return { context: '', messageIds: [] };
   }
 }

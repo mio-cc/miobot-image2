@@ -4,6 +4,7 @@ import { ComfyUiError, runComfyUiWorkflow, validateComfyUiProfile } from '../../
 import { stitchImages } from '../../../packages/image-compose/src/index.js';
 import { runInComfyUiQueue } from './comfyui-queue.js';
 import { withPurposeFallback, type ModelFallbackController } from './model-fallback.js';
+import { toMainModelSelection } from './config-bridge.js';
 import { reportExternalTaskFromHandler } from '../../../packages/orchestration/src/external-task-context.js';
 
 export interface ComfyUiGenerateOptions {
@@ -290,7 +291,14 @@ async function enhancePrompt(options: ComfyUiGenerateOptions, profile: ComfyUiPr
   const transform = mergeTransformConfig(cfg.comfyuiTransform, profile);
   const raw = sanitizePromptText(prompt, promptPolicyFor(profile));
   if (!raw) return { prompt: '', source: 'fallback' };
-  if (!transform.enabled || !transform.model) return { prompt: raw, source: 'fallback' };
+  // 「跟随」语义（与 start.ts TTS 前置 / trigger-intent.ts 同族，2026-11-06 拍板）：model 为空 =
+  // 用途表「恢复跟随」，节点与模型回落主对话；此前空模型直接跳过转化，与面板继承语义割裂。
+  // 主对话也没配时维持旧降级（跳过转化、回 raw）。
+  const hasOwnModel = Boolean(String(transform.model || '').trim());
+  const mainSel = toMainModelSelection(cfg);
+  const bindingModel = hasOwnModel ? String(transform.model) : mainSel.model;
+  const bindingNodeIndex = hasOwnModel ? Number(transform.nodeIndex) || 0 : mainSel.nodeIndex;
+  if (!transform.enabled || !bindingModel) return { prompt: raw, source: 'fallback' };
   const renderedPrompt = renderPromptTemplate(transform.promptTemplate, profile, raw);
   // P2 接入点：purpose = 'comfyui'（常量显式）。invoke = 既有「两轮重试」循环整体——
   // 主档位两轮都失败由状态机计数并切备重试本轮；循环结束后仍失败 → 按原语义回退 raw prompt（不抛出）。
@@ -320,7 +328,7 @@ async function enhancePrompt(options: ComfyUiGenerateOptions, profile: ComfyUiPr
     }
     throw new Error(lastError || 'comfyui_transform_failed');
   };
-  const binding = { nodeIndex: Number(transform.nodeIndex) || 0, model: String(transform.model) };
+  const binding = { nodeIndex: bindingNodeIndex, model: bindingModel };
   try {
     return options.fallback
       ? await withPurposeFallback(options.fallback, 'comfyui', binding, attemptLoop)

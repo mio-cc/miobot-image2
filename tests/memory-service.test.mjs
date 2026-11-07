@@ -18,7 +18,6 @@ function config(root) {
     topK: 6,
     minScore: 0,
     maxContextChars: 5000,
-    recentTurns: 2,
     retentionDays: 30,
     hybridSearch: true,
     autoIngest: true,
@@ -55,7 +54,8 @@ test('memory: group and private namespaces are physically isolated', async () =>
   assert.ok(g1.context.includes('同名 [QQ:u1]'));
   assert.equal(g1.context.includes('other group secret'), false);
   assert.equal(g1.context.includes('private secret'), false);
-  assert.equal(g1.namespaces.length, 2);
+  // P1 单份归属：群聊只查群索引一个 namespace（全局画像开关默认关）
+  assert.equal(g1.namespaces.length, 1);
 
   const privateU1 = await memory.retrieve({ botId: 'bot', chatType: 'private', userId: 'u1', query: 'secret' });
   assert.ok(privateU1.context.includes('private secret'));
@@ -124,7 +124,8 @@ test('memory: admin management can list and clear one user without touching anot
   await memory.ingest({ botId: 'bot', chatType: 'private', userId: 'u1', authorName: 'u1', role: 'user', text: 'private one', messageId: 'a2' });
   await memory.ingest({ botId: 'bot', chatType: 'group', groupId: 'g1', userId: 'u2', authorName: 'u2', role: 'user', text: 'dog two', messageId: 'a3' });
   const namespaces = await memory.listNamespaces();
-  assert.ok(namespaces.length >= 4);
+  // P1 单份归属：g1 群索引 + u1 私聊索引（旧双写会是 4 个）
+  assert.equal(namespaces.length, 2);
   assert.ok(namespaces.every((item) => typeof item.count === 'number'));
   const removed = await memory.clearUser('bot', 'u1', 'g1');
   assert.ok(removed >= 2);
@@ -143,7 +144,8 @@ test('memory: optional user-global profile crosses groups only for the same user
   const sameUserOtherGroup = await memory.retrieve({ botId: 'bot', chatType: 'group', groupId: 'g2', userId: 'u1', query: 'global cat' });
   const otherUser = await memory.retrieve({ botId: 'bot', chatType: 'group', groupId: 'g2', userId: 'u2', query: 'global cat' });
   assert.ok(sameUserOtherGroup.context.includes('global cat preference'));
-  assert.equal(sameUserOtherGroup.namespaces.length, 3);
+  // P1 单份归属：跨群画像开启时查 群索引 + 全局个人 两个 namespace
+  assert.equal(sameUserOtherGroup.namespaces.length, 2);
   assert.equal(otherUser.context.includes('global cat preference'), false);
 });
 
@@ -177,11 +179,14 @@ test('memory T3.4 consolidate: 冷启动跨进程仍能从 manifest 加载全部
   const first = new ChatMemoryService({ rootDir: root, getConfig: () => config(root), embedding });
   await first.ingest({ botId: 'bot', chatType: 'group', groupId: 'g1', userId: 'u1', role: 'user', text: 'cat A', messageId: 'a1', createdAt: new Date(now - 40 * 3600 * 1000).toISOString() });
   await first.ingest({ botId: 'bot', chatType: 'group', groupId: 'g1', userId: 'u1', role: 'user', text: 'cat B', messageId: 'a2', createdAt: new Date(now - 39 * 3600 * 1000).toISOString() });
+  // P1 单份归属后群聊只有一个群索引；补一组私聊消息保住「多 namespace 冷启动」的测试意图
+  await first.ingest({ botId: 'bot', chatType: 'private', userId: 'u1', role: 'user', text: 'cat A', messageId: 'a3', createdAt: new Date(now - 38 * 3600 * 1000).toISOString() });
+  await first.ingest({ botId: 'bot', chatType: 'private', userId: 'u1', role: 'user', text: 'cat B', messageId: 'a4', createdAt: new Date(now - 37 * 3600 * 1000).toISOString() });
   await first.flush();
   // 新进程：dbs 为空，只能靠 manifest 找到 namespace
   const second = new ChatMemoryService({ rootDir: root, getConfig: () => config(root), embedding });
   const stats = await second.consolidate({ now: () => now });
-  assert.ok(stats.namespaces >= 2, '应从 manifest 加载 group 与 personal namespace：' + stats.namespaces);
+  assert.equal(stats.namespaces, 2, '应从 manifest 加载群与私聊两个 namespace：' + stats.namespaces);
   assert.equal(stats.merged, 2, '两个 namespace 各归并一条重复');
   const after = await second.retrieve({ botId: 'bot', chatType: 'group', groupId: 'g1', userId: 'u1', query: 'cat' });
   assert.ok(after.context.includes('cat B'));
@@ -197,7 +202,8 @@ test('memory T3.4 consolidate: 未配置 scorer 时只归并不淘汰', async ()
   const stats = await memory.consolidate({ now: () => now });
   assert.equal(stats.scored, 0);
   assert.equal(stats.evicted, 0, '无 scorer 不得做低分淘汰');
-  const after = await memory.retrieve({ botId: 'bot', chatType: 'private', userId: 'u1', query: 'secret' });
+  // recentTurns 通道删除后，验证性检索必须用真正相关的查询词（'trash' 与原文同向量）。
+  const after = await memory.retrieve({ botId: 'bot', chatType: 'private', userId: 'u1', query: 'trash' });
   assert.ok(after.context.includes('trash small talk'), '无 scorer 时保留原文');
 });
 

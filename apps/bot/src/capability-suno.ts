@@ -307,8 +307,9 @@ export class SunoCapabilityHandler implements CapabilityHandler {
         }
       }
       // 其余 variant 入库为分支（requestText 标注"（分支）"），供 audio.music.variant 能力取用；入库失败不影响交付。
+      // 主版入库失败（historyRecord 为空）时不再落分支：无主分支会以「B版」形态与相邻无关记录错位配对。
       let branchSaved = 0;
-      if (first?.url && this.options.history) {
+      if (first?.url && historyRecord && this.options.history) {
         for (const variant of audioOutputs.slice(1)) {
           if (!variant.url) continue;
           try {

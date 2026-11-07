@@ -1,9 +1,23 @@
-﻿import type { BotTtsConfig } from '../../../packages/config/src/index.js';
+﻿import type { AppConfig, BotTtsConfig, BotTtsPreprocessConfig } from '../../../packages/config/src/index.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
+import { toMainModelSelection } from './config-bridge.js';
 
 /** 渲染 TTS 前置处理提示词，占位符只接受 {{text}}。 */
 export function renderTtsPreprocessPrompt(template: string, text: string): string {
   return String(template || '').replace(/\{\{\s*text\s*\}\}/g, () => String(text || ''));
+}
+
+/**
+ * 「跟随」语义（2026-11-06 拍板）：preprocess.model 为空 = 用户在用途表点了「恢复跟随」，
+ * 节点与模型都跟主对话走（与 trigger-intent.ts chatNode() 同款先例；ModelsPage 用途表
+ * 「未选择 → 回落主对话」的公开承诺）。此前运行时把空当「跳过改写」，与面板语义割裂——
+ * 966 字原文零处理直送 TTS 的实测根因。主对话也没配时返回空 model，由调用方门控降级。
+ */
+export function resolveTtsPreprocessTarget(pre: BotTtsPreprocessConfig | undefined, cfg: AppConfig): { nodeIndex: number; model: string } {
+  const own = String(pre?.model || '').trim();
+  if (own) return { nodeIndex: Number(pre?.nodeIndex) || 0, model: own };
+  const main = toMainModelSelection(cfg);
+  return { nodeIndex: main.nodeIndex, model: main.model };
 }
 
 export interface TtsRequestPlan {

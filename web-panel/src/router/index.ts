@@ -59,6 +59,12 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../pages/CapabilityDetailPage.vue'),
     },
     {
+        // P3-MCP（D27）：单个 MCP 服务器专属配置页——能力中心卡片 / AgentPage「配置」链接进入，不入侧栏。
+        path: '/mcp/:serverId',
+        name: 'mcp-server',
+        component: () => import('../pages/McpServerPage.vue'),
+    },
+    {
         // R16/4.1：五个能力专页保留为「能力中心 → 卡片 → 完整配置页」的目标页，
         // 从侧边栏导航移除（meta.group 空）但路由可达（能力中心卡片跳进来）。
         path: '/cap-image',

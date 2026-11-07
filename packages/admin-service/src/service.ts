@@ -53,6 +53,9 @@ export class AdminService {
     // 登录公共，交给 web-api。
     if (method === 'POST' && path === '/api/login') return this.api.handle(req);
 
+    // P3-MCP：OAuth 回调公共（浏览器 302 带 Authorization 不现实；安全性由 state 与发起会话配对保证）。
+    if (method === 'GET' && path === '/api/mcp/callback') return this.api.handle(req);
+
     // /api/* 统一鉴权（Bearer token = derivePanelToken(passwordSeed)）。
     if (path.startsWith('/api/') && !this.repository.isAuthorized(authHeader(req.headers))) {
       return { status: 401, body: { success: false, error: 'Unauthorized' } };

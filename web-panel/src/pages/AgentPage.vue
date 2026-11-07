@@ -216,10 +216,10 @@ function removeExposure(id: string) {
       </div>
     </SectionCard>
 
-    <SectionCard title="上下文策略" hint="历史、群上下文、记忆、工具结果与压缩预算；spillEnabled 大结果落盘、compactionEnabled 摘要裁剪已接线" class="mb-4">
+    <SectionCard title="上下文策略" hint="注入预算与裁剪：分块上限各自独立，总预算管整个模型请求；spillEnabled 大结果落盘、compactionEnabled 摘要裁剪已接线" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4">
         <FormField label="历史上限轮数"><input v-model.number="context.historyMaxRounds" type="number" min="1" max="200" class="input-field" /></FormField>
-        <FormField label="历史字符上限"><input v-model.number="context.historyMaxChars" type="number" min="500" class="input-field" /></FormField>
+        <FormField label="模型请求总字符预算" hint="整个消息列表的 JSON 序列化长度上限（system 注入块 + 会话历史 + 本轮输入，含结构开销）；接近时从最旧历史开始丢弃"><input v-model.number="context.historyMaxChars" type="number" min="500" class="input-field" /></FormField>
         <FormField label="群上下文消息数"><input v-model.number="context.groupContextMessages" type="number" min="1" max="500" class="input-field" /></FormField>
         <FormField label="群上下文字符上限"><input v-model.number="context.groupContextMaxChars" type="number" min="200" class="input-field" /></FormField>
         <FormField label="记忆 Top-K"><input v-model.number="context.memoryTopK" type="number" min="1" max="100" class="input-field" /></FormField>
@@ -234,6 +234,11 @@ function removeExposure(id: string) {
         <ToggleField v-model="context.compactionEnabled" label="启用上下文压缩（摘要裁剪）" />
         <ToggleField v-model="context.spillEnabled" label="溢出工具结果落盘（已接线）" />
       </div>
+      <p class="text-[color:var(--ink-3)] text-xs mt-3">
+        三层上限互相独立：记忆字符上限、群上下文字符上限只管各自注入块（当前配置：记忆 {{ context?.memoryMaxChars ?? '—' }} 字符、群上下文 {{ context?.groupContextMaxChars ?? '—' }} 字符）；「模型请求总字符预算」管整个请求的总量。
+        预算按 JSON 序列化长度计（比纯文本约多 10% 结构开销）；接近总量时从最旧的会话历史开始丢弃，人格提示与 system 注入块目前不参与裁剪；
+        总量达到阈值 80% 时后台会输出 warn 日志（含各注入块实际字符数与占比），便于定位是哪一块在膨胀。
+      </p>
     </SectionCard>
     <SectionCard title="回复偏好记录" hint="session/user 偏好持久化快照；删除与清空会写入后台审计" class="mb-4">
       <div class="flex flex-wrap gap-2 mb-3">
@@ -303,7 +308,10 @@ function removeExposure(id: string) {
             <span class="ml-2 tag">{{ server.enabled ? '已启用' : '已停用' }}</span>
             <div class="font-mono text-xs text-[color:var(--ink-3)] mt-0.5 truncate">{{ server.url }}</div>
           </div>
-          <button class="btn-outline !px-2" @click="(server as any).enabled = !(server as any).enabled">{{ server.enabled ? '停用' : '启用' }}</button>
+          <div class="flex gap-2 items-center">
+            <router-link class="btn-outline !px-2" :to="`/mcp/${encodeURIComponent(server.id)}`">配置</router-link>
+            <button class="btn-outline !px-2" @click="(server as any).enabled = !(server as any).enabled">{{ server.enabled ? '停用' : '启用' }}</button>
+          </div>
         </div>
       </div>
     </SectionCard>

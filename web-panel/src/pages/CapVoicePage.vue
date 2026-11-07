@@ -122,12 +122,12 @@ const voiceScopeOptions = [
             <ModelBindingMirror :node-index="Number(tts.preprocess.nodeIndex) || 0" :model="tts.preprocess.model || ''" purpose="朗读前改写" />
           </FormField>
           <div class="flex items-end">
-            <ToggleField v-model="tts.preprocess.enabled" label="启用改写" hint="回复里的 Markdown、链接、代码块直接念出来很难听，开启后先让模型改写成口语文本。需同时选定改写模型，模型为空时改写不会执行" />
+            <ToggleField v-model="tts.preprocess.enabled" label="启用改写" hint="回复里的 Markdown、链接、代码块直接念出来很难听，开启后先让模型改写成口语文本。需有可用改写模型：留空自动回落主对话模型，主对话也没配才跳过" />
           </div>
         </div>
-        <p v-if="tts.preprocess.enabled && !String(tts.preprocess.model || '').trim()"
+        <p v-if="tts.preprocess.enabled && !String(tts.preprocess.model || '').trim() && !String(config.agent?.mainModel || config.llm?.chatModel || '').trim()"
           class="mt-3 text-xs status-crit rounded-lg px-3 py-2" style="background: var(--critical-soft);">
-          改写模型为空：朗读前改写不会执行，语音将直接朗读原文本。请到「模型与节点」用途表为「TTS 前处理」选定模型。
+          改写模型与主对话模型均为空：朗读前改写不会执行，语音将直接朗读原文本（改写模型留空时自动回落主对话）。请到「模型与节点」配置主对话或「TTS 前处理」模型。
         </p>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
           <FormField label="超时 (ms)">

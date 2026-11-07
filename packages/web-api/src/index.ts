@@ -20,6 +20,18 @@ import { findUnresolvedSecrets, maskConfigSecrets, unmaskConfigSecrets } from '.
 import { PROMPT_REGISTRY, getPromptValue, setPromptValue } from './prompt-registry.js';
 import { applyCapabilityOverrides, applyRuntimeCapabilityGates, builtinCapabilityDescriptors, buildCapabilityManifest, createPermissionPolicyFromDefaults, resolvePermission, type CapabilityDescriptor } from '../../orchestration/src/index.js';
 import { detectComfyUiPromptNodeIds, inspectComfyUiWorkflow, validateComfyUiProfile } from '../../comfyui/src/index.js';
+// P3-MCP：OAuth 编排（纯函数）与凭据存储——面板进程与 bot 进程共享同一 data 目录文件。
+// 注：模块物理位置在 apps/bot/src（方案落点），web-api 经相对路径引用（monorepo 单 tsconfig 无包边界强制）。
+import {
+  buildAuthorizationUrl,
+  discoverAuthorizationServers,
+  exchangeCode,
+  fetchAuthorizationServerMetadata,
+  generatePkce,
+  parseResourceMetadataUrl,
+  registerClient,
+} from '../../../apps/bot/src/mcp-oauth.js';
+import { McpCredentialStore } from '../../../apps/bot/src/mcp-credential-store.js';
 
 export const WEB_API_PACKAGE: PackageDescriptor = {
   name: '@miobot-v2/web-api',
@@ -28,7 +40,7 @@ export const WEB_API_PACKAGE: PackageDescriptor = {
 
 export type WebApiMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 export type WebApiHeaders = Record<string, string | undefined>;
-export type WebApiStatus = 200 | 201 | 304 | 400 | 401 | 404 | 405 | 409 | 429 | 500; // 304 协商缓存；R15/N-20: 429 登录限速；409 配置版本冲突
+export type WebApiStatus = 200 | 201 | 302 | 304 | 400 | 401 | 404 | 405 | 409 | 429 | 500; // 304 协商缓存；R15/N-20: 429 登录限速；409 配置版本冲突；302 P3-MCP OAuth 回调跳面板页
 
 export interface PanelAuthSnapshot {
   token: string;
@@ -599,8 +611,117 @@ export class WebApi {
         return ok({ code: 200, msg: 'success', data: { received: true, duplicate } });
       }
 
+      // ── P3-MCP：OAuth 回调（鉴权例外——浏览器 302 无 token，靠 state 与发起会话配对保护，同 suno callback 模式）──
+      if (method === 'GET' && path === '/api/mcp/callback') {
+        // query 兼容两种来源：适配层显式解析（request.query）或完整 path 携带 search（v2 装配层形态）。
+        const query: Record<string, string> = {};
+        if (request.query && typeof request.query === 'object') {
+          Object.assign(query, request.query);
+        } else {
+          const search = String(request.path || '').split('?')[1] || '';
+          for (const [key, value] of new URLSearchParams(search)) query[key] = value;
+        }
+        const state = String(query.state || '');
+        const code = String(query.code || '');
+        const pending = mcpOAuthPending.get(state);
+        if (!pending) return json(400, { success: false, error: 'mcp_callback_state_mismatch' });
+        mcpOAuthPending.delete(state);
+        if (!code) return json(400, { success: false, error: 'mcp_callback_code_missing' });
+        const token = await exchangeCode({
+          tokenEndpoint: pending.tokenEndpoint,
+          clientId: pending.clientId,
+          redirectUri: pending.redirectUri,
+          code,
+          codeVerifier: pending.codeVerifier,
+          resource: pending.resource,
+        });
+        mcpCredentialStore().set(pending.serverId, {
+          accessToken: token.accessToken,
+          ...(token.refreshToken ? { refreshToken: token.refreshToken } : {}),
+          ...(token.expiresIn ? { expiresAt: new Date(Date.now() + token.expiresIn * 1000).toISOString() } : {}),
+          ...(token.scope ? { scope: token.scope } : {}),
+          tokenEndpoint: pending.tokenEndpoint,
+          resource: pending.resource,
+        });
+        touchMcpTrigger(`oauth:${pending.serverId}`);
+        // 面板挂在 /admin/（hash 路由）——跳转到 /admin/#/mcp/<serverId>?authorized=1。
+        return { status: 302, headers: { location: `/admin/#/mcp/${encodeURIComponent(pending.serverId)}?authorized=1` }, body: '' };
+      }
+
       if (path.startsWith('/api/') && !this.repository.isAuthorized(getAuthorization(request.headers))) {
         return json(401, { success: false, error: 'Unauthorized' });
+      }
+
+      // ── P3-MCP：状态查询（bot 进程写入 data/mcp-status.json 的快照，mtime 缓存读取）──
+      if (method === 'GET' && path === '/api/mcp/status') {
+        return ok({ success: true, status: readMcpStatusSnapshot() });
+      }
+
+      // ── P3-MCP：发起 OAuth 授权（发现链 → DCR → PKCE → 授权 URL；凭据不进 config.json）──
+      if (method === 'POST' && path === '/api/mcp/connect') {
+        const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
+        const serverId = String(body.serverId || '').trim();
+        const cfg = this.repository.getConfig();
+        const server = (cfg.orchestration?.mcpServers || []).find((item) => String(item.id) === serverId);
+        if (!server || server.transport !== 'http' || !server.url) {
+          return json(400, { success: false, error: `mcp_server_not_found:${serverId || '(empty)'}` });
+        }
+        // 无凭据探测 MCP 端点：401 的 WWW-Authenticate → RFC 9728 资源元数据 → RFC 8414 AS 元数据。
+        const probe = await fetch(String(server.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+        const resourceMetadataUrl = parseResourceMetadataUrl(probe.headers.get('www-authenticate'));
+        if (!resourceMetadataUrl) {
+          return json(400, { success: false, error: 'mcp_no_resource_metadata（服务器未声明 OAuth 资源元数据；若是免鉴权服务器请去掉 auth:"oauth" 配置）' });
+        }
+        const servers = await discoverAuthorizationServers(resourceMetadataUrl);
+        const metadata = await fetchAuthorizationServerMetadata(servers[0]);
+        if (!metadata.registrationEndpoint) {
+          return json(400, { success: false, error: 'mcp_dcr_unsupported（授权服务器不支持动态注册，需人工预注册 client_id）' });
+        }
+        const redirectUri = `${panelOrigin(request)}/api/mcp/callback`;
+        const store = mcpCredentialStore();
+        const registered = store.getClient(serverId)
+          ?? await registerClient(metadata.registrationEndpoint, { clientName: `miobot-${serverId}`, redirectUris: [redirectUri] });
+        store.setClient(serverId, { clientId: registered.clientId, redirectUri });
+        const pkce = generatePkce();
+        const state = `mcpst-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        mcpOAuthPending.set(state, {
+          serverId,
+          clientId: registered.clientId,
+          redirectUri,
+          codeVerifier: pkce.verifier,
+          tokenEndpoint: metadata.tokenEndpoint,
+          resource: String(server.url),
+          createdAt: Date.now(),
+        });
+        const authorizationUrl = buildAuthorizationUrl({
+          authorizationEndpoint: metadata.authorizationEndpoint,
+          clientId: registered.clientId,
+          redirectUri,
+          scope: 'api:v0 offline_access',
+          state,
+          codeChallenge: pkce.challenge,
+          resource: String(server.url),
+        });
+        return ok({ success: true, authorizationUrl, state });
+      }
+
+      // ── P3-MCP：断开（清凭据 + 触发 bot 热重载）──
+      if (method === 'POST' && path === '/api/mcp/disconnect') {
+        const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
+        const serverId = String(body.serverId || '').trim();
+        if (!serverId) return json(400, { success: false, error: 'serverId is required' });
+        mcpCredentialStore().clear(serverId);
+        touchMcpTrigger(`disconnect:${serverId}`);
+        return ok({ success: true });
+      }
+
+      // ── P3-MCP：手动重连（触发文件 → bot 即时 reload）──
+      if (method === 'POST' && path === '/api/mcp/reconnect') {
+        const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
+        const serverId = String(body.serverId || '').trim();
+        if (!serverId) return json(400, { success: false, error: 'serverId is required' });
+        touchMcpTrigger(`reconnect:${serverId}`);
+        return ok({ success: true });
       }
 
       if (method === 'GET' && path === '/api/orchestration/comfyui/workflows') {
@@ -1268,6 +1389,75 @@ function compactConfigSaveResult(result: ConfigSaveResult): Omit<ConfigSaveResul
 function getAuthorization(headers?: WebApiHeaders): string | undefined {
   if (!headers) return undefined;
   return headers.authorization || headers.Authorization || headers.AUTHORIZATION;
+}
+
+// ── P3-MCP：OAuth 编排的进程内状态与 data 目录文件桥（面板 ↔ bot 双进程，经文件通信）──
+
+interface McpOAuthPendingSession {
+  serverId: string;
+  clientId: string;
+  redirectUri: string;
+  codeVerifier: string;
+  tokenEndpoint: string;
+  resource: string;
+  createdAt: number;
+}
+
+/** 发起授权 → 回调之间的暂态（state 配对，10 分钟过期；进程内存，不落盘）。 */
+const mcpOAuthPending = new Map<string, McpOAuthPendingSession>();
+setInterval(() => {
+  const cutoff = Date.now() - 10 * 60_000;
+  for (const [state, session] of mcpOAuthPending) {
+    if (session.createdAt < cutoff) mcpOAuthPending.delete(state);
+  }
+}, 60_000).unref();
+
+function mcpCredentialStore(): McpCredentialStore {
+  mcpCredentialStoreInstance ??= new McpCredentialStore({
+    filePath: nodePath.join(miobotDataDir(), 'mcp-credentials.json'),
+  });
+  return mcpCredentialStoreInstance;
+}
+let mcpCredentialStoreInstance: McpCredentialStore | null = null;
+
+/** bot 进程 watch 的触发文件（OAuth 完成/断开/重连 → 即时 reload，不等 30s 巡检）。 */
+function touchMcpTrigger(action: string): void {
+  try {
+    const filePath = nodePath.join(miobotDataDir(), 'mcp-trigger.json');
+    mkdirSync(nodePath.dirname(filePath), { recursive: true });
+    writeFileSync(filePath, JSON.stringify({ action, at: new Date().toISOString() }, null, 2), 'utf8');
+  } catch { /* 触发失败可容忍：bot 侧 30s 巡检兜底 */ }
+}
+
+let mcpStatusCache: { at: number; mtimeMs: number; snapshot: unknown } | null = null;
+/** bot 进程写入的 MCP 状态快照（mtime 缓存，同 plugins.json 读取模式）。 */
+function readMcpStatusSnapshot(): unknown {
+  const filePath = nodePath.join(miobotDataDir(), 'mcp-status.json');
+  let mtimeMs = 0;
+  try { mtimeMs = statSync(filePath).mtimeMs; } catch { mtimeMs = 0; }
+  if (mcpStatusCache && mcpStatusCache.mtimeMs === mtimeMs) return mcpStatusCache.snapshot;
+  let snapshot: unknown = { servers: [], children: [] };
+  try {
+    snapshot = JSON.parse(readFileSync(filePath, 'utf8'));
+  } catch { /* 无快照 = 无 MCP 服务器 */ }
+  mcpStatusCache = { at: Date.now(), mtimeMs, snapshot };
+  return snapshot;
+}
+
+/** 面板对外可达 origin（OAuth redirect_uri 用；优先反代头，回退环境变量）。 */
+function panelOrigin(request: WebApiRequest): string {
+  const forwardedHost = String(request.headers?.['x-forwarded-host'] || '').split(',')[0].trim();
+  if (forwardedHost) {
+    const proto = String(request.headers?.['x-forwarded-proto'] || 'https').split(',')[0].trim() || 'https';
+    return `${proto}://${forwardedHost}`;
+  }
+  const configured = String(process.env.MIOBOT_PANEL_ORIGIN || '').trim();
+  if (configured) return configured.replace(/\/$/, '');
+  // 默认端口对齐 local-verify-server-v2（MIOBOT_PORT/VERIFY_PORT/PORT → 3018）；
+  // host 用 localhost（与 v2 server 的 listen host 一致——Windows 上它只绑 ::1，
+  // 硬编码 127.0.0.1 会被拒绝连接，走查实测发现）。
+  const port = String(process.env.MIOBOT_PORT || process.env.MIOBOT_VERIFY_PORT || process.env.PORT || '3018').trim();
+  return `http://localhost:${port}`;
 }
 
 function readPassword(body: unknown): string {

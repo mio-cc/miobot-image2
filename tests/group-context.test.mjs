@@ -23,7 +23,7 @@ test('buildGroupContext: 跳过合并转发', () => {
     mkMsg(2, 2, '[CQ:forward]', [{ type: 'forward', data: {} }]),  // 转发，跳过
     mkMsg(3, 3, 'world', [{ type: 'text', data: { text: 'world' } }]),
   ];
-  const out = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: OPTS });
+  const { context: out } = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: OPTS });
   assert.ok(out.includes('U1 [QQ:1]: hi'));
   assert.ok(!out.includes('U2'));  // 转发跳过
   assert.ok(out.includes('U3 [QQ:3]: world'));
@@ -35,7 +35,7 @@ test('buildGroupContext: 排除 bot 自己 + 触发消息', () => {
     mkMsg(1, 50, '@bot 在吗', [{ type: 'text', data: { text: '@bot 在吗' } }]),  // 触发消息
     mkMsg(2, 60, '在的', [{ type: 'text', data: { text: '在的' } }]),
   ];
-  const out = buildGroupContext({ messages: msgs, anchorMessageId: 50, selfId: 100, options: OPTS });
+  const { context: out } = buildGroupContext({ messages: msgs, anchorMessageId: 50, selfId: 100, options: OPTS });
   assert.ok(!out.includes('bot msg'));  // bot 自己排除
   assert.ok(!out.includes('U1 [QQ:1]: @bot 在吗'));  // 触发消息排除
   assert.ok(out.includes('U2 [QQ:2]: 在的'));
@@ -48,13 +48,13 @@ test('buildGroupContext: 图片 URL 保留/占位', () => {
     mkMsg(3, 3, '', [{ type: 'file', data: { file: 'doc.pdf' } }]),
     mkMsg(4, 4, '', [{ type: 'record', data: {} }]),
   ];
-  const withImg = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: OPTS });
+  const withImg = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: OPTS }).context;
   assert.ok(withImg.includes('http://x/a.png'));  // 图片 URL 保留
   assert.ok(withImg.includes('[视频]'));
   assert.ok(withImg.includes('[文件:doc.pdf]'));
   assert.ok(withImg.includes('[语音]'));
 
-  const noImg = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: OPTS_NO_IMG });
+  const noImg = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: OPTS_NO_IMG }).context;
   assert.ok(noImg.includes('[图片]'));  // includeImages=false 时占位
   assert.ok(!noImg.includes('http://x/a.png'));
 });
@@ -62,10 +62,35 @@ test('buildGroupContext: 图片 URL 保留/占位', () => {
 test('buildGroupContext: maxChars 裁剪从最旧截断', () => {
   const msgs = [];
   for (let i = 1; i <= 10; i++) msgs.push(mkMsg(i, i, 'msg'.repeat(20), [{ type: 'text', data: { text: 'msg'.repeat(20) } }]));
-  const out = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: { ...OPTS, maxChars: 100 } });
+  const { context: out } = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: { ...OPTS, maxChars: 100 } });
   assert.ok(out.length <= 100 + 50);  // 裁剪后不超太多（含换行容差）
   assert.ok(!out.includes('U1 [QQ:1]:'));  // 最旧的被截断
   assert.ok(out.includes('U10 [QQ:10]:'));  // 最新的保留
+});
+
+test('buildGroupContext: 单条超长消息也要截断（块内上限是硬保证，加省略标记）', () => {
+  const longText = '超'.repeat(300);
+  // 两条时：超长旧行整条丢弃，保留最新的短行。
+  const two = buildGroupContext({
+    messages: [
+      mkMsg(1, 1, longText, [{ type: 'text', data: { text: longText } }]),
+      mkMsg(2, 2, '最新一句', [{ type: 'text', data: { text: '最新一句' } }]),
+    ],
+    anchorMessageId: '999', selfId: '0', options: { ...OPTS, maxChars: 100 },
+  });
+  assert.ok(!two.context.includes('超'), '超长旧行整条丢弃');
+  assert.ok(two.context.includes('最新一句'));
+  assert.deepEqual(two.messageIds, ['2']);
+
+  // 只剩一条超长消息：不得突破 maxChars，保留最新部分并加省略标记；id 随行保留供跨通道互斥。
+  const single = buildGroupContext({
+    messages: [mkMsg(1, 1, longText, [{ type: 'text', data: { text: longText } }])],
+    anchorMessageId: '999', selfId: '0', options: { ...OPTS, maxChars: 100 },
+  });
+  assert.ok(single.context.length <= 100, '单行也不得突破块内上限');
+  assert.ok(single.context.startsWith('…'), '截断带省略标记');
+  assert.ok(single.context.endsWith(longText.slice(-99)), '保留最新部分');
+  assert.deepEqual(single.messageIds, ['1']);
 });
 
 test('buildGroupContext: 空消息跳过', () => {
@@ -73,7 +98,7 @@ test('buildGroupContext: 空消息跳过', () => {
     mkMsg(1, 1, '', []),  // 空
     mkMsg(2, 2, 'hello', [{ type: 'text', data: { text: 'hello' } }]),
   ];
-  const out = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: OPTS });
+  const { context: out } = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: OPTS });
   assert.ok(!out.includes('U1'));  // 空消息跳过
   assert.ok(out.includes('U2 [QQ:2]: hello'));
 });
@@ -81,10 +106,12 @@ test('buildGroupContext: 空消息跳过', () => {
 test('buildGroupContext: messageCount 限制条数', () => {
   const msgs = [];
   for (let i = 1; i <= 50; i++) msgs.push(mkMsg(i, i, 'msg' + i, [{ type: 'text', data: { text: 'msg' + i } }]));
-  const out = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: { ...OPTS, messageCount: 5 } });
+  const { context: out, messageIds } = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: { ...OPTS, messageCount: 5 } });
   const lines = out.split('\n').filter(Boolean);
   assert.equal(lines.length, 5);  // 只取5条
   assert.ok(out.includes('msg50'));  // 最新保留
+  // P0 注入去重：messageIds 与渲染行一一对应（最新的 5 条，时间正序），供记忆检索跨通道互斥
+  assert.deepEqual(messageIds, ['46', '47', '48', '49', '50']);
 });
 
 test('formatHistoryMessageText: 纯 CQ 字符串退化路径', () => {
@@ -98,7 +125,7 @@ test('buildGroupContext: 同名用户通过 QQ 号区分', () => {
     mkMsg(101, 1, 'a', [{ type: 'text', data: { text: 'a' } }], { card: '同名', nickname: 'A' }),
     mkMsg(202, 2, 'b', [{ type: 'text', data: { text: 'b' } }], { card: '同名', nickname: 'B' }),
   ];
-  const out = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: OPTS });
+  const { context: out } = buildGroupContext({ messages: msgs, anchorMessageId: '999', selfId: '0', options: OPTS });
   assert.ok(out.includes('同名 [QQ:101]: a'));
   assert.ok(out.includes('同名 [QQ:202]: b'));
 });

@@ -44,7 +44,6 @@ function memoryConfig(root, overrides = {}) {
     topK: 6,
     minScore: 0,
     maxContextChars: 5000,
-    recentTurns: 2,
     retentionDays: 3,
     hybridSearch: true,
     autoIngest: true,
@@ -125,7 +124,9 @@ test('观察链路: 连续三条消息全部入库且只回复触发的那条（
   const result = await memory.retrieve({ botId: '10000', chatType: 'group', groupId: '3000', userId: '5', query: 'cat' });
   assert.ok(result.context.includes('海报尺寸'), '触发的文字入库');
   assert.ok(result.context.includes('pic.png'), '纯图片消息以附件元数据入库');
-  assert.ok(result.context.includes('今天天气不错'), '未触发的闲聊入库');
+  // recentTurns 通道删除后，未触发闲聊改用同向量查询词验证入库（dog → [0,1,0]）。
+  const dog = await memory.retrieve({ botId: '10000', chatType: 'group', groupId: '3000', userId: '5', query: 'dog' });
+  assert.ok(dog.context.includes('今天天气不错'), '未触发的闲聊入库');
   await observer.dispose();
 });
 
@@ -354,12 +355,12 @@ test('向量检索: memoryMinScore 下放为 Orama similarity 截断（topK 恢�
   const memory = new ChatMemoryService({ rootDir: root, getConfig: () => cfg, embedding: new FakeEmbedding() });
   await memory.ingest({ botId: '10000', chatType: 'private', userId: 'u1', authorName: 'u1', role: 'user', text: 'cat related', messageId: 's1', createdAt: '2026-11-01T01:00:00Z' });
   await memory.ingest({ botId: '10000', chatType: 'private', userId: 'u1', authorName: 'u1', role: 'user', text: 'dog related', messageId: 's2', createdAt: '2026-11-01T02:00:00Z' });
-  await memory.ingest({ botId: '10000', chatType: 'private', userId: 'u1', authorName: 'u1', role: 'user', text: 'secret related', messageId: 's3', createdAt: '2026-11-01T03:00:00Z' });
-  // 查询向量取 [0.5,0.5,0]（与所有真实向量相似度 0.5-0.707，旧 Orama 默认 0.8 截断下全部丢失）。
+  await memory.ingest({ botId: '10000', chatType: 'private', userId: 'u1', authorName: 'u1', role: 'user', text: 'mixed words related', messageId: 's3', createdAt: '2026-11-01T03:00:00Z' });
+  // 查询向量取 [0.5,0.5,0]（与所有真实向量相似度 0.707-1.0，旧 Orama 默认 0.8 截断下部分丢失）。
   const result = await memory.retrieve({ botId: '10000', chatType: 'private', userId: 'u1', query: 'generic words' });
   assert.ok(result.context.includes('cat related'), '低相似度文档不再被 Orama 截断丢弃');
   assert.ok(result.context.includes('dog related'));
-  assert.ok(result.context.includes('secret related'));
+  assert.ok(result.context.includes('mixed words related'));
 });
 
 test('合并窗口: observer 爆发缓冲收集相邻消息（排除触发消息本身，0 窗口关闭）', async () => {

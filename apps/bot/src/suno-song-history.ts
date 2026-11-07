@@ -74,12 +74,14 @@ export class SunoSongHistoryStore {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as { records?: unknown };
       if (!Array.isArray(parsed?.records)) return;
       this.records = parsed.records.filter((item): item is SunoSongHistoryRecord => Boolean(item && typeof item === 'object' && typeof (item as any).id === 'string' && typeof (item as any).audioUrl === 'string'));
-      // 迁移：旧记录没有 globalSeq——按 createdAt 升序回填，保证序号稳定（下次 add 落盘固化）。
+      // 迁移：旧记录没有 globalSeq——只补缺不重排：已有编号一律不动（用户已见过的序号不能漂移），
+      // 缺失记录按 createdAt 升序在现有最大值之后顺延补号（下次 add 落盘固化）。
       const missing = this.records.filter((item) => !Number.isFinite(Number(item.globalSeq)));
       if (missing.length) {
-        [...this.records]
+        const base = this.records.reduce((max, item) => Math.max(max, Number(item.globalSeq) || 0), 0);
+        [...missing]
           .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
-          .forEach((item, index) => { item.globalSeq = index + 1; });
+          .forEach((item, index) => { item.globalSeq = base + index + 1; });
       }
     } catch (error) {
       this.logger?.warn('Suno history read failed', { error: String((error as Error)?.message || error) });
@@ -131,13 +133,19 @@ export class SunoSongHistoryStore {
     const limit = Math.max(1, Math.trunc(Number(this.maxRecords()) || 100));
     const scoped = this.records.filter((item) => item.scopeKey === scopeKey).sort((a, b) => b.seq - a.seq).slice(0, limit);
     const keep = new Set(scoped.map((item) => item.id));
-    this.records = this.records.filter((item) => item.scopeKey !== scopeKey || keep.has(item.id));
+    // 成对裁剪：主版不在保留集时其分支一并裁掉（同一次生成的主版/分支同 scope，
+    // variantOf 不在保留集即主版已被裁或本就是悬空孤儿），避免歌单出现无主「B版」造成 A/B 错位。
+    const keepPaired = new Set(scoped.filter((item) => !item.variantOf || keep.has(item.variantOf)).map((item) => item.id));
+    this.records = this.records.filter((item) => item.scopeKey !== scopeKey || keepPaired.has(item.id));
     // T2.7：全局上限（每范围上限×20）——跨会话总量随用户/群数增长，防文件无限膨胀。
     const globalLimit = limit * 20;
     if (this.records.length > globalLimit) {
-      this.records = this.records
+      const kept = this.records
         .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
         .slice(0, globalLimit);
+      const keptIds = new Set(kept.map((item) => item.id));
+      // 成对裁剪：全局上限按 createdAt 裁最老，主版被裁时其分支一并裁掉（与 scope 裁剪同一不变量）。
+      this.records = kept.filter((item) => !item.variantOf || keptIds.has(item.variantOf));
     }
     this.save();
     return record;
@@ -220,6 +228,15 @@ export class SunoSongHistoryStore {
     return this.findVariantOf(record) !== undefined;
   }
 
+  /** 分支记录的主版是否仍存活（variantOf 指向存在；无 variantOf 时按同 taskId 的非分支记录兜底）。 */
+  private hasLiveMain(record: SunoSongHistoryRecord): boolean {
+    if ((Number(record.variantIndex) || 1) < 2) return true;
+    if (record.variantOf) return this.records.some((item) => item.id === record.variantOf);
+    return record.taskId
+      ? this.records.some((item) => item.taskId === record.taskId && (Number(item.variantIndex) || 1) < 2)
+      : false;
+  }
+
   /** 全局共享列表（不标注来源群与生成者——歌单是公开内容，输出只含序号/标题/时间/分支标记）。 */
   formatListGlobal(limit = 20): string {
     const records = this.listGlobal(limit);
@@ -229,7 +246,8 @@ export class SunoSongHistoryStore {
       ...records.map((item) => {
         const title = item.title || item.requestText || '未命名歌曲';
         const date = item.createdAt.slice(0, 16).replace('T', ' ');
-        const variantTag = (Number(item.variantIndex) || 1) === 2 ? ' | B版' : (this.hasVariant(item) ? ' | 有B版' : '');
+        // B版 标记要求主版仍存活：主版已被裁掉的孤儿分支不再标 B版，避免与相邻无关记录伪造 A/B 配对。
+        const variantTag = (Number(item.variantIndex) || 1) === 2 && this.hasLiveMain(item) ? ' | B版' : (this.hasVariant(item) ? ' | 有B版' : '');
         return `#${item.globalSeq} ${title} | ${date}${item.duration ? ` | ${Math.round(item.duration)}s` : ''}${variantTag}`;
       }),
     ].join('\n');

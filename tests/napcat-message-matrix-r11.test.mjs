@@ -180,7 +180,7 @@ test('QQ message matrix: forward ids, nested forward payload and visible forward
 });
 
 test('QQ message matrix: group context keeps identities, media placeholders and skips forwards/self', () => {
-  const ctx = buildGroupContext({
+  const { context: ctx } = buildGroupContext({
     messages: [
       { message_id: 1, user_id: 111, sender: { nickname: '同名' }, message: [{ type: 'text', data: { text: '甲说的话' } }] },
       { message_id: 2, user_id: 222, sender: { nickname: '同名' }, message: [{ type: 'image', data: { url: 'https://example.test/g.png' } }] },

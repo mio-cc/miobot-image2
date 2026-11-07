@@ -253,7 +253,7 @@ export function builtinCapabilityDescriptors(): CapabilityDescriptor[] {
 
 export function applyCapabilityOverrides(
   descriptors: CapabilityDescriptor[],
-  overrides: Record<string, { enabled?: boolean; approvalRequired?: boolean; riskLevel?: CapabilityDescriptor['riskLevel']; presentationHint?: string }> = {},
+  overrides: Record<string, { enabled?: boolean; approvalRequired?: boolean; riskLevel?: CapabilityDescriptor['riskLevel']; presentationHint?: string; name?: string; timeoutMs?: number }> = {},
 ): CapabilityDescriptor[] {
   return descriptors.map((descriptor) => {
     const override = overrides[descriptor.id];
@@ -264,6 +264,9 @@ export function applyCapabilityOverrides(
       ...(override.approvalRequired === undefined ? {} : { approvalRequired: override.approvalRequired }),
       ...(override.riskLevel === undefined ? {} : { riskLevel: override.riskLevel }),
       ...(override.presentationHint === undefined ? {} : { presentationHint: override.presentationHint }),
+      // D22：显示名与超时覆盖（能力中心自定义命名 / MCP 根与子项同一套字段）。
+      ...(override.name === undefined || override.name === '' ? {} : { name: override.name }),
+      ...(override.timeoutMs === undefined ? {} : { timeoutMs: override.timeoutMs }),
     };
   });
 }

@@ -198,6 +198,10 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
       ...(options.resolveJob ? { resolveJob: options.resolveJob } : {}),
       enablePlanTool: false,
       toolSearchEnabled: cfg.toolRegistry.toolSearchEnabled,
+      // 上限语义清理（A，2026-11-07）：historyMaxChars 是整个消息列表的 JSON 序列化长度
+      // 总预算（system 块 + 会话历史 + 本轮输入，含结构开销），不是"历史"上限；
+      // 记忆/群上下文等注入块各有独立的块内字符上限（默认值见 CONFIG_V3_FIELD_METADATA：
+      // memoryMaxChars 5_000、groupContextMaxChars 4_000），与总预算互不感知。
       contextMaxChars: cfg.contextPolicy.compactionEnabled ? Math.min(cfg.contextPolicy.historyMaxChars, cfg.contextPolicy.compactionThresholdTokens * 3) : cfg.contextPolicy.historyMaxChars,
       compactionEnabled: cfg.contextPolicy.compactionEnabled,
       toolResultMaxChars: cfg.contextPolicy.toolResultMaxChars,
@@ -223,6 +227,7 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
         repairTemperature: cfg.agent.repair.repairTemperature,
         allowTextFallback: cfg.agent.repair.allowTextFallback,
       },
+      ...(options.logger ? { logger: options.logger } : {}),
       clock,
     });
 

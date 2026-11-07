@@ -95,7 +95,17 @@ export interface BotRuntimeOptions {
     groupId?: number | string;
     userId: number | string;
     query: string;
+    /**
+     * 跨通道互斥（P0 注入去重，2026-11-07 拍板）：本轮消息 id 恒在列（观察链路在触发
+     * 判定前入库，当前消息会全文命中自己）；群上下文已渲染的消息 id 由 runtime 汇入，
+     * 记忆检索按 id 输入侧排除，同一条内容不再注入两份。
+     */
+    excludeMessageIds?: Array<number | string>;
+    /** 会话历史已包含的文本：记忆命中按内容互斥（会话消息不落 messageId）。 */
+    excludeTexts?: string[];
   }) => Promise<string | undefined>;
+  /** 会话历史文本（跨通道互斥用）：返回该会话历史 user/assistant 消息文本，记忆按内容排除已注入内容。 */
+  getSessionHistoryTexts?: (sessionId: string) => string[];
   /**
    * 连发消息合并窗口：触发回合收集同会话爆发缓冲内的相邻用户消息（时间正序、排除触发消息本身）。
    * 覆盖"一连串消息卡头/中间/结尾带触发"的场景；由 start.ts 注入 MemoryObserver.collectBurst。
@@ -966,16 +976,26 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       log?.info('消息处理耗时', { outcome, totalMs: Date.now() - messageEntryAt, stages: stageMarks });
     };
     let cachedGroupContext: string | undefined;
+    let cachedGroupMessageIds: string[] = [];
     let groupContextLoaded = false;
-    const loadChatMemoryContext = async (): Promise<string | undefined> => {
+    /** 连发窗口互斥素材（P0 补遗）：已渲染进【相邻消息】段的连发消息 id/文本，
+     * 防止同一条内容再从记忆检索双份注入（与群上下文/会话历史同款互斥）。 */
+    let burstExcludeIds: Array<number | string> = [];
+    let burstExcludeTexts: string[] = [];
+    const loadChatMemoryContext = async (exclude?: { messageIds?: Array<number | string>; texts?: string[] }): Promise<string | undefined> => {
     if (!options.loadMemoryContext) return undefined;
     const query = stripNonTextCqSegments(rawMessage).trim();
     if (!query) return undefined;
     try {
-      const context = await options.loadMemoryContext({ chatType, groupId: event.group_id, userId: String(userId || ''), query });
+      const context = await options.loadMemoryContext({
+        chatType, groupId: event.group_id, userId: String(userId || ''), query,
+        // 跨通道互斥：本轮消息 id 恒在排除列（观察链路在触发判定前入库，当前消息会全文命中自己）。
+        excludeMessageIds: [...(event.message_id !== undefined ? [event.message_id] : []), ...(exclude?.messageIds || [])],
+        excludeTexts: exclude?.texts,
+      });
       return String(context || '').trim() || undefined;
     } catch (error) {
-      log?.warn('memory context load failed; falling back to recent history', { error: String((error as Error)?.message || error) });
+      log?.warn('memory context load failed; continuing without memory hits', { error: String((error as Error)?.message || error) });
       return undefined;
     }
   };
@@ -1006,35 +1026,46 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         placeholder: CONTENT_REJECTION_PLACEHOLDER,
       } : {}),
     });
-    if (!rawContext) {
+    if (!rawContext.context) {
       // 拉取为空不再静默：可能是 get_group_msg_history 失败、skipForward/图片占位过滤光、或群里本来就没人说话。
       if (chatType === 'group' && gcConfig.enabled && event.message_id && event.group_id) {
         log?.warn('群历史上下文为空', { groupId: event.group_id, messageCount: gcConfig.messageCount, skipForward: gcConfig.skipForward, maxChars: gcConfig.maxChars });
       }
       return undefined;
     }
+      // 跨通道互斥：群上下文已渲染的消息 id 暂存，供记忆检索输入侧排除（P0 注入去重）。
+      cachedGroupMessageIds = rawContext.messageIds;
       const currentName = event.sender?.card?.trim() || event.sender?.nickname?.trim() || '用户';
-      cachedGroupContext = `【群聊上下文；格式：昵称 [QQ号]: 内容；不同 QQ 号代表不同用户，不能合并成同一人】\n【当前提问用户】${currentName} [QQ:${userId ?? '未知'}]\n${rawContext}`;
+      cachedGroupContext = `【群聊上下文；格式：昵称 [QQ号]: 内容；不同 QQ 号代表不同用户，不能合并成同一人】\n【当前提问用户】${currentName} [QQ:${userId ?? '未知'}]\n${rawContext.context}`;
       return cachedGroupContext;
     };
     // 统一上下文组装器：群历史（"刚才群里说了什么"）+ 记忆命中（"历史事时"）合并，不再二选一——
-    // 旧逻辑 memoryContext 非空就跳过群历史，而记忆 recentTurns>0 时几乎恒非空，导致群上下文长期失效（线上时测）。
+    // 旧逻辑 memoryContext 非空就跳过群历史，而记忆命中恒非空时，导致群上下文长期失效（线上时测）。
     const buildChatContext = async (): Promise<{ context: string | undefined; ms: number }> => {
       const startedAt = Date.now();
+      // 跨通道互斥素材：会话历史文本（记忆命中与会话历史重叠时按内容排除）。
+      const sessionTexts = options.getSessionHistoryTexts?.(sessionId) || [];
       // 记忆库优先（灰度开关 memoryFirstGroupContext）：记忆命中非空时跳过 Napcat 群历史拉取，
       // 省一次上游调用；记忆为空/关闭/降级时照旧兜底（group-context.ts）。
-      const memory = await loadChatMemoryContext();
-      if (chatType === 'group' && Boolean(cfg.orchestration.memory?.memoryFirstGroupContext) && memory) {
+      const memoryFirstEnabled = chatType === 'group' && Boolean(cfg.orchestration.memory?.memoryFirstGroupContext);
+      let memory: string | undefined;
+      if (memoryFirstEnabled) {
+        memory = await loadChatMemoryContext({ messageIds: burstExcludeIds, texts: [...sessionTexts, ...burstExcludeTexts] });
+        if (memory) {
         // 记忆库优先时相邻消息（合并窗口）同样要带上，不能因提前返回而丢失。
         const contextWithBurst = burstLines.trim()
           ? memory + '\n\n【相邻消息（合并窗口；与本次提问同一时间的连发消息，按时间正序，用于接住上下文）】\n' + burstLines.trim()
           : memory;
         log?.info('上下文组装（记忆库优先，跳过群历史拉取）', { groupId: event.group_id, memoryChars: memory.length, burstChars: burstLines.length, ms: Date.now() - startedAt });
         return { context: contextWithBurst, ms: Date.now() - startedAt };
+        }
       }
+      const groupHistory = await loadGroupContext();
+      // 默认路径：记忆在群历史之后加载，携带群上下文已含 id + 连发消息 id/文本 + 会话历史文本做跨通道互斥；
+      // memoryFirst 开启但首轮命中为空时不重复拉取（排除集只会更严，空必仍空），直接走群历史兜底。
+      if (!memoryFirstEnabled) memory = await loadChatMemoryContext({ messageIds: [...cachedGroupMessageIds, ...burstExcludeIds], texts: [...sessionTexts, ...burstExcludeTexts] });
       const parts: string[] = [];
       if (memory) parts.push(`【相关记忆】\n${memory}`);
-      const groupHistory = await loadGroupContext();
       if (groupHistory) parts.push(groupHistory);
       // 连发消息合并窗口：把与本次提问同一时间的相邻消息补进上下文（触发前/后的连发都覆盖）。
       if (burstLines.trim()) parts.push('【相邻消息（合并窗口；与本次提问同一时间的连发消息，按时间正序，用于接住上下文）】\n' + burstLines.trim());
@@ -1042,6 +1073,8 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       log?.info('上下文组装', {
         groupId: event.group_id, sources: parts.length,
         memoryChars: memory?.length || 0, groupChars: groupHistory?.length || 0,
+        mutexIds: cachedGroupMessageIds.length + burstExcludeIds.length,
+        mutexTexts: sessionTexts.length + burstExcludeTexts.length,
         chars: context?.length || 0, ms: Date.now() - startedAt,
       });
       return { context, ms: Date.now() - startedAt };
@@ -1532,7 +1565,13 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           // 方案 1：连发窗口命中被拒登记 → 占位（保留说话人与时序），附件一并略过。
           const masked = options.contentRejection?.registry.isRejected({ messageId: item.messageId !== undefined ? String(item.messageId) : undefined, text: item.text }) ?? false;
           burstLines += `[${stamp}] ${item.authorName} [QQ:${item.userId}]: ${masked ? CONTENT_REJECTION_PLACEHOLDER : item.text.replace(/\s+/g, ' ').slice(0, 500)}\n`;
-          if (!masked) burstImageRefs.push(...item.imageRefs);
+          if (!masked) {
+            burstImageRefs.push(...item.imageRefs);
+            // P0 补遗（跨通道互斥）：连发消息已渲染进【相邻消息】段，id/文本汇入排除集——
+            // 与群上下文/会话历史同款，防止同一条内容再从记忆检索双份注入。占位行（被拒）不含原文，与 buildGroupContext 同语义不排除。
+            if (item.messageId !== undefined) burstExcludeIds.push(item.messageId);
+            if (item.text) burstExcludeTexts.push(String(item.text));
+          }
         }
         if (burst.length) log?.info('合并窗口收集相邻消息', { groupId: event.group_id, count: burst.length, images: burstImageRefs.length });
       } catch { /* 尽力而为，不阻塞回复 */ }

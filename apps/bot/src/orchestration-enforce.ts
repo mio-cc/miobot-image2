@@ -406,6 +406,19 @@ export class OrchestrationEnforcer {
     return this.registry.list();
   }
 
+  /**
+   * P2-MCP：注销动态注册的能力（McpServerManager 热重载移除服务器用）。
+   * 纯新增方法：pluginCapabilities 摘除 + handler 注销 + registry 立即重建，不影响既有注册路径。
+   */
+  unregisterCapability(capabilityId: string): void {
+    const index = this.pluginCapabilities.findIndex((item) => item.id === capabilityId);
+    if (index < 0) return;
+    this.pluginCapabilities.splice(index, 1);
+    this.dispatcher.unregisterHandler(capabilityId);
+    this.configFingerprint = '';
+    this.refreshConfig(this.options.getConfig());
+  }
+
   /** R5：把既有能力 handler 暴露给新 ToolExecutor，避免重写业务实现。 */
   getCapabilityHandler(capabilityId: string): CapabilityHandler | undefined {
     return this.dispatcher.getHandler(capabilityId);

@@ -97,11 +97,13 @@ export function inferCapabilityToolExposure(
   const id = String(descriptor.id || '');
   const provider = String(descriptor.provider || '');
   if (STATEFUL_CAPABILITY_TOOLS.has(id)) return 'core';
+  // P2-MCP（D7 树形）：一个 MCP 服务器 = 一个根工具，默认 searchable（经检索索引按需发现，
+  // 不挤占 core/domain 的 24 工具/48KB 预算）；toolRegistry.exposure 显式配置优先（上方 configured 分支）。
+  // http-generic / plugin- 保持 core（R23 既有语义不变）。
   if (provider === 'http-generic'
     || provider.startsWith('plugin-')
-    || provider.startsWith('mcp')
-    || id.startsWith('http.')
-    || id.startsWith('mcp.')) return 'core';
+    || id.startsWith('http.')) return 'core';
+  if (provider.startsWith('mcp') || id.startsWith('mcp.')) return 'searchable';
   return undefined;
 }
 

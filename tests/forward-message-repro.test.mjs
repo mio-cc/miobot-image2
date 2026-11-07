@@ -406,10 +406,10 @@ test('场景J：群历史里的纯转发消息 → 留 [合并转发] 占位，�
     messages: [forwardOnly],
     options: { messageCount: 10, skipForward: false, includeImages: false, maxChars: 4000 },
   });
-  assert.match(ctxKept, /\[合并转发\]/);
+  assert.match(ctxKept.context, /\[合并转发\]/);
   const ctxSkipped = buildGroupContext({
     messages: [forwardOnly],
     options: { messageCount: 10, skipForward: true, includeImages: false, maxChars: 4000 },
   });
-  assert.equal(ctxSkipped, '');
+  assert.equal(ctxSkipped.context, '');
 });

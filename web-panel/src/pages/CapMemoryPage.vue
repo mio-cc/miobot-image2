@@ -102,7 +102,6 @@ async function runMemoryAction() {
         </FormField>
         <FormField label="向量维度"><input v-model.number="orch.memory.embeddingDimensions" type="number" min="1" class="input-field" /></FormField>
         <FormField label="摘要间隔" hint="滚动摘要阈值（每 N 条生成一次）"><input v-model.number="orch.memory.summarizeEvery" type="number" min="2" class="input-field" /></FormField>
-        <FormField label="最近工作集条数" hint="Orama recent 窗口（orchestration.memory.recentTurns）"><input v-model.number="orch.memory.recentTurns" type="number" min="0" max="20" class="input-field" /></FormField>
       </div>
       <p class="text-[color:var(--ink-3)] text-xs mt-3">
         每次回复自动注入的记忆预算（TopK / 最低分 / 字符上限 / 群上下文）唯一在「Agent」页配置（contextPolicy）；模型可在预算之上经内部技能 memory.search 自主检索更多。

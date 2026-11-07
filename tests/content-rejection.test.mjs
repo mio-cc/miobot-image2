@@ -159,7 +159,7 @@ test('content pipeline: registered message is masked in group history with speak
     { message_id: 111, user_id: '100', sender: { user_id: '100', nickname: '甲' }, message: [{ type: 'text', data: { text: '敏感原文' } }] },
     { message_id: 222, user_id: '200', sender: { user_id: '200', nickname: '乙' }, message: [{ type: 'text', data: { text: '正常消息' } }] },
   ];
-  const ctx = buildGroupContext({
+  const { context: ctx } = buildGroupContext({
     messages,
     options: { messageCount: 10, maxChars: 4000, skipForward: true, includeImages: false },
     isRejected: (msg) => registry.isRejected({ messageId: String(msg.message_id ?? '') }),
@@ -182,7 +182,7 @@ test('content memory: rejected message is excluded from retrieval, summary input
     const memoryConfig = {
       enabled: true, autoIngest: true, summarizeEvery: 2, retentionDays: 7,
       embeddingModel: 'fake-embed', embeddingDimensions: dimensions, embeddingNodeIndex: 0,
-      recentTurns: 0, hybridSearch: false, userGlobalProfileEnabled: false, dataDir: dir,
+      hybridSearch: false, userGlobalProfileEnabled: false, dataDir: dir,
     };
     const summarizeInputs = [];
     const service = new ChatMemoryService({

@@ -67,9 +67,17 @@ export interface ReplyPolicyConfigV3 {
 
 export interface ContextConfigV3 {
   historyMaxRounds: number;
+  /**
+   * 上限语义清理（A，2026-11-07）：模型请求的**总字符预算**，不是"历史"上限——
+   * 按整个消息列表的 JSON 序列化长度计（system 块 + 会话历史 + 本轮输入，含 role/结构开销），
+   * 接近时从最旧的会话历史开始丢弃；system 块（人格/群上下文/记忆等注入段）当前不参与裁剪。
+   * 兼作 agent 会话存储的单会话字符上限（start.ts maxCharsPerSession 同源取值）。
+   * 记忆/群上下文另有各自独立的块内上限（memoryMaxChars/groupContextMaxChars），互不感知。
+   */
   historyMaxChars: number;
   groupContextEnabled: boolean;
   groupContextMessages: number;
+  /** 群上下文块内字符上限（独立于总预算；超出从最旧行截断）。 */
   groupContextMaxChars: number;
   /** 群上下文跳过合并转发消息（原 bot.groupContext.skipForward 唯一真源迁入）。 */
   groupContextSkipForward: boolean;
@@ -77,6 +85,7 @@ export interface ContextConfigV3 {
   groupContextIncludeImages: boolean;
   memoryTopK: number;
   memoryMinScore: number;
+  /** 记忆块内字符上限（独立于总预算；按相关性截断，合并去重后的全局 topK）。 */
   memoryMaxChars: number;
   compactionEnabled: boolean;
   compactionThresholdTokens: number;
@@ -367,7 +376,7 @@ export const CONFIG_V3_FIELD_METADATA: readonly ConfigFieldMetadata[] = [
   field('replyPolicy.audioDirectOnly', '音频仅直发', 'boolean', true, global, nextTurn, { danger: true }),
   field('replyPolicy.fileDirectOnly', '文件仅直发', 'boolean', true, global, nextTurn, { danger: true }),
   field('contextPolicy.historyMaxRounds', '对话历史上限', 'number', 8, global, nextTurn, { min: 1, max: 200 }),
-  field('contextPolicy.historyMaxChars', '对话历史字符上限', 'number', 12_000, global, nextTurn, { min: 500, max: 500_000 }),
+  field('contextPolicy.historyMaxChars', '模型请求总字符预算', 'number', 12_000, global, nextTurn, { min: 500, max: 500_000 }),
   field('contextPolicy.groupContextEnabled', '启用群上下文', 'boolean', true, global, nextTurn),
   field('contextPolicy.groupContextMessages', '群上下文消息数', 'number', 30, global, nextTurn, { min: 1, max: 500 }),
   field('contextPolicy.groupContextMaxChars', '群上下文字符上限', 'number', 4_000, global, nextTurn, { min: 200, max: 100_000 }),

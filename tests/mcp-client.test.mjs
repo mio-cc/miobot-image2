@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { McpClient, mcpToolToDescriptor, McpToolCapabilityHandler, inferEffectFromDescription } from '../dist/apps/bot/src/mcp-client.js';
 import { createDefaultConfig } from '../dist/packages/config/src/index.js';
 import { OrchestrationEnforcer } from '../dist/apps/bot/src/orchestration-enforce.js';
+import { startMcpHttpServer } from './fixtures/mcp-http-server.mjs';
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const serverScript = path.join(dir, 'fixtures', 'mcp-echo-server.mjs');
@@ -84,4 +85,92 @@ test('mcp T4.1: 配置规整——mcpServers 非法条目丢弃', async () => {
   assert.equal(servers[0].enabled, true);
   assert.equal(servers[1].command, 'node');
   assert.deepEqual(servers[1].allowlist, ['echo']);
+});
+
+// ═══ Phase 1（传输层硬化）：会话保持 / 分页 / 404 自愈 / structuredContent / 通知流 / stdio 自愈 ═══
+
+test('mcp Phase1: HTTP 会话保持——initialize 捕获 Mcp-Session-Id，后续请求回带 + 分页合并', async () => {
+  const server = await startMcpHttpServer();
+  try {
+    const client = new McpClient({ id: 'http-echo', enabled: true, transport: 'http', url: server.url }, { timeoutMs: 5000 });
+    await client.initialize();
+    const tools = await client.listTools();
+    assert.equal(tools.length, 3, '两页分页合并（2+1）');
+    assert.equal(tools[2].name, 'lookup');
+    const listRequests = server.requests.filter((r) => r.method === 'tools/list');
+    assert.ok(listRequests.length >= 2, '分页至少请求两页');
+    for (const r of listRequests) {
+      assert.equal(typeof r.session, 'string', '后续请求回带会话头');
+    }
+    client.close();
+  } finally {
+    await server.close();
+  }
+});
+
+test('mcp Phase1: 404 会话失效自愈——清 session 重 initialize 后重放成功', async () => {
+  const server = await startMcpHttpServer();
+  try {
+    const client = new McpClient({ id: 'http-echo', enabled: true, transport: 'http', url: server.url }, { timeoutMs: 5000 });
+    await client.initialize();
+    server.invalidateSession(); // 模拟服务端会话过期
+    const tools = await client.listTools(); // 旧 session → 404 → 自动重开 → 重放
+    assert.equal(tools.length, 3, '自愈后分页仍完整');
+    const methods = server.requests.map((r) => r.method);
+    const initializeCount = methods.filter((m) => m === 'initialize').length;
+    assert.equal(initializeCount, 2, 'initialize 恰好两次（首次 + 自愈重开）');
+    const lastList = [...server.requests].reverse().find((r) => r.method === 'tools/list');
+    assert.equal(lastList.session, server.session, '重放请求使用自愈后的新会话头');
+    client.close();
+  } finally {
+    await server.close();
+  }
+});
+
+test('mcp Phase1: structuredContent 透传', async () => {
+  const server = await startMcpHttpServer();
+  try {
+    const client = new McpClient({ id: 'http-echo', enabled: true, transport: 'http', url: server.url }, { timeoutMs: 5000 });
+    await client.initialize();
+    const called = await client.callTool('echo', { text: '你好' });
+    assert.equal(called.content[0].text, 'echo:你好');
+    assert.deepEqual(called.structuredContent, { echoed: '你好' }, '结构化内容透传');
+    client.close();
+  } finally {
+    await server.close();
+  }
+});
+
+test('mcp Phase1: GET 通知流——list_changed 回调可收到', async () => {
+  const server = await startMcpHttpServer();
+  try {
+    const events = [];
+    const client = new McpClient({ id: 'http-echo', enabled: true, transport: 'http', url: server.url }, {
+      timeoutMs: 5000,
+      onNotification: (method) => events.push(method),
+    });
+    await client.initialize();
+    const stop = await client.listen();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    stop();
+    assert.ok(events.includes('notifications/tools/list_changed'), '收到工具变更通知：' + JSON.stringify(events));
+    client.close();
+  } finally {
+    await server.close();
+  }
+});
+
+test('mcp Phase1: stdio 崩溃自愈——kill 后下次调用按策略重新拉起', async () => {
+  const client = new McpClient(
+    { id: 'echo', enabled: true, transport: 'stdio', command: process.execPath, args: [serverScript] },
+    { timeoutMs: 10000, reconnect: { maxAttempts: 3, delayMs: 50 } },
+  );
+  await client.initialize();
+  const first = await client.callTool('echo', { text: 'a' });
+  assert.equal(first.content[0].text, 'echo:a');
+  client.child.kill(); // 模拟崩溃
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const second = await client.callTool('echo', { text: 'b' }); // exit 后自动拉起
+  assert.equal(second.content[0].text, 'echo:b', '崩溃后自愈完成调用');
+  client.close();
 });

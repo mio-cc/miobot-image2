@@ -3,6 +3,8 @@
 //   2. 全局列表/查找跨会话跨用户；列表不标注来源群与生成者
 //   3. 分支版本（variantOf/variantIndex）入库后 findVariantOf 双向可达；单版歌无可取分支
 //   4. 三个 handler（history/replay/variant）全局语义：任何用户可查/可回放/可取另一版任何人的歌
+//   5. A/B 完整性护栏：scope/全局裁剪成对化（不产生孤儿 B，存量孤儿自然消失）、
+//      混合态迁移只补缺不重排（已有编号不漂移）、孤儿 B 不标 B版（不伪造配对）、主版入库失败不落分支
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,6 +13,8 @@ import path from 'node:path';
 
 import { SunoSongHistoryStore } from '../dist/apps/bot/src/suno-song-history.js';
 import { SunoHistoryCapabilityHandler, SunoReplayCapabilityHandler, SunoVariantCapabilityHandler } from '../dist/apps/bot/src/capability-suno-library.js';
+import { SunoCapabilityHandler } from '../dist/apps/bot/src/capability-suno.js';
+import { createDefaultConfig } from '../dist/packages/config/src/index.js';
 import { builtinCapabilityDescriptors } from '../dist/packages/orchestration/src/index.js';
 
 function tempStore(seed) {
@@ -170,4 +174,122 @@ test('回归: audio.music.variant 描述符已注册（sync/low/audio，不进 s
   // 与 history/replay 一致：不依赖 Suno 开关（纯历史读取，Suno 关闭也能查）
   const gates = descriptor.external;
   assert.notEqual(gates, true, '不应标记 external');
+});
+
+test('回归: scope 裁剪成对化——到达上限后不产生孤儿 B', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'suno-hist-'));
+  const filePath = path.join(dir, 'suno-song-history.json');
+  try {
+    const store = new SunoSongHistoryStore({ filePath, maxRecords: () => 5 });
+    const addPair = (taskId) => {
+      const a = store.add({ chatType: 'group', groupId: 1, userQq: '2', requestText: taskId, taskId, audioUrl: `https://example.com/${taskId}-a.mp3`, variantIndex: 1 });
+      store.add({ chatType: 'group', groupId: 1, userQq: '2', requestText: `${taskId}（分支）`, taskId, audioUrl: `https://example.com/${taskId}-b.mp3`, variantOf: a.id, variantIndex: 2 });
+    };
+    for (let i = 1; i <= 4; i += 1) {
+      addPair(`task-${i}`);
+      // 不变量：任一存活分支的 variantOf 必须指向存活记录——裁剪不得拆对产生孤儿 B
+      for (const item of store.records) {
+        if (item.variantOf) assert.ok(store.records.some((x) => x.id === item.variantOf), `分支 ${item.id} 的主版 ${item.variantOf} 不应消失`);
+      }
+    }
+    assert.ok(store.records.length <= 5, 'scope 记录数不超过上限');
+    assert.ok(store.records.some((item) => (Number(item.variantIndex) || 1) === 2), '保留窗口内仍有成对分支');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('回归: 存量悬空孤儿在该 scope 下次裁剪时自然消失（不做一次性清理）', () => {
+  // 孤儿分支 seq 较新（落在保留窗口内）：普通裁剪不会动它，依赖裁剪应将其剔除
+  const seed = {
+    version: 2,
+    records: [
+      rec({ id: 'song_normal_1', seq: 1, globalSeq: 1 }),
+      rec({ id: 'song_orphan_branch', seq: 2, globalSeq: 2, taskId: 'task-dead', variantOf: 'song_missing_main', variantIndex: 2 }),
+      rec({ id: 'song_normal_2', seq: 3, globalSeq: 3 }),
+    ],
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'suno-hist-'));
+  const filePath = path.join(dir, 'suno-song-history.json');
+  fs.writeFileSync(filePath, JSON.stringify(seed), 'utf8');
+  try {
+    const store = new SunoSongHistoryStore({ filePath, maxRecords: () => 3 });
+    store.add({ chatType: 'group', groupId: 1, userQq: '2', requestText: '新歌', taskId: 'task-new', audioUrl: 'https://example.com/new.mp3', variantIndex: 1 });
+    assert.ok(!store.records.some((item) => item.id === 'song_orphan_branch'), '悬空孤儿应在下次裁剪时被剔除');
+    assert.ok(store.records.some((item) => item.id === 'song_normal_2'), '无关记录不受影响');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('回归: 混合态迁移只补缺——已有 globalSeq 不漂移', () => {
+  const seed = {
+    version: 2,
+    records: [
+      rec({ id: 'song_has_10', globalSeq: 10, createdAt: '2026-10-24T09:00:00.000Z' }),
+      rec({ id: 'song_missing_early', createdAt: '2026-10-24T10:00:00.000Z' }),
+      rec({ id: 'song_has_30', globalSeq: 30, createdAt: '2026-10-24T11:00:00.000Z' }),
+      rec({ id: 'song_missing_late', createdAt: '2026-10-24T12:00:00.000Z' }),
+    ],
+  };
+  const { store, cleanup } = tempStore(seed);
+  try {
+    const byId = new Map(store.records.map((item) => [item.id, item]));
+    assert.equal(byId.get('song_has_10').globalSeq, 10, '已有编号不动');
+    assert.equal(byId.get('song_has_30').globalSeq, 30, '已有编号不动');
+    assert.equal(byId.get('song_missing_early').globalSeq, 31, '缺失记录在现有最大值之后顺延补号（createdAt 早者优先）');
+    assert.equal(byId.get('song_missing_late').globalSeq, 32, '缺失记录在现有最大值之后顺延补号');
+    const seqs = store.records.map((item) => item.globalSeq);
+    assert.equal(new Set(seqs).size, seqs.length, '补号后无重复编号');
+  } finally { cleanup(); }
+});
+
+test('回归: 孤儿 B 展示——主版不在库时不标 B版、不伪造配对', () => {
+  const seed = {
+    version: 2,
+    records: [
+      rec({ id: 'song_other_main', seq: 1, globalSeq: 1, taskId: 'task-other' }),
+      rec({ id: 'song_branch_orphan', seq: 2, globalSeq: 2, taskId: 'task-dead', variantOf: 'song_gone', variantIndex: 2 }),
+      rec({ id: 'song_main', seq: 3, globalSeq: 3, taskId: 'task-live', variantIndex: 1 }),
+      rec({ id: 'song_branch_live', seq: 4, globalSeq: 4, taskId: 'task-live', variantOf: 'song_main', variantIndex: 2 }),
+    ],
+  };
+  const { store, cleanup } = tempStore(seed);
+  try {
+    const text = store.formatListGlobal(10);
+    const line = (seq) => text.split('\n').find((l) => l.startsWith(`#${seq} `));
+    assert.match(line(4), /B版/, '主版存活的分支仍标 B版');
+    assert.match(line(3), /有B版/, '主版行仍标 有B版');
+    assert.ok(line(2) && !line(2).includes('B版'), `孤儿分支不应带任何 B版 标记：${line(2)}`);
+    assert.ok(line(1) && !line(1).includes('B版'), `无关主版不应被伪造配对标记：${line(1)}`);
+  } finally { cleanup(); }
+});
+
+test('回归: 主版入库失败时不落分支（无主 B 版不再产生）', async () => {
+  const { store: real, cleanup } = tempStore(null);
+  try {
+    const failingMainStore = {
+      add(input) {
+        if ((Number(input.variantIndex) || 1) === 1) throw new Error('disk full');
+        return real.add(input);
+      },
+    };
+    const cfg = createDefaultConfig();
+    cfg.orchestration.suno.enabled = true;
+    const handler = new SunoCapabilityHandler({
+      getConfig: () => cfg,
+      history: failingMainStore,
+      createClient: () => ({
+        async create() { return { id: 'task-nomain', raw: {} }; },
+        async wait() { return { id: 'task-nomain', status: 'success', raw: {}, outputs: [
+          { url: 'https://cdn/a.mp3', audioId: 'a1', title: '歌A' },
+          { url: 'https://cdn/b.mp3', audioId: 'b1', title: '歌A' },
+        ] }; },
+      }),
+    });
+    const result = await handler.execute({
+      plan: { planId: 'p', requestId: 'r', goal: 'song', steps: [] },
+      step: { id: 's', capability: 'audio.music.generate', args: {} },
+      request: { requestId: 'r', text: '来首歌', chat: { type: 'private', userId: '1' }, user: { qq: '1', role: 'user' }, attachments: [] },
+    });
+    assert.equal(result.status, 'success');
+    assert.equal(result.outputs[0].url, 'https://cdn/a.mp3', '交付不受历史写入失败影响');
+    assert.equal(real.records.length, 0, '主版入库失败时不应落分支');
+  } finally { cleanup(); }
 });

@@ -66,7 +66,7 @@ export function createMemorySearchHandler(options: MemorySearchHandlerOptions): 
         ...(scopeFilter ? { scopeFilter } : {}),
       });
       const text = (result.context || '（当前作用域内没有找到相关记忆。）')
-        + (result.degraded ? '\n（记忆检索降级：向量服务不可用，结果来自全文/最近匹配。）' : '');
+        + (result.degraded ? '\n（记忆检索降级：向量服务不可用，结果改走全文匹配。）' : '');
       return {
         ...base, status: 'success',
         outputs: [{ kind: 'text', text, priority: 10, mergeable: true }],

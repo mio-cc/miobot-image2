@@ -17,7 +17,7 @@ import {
   OutputRepairBudgetTracker,
   type OutputRepairLimits,
 } from './output-repair.js';
-import { DefaultAgentContextBuilder, type AgentContextBuilder } from './context-builder.js';
+import { DefaultAgentContextBuilder, type AgentContextBuilder, type AgentContextBuildResult } from './context-builder.js';
 import { estimateTokens, type PromptRegistry } from './prompt-registry.js';
 import type { AgentSessionStore } from './session-manager.js';
 import { ASK_USER_TOOL_NAME, ASK_USER_TOOL_SPEC } from './ask-user-tool.js';
@@ -173,6 +173,12 @@ export interface AgentLoopDependencies {
   spillDir?: string;
   maxPinnedFacts?: number;
   clock?: () => Date;
+  /**
+   * 上限语义清理（A，2026-11-07）：观测钩子——contextMaxChars 是整个消息列表的
+   * JSON 序列化长度总预算（含 system 块与结构开销），接近阈值时打 warn 便于定位。
+   * 结构化最小类型，不引入跨包依赖。
+   */
+  logger?: { warn: (message: string, data?: unknown) => void };
 }
 
 export interface AgentLoop {
@@ -195,6 +201,12 @@ interface TurnExecutionState {
 class AgentAbortError extends Error {
   constructor() { super('agent_turn_aborted'); }
 }
+
+/** 上限语义清理（A，2026-11-07）：总量接近预算阈值时的告警节流——同会话 10 分钟冷却，
+ * 避免常驻高占用会话每轮刷屏；模块级是因为 AgentRuntime 每 turn 重建（agent-host 侧）。 */
+const CONTEXT_BUDGET_WARN_RATIO = 0.8;
+const CONTEXT_BUDGET_WARN_COOLDOWN_MS = 10 * 60_000;
+const contextBudgetWarnAt = new Map<string, number>();
 
 class AgentTimeoutError extends Error {
   constructor() { super('agent_turn_timeout'); }
@@ -252,6 +264,41 @@ export class AgentRuntime implements AgentLoop {
       clearTimeout(timer);
       input.signal?.removeEventListener('abort', onExternalAbort);
     }
+  }
+
+  /**
+   * 上限语义清理（A，2026-11-07）：contextMaxChars（contextPolicy.historyMaxChars）是整个
+   * 消息列表的 JSON 序列化长度总预算，不是"历史"上限。总量 ≥80% 预算时打一条 warn
+   * （带各注入段实际字符数与占比、裁剪丢弃数），同会话 10 分钟冷却防刷屏——
+   * 常规会话远低于阈值保持零输出，真撞上时可立刻定位是哪一块在膨胀。
+   */
+  private warnContextBudget(sessionKey: string, context: AgentContextBuildResult, budget: number | undefined): void {
+    const logger = this.deps.logger;
+    if (!logger || !budget || budget <= 0) return;
+    const estimated = context.estimatedChars || 0;
+    if (estimated < budget * CONTEXT_BUDGET_WARN_RATIO) return;
+    const now = Date.now();
+    if (now - (contextBudgetWarnAt.get(sessionKey) || 0) < CONTEXT_BUDGET_WARN_COOLDOWN_MS) return;
+    contextBudgetWarnAt.set(sessionKey, now);
+    if (contextBudgetWarnAt.size > 4096) {
+      for (const [key, at] of contextBudgetWarnAt) {
+        if (now - at >= CONTEXT_BUDGET_WARN_COOLDOWN_MS) contextBudgetWarnAt.delete(key);
+      }
+    }
+    const sections = (context.sectionChars || []).map((section) => ({
+      label: section.label,
+      chars: section.chars,
+      share: Number((section.chars / Math.max(1, estimated)).toFixed(3)),
+    }));
+    logger.warn('上下文接近总预算阈值', {
+      sessionKey,
+      budget,
+      estimatedChars: estimated,
+      ratio: Number((estimated / budget).toFixed(3)),
+      sections,
+      trimmedMessages: context.trimmedMessages || 0,
+      note: 'historyMaxChars=整个消息列表 JSON 序列化长度总预算（含 system 块与结构开销）；[Group context] 段的分块字符数见 runtime「上下文组装」日志；system 块当前不参与裁剪',
+    });
   }
 
   private async runTurnInner(input: AgentTurnInput, mode: Exclude<AgentRuntimeMode, 'off'>, signal: AbortSignal, executionState: TurnExecutionState): Promise<AgentTurnResult> {
@@ -491,6 +538,7 @@ export class AgentRuntime implements AgentLoop {
       ...(this.deps.compactionEnabled ? { compactionEnabled: true } : {}),
       ...(this.deps.contextMaxChars ? { maxChars: this.deps.contextMaxChars } : {}),
     });
+    this.warnContextBudget(input.sessionKey, context, this.deps.contextMaxChars);
     const workingMessages: AgentMessage[] = context.messages.map((message) => structuredClone(message));
     const persistedMessages: AgentMessage[] = workingMessages
       .filter((message) => message.role !== 'system')

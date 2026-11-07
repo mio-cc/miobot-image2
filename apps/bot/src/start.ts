@@ -16,7 +16,7 @@ import { hasPendingAgentClarification } from './pending-clarification.js';
 import { InMemoryAgentSessionManager, type AgentJobRecord, type AgentToolPreflightDecision, type AgentToolPreflightInput } from '../../../packages/agent-runtime/src/index.js';
 import { createBotMessageRuntime, handleCodeRenderRequest, handleFileGenerateCommand, handleFileReadCommand, handleWebScreenshotRequest, type BotRuntimeOptions, type FileReference, type NapcatMessageEvent } from './runtime.js';
 import { toModelNodes, toCapabilityOverrides } from './config-bridge.js';
-import { renderTtsPreprocessPrompt, shouldUseTts, synthesizeSpeech } from './tts.js';
+import { renderTtsPreprocessPrompt, resolveTtsPreprocessTarget, shouldUseTts, synthesizeSpeech } from './tts.js';
 import type { OwnerCommand } from './owner.js';
 import type { NapcatHistoryMessage } from './group-context.js';
 import { normalizeForwardPayload } from './message-enrichment.js';
@@ -49,7 +49,8 @@ import { assertSafePublicUrl } from '../../../packages/browser-render/src/index.
 import { TriggerIntentChecker } from './trigger-intent.js';
 import { ScheduleCapabilityHandler } from './capability-schedule.js';
 import { loadCapabilityPlugins, pluginManifestPath } from './capability-plugins.js';
-import { McpClient, McpToolCapabilityHandler, mcpToolToDescriptor } from './mcp-client.js';
+import { McpServerManager } from './mcp-server-manager.js';
+import { McpCredentialStore } from './mcp-credential-store.js';
 import { RuntimeAdapterCapabilityHandler, executionFromBotResult } from './capability-runtime-adapters.js';
 import { ImageStitchCapabilityHandler } from './capability-image.js';
 import { CanvasGalleryCapabilityHandler } from './capability-canvas.js';
@@ -997,6 +998,9 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   }
   if (loadedHttpCapabilities) logger.info('http capabilities registered', { count: loadedHttpCapabilities });
 
+  // P2-MCP（D19）：检索索引引用——MCP 子项（mcp.<server>.<tool>）经 capability.catalog 关键字命中；
+  // manager 在下方 MCP 装配区创建后注入实现（初始空 = 无 MCP 服务器时不影响目录）。
+  let mcpSearchIndex: () => Array<{ rootId: string; childName: string; displayName?: string; summary: string }> = () => [];
   orchestrationHandlers.set('capability.catalog', new RuntimeAdapterCapabilityHandler(async (invocation) => {
     const args = (invocation.step.args || {}) as Record<string, unknown>;
     const keyword = String(args.keyword || '').trim().toLowerCase();
@@ -1032,13 +1036,20 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       descriptors = descriptors.filter((d) =>
         `${d.id} ${d.name} ${d.description || ''}`.toLowerCase().includes(keyword));
     }
+    // P2-MCP（D19）：子项命中渲染为「根工具 → 子项」并给出精确 action 名（≤10 行，防膨胀）。
+    const mcpLines = keyword
+      ? mcpSearchIndex()
+        .filter((entry) => `${entry.rootId} ${entry.childName} ${entry.displayName || ''} ${entry.summary}`.toLowerCase().includes(keyword))
+        .slice(0, 10)
+        .map((entry) => `- ${entry.rootId} → ${entry.childName}${entry.displayName ? `（${entry.displayName}）` : ''}：${entry.summary}｜调用 ${entry.rootId} 并传 action=${entry.childName}`)
+      : [];
     const lines = descriptors.slice(0, 40).map((d) => {
       const enabled = getConfig().orchestration.capabilityOverrides?.[d.id]?.enabled !== false;
       const known = DEDICATED_CAP_PAGES.has(String(d.id));
       return `- ${d.id}（${d.name}）：${String(d.description || '').slice(0, 80)}${d.presentationHint ? '【展示方式推荐：' + d.presentationHint + '】' : ''}${known ? '［有专属配置页］' : ''}${enabled ? '' : '［已停用］'}`;
     });
-    const text = lines.length
-      ? `可用能力目录（${descriptors.length} 项）：\n${lines.join('\n')}`
+    const text = lines.length || mcpLines.length
+      ? `可用能力目录（${descriptors.length} 项${mcpLines.length ? `，另含 ${mcpLines.length} 个 MCP 子操作` : ''}）：\n${[...lines, ...mcpLines].join('\n')}`
       : '没有匹配的能力。';
     return {
       jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success',
@@ -1345,28 +1356,36 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     }, { logger });
     if (manifest.length) logger.info('能力插件加载完成', { count: manifest.length, manifestFile: pluginManifestPath(capabilitiesDir) });
   })().catch((error) => logger.warn('能力插件目录加载异常', { error: String((error as Error)?.message || error) }));
-  // T4.1：MCP servers（orchestration.mcpServers，配置得到本进程才会接入）——
-  // 动动连接、tools 转能力注册（默认全 deny，面板逐工具开动）；单个 server 失败只告警。
-  void (async () => {
-    const servers = (getConfig().orchestration.mcpServers || []).filter((server) => server.enabled);
-    for (const server of servers) {
-      try {
-        const client = new McpClient(server, { logger });
-        await client.initialize();
-        const tools = await client.listTools();
-        const allowlist = server.allowlist?.length ? new Set(server.allowlist.map(String)) : null;
-        let registered = 0;
-        for (const tool of tools) {
-          if (allowlist && !allowlist.has(tool.name)) continue;
-          orchestrationEnforcer.registerCapability(mcpToolToDescriptor(server.id, tool), new McpToolCapabilityHandler(client, tool.name));
-          registered += 1;
-        }
-        logger.info('MCP server 已接入', { server: server.id, tools: tools.length, registered });
-      } catch (error) {
-        logger.warn('MCP server 接入失败', { server: server.id, error: String((error as Error)?.message || error) });
-      }
-    }
-  })();
+  // P2/P3-MCP：MCP servers——McpServerManager 接管（树形根工具：一服务器一根、预算按根计、默认 deny；
+  // 状态机 / 目录缓存失效 / 配置 diff 热重载，方案 §4.1/§4.3）。reload() 幂等（无变化 no-op）。
+  // P3：OAuth 凭据存储（独立 secret 文件，不进 config.json）+ 状态快照（面板进程读取）+
+  // 即时热重载通道（watch config.json 与 mcp-trigger.json——面板保存/OAuth 完成秒级生效，30s 巡检兜底）。
+  const mcpCredentialStore = new McpCredentialStore({
+    filePath: process.env.MIOBOT_MCP_CREDENTIALS_FILE || path.join(dataDir, 'mcp-credentials.json'),
+    logger,
+  });
+  const mcpManager = new McpServerManager({
+    getConfig,
+    registerCapability: (descriptor, handler) => orchestrationEnforcer.registerCapability(descriptor, handler),
+    unregisterCapability: (capabilityId) => orchestrationEnforcer.unregisterCapability(capabilityId),
+    logger,
+    credentialStore: mcpCredentialStore,
+    statusFilePath: path.join(dataDir, 'mcp-status.json'),
+  });
+  mcpSearchIndex = () => mcpManager.searchIndex();
+  void mcpManager.reload().catch((error) => logger.warn('MCP 初始装配失败', { error: String((error as Error)?.message || error) }));
+  // 句柄保留：stop() 时关闭 watch 与巡检定时器，配合 mcpManager.close()（断开 stdio 子进程/通知流）——
+  // 否则停机后 fs.watch 句柄泄漏、stdio 子进程残留。
+  const mcpWatchCloser = mcpManager.watchDataFiles({
+    configPath: options.configFilePath || process.env.MIOBOT_CONFIG_FILE || path.join(dataDir, 'config.json'),
+    triggerPath: path.join(dataDir, 'mcp-trigger.json'),
+  });
+  const mcpPollTimer = setInterval(() => {
+    void mcpManager.reload()
+      .then(() => mcpManager.refreshStale())
+      .catch((error) => logger.warn('MCP 巡检失败', { error: String((error as Error)?.message || error) }));
+  }, 30_000);
+  mcpPollTimer.unref();
 
   const memoryActionFile = process.env.MIOBOT_MEMORY_ACTION_FILE || path.join(dataDir, 'orchestration-memory-actions.jsonl');
   const memoryResultFile = process.env.MIOBOT_MEMORY_RESULT_FILE || path.join(dataDir, 'orchestration-memory-results.json');
@@ -1666,6 +1685,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       return {
         maxSessions: 2000,
         maxMessagesPerSession: Math.max(4, cp.historyMaxRounds * 4),
+        // 上限语义清理（A，2026-11-07）：historyMaxChars 的第二重身份——兼作 agent 会话
+        // 存储的单会话字符上限（与模型请求总预算同源取值，两处语义都已在配置注释说明）。
         maxCharsPerSession: Math.max(cp.historyMaxChars, 1000),
         ttlMs: Math.max(0, Number(cfg.llm.sessionTtlMinutes || 0) * 60_000),
       };
@@ -1766,6 +1787,10 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         topK: getConfig().contextPolicy.memoryTopK,
         minScore: getConfig().contextPolicy.memoryMinScore,
         maxContextChars: getConfig().contextPolicy.memoryMaxChars,
+        // 跨通道互斥（P0 注入去重，2026-11-07 拍板）：本轮消息 + 群上下文已含 id / 会话历史已含文本，
+        // 检索输入侧整条排除——同一内容不再以「记忆 + 群历史/会话历史」双份注入。
+        excludeMessageIds: input.excludeMessageIds,
+        excludeTexts: input.excludeTexts,
       });
       const voiceScope = {
         chatType: input.chatType,
@@ -1793,6 +1818,16 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     },
     // 连发消息合并窗口：触发回合收集同会话窗口内的相邻用户消息（observer 爆发缓冲）。
     collectBurst: (input) => memoryObserver.collectBurst(input),
+    // 跨通道互斥（P0 注入去重）：会话历史文本由 agentSessions 提供，记忆检索按内容排除
+    // 已在会话历史里的内容；load(sessionKey) 返回克隆，读档不产生副作用。
+    getSessionHistoryTexts: (sessionId) => {
+      const session = agentSessions.load(sessionId);
+      if (!session?.messages?.length) return [];
+      return session.messages
+        .filter((message) => message.role === 'user' || message.role === 'assistant')
+        .map((message) => String(message.content ?? ''))
+        .filter(Boolean);
+    },
     // 会话收尾固化：委托共享实现（真身在 agentSessions，编排 session.clear 与旧命令路径共用）。
     consolidateSession: (input) => consolidateSessionMemory({ ...input }),
     agentRuntime: async (input) => {
@@ -1955,13 +1990,17 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       if (!shouldUseTts(tts, text)) return null;
       let speakText = text;
       const pre = tts.preprocess;
-      if (pre?.enabled && String(pre.model || '').trim()) {
+      // 「跟随」语义：pre.model 为空 = 用户在用途表点了「恢复跟随」，节点与模型都跟主对话走
+      // （resolveTtsPreprocessTarget，与 trigger-intent.ts chatNode() 同款）；此前空模型直接跳过
+      // 改写，与用途表「未选择 → 回落主对话」承诺割裂。
+      const preTarget = resolveTtsPreprocessTarget(pre, getConfig());
+      if (pre?.enabled && preTarget.model) {
         try {
           const rendered = renderTtsPreprocessPrompt(String(pre.promptTemplate || ''), text);
           // P2 接入点：purpose = 'tts'（常量显式）。备用取 bot.tts.preprocess.fallback*；
           // 主/备都失败仍按原语义处理（fallbackToOriginal ? 用原文合成 : 放弃语音）。
           const preprocessCall = (target: { nodeIndex: number; model: string }) => client.chat(target.nodeIndex, { model: target.model, messages: [{ role: 'user', content: rendered }] });
-          const res = await withPurposeFallback(modelFallback, 'tts', { nodeIndex: pre.nodeIndex, model: pre.model }, preprocessCall);
+          const res = await withPurposeFallback(modelFallback, 'tts', preTarget, preprocessCall);
           const out = String(res.text || '').trim();
           if (out) {
             speakText = out.slice(0, Math.max(1, Number(pre.maxOutputChars || 1000)));
@@ -1974,6 +2013,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
           logger?.warn('tts 前置转化失败' + (pre.fallbackToOriginal ? '，已回退原文合成' : '，放弃语音'), { error: String((error as { message?: string })?.message || error) });
           if (!pre.fallbackToOriginal) return null;
         }
+      } else if (pre?.enabled) {
+        logger?.warn('tts 前置转化已启用，但改写模型与主对话模型均为空，跳过改写', { preprocessModel: String(pre?.model || ''), mainModel: preTarget.model });
       }
       try {
         const audio = await synthesizeSpeech(tts, speakText, { logger });
@@ -2394,6 +2435,11 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     approvalActionConsumer.stop();
     capabilityTestConsumer.stop();
     memoryActionConsumer.stop();
+    // P2/P3-MCP：停机清理——关目录级 watch 句柄与 30s 巡检定时器，再断开全部 MCP 客户端
+    // （stdio 子进程 kill / HTTP 通知流 abort / 根能力注销），防止句柄与子进程泄漏。
+    clearInterval(mcpPollTimer);
+    try { mcpWatchCloser(); } catch { /* best effort */ }
+    try { await mcpManager.close(); } catch { /* best effort */ }
     // Harness Memory Layer：先停观察队列并冲刷，再落盘记忆索引。
     try { await memoryObserver.dispose(); } catch { /* best effort */ }
     // T3.4：记忆防抖落盘的优雅退出 flush。

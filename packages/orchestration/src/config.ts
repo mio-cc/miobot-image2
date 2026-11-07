@@ -6,6 +6,10 @@ export interface CapabilityOverride {
   riskLevel?: RiskLevel;
   /** presentation recommendation; empty means no change. */
   presentationHint?: string;
+  /** D22：显示名覆盖（能力中心自定义命名 / MCP 根与子项同一套字段）。 */
+  name?: string;
+  /** D22：超时覆盖（ms）。 */
+  timeoutMs?: number;
 }
 
 export interface ModelRoleConfig {
@@ -65,7 +69,8 @@ export interface OrchestrationConfig {
     embeddingDimensions: number;
     // topK/minScore/maxContextChars 曾与 contextPolicy.memory* 双真源并存，已收口删除——
     // 检索预算唯一真源 contextPolicy.memoryTopK/memoryMinScore/memoryMaxChars。
-    recentTurns: number;
+    // recentTurns（无条件注入最近 N 条）已随 P0 注入去重（2026-11-07 拍板）删除：
+    // 与群上下文最近 30 条整段重叠，是跨通道重复注入的结构性根源之一。
     summarizeEvery: number;
     retentionDays: number;
     hybridSearch: boolean;
@@ -225,7 +230,6 @@ export function defaultOrchestrationConfig(): OrchestrationConfig {
       embeddingNodeIndex: 0,
       embeddingModel: '',
       embeddingDimensions: 1536,
-      recentTurns: 4,
       summarizeEvery: 20,
       retentionDays: 3,
       hybridSearch: true,
@@ -462,6 +466,16 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
         ...(Array.isArray(item.args) ? { args: item.args.map(String) } : {}),
         ...(String(item.token || '').trim() ? { token: String(item.token).trim() } : {}),
         ...(Array.isArray(item.allowlist) ? { allowlist: item.allowlist.map(String).filter(Boolean) } : {}),
+        // P2-MCP：鉴权模式（static 默认 | oauth）、代理（本地调试可选项）、目录缓存 TTL、stdio 重连策略。
+        ...(item.auth === 'oauth' ? { auth: 'oauth' as const } : {}),
+        ...(typeof item.proxyUrl === 'string' && /^https?:\/\//i.test(item.proxyUrl.trim()) ? { proxyUrl: item.proxyUrl.trim() } : {}),
+        ...(item.toolsCacheTtlMs !== undefined && Number.isFinite(Number(item.toolsCacheTtlMs)) ? { toolsCacheTtlMs: Math.max(0, Math.trunc(Number(item.toolsCacheTtlMs))) } : {}),
+        ...(item.reconnect && typeof item.reconnect === 'object' ? {
+          reconnect: {
+            ...(Number.isFinite(Number(item.reconnect.maxAttempts)) ? { maxAttempts: Math.max(1, Math.trunc(Number(item.reconnect.maxAttempts))) } : {}),
+            ...(Number.isFinite(Number(item.reconnect.delayMs)) ? { delayMs: Math.max(0, Math.trunc(Number(item.reconnect.delayMs))) } : {}),
+          },
+        } : {}),
       }];
     }),
     voice: (() => {
@@ -495,7 +509,6 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
           fallbackEmbeddingNodeIndex: numberIn(m.fallbackEmbeddingNodeIndex, 0, 0, 10000),
         } : {}),
         embeddingDimensions: numberIn(m.embeddingDimensions, d.memory.embeddingDimensions, 1, 16384),
-        recentTurns: numberIn(m.recentTurns, d.memory.recentTurns, 0, 20),
         summarizeEvery: numberIn(m.summarizeEvery, d.memory.summarizeEvery, 2, 500),
         retentionDays: numberIn(m.retentionDays, d.memory.retentionDays, 1, 3650),
         hybridSearch: bool(m.hybridSearch, d.memory.hybridSearch),
@@ -528,6 +541,9 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
           ...(item.approvalRequired === undefined ? {} : { approvalRequired: bool(item.approvalRequired, false) }),
           ...(item.riskLevel === 'low' || item.riskLevel === 'medium' || item.riskLevel === 'high' || item.riskLevel === 'critical' ? { riskLevel: item.riskLevel } : {}),
           ...(typeof item.presentationHint === 'string' ? { presentationHint: String(item.presentationHint).trim().slice(0, 2000) } : {}),
+          // D22：显示名与超时覆盖（MCP 根/子项与能力中心同一套字段）。
+          ...(typeof item.name === 'string' && item.name.trim() ? { name: item.name.trim().slice(0, 120) } : {}),
+          ...(item.timeoutMs !== undefined && Number.isFinite(Number(item.timeoutMs)) ? { timeoutMs: Math.max(1000, Math.trunc(Number(item.timeoutMs))) } : {}),
         };
       }
       return out;
