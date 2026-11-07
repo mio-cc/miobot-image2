@@ -14,6 +14,7 @@ import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import FlowEditor from '../components/FlowEditor.vue';
+import ParamDefaultsEditor from '../components/ParamDefaultsEditor.vue';
 
 const route = useRoute();
 const configStore = useConfigStore();
@@ -73,6 +74,34 @@ const childModels = computed(() => serverChildren.value.map((child: any) => ({
         set: (value: string) => { ensureOverride(`mcp.${serverId.value}.${child.name}`).name = String(value ?? ''); },
     }),
 })));
+
+/* ── 参数默认值（2026-11-07）：根级作用于全部子项；子项级同键整条覆盖根级。合并发生在根 handler
+ *    转发前（确定性层）——锁定键无论模型传什么都以此为准，并把默认/锁定状态告诉模型。 ── */
+const rootParamDefaults = computed<Record<string, { value: string | number | boolean; locked?: boolean }>>(() => (server.value as any)?.paramDefaults || {});
+function setRootParamDefaults(next: Record<string, { value: string | number | boolean; locked?: boolean }>) {
+    if (!server.value) return;
+    (server.value as any).paramDefaults = next;
+}
+/** 子项级编辑器展开态（键=子项工具名）。 */
+const expandedChildDefaults = ref<string>('');
+function childParamDefaultsOf(toolName: string): Record<string, { value: string | number | boolean; locked?: boolean }> {
+    return (server.value as any)?.childParamDefaults?.[toolName] || {};
+}
+function setChildParamDefaults(toolName: string, next: Record<string, { value: string | number | boolean; locked?: boolean }>) {
+    if (!server.value) return;
+    (server.value as any).childParamDefaults ||= {};
+    if (Object.keys(next).length) (server.value as any).childParamDefaults[toolName] = next;
+    else delete (server.value as any).childParamDefaults[toolName];
+}
+/** 键建议：已知子项 schema 的属性名并集（授权前拿不到 schema 时为空——自由输入）。 */
+const paramKeySuggestions = computed<string[]>(() => {
+    const keys = new Set<string>();
+    for (const child of serverChildren.value as any[]) {
+        const props = child?.inputSchema?.properties;
+        if (props && typeof props === 'object') for (const key of Object.keys(props)) keys.add(key);
+    }
+    return [...keys].slice(0, 50);
+});
 
 const exposure = computed(() => configStore.config?.toolRegistry?.exposure?.[`mcp.${serverId.value}`] as string | undefined);
 const stateBadge = computed(() => {
@@ -233,6 +262,12 @@ onMounted(async () => {
     <!-- 流程编排（2026-11-07）：MCP 根的默认调用组合（与能力详情页共用 FlowEditor，单一真相源）。 -->
     <FlowEditor v-if="server" :capability-id="`mcp.${serverId}`" />
 
+    <!-- 参数默认值·根级（2026-11-07）：作用于全部子项；确定性合并发生在根 handler 转发前。
+         典型用法：账号只能用特定模型时配 model=v6-mini（先「仅默认」，确认稳定后再锁）。 -->
+    <SectionCard v-if="server" title="参数默认值（根级 · 作用于全部子项）" hint="非锁定=仅在该参数缺失时填入（模型可显式覆盖）；锁定=无论模型传什么都以此为准。模型会经工具说明与 list_actions 看到默认/锁定状态">
+      <ParamDefaultsEditor :model-value="rootParamDefaults" :key-suggestions="paramKeySuggestions" @update:model-value="setRootParamDefaults" />
+    </SectionCard>
+
     <!-- 区块 3：子项列表（树形数据 + 覆盖，capabilityOverrides['mcp.<server>.<tool>']）。v-if=server 与区块 2 同款防直绑 -->
     <SectionCard v-if="server" title="子项工具" :hint="`allowlist 管「进不进树」；这里的开关与改名管「树内待遇」（${serverId} 共 ${serverChildren.length} 个已进树子项）`">
       <div v-if="!serverChildren.length" class="text-xs text-[color:var(--ink-3)]">
@@ -247,7 +282,18 @@ onMounted(async () => {
             <span class="tag">{{ child.effect }}</span>
             <span class="tag">{{ child.riskLevel }}</span>
             <span class="text-xs text-[color:var(--ink-3)] truncate flex-1">{{ child.summary }}</span>
+            <button type="button" class="btn-outline !px-2 !py-0.5 !text-xs"
+              :class="Object.keys(childParamDefaultsOf(child.name)).length ? '!text-amber-600 !border-amber-400/60' : ''"
+              @click="expandedChildDefaults = expandedChildDefaults === child.name ? '' : child.name">
+              参数默认{{ Object.keys(childParamDefaultsOf(child.name)).length ? `（${Object.keys(childParamDefaultsOf(child.name)).length}）` : '' }}
+            </button>
             <ToggleField v-model="child.enabledModel.value" label="启用" />
+          </div>
+          <!-- 子项级参数默认值：同键整条覆盖根级（含锁定标志）。 -->
+          <div v-if="expandedChildDefaults === child.name" class="mt-2 pt-2 border-t border-[color:var(--hairline-2)]">
+            <ParamDefaultsEditor :model-value="childParamDefaultsOf(child.name)" :key-suggestions="paramKeySuggestions"
+              empty-text="未配置——该子项继承根级默认值，其余完全使用模型传参"
+              @update:model-value="setChildParamDefaults(child.name, $event)" />
           </div>
         </div>
       </div>

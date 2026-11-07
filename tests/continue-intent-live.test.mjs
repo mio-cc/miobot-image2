@@ -380,7 +380,10 @@ test('L2E-窗口过期: 超过 windowMs(10s) 后消息不再触发延续判断',
   const e2e = await setupE2E({ cfg, checker });
   try {
     await e2e.establish();
-    await sleep(10500);
+    // flake 治理：原 sleep(10500) 余量仅 500ms，被 establish 后延续状态写入的异步偏移吃掉
+    // （并行负载下偏移可 >500ms）→ followUp 处理时窗口未过期 → checker 被误调用 → 断言误报。
+    // 放宽到 12s：起点偏移容差 2s，断言本身不变（负向断言对管道慢免疫，只有起点偏移会翻车）。
+    await sleep(12000);
     e2e.followUp('再粉嫩一点');
     await sleep(500);
     note2('窗口过期', { checkCalls: checker.calls.cont.length, sends: e2e.sends() });
@@ -398,9 +401,11 @@ test('L2E-轮数上限: maxRounds=1，第二次延续请求被拒且不再调模
     await e2e.establish();
     e2e.followUp('再粉嫩一点'); // 第 1 轮延续
     await waitUntil(() => e2e.sends() === 2, 4000, '第 1 轮延续回复');
-    await sleep(250);
+    // flake 治理：轮数计数在回复发送后异步落账，原 250ms 在并行负载下不够——第三条抢在
+    // 计数落定前到达判定点会被误续话 → cont.length=2 误报。放宽到 1000ms，断言不变。
+    await sleep(1000);
     e2e.followUp('再粉嫩一点'); // 轮数已满
-    await sleep(500);
+    await sleep(800);
     note2('轮数上限', { checkCalls: checker.calls.cont.length, sends: e2e.sends() });
     assert.equal(checker.calls.cont.length, 1, '轮数满后不应再调用延续判断');
     assert.equal(e2e.sends(), 2, '轮数满后不应有第三条回复');

@@ -111,7 +111,7 @@ export class SunoCapabilityHandler implements CapabilityHandler {
       } catch (error) {
         lastError = error;
         const message = String((error as Error)?.message || error);
-        const retryable = !/suno_(?:http_4|quota|queue|base_url_missing|task_id_missing|unauthorized|forbidden|wait_timeout|wait_aborted)/i.test(message);
+        const retryable = !/suno_(?:http_4|upstream_error|quota|queue|base_url_missing|task_id_missing|unauthorized|forbidden|wait_timeout|wait_aborted)/i.test(message);
         if (!retryable || attempt >= retries) throw error;
         await new Promise((resolve) => setTimeout(resolve, Math.min(2000, 250 * (attempt + 1))));
       }

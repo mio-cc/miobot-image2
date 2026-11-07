@@ -146,7 +146,15 @@ test('prompt audit: image interrogation template placeholders are rendered', asy
 });
 
 test('prompt audit: TTS preprocess template only replaces {{text}}', () => {
-  assert.equal(renderTtsPreprocessPrompt('SPEAK {{text}} / keep {{other}}', '你好'), 'SPEAK 你好 / keep {{other}}');
+  assert.equal(renderTtsPreprocessPrompt('SPEAK {{text}} / keep {{other}}', '你好'), 'SPEAK 你好\n/ keep {{other}}');
+  // {{text}} 位于行尾（代码默认值形态）：不追加多余换行。
+  assert.equal(renderTtsPreprocessPrompt('待处理文本：{{text}}', '你好'), '待处理文本：你好');
+});
+
+test('prompt audit: TTS preprocess template separates glued instructions after {{text}}', () => {
+  // 2026-11-07 生产模板坑：{{text}} 后直接拼「4.人物…」，正文边界全靠模型猜。渲染层强制换行分隔。
+  const out = renderTtsPreprocessPrompt('要求：只输出改写文本。待处理文本：{{text}}4.人物是阳光开朗的少女。', '今天也要加油哦');
+  assert.ok(out.includes('待处理文本：今天也要加油哦\n4.人物是阳光开朗的少女。'), JSON.stringify(out));
 });
 
 test('prompt audit: image safe rewrite template is rendered and used', async () => {

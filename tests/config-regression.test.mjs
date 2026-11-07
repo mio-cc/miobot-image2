@@ -327,6 +327,19 @@ test('config migration: known legacy intent prompt upgrades to effect semantics'
   assert.equal(normalizedCustom.intentRecognition.promptTemplate, 'MY CUSTOM INTENT');
 });
 
+test('config regression: TTS preprocess 模板 {{text}} 粘接指令归一化治愈', () => {
+  // 2026-11-07 生产模板坑：{{text}} 后直接拼「4.人物…」，正文边界全靠模型猜。
+  const cfg = createDefaultConfig();
+  cfg.bot.tts.preprocess.promptTemplate = '要求：只输出改写文本。待处理文本：{{text}}4.人物是阳光开朗的少女。';
+  const normalized = normalizeConfig(cfg);
+  assert.ok(normalized.bot.tts.preprocess.promptTemplate.includes('{{text}}\n4.人物'), normalized.bot.tts.preprocess.promptTemplate);
+  // {{text}} 位于行尾（默认值形态）：不追加多余换行，自定义内容不被破坏。
+  const clean = createDefaultConfig();
+  clean.bot.tts.preprocess.promptTemplate = '处理：{{text}}';
+  const normalizedClean = normalizeConfig(clean);
+  assert.equal(normalizedClean.bot.tts.preprocess.promptTemplate, '处理：{{text}}');
+});
+
 test('config regression T0.7: reply 文本兜底与 overflow 默认值', () => {
   const defaults = createDefaultConfig();
   assert.equal(defaults.orchestration.reply.textFallback, 'always');

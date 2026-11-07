@@ -5,7 +5,8 @@ import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 import { McpClient, type McpServerConfig, type McpToolInfo } from './mcp-client.js';
 import { refreshAccessToken } from './mcp-oauth.js';
 import type { McpCredentialStore } from './mcp-credential-store.js';
-import { buildMcpChildTools, buildMcpRootDescriptor, McpRootToolHandler, type McpCapabilityOverrideInput, type McpChildTool } from './mcp-root-tool.js';
+import { buildMcpChildTools, buildMcpRootDescriptor, McpRootToolHandler, resolveChildParamDefaults, type McpCapabilityOverrideInput, type McpChildTool } from './mcp-root-tool.js';
+import type { McpParamDefaultRule } from './mcp-client.js';
 
 /**
  * Phase 2（方案 §4.1/§4.3/§4.9，D3/D6/D7/D11/D16）：MCP 服务器生命周期管理器。
@@ -117,8 +118,8 @@ export class McpServerManager {
   }
 
   private registerRoot(managed: ManagedServer): void {
-    const descriptor = buildMcpRootDescriptor(managed.config.id, managed.children, this.overrideFor(managed.config.id));
-    const handler = new McpRootToolHandler(managed.client!, managed.config.id, managed.children);
+    const descriptor = buildMcpRootDescriptor(managed.config.id, managed.children, this.overrideFor(managed.config.id), managed.config.paramDefaults);
+    const handler = new McpRootToolHandler(managed.client!, managed.config.id, managed.children, this.resolvedParamDefaults(managed.config, managed.children));
     this.options.registerCapability(descriptor, handler);
     managed.status.toolCount = managed.children.length;
     managed.status.enabledToolCount = managed.children.filter((child) => child.enabled).length;
@@ -142,13 +143,29 @@ export class McpServerManager {
     await this.connectManaged(managed, server);
   }
 
-  /** capabilityOverrides 中与该服务器相关的键摘要（前缀 mcp.<server> / mcp.<server>.）。 */
+  /** capabilityOverrides 相关键摘要 + 参数默认值摘要（前缀 mcp.<server> / mcp.<server>.）——
+   *  变化时本地重建树并热替换根能力（免重连）。paramDefaults 属于「树内容」而非连接参数，
+   *  与覆盖同走本地重建通道（改默认值不应断开正在使用的连接）。 */
   private overridesSummaryFor(serverId: string): string {
     const entries = Object.entries(this.capabilities())
       .filter(([key]) => key === `mcp.${serverId}` || key.startsWith(`mcp.${serverId}.`))
       .map(([key, value]) => [key, value] as const)
       .sort(([a], [b]) => a.localeCompare(b));
-    return JSON.stringify(entries);
+    const server = (this.options.getConfig().orchestration?.mcpServers || []).find((item) => item.id === serverId);
+    return JSON.stringify({ overrides: entries, paramDefaults: server?.paramDefaults ?? null, childParamDefaults: server?.childParamDefaults ?? null });
+  }
+
+  /** 每子项解析后的参数默认值（根级+子项级合并；树外子项的配置不保留——调不到）。 */
+  private resolvedParamDefaults(config: { paramDefaults?: Record<string, McpParamDefaultRule>; childParamDefaults?: Record<string, Record<string, McpParamDefaultRule>> }, children: McpChildTool[]): Record<string, Record<string, McpParamDefaultRule>> {
+    const childMap = config.childParamDefaults || {};
+    const root = config.paramDefaults;
+    if (!root && !Object.keys(childMap).length) return {};
+    const out: Record<string, Record<string, McpParamDefaultRule>> = {};
+    for (const child of children) {
+      const resolved = resolveChildParamDefaults(root, childMap[child.name]);
+      if (Object.keys(resolved).length) out[child.name] = resolved;
+    }
+    return out;
   }
 
   /** Phase 3：实际连接逻辑（含 OAuth 凭据注入与 401 刷新重试一次）。

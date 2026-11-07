@@ -4,7 +4,11 @@ import { toMainModelSelection } from './config-bridge.js';
 
 /** 渲染 TTS 前置处理提示词，占位符只接受 {{text}}。 */
 export function renderTtsPreprocessPrompt(template: string, text: string): string {
-  return String(template || '').replace(/\{\{\s*text\s*\}\}/g, () => String(text || ''));
+  // {{text}} 是整段待处理正文：其后若还有同行内容（如生产模板出现过的「{{text}}4.人物…」补充指令），
+  // 强制以换行分隔，避免指令拼进正文、边界全靠模型猜（2026-11-07 坑）。
+  // 归一化层 normalizeTtsPreprocessTemplate 对存量配置做同规则治愈，这里是不经过归一化的最后防线。
+  const separated = String(template || '').replace(/(\{\{\s*text\s*\}\})[ \t]*(?=[^\r\n])/g, '$1\n');
+  return separated.replace(/\{\{\s*text\s*\}\}/g, () => String(text || ''));
 }
 
 /**

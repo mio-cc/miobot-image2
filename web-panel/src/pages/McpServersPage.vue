@@ -88,10 +88,12 @@ const TEMPLATES = [
     id: 'suno-official',
     name: 'Suno 官方',
     defaultName: 'Suno 官方',
-    description: '音乐生成/续写/人声等官方工具（约 32 个，授权后以实际清单为准）· 浏览器账号授权，凭据存独立 secret 文件',
+    description: '音乐生成/续写/人声等官方工具（约 32 个，授权后以实际清单为准）· 浏览器账号授权，凭据存独立 secret 文件 · 默认 model=v6-mini（账号当前仅可用此模型，可在配置页「参数默认值」按账号可用模型调整）',
     transport: 'http',
     url: 'https://api.suno.com/mcp',
     auth: 'oauth',
+    /** 参数默认值（2026-11-07 用户拍板）：账号目前只能使用 v6-mini——仅作默认（不锁死），模型可显式覆盖。 */
+    paramDefaults: { model: { value: 'v6-mini' } },
     /** 流程编排（2026-11-07 拍板）：模板预置默认链——创作规范（承载于根工具描述的歌词结构规范注入）→ 生成 → 查询确认。 */
     flow: {
       steps: [
@@ -129,6 +131,7 @@ async function addFromTemplate() {
       transport: template.transport,
       url: template.url,
       ...(template.auth ? { auth: template.auth } : {}),
+      ...(template.paramDefaults ? { paramDefaults: structuredClone(template.paramDefaults) } : {}),
     });
     orch.capabilityOverrides ||= {};
     orch.capabilityOverrides[`mcp.${template.id}`] = {

@@ -166,6 +166,20 @@ export class SunoClient {
     }
   }
 
+  /**
+   * 业务错误信封透传（只做新增判断，不动成功路径）：上游可能 HTTP 200 但信封体是
+   * `{"code":429,"msg":"The current credits are insufficient. Please top up.","data":null}`——
+   * 原实现取不到任务 id 只报 suno_task_id_missing，真实原因被吞。仅在 id 提取失败的
+   * 兜底分支调用：code 数值化后 ∉ {0, 200} 视为业务错误，code 与原始 msg 原样透传
+   * （截断 300 字符防日志膨胀，与 suno_http_* 错误同款口径）。
+   */
+  private upstreamEnvelopeError(data: any): string | undefined {
+    const code = Number(data?.code);
+    if (!Number.isFinite(code) || code === 0 || code === 200) return undefined;
+    const message = String(data?.msg || data?.message || '').trim();
+    return `suno_upstream_error:${code} ${message}`.trim().slice(0, 300);
+  }
+
   private buildBody(input: SunoGenerateInput): Record<string, unknown> {
     if (this.requestMode === 'legacy') {
       return {
@@ -227,7 +241,11 @@ export class SunoClient {
     });
     const id = getFirstString(data, ['id', 'taskId', 'task_id', 'jobId', 'job_id']) ||
       getFirstString(data?.data, ['id', 'taskId', 'task_id', 'jobId', 'job_id']);
-    if (!id) throw new Error('suno_task_id_missing');
+    if (!id) {
+      const upstream = this.upstreamEnvelopeError(data);
+      if (upstream) throw new Error(upstream);
+      throw new Error('suno_task_id_missing');
+    }
     return { id, raw: data };
   }
 
@@ -241,7 +259,11 @@ export class SunoClient {
       body: JSON.stringify({ ...input, callBackUrl: callbackUrl, model: input.model || this.options.model || "V6" }),
     });
     const id = getFirstString(data, ["id", "taskId", "task_id", "jobId", "job_id"]) || getFirstString(data?.data, ["id", "taskId", "task_id", "jobId", "job_id"]);
-    if (!id) throw new Error("suno_task_id_missing");
+    if (!id) {
+      const upstream = this.upstreamEnvelopeError(data);
+      if (upstream) throw new Error(upstream);
+      throw new Error("suno_task_id_missing");
+    }
     return { id, raw: data };
   }
 

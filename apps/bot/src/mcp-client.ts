@@ -19,6 +19,12 @@ import type { StructuredLogger } from '../../../packages/logger/src/index.js';
  *   （需环境自装 undici，生产部署不要求配置）。
  */
 
+/** MCP 参数默认值规则（2026-11-07 拍板）：value 为默认值；locked=true 时无论模型传什么都以此为准。 */
+export interface McpParamDefaultRule {
+  value: string | number | boolean;
+  locked?: boolean;
+}
+
 export interface McpServerConfig {
   id: string;
   enabled: boolean;
@@ -36,6 +42,10 @@ export interface McpServerConfig {
   toolsCacheTtlMs?: number;
   /** stdio 崩溃自愈策略（D2）：重启次数上限与最小间隔。 */
   reconnect?: { maxAttempts?: number; delayMs?: number };
+  /** 参数默认值（根级）：作用于该服务器全部子项的指定参数。子项级同键整条覆盖（含锁定标志）。 */
+  paramDefaults?: Record<string, McpParamDefaultRule>;
+  /** 参数默认值（子项级）：键=子项工具名。 */
+  childParamDefaults?: Record<string, Record<string, McpParamDefaultRule>>;
 }
 
 export interface McpToolInfo {

@@ -267,6 +267,42 @@ test('orchestration: Suno client creates and polls an official-style task', asyn
   assert.ok(calls.some((call) => call.url.includes('/generate/task-1')));
 });
 
+test('orchestration: Suno client 透传 HTTP 200 业务错误信封（code/msg 原文保留）', async () => {
+  const envelope = { code: 429, msg: 'The current credits are insufficient. Please top up.', data: null };
+  const fakeFetch = async () => new Response(JSON.stringify(envelope), { status: 200, headers: { 'content-type': 'application/json' } });
+  const client = new SunoClient({ baseUrl: 'https://suno.example', apiKey: 'secret', requestMode: 'legacy', fetchImpl: fakeFetch });
+  await assert.rejects(() => client.create({ prompt: 'x' }), (error) => {
+    assert.match(error.message, /^suno_upstream_error:429 /, '错误码透传');
+    assert.ok(error.message.includes('The current credits are insufficient. Please top up.'), '原始 msg 原样保留');
+    return true;
+  });
+  await assert.rejects(() => client.replaceSection({ taskId: 't', audioId: 'a', callBackUrl: 'https://bot.example/cb' }), /suno_upstream_error:429/);
+});
+
+test('orchestration: Suno client 无业务错误码的信封仍报 task_id_missing（成功路径与旧兜底零改动）', async () => {
+  const fakeFetch = async () => new Response(JSON.stringify({ data: null }), { status: 200, headers: { 'content-type': 'application/json' } });
+  const client = new SunoClient({ baseUrl: 'https://suno.example', requestMode: 'legacy', fetchImpl: fakeFetch });
+  await assert.rejects(() => client.create({ prompt: 'x' }), /suno_task_id_missing/);
+});
+
+test('orchestration: Suno 业务错误（upstream_error）不做 withRetry 重试——429 余额不足不反复烧请求', async () => {
+  let createCalls = 0;
+  const handler = new SunoCapabilityHandler({
+    getConfig: () => ({ orchestration: { suno: { enabled: true, maxRetries: 3 } } }),
+    createClient: () => ({
+      async create() { createCalls += 1; throw new Error('suno_upstream_error:429 The current credits are insufficient.'); },
+    }),
+  });
+  const result = await handler.execute({
+    request: { requestId: 'r', chat: { type: 'private' }, user: { qq: '1', role: 'user' }, text: 'song' },
+    plan: { planId: 'p', requestId: 'r', goal: 'music', steps: [] },
+    step: { id: 's', capability: 'audio.music.generate', args: { request: 'song' } },
+  });
+  assert.equal(result.status, 'failed');
+  assert.match(result.error, /suno_upstream_error:429/);
+  assert.equal(createCalls, 1, '业务错误信封不得重试');
+});
+
 test('orchestration: Suno capability handler returns only the first audio and no cover', async () => {
   const handler = new SunoCapabilityHandler({
     getConfig: () => ({ orchestration: { suno: { enabled: true } } }),

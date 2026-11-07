@@ -22,7 +22,7 @@ export const PROMPT_REGISTRY: readonly PromptEntry[] = [
   { id: 'trigger.intent', title: '@ 触发判定', description: '判断群消息用户是否在跟 bot 说话', configPath: 'bot.keywordTrigger.triggerIntentPromptTemplate', category: 'input', hotReload: 'next_turn', variables: '{{words}} {{context}} {{userText}} {{userName}} {{triggerWord}}' },
   { id: 'trigger.continue', title: '续话判定', description: 'autoContinue 窗口内判断是否延续对话（addressee 判定：用户可能在与群里其他人交流）', configPath: 'bot.autoContinue.continueIntentPromptTemplate', category: 'input', hotReload: 'next_turn', variables: '{{focusNote}} {{groupContext}} {{botLastReply}} {{userText}} {{userName}}' },
   // ── 生成侧 ──
-  { id: 'suno.composer', title: 'Suno 作曲', description: '歌词与参数规划（含歌名原创最高优先级 override）', configPath: 'orchestration.suno.composerPromptTemplate', category: 'generation', hotReload: 'next_turn', variables: '{{userRequest}} {{intents}} {{context}}' },
+  { id: 'suno.composer', title: 'Suno 作曲', description: '歌词与参数规划（含歌名原创最高优先级 override）', configPath: 'orchestration.suno.composerPromptTemplate', category: 'generation', hotReload: 'next_turn', variables: '{{userText}} {{supplied}} {{schema}} {{model}} {{defaultVocalGender}} {{defaultLanguage}}' },
   { id: 'image.enhance', title: '提示词润色', description: '用户原始提示词 → 图像生成结构化提示词', configPath: 'llm.enhancePromptTemplate', category: 'generation', hotReload: 'next_turn', variables: '{{rawPrompt}}' },
   { id: 'image.safeRewrite', title: '合规改写', description: '提示词合规改写（保留原始语言）', configPath: 'llm.safeRewritePromptTemplate', category: 'generation', hotReload: 'next_turn', variables: '{{rawPrompt}}' },
   { id: 'image.interrogate', title: '图片反推', description: '图片 → 生成提示词描述', configPath: 'llm.interrogatePromptTemplate', category: 'generation', hotReload: 'next_turn', variables: '(图片输入)' },

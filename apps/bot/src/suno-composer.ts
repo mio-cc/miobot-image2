@@ -31,8 +31,25 @@ function clip(value: unknown, max: number): string {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+/** 歌词专用清洗（2026-11-07 修复）：**保留 \n**——「结构标记独占一行」是 composer 规范 25 的要求，
+ *  通用 clip 的 \s+ 拍平会把它破坏成单行（实测 57 个换行全被压成 986 字单行）。只压行内连续空白、
+ *  去 \r、修掉换行两侧空格；其他字段（style/title/musicBrief…）继续用通用 clip，行为不变。 */
+function lyricsClip(value: unknown, max: number): string {
+  return String(value || '')
+    .replace(/\r/g, '')
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/ ?\n ?/g, '\n')
+    .trim()
+    .slice(0, max);
+}
+
 function nullableClip(value: unknown, max: number): string | undefined {
   const text = clip(value, max);
+  return text || undefined;
+}
+
+function nullableLyricsClip(value: unknown, max: number): string | undefined {
+  const text = lyricsClip(value, max);
   return text || undefined;
 }
 
@@ -50,7 +67,8 @@ function normalizeSpec(raw: Record<string, unknown>, cfg: AppConfig): SunoCompos
     : configuredGender === 'm' || configuredGender === 'f' ? configuredGender : undefined;
   // 歌词恒由我们的模型写（用户要求）：非纯音乐一律 customMode=true，Suno 只负责演唱与编曲。
   const customMode = instrumental ? Boolean(raw.customMode) : true;
-  const lyrics = customMode && !instrumental ? nullableClip(raw.lyrics, 5000) : undefined;
+  // 2026-11-07 修复：lyrics 用 lyricsClip 保留换行（结构标记独占一行），其余字段维持通用清洗。
+  const lyrics = customMode && !instrumental ? nullableLyricsClip(raw.lyrics, 5000) : undefined;
   const musicBrief = nullableClip(raw.musicBrief, 3000);
   const style = nullableClip(raw.style, 1000) || (customMode ? nullableClip(raw.musicBrief, 1000) : undefined);
   const title = customMode ? nullableClip(raw.title, 80) : undefined;
@@ -117,8 +135,8 @@ function enforceOriginalTitle(spec: SunoComposedSpec, args: Record<string, unkno
 /** 从新歌词提取原创歌名：优先副歌行，其次最长意象行，去结构标记后 2-24 字。 */
 function deriveOriginalTitle(lyrics?: string): string | undefined {
   if (!lyrics) return undefined;
-  // 注意：normalizeSpec 的 clip 已把换行拍扁为空格，因此这里按 [Chorus] 标记后
-  // 任意空白分隔取行，不依赖 \n。
+  // lyricsClip（2026-11-07 起）保留 \n——[Chorus] 标记后 \s* 跨过换行取下一行，
+  // 捕获组 [^\[\n]+ 在行内截断，行为与拍平时代一致。
   const chorusMatch = lyrics.match(/\[Chorus\]\s*([^\[\n]+)/);
   const candidate = clip((chorusMatch?.[1] || ''), 24);
   const title = candidate.replace(/[，。,.;；!?！？\s]+$/g, '').slice(0, 24);
@@ -353,7 +371,8 @@ const SUNO_COMPOSER_OVERRIDE = [
     const cfg = this.getConfig();
     const suno = cfg.orchestration.suno;
     const userText = clip(args.request || args.prompt || request.text, 3000);
-    const lyrics = nullableClip(args.lyrics, 5000);
+    // 2026-11-07 修复：safe fallback 同样保留歌词换行（与 normalizeSpec 同一修复）。
+    const lyrics = nullableLyricsClip(args.lyrics, 5000);
     const instrumental = Boolean(args.instrumental);
     const configuredGender = suno.defaultVocalGender;
     const requestedGender = args.vocalGender === 'm' || args.vocalGender === 'f'

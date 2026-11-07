@@ -57,6 +57,10 @@ export interface OrchestrationConfig {
     token?: string;
     /** 只注册列出的工具名（留空注册全部，全部默认 deny）。 */
     allowlist?: string[];
+    /** 参数默认值（根级，2026-11-07）：作用于全部子项；locked=true 时强制覆盖模型传参。 */
+    paramDefaults?: Record<string, { value: string | number | boolean; locked?: boolean }>;
+    /** 参数默认值（子项级）：键=子项工具名；同键整条覆盖根级。 */
+    childParamDefaults?: Record<string, Record<string, { value: string | number | boolean; locked?: boolean }>>;
   }>;
   voice: {
     enabled: boolean;
@@ -458,6 +462,25 @@ export function normalizeCapabilityFlows(input: unknown): Record<string, Capabil
   return out;
 }
 
+/**
+ * MCP 参数默认值规整（2026-11-07）：value 必须是 string|number|boolean；键 ≤120 字符；
+ * 上限 32 键（根级）/ 32 子项 × 32 键（子项级）——超出丢弃。悬挂键（schema 里没有的参数）不拦截：
+ * 合并发生在校验之前，真有问题会以带路径的可读错误暴露。
+ */
+function normalizeParamDefaultRules(input: unknown): Record<string, { value: string | number | boolean; locked?: boolean }> {
+  const source = record(input);
+  const out: Record<string, { value: string | number | boolean; locked?: boolean }> = {};
+  for (const [rawKey, rawValue] of Object.entries(source).slice(0, 32)) {
+    const key = rawKey.trim().slice(0, 120);
+    if (!key) continue;
+    const item = record(rawValue);
+    const { value } = item;
+    if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') continue;
+    out[key] = { value, ...(item.locked === true ? { locked: true } : {}) };
+  }
+  return out;
+}
+
 export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfig {
   const d = defaultOrchestrationConfig();
   const raw = record(input);
@@ -512,6 +535,15 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
         ...(Array.isArray(item.args) ? { args: item.args.map(String) } : {}),
         ...(String(item.token || '').trim() ? { token: String(item.token).trim() } : {}),
         ...(Array.isArray(item.allowlist) ? { allowlist: item.allowlist.map(String).filter(Boolean) } : {}),
+        // 参数默认值（2026-11-07）：根级 + 子项级（空对象不落键）。
+        ...(Object.keys(record(item.paramDefaults)).length ? { paramDefaults: normalizeParamDefaultRules(item.paramDefaults) } : {}),
+        ...(Object.keys(record(item.childParamDefaults)).length ? {
+          childParamDefaults: Object.fromEntries(
+            Object.entries(record(item.childParamDefaults)).slice(0, 32)
+              .map(([toolName, rules]) => [String(toolName).trim().slice(0, 120), normalizeParamDefaultRules(rules)])
+              .filter(([toolName, rules]) => String(toolName) && Object.keys(rules as object).length > 0),
+          ),
+        } : {}),
         // P2-MCP：鉴权模式（static 默认 | oauth）、代理（本地调试可选项）、目录缓存 TTL、stdio 重连策略。
         ...(item.auth === 'oauth' ? { auth: 'oauth' as const } : {}),
         ...(typeof item.proxyUrl === 'string' && /^https?:\/\//i.test(item.proxyUrl.trim()) ? { proxyUrl: item.proxyUrl.trim() } : {}),

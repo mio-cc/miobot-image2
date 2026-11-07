@@ -2,6 +2,8 @@ import type { CapabilityDescriptor, CapabilityHandler, CapabilityInvocation, Exe
 import { validateCapabilityArgs } from '../../../packages/orchestration/src/validation.js';
 import type { McpClient, McpToolInfo } from './mcp-client.js';
 import { inferEffectFromDescription } from './mcp-client.js';
+export type { McpParamDefaultRule } from './mcp-client.js';
+import type { McpParamDefaultRule } from './mcp-client.js';
 // 方案 B（2026-11-07）：歌词结构规范单一来源——子项 schema 含 lyrics 字段时自动注入（通用判据，不认品牌）。
 import { MCP_LYRICS_SPEC_HINT } from './suno-lyrics-spec.js';
 
@@ -106,21 +108,47 @@ function hasLyricsField(children: McpChildTool[]): boolean {
   });
 }
 
+/** 参数默认值解析：子项级同键**整条覆盖**根级（含锁定标志）——不做字段级合并，简单可预测。 */
+export function resolveChildParamDefaults(
+  root?: Record<string, McpParamDefaultRule>,
+  child?: Record<string, McpParamDefaultRule>,
+): Record<string, McpParamDefaultRule> {
+  return { ...(root || {}), ...(child || {}) };
+}
+
+function formatRuleValue(rule: McpParamDefaultRule): string {
+  return `${String(rule.value)}${rule.locked ? '（锁定）' : ''}`;
+}
+
+/** 参数默认值的模型可见说明（目录行/description 共用）：每级最多展示 4 键，超出以 … 截断。 */
+export function formatParamDefaultsNote(rules: Record<string, McpParamDefaultRule> | undefined): string {
+  if (!rules) return '';
+  const entries = Object.entries(rules);
+  if (!entries.length) return '';
+  const shown = entries.slice(0, 4).map(([key, rule]) => `${key}=${formatRuleValue(rule)}`);
+  const text = shown.join('、') + (entries.length > 4 ? '…' : '');
+  const hasLock = entries.some(([, rule]) => rule.locked);
+  return `${hasLock ? '参数默认/锁定：' : '参数默认：'}${text}。`;
+}
+
 /** 根 descriptor：id `mcp.<server>`，默认 deny，description 分层摘要（上限 800 字符：协议说明 +
- *  歌词规范注入后的预算；2026-11-07 拍板由 500 放宽——500 装不下「协议说明+规范」两段）。 */
+ *  歌词规范 + 根级参数默认值注入后的预算；2026-11-07 拍板由 500 放宽）。 */
 export function buildMcpRootDescriptor(
   serverId: string,
   children: McpChildTool[],
   override: McpCapabilityOverrideInput = {},
+  paramDefaults?: Record<string, McpParamDefaultRule>,
 ): CapabilityDescriptor {
   const enabledCount = children.filter((child) => child.enabled).length;
   const lyricsCapable = hasLyricsField(children);
+  const defaultsNote = formatParamDefaultsNote(paramDefaults);
   const description = [
     `MCP 服务器 ${serverId} 的统一入口工具（树形根，预算按 1 个工具计）。`,
     `含 ${children.length} 个子操作（${enabledCount} 个已启用）。`,
     '调用时传 action（子工具名）与 params（该子工具的参数对象）；',
     'action 传 list_actions 或留空可查看子项清单与参数说明。',
     ...(lyricsCapable ? [`歌词/文本参数规范：${MCP_LYRICS_SPEC_HINT}`] : []),
+    ...(defaultsNote ? [defaultsNote] : []),
   ].join('').slice(0, 800);
   return {
     id: `mcp.${serverId}`,
@@ -157,12 +185,17 @@ function suggestActions(children: McpChildTool[], action: string): string[] {
     .slice(0, 3);
 }
 
-/** 子项目录文本（list_actions）：名称 + 一行摘要 + required 参数提示（D17）。 */
-export function formatChildCatalog(serverId: string, children: McpChildTool[]): string {
+/** 子项目录文本（list_actions）：名称 + 一行摘要 + required 参数提示（D17）+ 参数默认值说明（2026-11-07）。 */
+export function formatChildCatalog(
+  serverId: string,
+  children: McpChildTool[],
+  childParamDefaults?: Record<string, Record<string, McpParamDefaultRule>>,
+): string {
   if (!children.length) return `mcp.${serverId} 当前没有已进树的子操作（allowlist 为空或目录为空）。`;
   const lines = children.slice(0, 40).map((child) => {
     const required = Array.isArray((child.inputSchema as any)?.required) ? (child.inputSchema as any).required.map(String) : [];
-    return `- ${child.name}${child.displayName ? `（${child.displayName}）` : ''}：${child.summary || '（无描述）'}${required.length ? `｜必填参数：${required.join(', ')}` : ''}${child.enabled ? '' : '｜已停用'}`;
+    const defaultsNote = formatParamDefaultsNote(childParamDefaults?.[child.name]);
+    return `- ${child.name}${child.displayName ? `（${child.displayName}）` : ''}：${child.summary || '（无描述）'}${required.length ? `｜必填参数：${required.join(', ')}` : ''}${defaultsNote ? `｜${defaultsNote}` : ''}${child.enabled ? '' : '｜已停用'}`;
   });
   return [
     `mcp.${serverId} 子操作清单（${children.length} 项${children.length > 40 ? '，仅显示前 40 项' : ''}）：`,
@@ -172,12 +205,18 @@ export function formatChildCatalog(serverId: string, children: McpChildTool[]): 
   ].join('\n');
 }
 
-/** 树形根工具 handler：action 路由 / list_actions 目录 / 子项校验 / 错误定位（D17/D18）。 */
+/**
+ * 树形根工具 handler：action 路由 / list_actions 目录 / 子项校验 / 错误定位（D17/D18）。
+ * 参数默认值（2026-11-07）：转发前**确定性合并**——非锁定键仅填缺失，锁定键无论模型传什么都覆盖；
+ * 合并发生在 schema 校验之前（锁定值违 schema 由校验层报可读错误，并标注来源）。
+ */
 export class McpRootToolHandler implements CapabilityHandler {
   constructor(
     private readonly client: McpClient,
     private readonly serverId: string,
     private readonly children: McpChildTool[],
+    /** 每子项已解析的参数默认值规则（根级+子项级，键=子项名）。 */
+    private readonly childParamDefaults: Record<string, Record<string, McpParamDefaultRule>> = {},
   ) {}
 
   async execute(invocation: CapabilityInvocation): Promise<ExecutionResult> {
@@ -189,7 +228,7 @@ export class McpRootToolHandler implements CapabilityHandler {
       return {
         ...base,
         status: 'success',
-        outputs: [{ kind: 'text', text: formatChildCatalog(this.serverId, this.children), priority: 10, mergeable: true }],
+        outputs: [{ kind: 'text', text: formatChildCatalog(this.serverId, this.children, this.childParamDefaults), priority: 10, mergeable: true }],
       };
     }
 
@@ -219,28 +258,53 @@ export class McpRootToolHandler implements CapabilityHandler {
     const params = (args.params && typeof args.params === 'object' && !Array.isArray(args.params))
       ? args.params as Record<string, unknown>
       : {};
-    const validation = validateCapabilityArgs(child.inputSchema, params, '$.params');
+    // 参数默认值合并（确定性层，不靠提示词）：默认填缺失 / 锁定强制覆盖；记录实际生效来源供诊断。
+    const rules = this.childParamDefaults[action] || {};
+    const merged: Record<string, unknown> = { ...params };
+    const appliedLocked: string[] = [];
+    const appliedDefault: string[] = [];
+    for (const [key, rule] of Object.entries(rules)) {
+      if (rule.locked) {
+        merged[key] = rule.value;
+        appliedLocked.push(key);
+      } else if (merged[key] === undefined) {
+        merged[key] = rule.value;
+        appliedDefault.push(key);
+      }
+    }
+    const validation = validateCapabilityArgs(child.inputSchema, merged, '$.params');
     if (!validation.ok) {
+      // 来源标注只看实际注入的键：锁定键的值恒来自配置；默认键仅当「填缺失」时来自配置（模型显式传的不标）。
       return {
         ...base,
         status: 'failed',
         outputs: [],
-        error: `mcp_action_params_invalid:${action}（${validation.issues.slice(0, 5).map((item) => `${item.path} ${item.message}`).join('；')}）`,
+        error: `mcp_action_params_invalid:${action}（${validation.issues.slice(0, 5).map((item) => {
+          const key = item.path.replace('$.params.', '');
+          const source = rules[key]?.locked ? '［来自锁定配置］' : appliedDefault.includes(key) ? '［来自默认值配置］' : '';
+          return `${item.path} ${item.message}${source}`;
+        }).join('；')}）`,
         retryable: false,
-        diagnostics: { action, serverId: this.serverId, issues: validation.issues.slice(0, 5) },
+        diagnostics: { action, serverId: this.serverId, issues: validation.issues.slice(0, 5), ...(appliedLocked.length || appliedDefault.length ? { appliedParamDefaults: { locked: appliedLocked, default: appliedDefault } } : {}) },
       };
     }
 
     try {
-      const result = await this.client.callTool(child.name, params);
+      const result = await this.client.callTool(child.name, merged);
       if (result.isError) {
+        // 失败可诊断（2026-11-07 拍板）：上游拒绝（如账号无该模型权限）时透传错误文本，不退化成一句参数错误。
+        const upstreamText = result.content
+          .filter((item) => String(item?.type) === 'text' && String(item?.text || '').trim())
+          .map((item) => String(item.text).trim())
+          .join(' ')
+          .slice(0, 200);
         return {
           ...base,
           status: 'failed',
           outputs: [],
-          error: `mcp_tool_error:${action}`,
+          error: `mcp_tool_error:${action}${upstreamText ? `：${upstreamText}` : ''}`,
           retryable: false,
-          diagnostics: { action, serverId: this.serverId },
+          diagnostics: { action, serverId: this.serverId, ...(appliedLocked.length || appliedDefault.length ? { appliedParamDefaults: { locked: appliedLocked, default: appliedDefault } } : {}) },
         };
       }
       const outputs = result.content
@@ -249,7 +313,16 @@ export class McpRootToolHandler implements CapabilityHandler {
       if (!outputs.length) {
         return { ...base, status: 'failed', outputs: [], error: `mcp_tool_empty_output:${action}`, retryable: true, diagnostics: { action, serverId: this.serverId } };
       }
-      return { ...base, status: 'success', outputs, diagnostics: { action, serverId: this.serverId } };
+      return {
+        ...base,
+        status: 'success',
+        outputs,
+        diagnostics: {
+          action,
+          serverId: this.serverId,
+          ...(appliedLocked.length || appliedDefault.length ? { appliedParamDefaults: { locked: appliedLocked, default: appliedDefault } } : {}),
+        },
+      };
     } catch (error) {
       return {
         ...base,
@@ -257,7 +330,7 @@ export class McpRootToolHandler implements CapabilityHandler {
         outputs: [],
         error: String((error as Error)?.message || error),
         retryable: true,
-        diagnostics: { action, serverId: this.serverId },
+        diagnostics: { action, serverId: this.serverId, ...(appliedLocked.length || appliedDefault.length ? { appliedParamDefaults: { locked: appliedLocked, default: appliedDefault } } : {}) },
       };
     }
   }

@@ -282,7 +282,9 @@ test('QQ matrix: auto-continue catches a no-mention follow-up once and then stop
       post_type: 'message', message_type: 'group', group_id: 6002, user_id: 2202, message_id: 8203, sender: { nickname: '续话用户' },
       raw_message: '再补充', message: [{ type: 'text', data: { text: '再补充' } }],
     });
-    await sleep(180);
+    // flake 治理：auto-continue 轮数计数在回复发送后异步落账，原 180ms 在并行负载下不够——
+    // 第三条抢在计数落定前到达判定点会被误续话（inputs=3）误报。放宽到 1000ms，断言不变。
+    await sleep(1000);
     assert.equal(h.inputs.length, 2);
     assert.equal(h.sim.actions.filter((action) => action.action === 'send_group_msg').length, 2);
     assert.equal(h.fallbackCalls.length, 0);

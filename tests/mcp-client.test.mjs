@@ -169,7 +169,14 @@ test('mcp Phase1: stdio 崩溃自愈——kill 后下次调用按策略重新拉
   const first = await client.callTool('echo', { text: 'a' });
   assert.equal(first.content[0].text, 'echo:a');
   client.child.kill(); // 模拟崩溃
-  await new Promise((resolve) => setTimeout(resolve, 150));
+  // flake 治理：固定 150ms 等 exit 事件在并行负载下不够——kill 到 exit 回调（child=null、
+  // lastExitAt 记账）之间有事件循环竞态，抢跑会向已死管道 write 触发 EPIPE。
+  // 改为确定性等待 exit 回调完成（child === null）再发起下一次调用，断言本身不变。
+  const exitDeadline = Date.now() + 5000;
+  while (client.child !== null && Date.now() < exitDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(client.child, null, 'kill 后 exit 回调应在 5s 内完成（child 置空）');
   const second = await client.callTool('echo', { text: 'b' }); // exit 后自动拉起
   assert.equal(second.content[0].text, 'echo:b', '崩溃后自愈完成调用');
   client.close();
