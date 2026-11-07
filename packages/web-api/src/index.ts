@@ -1093,7 +1093,10 @@ export class WebApi {
         const cfg = this.repository.getConfig();
         const descriptors = applyCapabilityOverrides(allCapabilityDescriptors(), cfg.orchestration?.capabilityOverrides || {});
         const gated = applyRuntimeCapabilityGates(descriptors, { sunoEnabled: Boolean(cfg.orchestration?.suno?.enabled), externalEnabled: Boolean(cfg.orchestration?.externalProviders?.enabled), allowlist: cfg.orchestration?.externalProviders?.allowlist || [] });
-        const body = { success: true, capabilities: gated.map((item) => ({ ...item, health: capabilityHealth(cfg, item) })), manifest: buildCapabilityManifest(gated) };
+        // P4-MCP（二期）：MCP 根合成 descriptor 合并进统一列表（参与搜索/排序/第三方消费）——
+        // 纯新增条目（向后兼容）；manifest 形态不变（tools/permissions 页语义不受影响）。
+        const withMcp = [...gated, ...mcpRootDescriptors(cfg)];
+        const body = { success: true, capabilities: withMcp.map((item) => ({ ...item, health: capabilityHealth(cfg, item) })), manifest: buildCapabilityManifest(gated) };
         // ETag 协商缓存（~64KB 大 payload）：内容指纹命中 If-None-Match 时返 304 空体。
         // no-cache = 允许浏览器存储但每次协商；与前端 60s TTL 正交（TTL 期内不发请求，过期后协商只需 304）。
         const etag = `"cap-${createHash('sha1').update(JSON.stringify(body)).digest('hex').slice(0, 16)}"`;
@@ -1442,6 +1445,45 @@ function readMcpStatusSnapshot(): unknown {
   } catch { /* 无快照 = 无 MCP 服务器 */ }
   mcpStatusCache = { at: Date.now(), mtimeMs, snapshot };
   return snapshot;
+}
+
+/**
+ * P4-MCP（二期）：MCP 根合成 descriptor——config.mcpServers + mcp-status.json 快照构造，
+ * 应用根覆盖（capabilityOverrides['mcp.<id>'] 的 enabled/name/riskLevel/approvalRequired）。
+ * 仅合并进 capabilities 列表（搜索/排序可见）；默认 deny 语义保留（enabled 默认 false）。
+ */
+function mcpRootDescriptors(cfg: { orchestration?: { mcpServers?: Array<{ id: string; transport: string }>; capabilityOverrides?: Record<string, any> } }): CapabilityDescriptor[] {
+  const servers = cfg.orchestration?.mcpServers || [];
+  if (!servers.length) return [];
+  const snapshot = readMcpStatusSnapshot() as { servers?: Array<{ serverId: string; state: string; toolCount: number; enabledToolCount?: number }> };
+  const statusMap = new Map((snapshot?.servers || []).map((server) => [server.serverId, server]));
+  const overrides = cfg.orchestration?.capabilityOverrides || {};
+  return servers.map((server) => {
+    const override = overrides[`mcp.${server.id}`] || {};
+    const status = statusMap.get(server.id);
+    const stateLabel = status
+      ? status.state === 'connected' ? `已连接（${status.toolCount} 子项）`
+        : status.state === 'connected-no-tools' ? '已连接·无子项'
+        : status.state === 'needs-auth' ? '待授权' : status.state
+      : '未连接';
+    return {
+      id: `mcp.${server.id}`,
+      version: '1.0.0',
+      name: String(override.name || `${server.id} MCP`).slice(0, 120),
+      description: `MCP 服务器 ${server.id} 的树形根工具（${server.transport} 传输，${stateLabel}）；调用传 action（子工具名）与 params，action=list_actions 可查看子项清单`,
+      provider: `mcp:${server.id}`,
+      presentationHint: '',
+      mode: 'sync',
+      riskLevel: override.riskLevel ?? 'medium',
+      enabled: override.enabled ?? false,
+      approvalRequired: override.approvalRequired === true,
+      mergeable: false,
+      outputKinds: ['text'],
+      effect: 'unknown',
+      sideEffects: ['external_call'],
+      inputSchema: { type: 'object', properties: { action: { type: 'string', description: '子工具名；list_actions 查看清单' }, params: { type: 'object', description: '子工具参数' } }, required: ['action'] },
+    } as CapabilityDescriptor;
+  });
 }
 
 /** 面板对外可达 origin（OAuth redirect_uri 用；优先反代头，回退环境变量）。 */

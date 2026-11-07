@@ -59,6 +59,12 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../pages/CapabilityDetailPage.vue'),
     },
     {
+        // P4-MCP：MCP 服务器列表页（新增/删除/状态总入口）——能力中心空态卡片 / AgentPage 进入，不入侧栏。
+        path: '/mcp',
+        name: 'mcp-servers',
+        component: () => import('../pages/McpServersPage.vue'),
+    },
+    {
         // P3-MCP（D27）：单个 MCP 服务器专属配置页——能力中心卡片 / AgentPage「配置」链接进入，不入侧栏。
         path: '/mcp/:serverId',
         name: 'mcp-server',

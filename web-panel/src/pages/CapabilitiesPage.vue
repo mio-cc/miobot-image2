@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useCapabilityStore } from '../stores/capabilities';
+import { useConfigStore } from '../stores/config';
+import client from '../api/client';
 
 /**
  * R16/4.1 契约（恢复）：能力中心主数据源 = 能力注册表（/orchestration/capabilities
@@ -111,6 +113,8 @@ interface Card {
 const registryCards = computed<Card[]>(() => {
   const kw = keyword.value.trim().toLowerCase();
   return registry.value
+    // P4-MCP：mcp.* 根能力由下方「MCP 服务器」专属区块展示（三态 + 根开关 + 子项数），registry 网格去重。
+    .filter((item) => !String(item.id).startsWith('mcp.'))
     .filter((item) => category.value === '全部' ? true : categoryOf(item.id) === category.value)
     .filter((item) => !kw || `${item.id} ${item.name}`.toLowerCase().includes(kw))
     .map((item) => {
@@ -184,7 +188,48 @@ const countByCat = (cat: string) => {
 onMounted(() => {
   void store.refresh();
   void refreshRegistry();
+  void initMcpSection();
 });
+
+/* ── P4-MCP：MCP 服务器区块——能力中心可见的外部能力入口（读 config + 状态快照，未接入显示空态） ── */
+const configStore = useConfigStore();
+const mcpStatusMap = ref<Record<string, any>>({});
+const mcpChildCounts = ref<Record<string, number>>({});
+const mcpServers = computed<any[]>(() => ((configStore.config as any)?.orchestration?.mcpServers || []));
+
+async function initMcpSection() {
+  if (!configStore.loaded) await configStore.fetchConfig();
+  try {
+    const res = await client.get('/mcp/status');
+    const snapshot = res.data?.status || {};
+    const map: Record<string, any> = {};
+    const counts: Record<string, number> = {};
+    for (const server of snapshot.servers || []) map[server.serverId] = server;
+    for (const child of snapshot.children || []) counts[child.serverId] = (counts[child.serverId] || 0) + 1;
+    mcpStatusMap.value = map;
+    mcpChildCounts.value = counts;
+  } catch { /* 状态获取失败按无快照处理（卡片退化为「未连接」） */ }
+}
+
+/** MCP 卡片三态：未接入（整块空态）/ 已停用 / 未连接·待授权 / 已连接（根能力开关单独标注，默认 deny 可见）。 */
+function mcpStateOf(id: string): { label: string; ok: boolean; warn: boolean } {
+  const server = mcpServers.value.find((item) => String(item.id) === id);
+  if (!server || server.enabled === false) return { label: '已停用', ok: false, warn: false };
+  const status = mcpStatusMap.value[id];
+  if (!status) return { label: '未连接', ok: false, warn: false };
+  if (status.state === 'connected' || status.state === 'connected-no-tools') return { label: status.state === 'connected' ? '已连接' : '已连接·无子项', ok: true, warn: false };
+  if (status.state === 'needs-auth') return { label: '待授权', ok: false, warn: true };
+  if (status.state === 'connecting') return { label: '连接中', ok: false, warn: false };
+  return { label: '未连接', ok: false, warn: false };
+}
+function mcpDisplayName(id: string): string {
+  const overrides = (configStore.config as any)?.orchestration?.capabilityOverrides || {};
+  return overrides[`mcp.${id}`]?.name || `${id} MCP`;
+}
+function mcpRootEnabled(id: string): boolean {
+  const overrides = (configStore.config as any)?.orchestration?.capabilityOverrides || {};
+  return overrides[`mcp.${id}`]?.enabled === true;
+}
 </script>
 
 <template>
@@ -272,6 +317,39 @@ onMounted(() => {
         <button v-else type="button" class="pg-btn" :class="p === page ? 'on' : ''" @click="page = p">{{ p }}</button>
       </template>
       <button type="button" class="pg-btn" :disabled="page >= totalPages" aria-label="下一页" @click="page += 1">›</button>
+    </div>
+
+    <!-- ── P4-MCP：MCP 服务器区块（外部能力入口——未接入也可见，点击去 /mcp 列表管理） ── -->
+    <div v-if="view === 'registry'" class="mt-6">
+      <div class="flex items-center gap-2 mb-2.5">
+        <h2 class="text-sm font-semibold m-0">MCP 服务器</h2>
+        <span class="text-[10px] text-[color:var(--ink-3)]">外部能力 · 一个服务器 = 一个树形根工具（默认 deny，预算按 1 个工具计）</span>
+        <router-link class="btn-outline !px-2 !py-0.5 !text-xs ml-auto" to="/mcp">管理</router-link>
+      </div>
+      <div v-if="!mcpServers.length" class="card p-4 flex flex-wrap items-center gap-3">
+        <span class="text-xs text-[color:var(--ink-3)]">MCP 未接入——接入 Suno 官方等外部 MCP 后，这里会显示对应能力卡片，模型即可检索其子项</span>
+        <router-link class="btn !px-3 !py-1 !text-xs ml-auto" to="/mcp">新增 MCP 服务器</router-link>
+      </div>
+      <div v-else class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-2.5">
+        <router-link v-for="server in mcpServers" :key="`mcp-${server.id}`" :to="`/mcp/${encodeURIComponent(server.id)}`" class="block group">
+          <div class="relative bg-[color:var(--surface)] border border-[color:var(--hairline-2)] rounded-[10px] px-3 py-2.5 shadow-[var(--sh-1)] transition-all duration-200 group-hover:-translate-y-[2px] group-hover:shadow-[var(--sh-2)] group-hover:border-[color:var(--accent-line)] cursor-pointer h-full">
+            <span class="absolute top-2.5 right-2.5 dot"
+              :class="mcpStateOf(server.id).ok && mcpRootEnabled(server.id) ? 'dot-good' : mcpStateOf(server.id).ok || mcpStateOf(server.id).warn ? 'dot-warn' : 'dot-idle'"
+              :title="mcpStateOf(server.id).ok ? (mcpRootEnabled(server.id) ? '已连接·根能力已启用' : '已连接·根能力关闭（默认 deny，进配置页开启）') : mcpStateOf(server.id).label" />
+            <div class="w-[22px] h-[22px] rounded-md grid place-items-center mb-1.5 bg-[color:var(--c-input-soft)] text-[color:var(--c-input)]">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 7V5a1 1 0 0 1 1-1h2M20 7V5a1 1 0 0 0-1-1h-2M4 17v2a1 1 0 0 0 1 1h2M20 17v2a1 1 0 0 1-1 1h-2M8 12h8" />
+              </svg>
+            </div>
+            <div class="text-[12.5px] font-semibold tracking-[-0.01em] truncate" :title="mcpDisplayName(server.id)">{{ mcpDisplayName(server.id) }}</div>
+            <div class="text-[10px] text-[color:var(--ink-3)] mt-0.5 mb-1.5 font-mono truncate">mcp.{{ server.id }}</div>
+            <div class="flex items-center gap-1.5 text-[color:var(--ink-2)] min-w-0">
+              <span class="text-[9.5px] font-semibold rounded-[4px] px-1.5 py-px flex-none tag-input">MCP</span>
+              <span class="truncate text-[10.5px]" :title="mcpStateOf(server.id).label + (mcpStateOf(server.id).ok && !mcpRootEnabled(server.id) ? ' · 根能力关闭' : '')">{{ mcpStateOf(server.id).label }}<template v-if="mcpStateOf(server.id).ok && !mcpRootEnabled(server.id)"> · 根关闭</template> · {{ mcpChildCounts[server.id] || 0 }} 子项</span>
+            </div>
+          </div>
+        </router-link>
+      </div>
     </div>
 
     <div v-if="!registryLoading && !store.loading && !cards.length" class="empty-state">

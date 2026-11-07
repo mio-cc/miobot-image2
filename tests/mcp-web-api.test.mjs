@@ -90,6 +90,38 @@ test('mcp web-api: status 读取 bot 快照（query 与 path-search 双形态兼
   assert.equal(status.body.status.children[0].name, 'echo');
 });
 
+test('mcp web-api: capabilities 接口合并 MCP 根（P4 二期）——覆盖应用、默认 deny、快照状态进描述', async () => {
+  fs.writeFileSync(path.join(dataDir, 'mcp-status.json'), JSON.stringify({
+    version: 1,
+    servers: [{ serverId: 'suno', state: 'connected', toolCount: 10, enabledToolCount: 10, lastChangedAt: '2026-11-07T00:00:00Z' }],
+    children: [],
+  }));
+  const api = createWebApi({
+    initialConfig: {
+      panel: { passwordSeed: SEED },
+      orchestration: {
+        mcpServers: [{ id: 'suno', enabled: true, transport: 'http', url: 'http://127.0.0.1:9/mcp', auth: 'oauth', allowlist: ['echo', 'generate'] }],
+        capabilityOverrides: { 'mcp.suno': { name: 'Suno 官方', enabled: true, riskLevel: 'high' } },
+      },
+    },
+  });
+  const res = await api.handle({ method: 'GET', path: '/api/orchestration/capabilities', headers: authHeaders });
+  assert.equal(res.status, 200);
+  const root = res.body.capabilities.find((item) => item.id === 'mcp.suno');
+  assert.ok(root, 'capabilities 列表包含 MCP 根');
+  assert.equal(root.name, 'Suno 官方', '根覆盖 name 应用');
+  assert.equal(root.enabled, true, '根覆盖 enabled 应用');
+  assert.equal(root.riskLevel, 'high', '根覆盖 riskLevel 应用');
+  assert.ok(root.description.includes('已连接（10 子项）'), '快照状态进描述');
+  assert.equal(root.provider, 'mcp:suno');
+  // 未配置覆盖的服务器：默认 deny。
+  const api2 = createWebApi({ initialConfig: { panel: { passwordSeed: SEED }, orchestration: { mcpServers: [{ id: 'bare', enabled: true, transport: 'http', url: 'http://x/mcp' }] } } });
+  const res2 = await api2.handle({ method: 'GET', path: '/api/orchestration/capabilities', headers: authHeaders });
+  const bare = res2.body.capabilities.find((item) => item.id === 'mcp.bare');
+  assert.equal(bare.enabled, false, '默认 deny');
+  assert.ok(bare.description.includes('未连接'), '无快照按未连接描述');
+});
+
 test('mcp web-api: disconnect 清凭据并触发；connect 对未知 server 报 400', async () => {
   const server = await startMockAuthorizationServer();
   try {

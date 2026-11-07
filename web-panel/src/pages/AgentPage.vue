@@ -297,9 +297,9 @@ function removeExposure(id: string) {
 
     <!-- ═══ R21: MCP 服务器配置（此前无页面）═══ -->
     <SectionCard title="MCP 服务器" hint="orchestration.mcpServers · Model Context Protocol 外部工具接入" class="mb-4">
-      <div v-if="!(orchestration?.mcpServers as any)?.length" class="text-xs text-[color:var(--ink-3)]">
-        暂未配置 MCP 服务器。在 config.json 的 orchestration.mcpServers 中添加：
-        <pre class="mt-2 p-2 rounded-lg bg-[color:var(--surface-2)] font-mono text-[11px] whitespace-pre-wrap">[{ "id": "server-name", "enabled": true, "url": "https://...", "allowlist": ["tool1"] }]</pre>
+      <div v-if="!(orchestration?.mcpServers as any)?.length" class="space-y-2">
+        <div class="text-xs text-[color:var(--ink-3)]">暂未配置 MCP 服务器——一个服务器 = 一个树形根工具（预算按 1 个工具计，默认 deny）。</div>
+        <router-link class="btn-outline !px-3" to="/mcp">去新增 MCP 服务器</router-link>
       </div>
       <div v-else class="space-y-2">
         <div v-for="(server, idx) in (orchestration as any).mcpServers" :key="idx" class="field-box">
@@ -313,6 +313,7 @@ function removeExposure(id: string) {
             <button class="btn-outline !px-2" @click="(server as any).enabled = !(server as any).enabled">{{ server.enabled ? '停用' : '启用' }}</button>
           </div>
         </div>
+        <router-link class="btn-outline !px-3" to="/mcp">管理 MCP 服务器（新增 / 删除）</router-link>
       </div>
     </SectionCard>
 
