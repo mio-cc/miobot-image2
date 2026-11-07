@@ -12,6 +12,19 @@ export interface CapabilityOverride {
   timeoutMs?: number;
 }
 
+/** 流程编排（2026-11-07 拍板）：能力默认调用链的一步——capability 为目标能力 id，
+ *  hint 为该步的参数/行为提示（≤120 字符），when 为自然语言条件（给模型读，不做运行时求值）。 */
+export interface CapabilityFlowStep {
+  capability: string;
+  hint?: string;
+  when?: string;
+}
+
+/** 能力默认调用链：单条；steps 有序；未配置 = 默认链 = 该能力自己（单步，零成本）。 */
+export interface CapabilityFlowConfig {
+  steps: CapabilityFlowStep[];
+}
+
 export interface ModelRoleConfig {
   enabled: boolean;
   nodeIndex?: number;
@@ -103,6 +116,9 @@ export interface OrchestrationConfig {
     };
   };
   capabilityOverrides: Record<string, CapabilityOverride>;
+  /** 流程编排：能力默认调用链（键=能力 id）。与 capabilityOverrides 分键空间——后者管「树内待遇」，
+   *  这里管「调用组合」；不配置 = 单步 = 自己。纯声明+提示注入，不进执行路径（零运行时状态）。 */
+  capabilityFlows: Record<string, CapabilityFlowConfig>;
   execution: {
     maxSteps: number;
     maxParallelSteps: number;
@@ -252,6 +268,7 @@ export function defaultOrchestrationConfig(): OrchestrationConfig {
       },
     },
     capabilityOverrides: {},
+    capabilityFlows: {},
     execution: {
       maxSteps: 20,
       maxParallelSteps: 4,
@@ -412,6 +429,35 @@ export function normalizePermissionRules(input: unknown): PermissionRule[] {
   });
   return out;
 }
+/**
+ * 流程编排（capabilityFlows）规整：清洗 steps（capability 必填、hint≤120、when≤200），
+ * 悬挂引用（能力 id 不在注册表）不在此拦截——链是提示不是依赖，模型调不到会收到既有错误。
+ * 上限：≤64 条链 × ≤12 步（防配置膨胀；超出部分丢弃）。
+ */
+export function normalizeCapabilityFlows(input: unknown): Record<string, CapabilityFlowConfig> {
+  const source = record(input);
+  const out: Record<string, CapabilityFlowConfig> = {};
+  for (const [id, value] of Object.entries(source).slice(0, 64)) {
+    const key = id.trim().slice(0, 200);
+    if (!key) continue;
+    const item = record(value);
+    if (!Array.isArray(item.steps) || !item.steps.length) continue;
+    const steps: CapabilityFlowStep[] = [];
+    for (const step of item.steps.slice(0, 12)) {
+      const s = record(step);
+      const capability = String(s.capability || '').trim().slice(0, 200);
+      if (!capability) continue;
+      steps.push({
+        capability,
+        ...(String(s.hint || '').trim() ? { hint: String(s.hint).trim().slice(0, 120) } : {}),
+        ...(String(s.when || '').trim() ? { when: String(s.when).trim().slice(0, 200) } : {}),
+      });
+    }
+    if (steps.length) out[key] = { steps };
+  }
+  return out;
+}
+
 export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfig {
   const d = defaultOrchestrationConfig();
   const raw = record(input);
@@ -548,6 +594,7 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       }
       return out;
     })(),
+    capabilityFlows: normalizeCapabilityFlows(raw.capabilityFlows),
     execution: {
       maxSteps: numberIn(execution.maxSteps, d.execution.maxSteps, 1, 1000),
       maxParallelSteps: numberIn(execution.maxParallelSteps, d.execution.maxParallelSteps, 1, 64),

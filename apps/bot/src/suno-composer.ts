@@ -5,6 +5,9 @@ import type { UserRequest } from '../../../packages/orchestration/src/index.js';
 import { extractJsonObject } from '../../../packages/orchestration/src/index.js';
 import type { ModelClient } from '../../../packages/model/src/index.js';
 import { withPurposeFallback, type ModelFallbackController } from './model-fallback.js';
+// 方案 B（2026-11-07）：歌词结构规范单一来源——规则 25/26/41 抽为共享常量，
+// MCP 根注入与 composer 同源；渲染结果逐字节不变（黄金快照 tests/suno-composer-prompt.test.mjs 锚定）。
+import { SUNO_LYRICS_STRUCTURE_RULE_25, SUNO_LYRICS_STRUCTURE_RULE_26, SUNO_LYRICS_TITLE_RULE_41 } from './suno-lyrics-spec.js';
 
 export interface SunoComposedSpec {
   customMode: boolean;
@@ -218,8 +221,8 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     '23. 每段保持稳定的句长和演唱呼吸点。押韵自然，不为了押韵破坏语义；中文歌词避免翻译腔和机械堆字。',
     '24. 语言必须与用户要求一致。用户没有指定时跟随用户消息的主要语言。不要擅自把中文歌词翻成英文，也不要中英混杂除非用户要求。',
     '24a. 后台默认歌词语言是 ' + String(cfg.orchestration.suno.defaultLanguage || 'auto') + '。用户未指定语言且默认不是 auto 时，歌词必须使用该语言；language 字段输出最终语言。',
-    '25. 使用标准结构标记，每个标记独占一行：[Intro]、[Verse 1]、[Pre-Chorus]、[Chorus]、[Verse 2]、[Bridge]、[Outro]。必要时可使用 [Instrumental Break]、[Guitar Solo]、[Drop]、[Spoken Word]。',
-    '26. 结构标记后不要写解释、制作备注、和弦或参数。只写要演唱的歌词。',
+    SUNO_LYRICS_STRUCTURE_RULE_25,
+    SUNO_LYRICS_STRUCTURE_RULE_26,
     '27. 默认写完整但不过长的歌曲：2 个 verse、1 个 pre-chorus、2 到 3 个 chorus、1 个 bridge、1 个 outro。纯器乐则不要歌词。',
     '28. 歌词最多 5000 字符。若用户只给了主题，不要写成空洞的长诗；宁可少而准。',
     '',
@@ -242,7 +245,7 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     '38. audioWeight 仅在 custom 模式、有人声且存在音频参考时输出 0 到 1；否则 null。',
     '39. variety 仅在 custom 模式输出整数 0 到 4。用户要固定风格用 0 到 1；普通生成用 1；主动探索用 2 到 3；最大发散才用 4。',
     '40. negativeTags 只写用户明确不想要的音乐特征，英文逗号分隔，最多 1000 字符；不要填写 bad quality 等泛化负面词。',
-    '41. title 必须是你为这首歌新拟的原创歌名（80 字内，取副歌 hook 或核心意象）。当请求里出现已有歌曲（用户给出现有歌词、或点明基于某首歌重做/换词）时，title 绝对不得使用原歌名、也不得是原歌名的微小变体；必须从新歌词的核心意象另拟一个全新的名字。只有用户明确要求保留原歌名时才可例外。',
+    SUNO_LYRICS_TITLE_RULE_41,
     '',
     '【自检】',
     '42. 提交前检查：歌词是否能唱、副歌是否记得住、语言是否统一、段落是否有推进、style 是否与歌词情绪一致、是否误用了 custom 模式禁止字段。',

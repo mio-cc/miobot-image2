@@ -76,6 +76,20 @@ const crumbs = computed<Crumb[]>(() => {
     if (path.startsWith('/tools/')) {
         return [{ label: '工具与权限', to: '/tools' }, ...current(String(route.params.id || label))];
     }
+    // P4-MCP：/mcp 列表与 /mcp/<id> 配置页——面包屑挂回能力中心 MCP 分类视图
+    //（?cat=MCP 深链；返回落点是分类视图而非首页）。末级显示名取注册表（60s 共享缓存）。
+    if (path === '/mcp') {
+        return [{ label: '能力中心', to: '/capabilities?cat=MCP' }, ...current('MCP')];
+    }
+    if (path.startsWith('/mcp/')) {
+        const serverId = String(route.params.serverId || '');
+        const registered = (capabilities.registry as Array<{ id?: string; name?: string }> | null)?.find?.((item) => item?.id === `mcp.${serverId}`);
+        return [
+            { label: '能力中心', to: '/capabilities?cat=MCP' },
+            { label: 'MCP', to: '/mcp' },
+            ...current(String(registered?.name || serverId)),
+        ];
+    }
     // 能力中心卡片进入的专属配置页：面包屑挂回能力中心
     if (CAP_TITLES[path.slice(1)]) {
         return [{ label: '能力中心', to: '/capabilities' }, ...current(CAP_TITLES[path.slice(1)])];

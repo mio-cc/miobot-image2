@@ -138,3 +138,25 @@ test('mcp root: formatChildCatalog——空树与超长截断', () => {
   const text = formatChildCatalog('demo', many);
   assert.ok(text.includes('仅显示前 40 项'));
 });
+
+test('mcp root: 歌词规范注入——子项 schema 含 lyrics 字段时根描述/params 描述/list_actions 带规范（方案 B，2026-11-07）', () => {
+  const lyricChildren = buildMcpChildTools('suno', [
+    { name: 'generate', description: 'Generate a song', inputSchema: { type: 'object', properties: { lyrics: { type: 'string' }, style: { type: 'string' } }, required: ['lyrics'] } },
+    { name: 'query', description: 'Query library', inputSchema: { type: 'object', properties: { keywords: { type: 'string' } } } },
+  ]);
+  const descriptor = buildMcpRootDescriptor('suno', lyricChildren);
+  // 注入规范（与 composer 规则 25/26/41 同源的精简版）。
+  assert.ok(descriptor.description.includes('[Verse 1]'), '根描述含结构标记清单');
+  assert.ok(descriptor.description.includes('[Chorus]'));
+  assert.ok(descriptor.description.includes('歌名必须原创'), '根描述含歌名原创约束');
+  assert.ok(descriptor.description.length <= 800, '上限 800（2026-11-07 由 500 放宽）');
+  const paramsDesc = String(descriptor.inputSchema.properties.params.description);
+  assert.ok(paramsDesc.includes('结构标记'), 'params 描述带歌词提示');
+  const catalog = formatChildCatalog('suno', lyricChildren);
+  assert.ok(catalog.includes('结构标记规范'), 'list_actions 尾部带规范行');
+  // 通用判据：无 lyrics 字段的服务器不注入（echo 服务器零影响）。
+  const plainChildren = buildMcpChildTools('echo', [{ name: 'echo', description: 'Echo back', inputSchema: { type: 'object', properties: { text: { type: 'string' } } } }]);
+  const plainDescriptor = buildMcpRootDescriptor('echo', plainChildren);
+  assert.ok(!plainDescriptor.description.includes('[Verse 1]'), '无 lyrics 字段不注入规范');
+  assert.ok(!formatChildCatalog('echo', plainChildren).includes('结构标记规范'), '无 lyrics 字段 list_actions 不带规范行');
+});

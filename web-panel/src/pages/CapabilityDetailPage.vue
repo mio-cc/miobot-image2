@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import { useRoute } from 'vue-router';
 import CapabilityPageLayout from '../components/CapabilityPageLayout.vue';
+import FlowEditor from '../components/FlowEditor.vue';
 import { useCapabilityStore } from '../stores/capabilities';
 
 /**
@@ -30,8 +31,12 @@ const knownPages: Record<string, string> = {
 </script>
 
 <template>
-  <CapabilityPageLayout v-if="capabilityId" :capability-id="capabilityId" :feature-id="featureId"
-    :subtitle="'能力注册表自动生成页面；该能力可在「能力中心」搜索进入' + (knownPages[capabilityId] ? '，专属完整配置页在「' + knownPages[capabilityId] + '」' : '')" />
+  <div v-if="capabilityId" class="space-y-4">
+    <CapabilityPageLayout :capability-id="capabilityId" :feature-id="featureId"
+      :subtitle="'能力注册表自动生成页面；该能力可在「能力中心」搜索进入' + (knownPages[capabilityId] ? '，专属完整配置页在「' + knownPages[capabilityId] + '」' : '')" />
+    <!-- 流程编排（2026-11-07）：详情页挂默认调用组合编辑器（与 /mcp/<id> 共用 FlowEditor，单一真相源）。 -->
+    <FlowEditor :capability-id="capabilityId" />
+  </div>
   <div v-else class="text-sm text-[color:var(--ink-3)]">
     未知能力。回到 <router-link class="underline" to="/capabilities">能力中心</router-link> 重新选择。
   </div>

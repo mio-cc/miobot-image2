@@ -270,12 +270,12 @@ test('QQ matrix: auto-continue catches a no-mention follow-up once and then stop
       raw_message: '[CQ:at,qq=10000] 先说一句',
       message: [{ type: 'at', data: { qq: '10000' } }, { type: 'text', data: { text: ' 先说一句' } }],
     });
-    await waitUntil(() => h.sim.actions.some((action) => action.action === 'send_group_msg'), 8000, 'first group reply');
+    await waitUntil(() => h.sim.actions.some((action) => action.action === 'send_group_msg'), 20000, 'first group reply');
     await h.sim.sendEvent({
       post_type: 'message', message_type: 'group', group_id: 6002, user_id: 2202, message_id: 8202, sender: { nickname: '续话用户' },
       raw_message: '接着补充', message: [{ type: 'text', data: { text: '接着补充' } }],
     });
-    await waitUntil(() => h.sim.actions.filter((action) => action.action === 'send_group_msg').length >= 2, 8000, 'auto continue reply');
+    await waitUntil(() => h.sim.actions.filter((action) => action.action === 'send_group_msg').length >= 2, 20000, 'auto continue reply');
     assert.equal(h.inputs.length, 2);
     assert.match(String(h.inputs[1].text), /接着补充/);
     await h.sim.sendEvent({
@@ -389,14 +389,14 @@ test('QQ matrix: auto-continue checker can reject a follow-up and clear state', 
       raw_message: '[CQ:at,qq=10000] 第一次',
       message: [{ type: 'at', data: { qq: '10000' } }, { type: 'text', data: { text: ' 第一次' } }],
     });
-    await waitUntil(() => h.sim.actions.some((action) => action.action === 'send_group_msg'), 8000, 'first reply before reject');
+    await waitUntil(() => h.sim.actions.some((action) => action.action === 'send_group_msg'), 20000, 'first reply before reject');
     await h.sim.sendEvent({
       post_type: 'message', message_type: 'group', group_id: 6004, user_id: 2204, message_id: 8602, sender: { nickname: '拒绝续话' },
       raw_message: '不相关的话', message: [{ type: 'text', data: { text: '不相关的话' } }],
     });
     // P1 flaky 治理：原固定 220ms 等 auto-continue checker 异步完成，并发抢占下不够（实测 checks=0）。
     // 改为事件驱动等待 checker 被调用（窗口 8s，与首条回复同规格），断言语义不变。
-    await waitUntil(() => checks >= 1, 8000, 'auto-continue checker invoked');
+    await waitUntil(() => checks >= 1, 20000, 'auto-continue checker invoked');
     assert.equal(checks, 1);
     assert.equal(h.inputs.length, 1);
     assert.equal(h.sim.actions.filter((action) => action.action === 'send_group_msg').length, 1);

@@ -19,7 +19,7 @@ export interface SunoCapabilityOptions {
   repairLyrics?: (input: { lyrics: string; title?: string; style?: string; userText: string }) => Promise<string | null>;
 }
 
-/** Suno 400 是否为内容审核拒绝：官方 400 错误体文案未经真实上游采样，按保守特征识别——
+/** Suno 400 是否为内容审核拒绝：第三方 SunoAPI 上游的 400 错误体文案未经真实采样，按保守特征识别——
  *  识别不中按普通失败处理（现行为），绝不误判成普通参数错误为审核。 */
 export function isSunoModerationRejection(message: string): boolean {
   return /suno_http_400/i.test(message) && /(敏感|审核|content|sensitive|moderation|inappropriate|policy|flagged)/i.test(message);

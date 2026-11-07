@@ -2,6 +2,8 @@ import type { CapabilityDescriptor, CapabilityHandler, CapabilityInvocation, Exe
 import { validateCapabilityArgs } from '../../../packages/orchestration/src/validation.js';
 import type { McpClient, McpToolInfo } from './mcp-client.js';
 import { inferEffectFromDescription } from './mcp-client.js';
+// 方案 B（2026-11-07）：歌词结构规范单一来源——子项 schema 含 lyrics 字段时自动注入（通用判据，不认品牌）。
+import { MCP_LYRICS_SPEC_HINT } from './suno-lyrics-spec.js';
 
 /**
  * Phase 2（方案 §4.4，D7/D17/D18/D20/D22）：树形根工具——一个 MCP 服务器 = 一个根能力。
@@ -96,19 +98,30 @@ export function buildMcpChildTools(
   return children;
 }
 
-/** 根 descriptor：id `mcp.<server>`，默认 deny，description 恒定（分层摘要 ≤500 字符，预算按根计）。 */
+/** 子项集里是否存在歌词类参数（inputSchema.properties.lyrics）——通用判据，不认 Suno 品牌。 */
+function hasLyricsField(children: McpChildTool[]): boolean {
+  return children.some((child) => {
+    const props = (child.inputSchema as { properties?: Record<string, unknown> } | null)?.properties;
+    return Boolean(props && typeof props === 'object' && props.lyrics);
+  });
+}
+
+/** 根 descriptor：id `mcp.<server>`，默认 deny，description 分层摘要（上限 800 字符：协议说明 +
+ *  歌词规范注入后的预算；2026-11-07 拍板由 500 放宽——500 装不下「协议说明+规范」两段）。 */
 export function buildMcpRootDescriptor(
   serverId: string,
   children: McpChildTool[],
   override: McpCapabilityOverrideInput = {},
 ): CapabilityDescriptor {
   const enabledCount = children.filter((child) => child.enabled).length;
+  const lyricsCapable = hasLyricsField(children);
   const description = [
     `MCP 服务器 ${serverId} 的统一入口工具（树形根，预算按 1 个工具计）。`,
     `含 ${children.length} 个子操作（${enabledCount} 个已启用）。`,
     '调用时传 action（子工具名）与 params（该子工具的参数对象）；',
     'action 传 list_actions 或留空可查看子项清单与参数说明。',
-  ].join('').slice(0, 500);
+    ...(lyricsCapable ? [`歌词/文本参数规范：${MCP_LYRICS_SPEC_HINT}`] : []),
+  ].join('').slice(0, 800);
   return {
     id: `mcp.${serverId}`,
     version: '1.0.0',
@@ -128,7 +141,7 @@ export function buildMcpRootDescriptor(
       type: 'object',
       properties: {
         action: { type: 'string', description: '子工具名；传 list_actions 或留空查看可用子项清单' },
-        params: { type: 'object', description: '该子工具的参数，结构见 list_actions 返回' },
+        params: { type: 'object', description: lyricsCapable ? '该子工具的参数，结构见 list_actions 返回；歌词/文本参数须带结构标记（规范见工具说明）' : '该子工具的参数，结构见 list_actions 返回' },
       },
       required: ['action'],
     } as CapabilityDescriptor['inputSchema'],
@@ -155,6 +168,7 @@ export function formatChildCatalog(serverId: string, children: McpChildTool[]): 
     `mcp.${serverId} 子操作清单（${children.length} 项${children.length > 40 ? '，仅显示前 40 项' : ''}）：`,
     ...lines,
     '调用方式：action=子操作名，params=该子操作的参数对象。',
+    ...(hasLyricsField(children) ? ['歌词/文本参数请遵循工具说明中的结构标记规范（[Intro]/[Verse]/[Chorus] 等标记独占一行，标记后只写歌词）。'] : []),
   ].join('\n');
 }
 

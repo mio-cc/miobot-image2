@@ -23,7 +23,7 @@ import { normalizeForwardPayload } from './message-enrichment.js';
 import { FeatureGate } from './feature-gate.js';
 import { createOutboundImageCompressor, materializeImagesForNapcat, materializeAudioForNapcat } from './image-output.js';
 import { ApprovalRuntime } from './approval-runtime.js';
-import { buildCommandIntentPlan, createPermissionPolicyFromDefaults, hashApprovalPayload, resolvePermission, type CapabilityDescriptor, type UserRole } from '../../../packages/orchestration/src/index.js';
+import { buildCommandIntentPlan, createPermissionPolicyFromDefaults, hashApprovalPayload, resolvePermission, formatFlowCatalogMarker, formatFlowHint, type CapabilityDescriptor, type UserRole } from '../../../packages/orchestration/src/index.js';
 import { ApprovalActionConsumer } from './approval-actions.js';
 import { CapabilityTestActionConsumer } from './capability-test-actions.js';
 import { NodeLatencyActionConsumer, NodeLatencyRecorder, probeAllNodes, wrapClientWithLatency } from './node-latency.js';
@@ -1044,9 +1044,14 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         .map((entry) => `- ${entry.rootId} → ${entry.childName}${entry.displayName ? `（${entry.displayName}）` : ''}：${entry.summary}｜调用 ${entry.rootId} 并传 action=${entry.childName}`)
       : [];
     const lines = descriptors.slice(0, 40).map((d) => {
-      const enabled = getConfig().orchestration.capabilityOverrides?.[d.id]?.enabled !== false;
+      // enabled 语义与 loadout 同源（实测障碍 #1 修复，2026-11-07）：目录读 descriptor 的有效值
+      // （内置=覆盖后默认；MCP 根=覆盖 ?? false 默认 deny），不再读原始 override——否则默认 deny 的
+      // MCP 根在目录里不带「已停用」标记，模型会看到「目录有、工具无」的矛盾。
+      const enabled = d.enabled !== false;
+      // 流程编排：目录行尾链标记（发现时可见；紧凑形式 >2 步截断）。
+      const flowMarker = formatFlowCatalogMarker(String(d.id), getConfig().orchestration?.capabilityFlows || {});
       const known = DEDICATED_CAP_PAGES.has(String(d.id));
-      return `- ${d.id}（${d.name}）：${String(d.description || '').slice(0, 80)}${d.presentationHint ? '【展示方式推荐：' + d.presentationHint + '】' : ''}${known ? '［有专属配置页］' : ''}${enabled ? '' : '［已停用］'}`;
+      return `- ${d.id}（${d.name}）：${String(d.description || '').slice(0, 80)}${d.presentationHint ? '【展示方式推荐：' + d.presentationHint + '】' : ''}${known ? '［有专属配置页］' : ''}${flowMarker}${enabled ? '' : '［已停用］'}`;
     });
     const text = lines.length || mcpLines.length
       ? `可用能力目录（${descriptors.length} 项${mcpLines.length ? `，另含 ${mcpLines.length} 个 MCP 子操作` : ''}）：\n${[...lines, ...mcpLines].join('\n')}`
@@ -1574,7 +1579,10 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       // tts.speak 是底层合成工具，不是回复方式开关；Agent 语音偏好走 reply.presentation。
       if (descriptor.id === 'tts.speak' && !configuredExposure) return [];
       const inferredExposure = inferCapabilityToolExposure(descriptor, configuredExposure as 'core' | 'domain' | 'searchable' | 'hidden' | undefined);
-      const binding = createCapabilityToolBinding(descriptor, handler, {
+      // 流程编排（2026-11-07）：默认调用链尾拼进工具 description——模型偏离链直调时描述仍在场；
+      // 同源派生（formatFlowHint），与目录行标记一致。纯提示：不进执行路径，零运行时状态。
+      const flowHint = formatFlowHint(descriptor.id, cfg.orchestration?.capabilityFlows || {});
+      const binding = createCapabilityToolBinding(flowHint ? { ...descriptor, description: `${descriptor.description || ''}\n${flowHint}` } : descriptor, handler, {
         ...(inferredExposure ? { exposure: inferredExposure } : {}),
         ...(!descriptor.timeoutMs ? { timeoutMs: Math.max(1000, cfg.toolRegistry.defaultTimeoutMs) } : {}),
       });

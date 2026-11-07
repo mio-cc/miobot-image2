@@ -90,7 +90,7 @@ test('mcp web-api: status 读取 bot 快照（query 与 path-search 双形态兼
   assert.equal(status.body.status.children[0].name, 'echo');
 });
 
-test('mcp web-api: capabilities 接口合并 MCP 根（P4 二期）——覆盖应用、默认 deny、快照状态进描述', async () => {
+test('mcp web-api: capabilities 接口合并 MCP 根（P4 二期）——覆盖应用、默认 deny、快照状态进描述、合成 health 三态', async () => {
   fs.writeFileSync(path.join(dataDir, 'mcp-status.json'), JSON.stringify({
     version: 1,
     servers: [{ serverId: 'suno', state: 'connected', toolCount: 10, enabledToolCount: 10, lastChangedAt: '2026-11-07T00:00:00Z' }],
@@ -114,12 +114,40 @@ test('mcp web-api: capabilities 接口合并 MCP 根（P4 二期）——覆盖�
   assert.equal(root.riskLevel, 'high', '根覆盖 riskLevel 应用');
   assert.ok(root.description.includes('已连接（10 子项）'), '快照状态进描述');
   assert.equal(root.provider, 'mcp:suno');
-  // 未配置覆盖的服务器：默认 deny。
+  // 合成 health（能力中心 MCP 分类卡片数据源）：已连接 = ok + 子项数进 detail。
+  assert.equal(root.health.status, 'ok', '已连接 → health ok');
+  assert.ok(root.health.detail.includes('已连接（10 子项）'), 'health detail 含子项数');
+  // 内置能力的 health 仍走 capabilityHealth（无合成值时不被覆盖）。
+  const builtin = res.body.capabilities.find((item) => item.id === 'tts.speak');
+  assert.ok(builtin && builtin.health, '内置能力 health 照旧合成');
+
+  // 未配置覆盖的服务器：默认 deny；无快照 → 未连接（unconfigured）。
   const api2 = createWebApi({ initialConfig: { panel: { passwordSeed: SEED }, orchestration: { mcpServers: [{ id: 'bare', enabled: true, transport: 'http', url: 'http://x/mcp' }] } } });
   const res2 = await api2.handle({ method: 'GET', path: '/api/orchestration/capabilities', headers: authHeaders });
   const bare = res2.body.capabilities.find((item) => item.id === 'mcp.bare');
   assert.equal(bare.enabled, false, '默认 deny');
   assert.ok(bare.description.includes('未连接'), '无快照按未连接描述');
+  assert.equal(bare.health.status, 'unconfigured', '无快照 → health unconfigured');
+  assert.equal(bare.health.detail, '未连接');
+
+  // 停用（server.enabled:false）→ health disabled；待授权（needs-auth）→ unconfigured + 待授权。
+  const api3 = createWebApi({ initialConfig: { panel: { passwordSeed: SEED }, orchestration: { mcpServers: [
+    { id: 'off', enabled: false, transport: 'http', url: 'http://x/mcp' },
+    { id: 'auth-pending', enabled: true, transport: 'http', url: 'http://x/mcp', auth: 'oauth' },
+  ] } } });
+  const res3 = await api3.handle({ method: 'GET', path: '/api/orchestration/capabilities', headers: authHeaders });
+  const off = res3.body.capabilities.find((item) => item.id === 'mcp.off');
+  assert.equal(off.health.status, 'disabled', 'server.enabled:false → health disabled');
+  assert.equal(off.health.detail, '已停用');
+  fs.writeFileSync(path.join(dataDir, 'mcp-status.json'), JSON.stringify({
+    version: 1,
+    servers: [{ serverId: 'auth-pending', state: 'needs-auth', toolCount: 0, enabledToolCount: 0, lastChangedAt: '2026-11-07T00:00:00Z' }],
+    children: [],
+  }));
+  const res4 = await api3.handle({ method: 'GET', path: '/api/orchestration/capabilities', headers: authHeaders });
+  const pending = res4.body.capabilities.find((item) => item.id === 'mcp.auth-pending');
+  assert.equal(pending.health.status, 'unconfigured', 'needs-auth → health unconfigured');
+  assert.ok(pending.health.detail.includes('待授权'), '待授权进 health detail');
 });
 
 test('mcp web-api: disconnect 清凭据并触发；connect 对未知 server 报 400', async () => {

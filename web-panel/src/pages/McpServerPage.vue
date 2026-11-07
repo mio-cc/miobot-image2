@@ -13,6 +13,7 @@ import { useConfigStore } from '../stores/config';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import FlowEditor from '../components/FlowEditor.vue';
 
 const route = useRoute();
 const configStore = useConfigStore();
@@ -127,6 +128,20 @@ async function save() {
     else actionMessage.value = '已保存；bot 已即时热重载（config watch）。';
 }
 
+/* 实测障碍 #2（2026-11-07）：MCP 根默认 searchable，toolSearchEnabled=false（生产默认）时
+ * 模型完全不可见（loadout/目录双双缺席）——接入后必须引导开启，否则「接进去等于白接」。
+ * 取舍：不改全局默认（开默认会让全部 searchable 工具进每次请求的 loadout，token 成本上升），
+ * 改为接入路径上的强引导（横幅 + 一键开启）。 */
+const toolSearchDisabled = computed(() => (configStore.config as any)?.toolRegistry?.toolSearchEnabled !== true);
+async function enableToolSearch() {
+    const toolRegistry = (configStore.config as any)?.toolRegistry;
+    if (!toolRegistry) return;
+    toolRegistry.toolSearchEnabled = true;
+    const result = await configStore.save();
+    if (result.ok) actionMessage.value = '工具检索已开启（bot 即时热重载）——MCP 根能力现在对模型可见了';
+    else actionError.value = configStore.saveStatus || '保存失败';
+}
+
 onMounted(async () => {
     if (!configStore.loaded) await configStore.fetchConfig();
     await refreshStatus();
@@ -135,7 +150,18 @@ onMounted(async () => {
 
 <template>
   <div class="max-w-4xl mx-auto space-y-4">
-    <SectionCard :title="`MCP 服务器：${serverId}`" :hint="`mcp.${serverId} · 树形根工具（预算按 1 个工具计，默认 deny）`">
+    <!-- 移动端返回（<640px 面包屑隐藏）：确定性层级返回——上级是 MCP 列表，不用 history.back（深链后不可靠） -->
+    <div class="sm:hidden -mb-2 flex items-center gap-2">
+      <router-link to="/mcp" class="btn-outline !px-2.5 !py-1 !text-xs">‹ 返回 MCP 列表</router-link>
+    </div>
+
+    <!-- 实测障碍 #2：检索关闭 = MCP 对模型完全不可见——最后一公里引导（说明见 script 注释） -->
+    <div v-if="toolSearchDisabled" class="card p-3 flex flex-wrap items-center gap-3">
+      <span class="text-xs text-amber-600">工具检索（toolRegistry.toolSearchEnabled）当前关闭——MCP 根能力默认 searchable，关闭时模型既看不到工具也搜不到能力目录，接入后无法使用</span>
+      <button class="btn !px-3 !py-1 !text-xs ml-auto" :disabled="configStore.saving" @click="enableToolSearch">开启工具检索</button>
+    </div>
+
+    <SectionCard :title="`MCP 服务器：${rootName || serverId}`" :hint="`mcp.${serverId} · 树形根工具（预算按 1 个工具计，默认 deny）`">
       <div class="flex flex-wrap items-center gap-3">
         <span class="tag" :class="stateBadge.state === 'connected' ? '!bg-green-500/15 !text-green-600' : stateBadge.state === 'needs-auth' ? '!bg-amber-500/15 !text-amber-600' : ''">{{ stateBadge.label }}</span>
         <span v-if="serverStatus" class="text-xs text-[color:var(--ink-3)]">子项 {{ serverStatus.toolCount }}（启用 {{ serverStatus.enabledToolCount }}）· 快照时间 {{ String(serverStatus.fetchedAt || '').slice(0, 19).replace('T', ' ') }}</span>
@@ -167,7 +193,11 @@ onMounted(async () => {
     <!-- B6：serverId 不在配置中（已删除/链接过期）→ 空态页，不做 server.* 直绑（防整页 TypeError） -->
     <SectionCard v-if="!server" title="未找到该 MCP 服务器" :hint="`orchestration.mcpServers 中没有 id 为 ${serverId} 的条目`">
       <p class="text-xs text-[color:var(--ink-3)]">
-        该服务器可能已被删除，或链接已过期。请回到「Agent」页的 MCP 服务器列表重新进入；也可在 config.json 的 orchestration.mcpServers 中确认该 id 是否存在。
+        该服务器可能已被删除，或链接已过期。请回到
+        <router-link to="/mcp" class="text-[color:var(--accent)] hover:underline">MCP 服务器列表</router-link>
+        重新进入，或到
+        <router-link to="/capabilities?cat=MCP" class="text-[color:var(--accent)] hover:underline">能力中心 · MCP 分类</router-link>
+        查看已接入的服务器。
       </p>
     </SectionCard>
 
@@ -199,6 +229,9 @@ onMounted(async () => {
         <span v-else class="text-xs text-[color:var(--ink-3)]">{{ configStore.saveStatus }}</span>
       </div>
     </SectionCard>
+
+    <!-- 流程编排（2026-11-07）：MCP 根的默认调用组合（与能力详情页共用 FlowEditor，单一真相源）。 -->
+    <FlowEditor v-if="server" :capability-id="`mcp.${serverId}`" />
 
     <!-- 区块 3：子项列表（树形数据 + 覆盖，capabilityOverrides['mcp.<server>.<tool>']）。v-if=server 与区块 2 同款防直绑 -->
     <SectionCard v-if="server" title="子项工具" :hint="`allowlist 管「进不进树」；这里的开关与改名管「树内待遇」（${serverId} 共 ${serverChildren.length} 个已进树子项）`">
