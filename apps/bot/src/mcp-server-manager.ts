@@ -30,6 +30,17 @@ export interface McpServerStatus {
   fetchedAt?: string;
 }
 
+/** 鉴权类失败（token 失效 / 权限不足）：值得刷新一次 token 后重试；
+ *  刷新仍失败（如 Suno 对扩权刷新返回 invalid_scope）则只能由用户重新授权。 */
+export function isMcpAuthError(message: string): boolean {
+  const text = String(message || '').toLowerCase();
+  return text.includes('mcp_http_401')
+    || text.includes('mcp_http_403')
+    || text.includes('insufficient_scope')
+    || text.includes('mcp_oauth_token_failed:invalid_grant')
+    || text.includes('mcp_oauth_token_failed:invalid_scope');
+}
+
 /** D16：配置摘要——参与 diff 的字段（不含 toolOverrides；覆盖经 capabilityOverrides 即时生效）。
  * token 参与 diff：静态 token 变更即重连（旧 client 持旧 token 会一直 401）；OAuth 服务器凭据在
  * 独立 secret 文件（config 内 token 通常为空），401 走刷新链路，不受此处影响。 */
@@ -118,7 +129,7 @@ export class McpServerManager {
   }
 
   private registerRoot(managed: ManagedServer): void {
-    const descriptor = buildMcpRootDescriptor(managed.config.id, managed.children, this.overrideFor(managed.config.id), managed.config.paramDefaults);
+    const descriptor = buildMcpRootDescriptor(managed.config.id, managed.children, this.overrideFor(managed.config.id), managed.config.paramDefaults, managed.config.childParamDefaults);
     const handler = new McpRootToolHandler(managed.client!, managed.config.id, managed.children, this.resolvedParamDefaults(managed.config, managed.children));
     this.options.registerCapability(descriptor, handler);
     managed.status.toolCount = managed.children.length;
@@ -140,7 +151,29 @@ export class McpServerManager {
     };
     this.servers.set(server.id, managed);
     this.setState(managed, 'connecting');
+    this.writeStatusFile(); // 面板轮询据此显示「正在握手」阶段
     await this.connectManaged(managed, server);
+  }
+
+  /**
+   * 手动重连（面板「重连」按钮）：与 reload() 的配置 diff 解耦——即使配置摘要没变也真的
+   * 断开（关 client + 注销根能力）→ 重新 initialize → 重新拉 tools/list。
+   * 面板与 bot 双进程，由 trigger 文件 `reconnect:<id>` 调到这里。
+   * forceTokenRefresh：先强制用 refresh token 换一次新 token（token 未过期但 scope 不足时的兜底；
+   * 若授权服务器拒绝扩权刷新，则保留凭据并进入 needs-auth，面板提示重新授权）。
+   */
+  async forceReconnect(serverId: string, options: { forceTokenRefresh?: boolean } = {}): Promise<McpServerStatus> {
+    const server = (this.options.getConfig().orchestration?.mcpServers || []).find((item) => String(item.id) === serverId);
+    if (!server) throw new Error(`mcp_server_not_found:${serverId}`);
+    if (server.enabled === false) throw new Error('mcp_server_disabled');
+    // 断开旧连接（保留 OAuth 凭据，仅关闭 client/通知流并注销根能力）。
+    this.disconnect(serverId);
+    if (options.forceTokenRefresh) await this.tryRefreshCredential(server, '', true);
+    await this.connect(server);
+    const status = this.statusOf(serverId);
+    if (!status) throw new Error('mcp_reconnect_no_status');
+    this.logger?.info('MCP 手动重连完成', { server: serverId, state: status.state, tools: status.toolCount });
+    return status;
   }
 
   /** capabilityOverrides 相关键摘要 + 参数默认值摘要（前缀 mcp.<server> / mcp.<server>.）——
@@ -199,26 +232,29 @@ export class McpServerManager {
       this.logger?.info('MCP server 已接入（树形根）', { server: server.id, tools: tools.length, inTree: managed.children.length });
     } catch (error) {
       const message = String((error as Error)?.message || error);
+      // 401/403/权限不足统一走一次刷新重试——覆盖「token 未过期但 scope 不足」
+      // （部分服务器对缺 scope 返回 403 而非 401）。
       const refreshed = refreshDepth < 1 ? await this.tryRefreshCredential(server, message) : false;
       if (refreshed) {
-        // 刷新成功：关闭旧 client，用新 token 重试一次（仅一次；再 401 由下一轮 needs-auth 判定接住）。
+        // 刷新成功：关闭旧 client，用新 token 重试一次（仅一次；再失败由下一轮 needs-auth 判定接住）。
         try { client.close(); } catch { /* 忽略关闭失败 */ }
         await this.connectManaged(managed, server, refreshDepth + 1);
         return;
       }
       managed.client = null;
       try { client.close(); } catch { /* 忽略关闭失败 */ }
-      const needsAuth = message.includes('mcp_http_401') || message.includes('mcp_oauth_token_failed:invalid_grant');
+      const needsAuth = isMcpAuthError(message);
       this.setState(managed, needsAuth ? 'needs-auth' : 'disconnected', message);
       this.writeStatusFile();
       this.logger?.warn('MCP server 接入失败', { server: server.id, state: needsAuth ? 'needs-auth' : 'disconnected', error: message });
     }
   }
 
-  /** Phase 3：401 时尝试用 refresh token 换新（auth:'oauth' 且存有 tokenEndpoint/resource）；成功更新存储。 */
-  private async tryRefreshCredential(server: McpServerConfig, errorMessage: string): Promise<boolean> {
+  /** Phase 3：鉴权失败时用 refresh token 换新（auth:'oauth' 且存有 tokenEndpoint/resource）；成功更新存储。
+   *  force=true 供手动重连显式强制刷新（不看错误内容）。 */
+  private async tryRefreshCredential(server: McpServerConfig, errorMessage: string, force = false): Promise<boolean> {
     if (server.auth !== 'oauth' || !this.options.credentialStore) return false;
-    if (!errorMessage.includes('mcp_http_401')) return false;
+    if (!force && !isMcpAuthError(errorMessage)) return false;
     const store = this.options.credentialStore;
     const credential = store.get(server.id);
     const storedClient = store.getClient(server.id);
@@ -307,6 +343,11 @@ export class McpServerManager {
       } else if (managed.summary !== summary) {
         // 变更：先断开再重连（窗口期调用按 mcp_server_unavailable 失败）。
         this.disconnect(serverId);
+        tasks.push(this.connect(server));
+      } else if (!managed.client && this.options.credentialStore?.get(serverId)) {
+        // OAuth 授权完成后的 trigger 热重载：凭据已落盘但连接参数未变，
+        // 上面的 config diff 不会重连，服务器会一直停在 needs-auth。
+        // 无 client 且已有凭据时补一次重连（token 由 connectManaged 从凭据存储注入）。
         tasks.push(this.connect(server));
       } else {
         // 连接参数未变：capabilityOverrides 变化 → 本地重建树并热替换根能力（免重连，走查实测发现）。
@@ -401,13 +442,17 @@ export class McpServerManager {
    */
   watchDataFiles(options: { configPath?: string; triggerPath?: string } = {}): () => void {
     const watchers: Array<{ close: () => void }> = [];
+    const triggerPath = options.triggerPath;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const scheduleReload = (source: string): void => {
       this.logger?.info('mcp 触发热重载', { source });
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
-        void this.reload().catch((error) => this.logger?.warn('mcp 热重载失败', { source, error: String((error as Error)?.message || error) }));
+        // trigger 文件带具体动作（reconnect/disconnect/oauth）——解析后执行，
+        // 不再一律走幂等 diff（否则「重连」在配置未变时是空操作）。
+        const run = source === 'trigger' ? this.applyTrigger(triggerPath) : this.reload();
+        void run.catch((error) => this.logger?.warn('mcp 热重载失败', { source, error: String((error as Error)?.message || error) }));
       }, 500);
     };
     const watchFile = (filePath: string | undefined, source: string): void => {
@@ -426,10 +471,35 @@ export class McpServerManager {
       }
     };
     watchFile(options.configPath, 'config');
-    watchFile(options.triggerPath, 'trigger');
+    watchFile(triggerPath, 'trigger');
     return () => {
       if (timer) clearTimeout(timer);
       for (const watcher of watchers) watcher.close();
     };
+  }
+
+  /**
+   * 触发文件动作分发：reconnect:<id> 真断开重连；disconnect:<id> 仅断开（保留凭据清理由面板侧做）；
+   * 其余（oauth 完成等）走 reload() 的「有凭据无 client → 补连」分支。
+   */
+  private async applyTrigger(triggerPath: string | undefined): Promise<void> {
+    let payload: { action?: string; forceTokenRefresh?: boolean } = {};
+    try {
+      if (triggerPath) payload = JSON.parse(await fs.promises.readFile(triggerPath, 'utf8'));
+    } catch {
+      // 读取失败/文件被删除：退回配置 diff（幂等）。
+    }
+    const action = String(payload?.action || '');
+    const match = /^(reconnect|disconnect|oauth):(.+)$/.exec(action);
+    if (!match) { await this.reload(); return; }
+    const kind = String(match[1] || '');
+    const serverId = String(match[2] || '');
+    this.logger?.info('mcp 触发动作', { kind, serverId, forceTokenRefresh: payload.forceTokenRefresh === true });
+    if (kind === 'disconnect') { this.disconnect(serverId); return; }
+    if (kind === 'reconnect') {
+      await this.forceReconnect(serverId, { forceTokenRefresh: payload.forceTokenRefresh === true });
+      return;
+    }
+    await this.reload();
   }
 }

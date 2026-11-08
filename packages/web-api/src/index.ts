@@ -697,7 +697,11 @@ export class WebApi {
           authorizationEndpoint: metadata.authorizationEndpoint,
           clientId: registered.clientId,
           redirectUri,
-          scope: 'api:v0 offline_access',
+          // Suno MCP 资源元数据（RFC 9728）声明的完整 scope 集：任一工具调用都先校验 profile:read
+          // （仅 api:v0 会得到 insufficient_scope，实测 2026-11-08）；生成需 credits:spend，
+          // 库/下载/设置分别对应 library:read|search|write、download。刷新令牌无法扩权（invalid_scope），
+          // 改本清单后需重新授权一次。
+          scope: 'api:v0 offline_access profile:read credits:spend library:read library:search library:write download',
           state,
           codeChallenge: pkce.challenge,
           resource: String(server.url),
@@ -705,7 +709,7 @@ export class WebApi {
         return ok({ success: true, authorizationUrl, state });
       }
 
-      // ── P3-MCP：断开（清凭据 + 触发 bot 热重载）──
+      // ── P3-MCP：断开（清凭据 + 触发 bot 断开连接）──
       if (method === 'POST' && path === '/api/mcp/disconnect') {
         const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
         const serverId = String(body.serverId || '').trim();
@@ -715,13 +719,20 @@ export class WebApi {
         return ok({ success: true });
       }
 
-      // ── P3-MCP：手动重连（触发文件 → bot 即时 reload）──
+      // ── P3-MCP：手动重连（触发文件 → bot 真断开重连：initialize + tools/list）──
+      // 与配置 diff 解耦：配置未变也会重连；forceTokenRefresh=true 时先强制刷新一次 token
+      // （覆盖「token 未过期但 scope 不足」；若授权服务器拒绝扩权刷新，bot 置 needs-auth，面板提示重新授权）。
       if (method === 'POST' && path === '/api/mcp/reconnect') {
         const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
         const serverId = String(body.serverId || '').trim();
         if (!serverId) return json(400, { success: false, error: 'serverId is required' });
-        touchMcpTrigger(`reconnect:${serverId}`);
-        return ok({ success: true });
+        const cfg = this.repository.getConfig();
+        const server = (cfg.orchestration?.mcpServers || []).find((item) => String(item.id) === serverId);
+        if (!server) return json(400, { success: false, error: `mcp_server_not_found:${serverId}` });
+        if (server.enabled === false) return json(400, { success: false, error: 'mcp_server_disabled' });
+        const forceTokenRefresh = body.forceTokenRefresh === true;
+        touchMcpTrigger(`reconnect:${serverId}`, { forceTokenRefresh });
+        return ok({ success: true, serverId, forceTokenRefresh });
       }
 
       if (method === 'GET' && path === '/api/orchestration/comfyui/workflows') {
@@ -1425,12 +1436,12 @@ function mcpCredentialStore(): McpCredentialStore {
 }
 let mcpCredentialStoreInstance: McpCredentialStore | null = null;
 
-/** bot 进程 watch 的触发文件（OAuth 完成/断开/重连 → 即时 reload，不等 30s 巡检）。 */
-function touchMcpTrigger(action: string): void {
+/** bot 进程 watch 的触发文件（OAuth 完成/断开/重连 → 即时动作，不等 30s 巡检）。 */
+function touchMcpTrigger(action: string, extra: Record<string, unknown> = {}): void {
   try {
     const filePath = nodePath.join(miobotDataDir(), 'mcp-trigger.json');
     mkdirSync(nodePath.dirname(filePath), { recursive: true });
-    writeFileSync(filePath, JSON.stringify({ action, at: new Date().toISOString() }, null, 2), 'utf8');
+    writeFileSync(filePath, JSON.stringify({ action, ...extra, at: new Date().toISOString() }, null, 2), 'utf8');
   } catch { /* 触发失败可容忍：bot 侧 30s 巡检兜底 */ }
 }
 

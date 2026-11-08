@@ -421,6 +421,31 @@ test('orchestration: capability argument schema validation produces clarificatio
   assert.ok(validationQuestion(bad.issues).includes('count'));
 });
 
+test('orchestration: anyOf 条件必填——空参数被拒，任一模式满足即通过', () => {
+  const schema = {
+    type: 'object', additionalProperties: false,
+    properties: {
+      description: { type: 'string' }, lyrics: { type: 'string' },
+      instrumental: { type: 'boolean' }, midi_upload_id: { type: 'string' },
+    },
+    anyOf: [
+      { required: ['description'] },
+      { required: ['lyrics'] },
+      { required: ['instrumental'], properties: { instrumental: { const: true } } },
+      { required: ['midi_upload_id'] },
+    ],
+  };
+  const empty = validateCapabilityArgs(schema, {});
+  assert.equal(empty.ok, false, '空 params 必须本地拒绝');
+  assert.ok(empty.issues.some((item) => item.code === 'anyOf'));
+  assert.ok(empty.issues.find((item) => item.code === 'anyOf').message.includes('description 或 lyrics 或 instrumental=true 或 midi_upload_id'));
+  assert.equal(validateCapabilityArgs(schema, { description: 'city pop' }).ok, true);
+  assert.equal(validateCapabilityArgs(schema, { lyrics: '[Verse]\nla' }).ok, true);
+  assert.equal(validateCapabilityArgs(schema, { instrumental: true }).ok, true);
+  assert.equal(validateCapabilityArgs(schema, { instrumental: false }).ok, false, 'instrumental=false 不算满足');
+  assert.equal(validateCapabilityArgs(schema, { midi_upload_id: 'm1' }).ok, true);
+});
+
 test('orchestration: exact command builds IntentPlan without model planning', () => {
   const plan = buildCommandIntentPlan({ requestId: 'r', command: 'genImage', args: '一只猫' });
   assert.equal(plan.source, 'command');

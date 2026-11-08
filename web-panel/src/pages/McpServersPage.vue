@@ -13,7 +13,7 @@
  * - 删除：二次确认 + 移除条目 + 清孤儿覆盖（mcp.<id> 与 mcp.<id>.*）+ disconnect 端点清凭据并
  *   触发 bot 即时热重载。
  */
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import client, { errorMessage } from '../api/client';
 import { useConfigStore } from '../stores/config';
@@ -28,6 +28,7 @@ const actionError = ref('');
 const saving = ref(false);
 const statusMap = ref<Record<string, any>>({});
 const childCountMap = ref<Record<string, number>>({});
+let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
 const orchestration = computed(() => (configStore.config as any)?.orchestration);
 const servers = computed(() => (orchestration.value?.mcpServers || []) as any[]);
@@ -66,6 +67,16 @@ async function refreshStatus() {
   } catch (error: any) {
     statusError.value = errorMessage(error, '状态获取失败');
   }
+}
+
+/** 列表页同样自动更新：授权回调、连接状态变化不需要手动刷新。 */
+function transportLabel(value: unknown): string {
+  const key = String(value || '');
+  return key === 'http' ? 'HTTP 远程' : key === 'stdio' ? '本地进程' : key;
+}
+function authLabel(value: unknown): string {
+  const key = String(value || '');
+  return key === 'oauth' ? '账号授权' : key === 'static' ? '静态令牌' : key === 'none' || !key ? '免鉴权' : key;
 }
 
 /* 实测障碍 #2（2026-11-07）：MCP 根默认 searchable，检索关闭时模型完全不可见——列表页强引导。 */
@@ -271,6 +282,11 @@ async function removeServer(id: string) {
 onMounted(async () => {
   if (!configStore.loaded) await configStore.fetchConfig();
   await refreshStatus();
+  autoRefreshTimer = setInterval(() => { void refreshStatus(); }, 10_000);
+});
+
+onUnmounted(() => {
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
 });
 </script>
 
@@ -282,7 +298,7 @@ onMounted(async () => {
         <router-link to="/capabilities?cat=MCP" class="btn-outline !px-2.5 !py-1 !text-xs">‹ 返回能力中心</router-link>
       </div>
       <h1 class="page-title mb-0.5 mt-2 sm:mt-0">MCP 服务器</h1>
-      <p class="text-[color:var(--ink-3)] text-xs">外部 MCP 能力接入——能力中心「MCP」分类的卡片来自这里 · 一个服务器 = 一个树形根工具（预算按 1 个工具计，默认 deny）</p>
+      <p class="text-[color:var(--ink-3)] text-xs">外部 MCP 能力接入——能力中心「MCP」分类的卡片来自这里 · 一个服务器 = 一个入口工具（预算按 1 个工具计，默认不开放给模型）</p>
     </div>
 
     <SectionCard title="服务器列表" hint="接入状态总览；点击「配置」进入该服务器的专属配置页">
@@ -300,9 +316,9 @@ onMounted(async () => {
           <div class="flex flex-wrap items-center gap-2 min-w-0">
             <span class="font-semibold text-sm">{{ displayName(server.id) }}</span>
             <span class="font-mono text-[11px] text-[color:var(--ink-3)]">mcp.{{ server.id }}</span>
-            <span class="tag">{{ server.transport }}</span>
+            <span class="tag">{{ transportLabel(server.transport) }}</span>
             <span class="tag" :class="stateOf(server.id).ok ? '!bg-green-500/15 !text-green-600' : stateOf(server.id).label === '待授权' ? '!bg-amber-500/15 !text-amber-600' : ''">{{ stateOf(server.id).label }}</span>
-            <span v-if="stateOf(server.id).ok && !rootEnabled(server.id)" class="tag !bg-amber-500/15 !text-amber-600" title="根能力默认 deny——进入配置页开启后模型才可调用">根能力关闭</span>
+            <span v-if="stateOf(server.id).ok && !rootEnabled(server.id)" class="tag !bg-amber-500/15 !text-amber-600" title="入口工具默认不开放给模型——进入配置页开启后才可调用">未开放给模型</span>
             <span class="text-xs text-[color:var(--ink-3)] truncate flex-1 font-mono">{{ server.url || server.command }}</span>
             <span class="text-xs text-[color:var(--ink-3)] flex-none">{{ childCountMap[server.id] || 0 }} 子项</span>
             <div class="flex gap-2 flex-none">
@@ -328,8 +344,8 @@ onMounted(async () => {
           @click="selectedTemplateId = t.id">
           <div class="flex flex-wrap items-center gap-2">
             <span class="font-semibold text-sm">{{ t.name }}</span>
-            <span class="tag">{{ t.transport }}</span>
-            <span class="tag">{{ t.auth }}</span>
+            <span class="tag">{{ transportLabel(t.transport) }}</span>
+            <span class="tag">{{ authLabel(t.auth) }}</span>
             <span v-if="templateExists(t.id)" class="tag !bg-green-500/15 !text-green-600">已接入</span>
           </div>
           <div class="text-xs text-[color:var(--ink-3)] mt-1.5">{{ t.description }}</div>
@@ -367,10 +383,10 @@ onMounted(async () => {
             <FormField label="显示名（可选）" hint="能力中心与目录展示名，可在配置页随时改">
               <input v-model="form.name" class="input-field" placeholder="Suno 官方" />
             </FormField>
-            <FormField label="传输类型">
+            <FormField label="连接方式">
               <select v-model="form.transport" class="input-field">
-                <option value="http">http（streamable HTTP，推荐）</option>
-                <option value="stdio">stdio（本地子进程）</option>
+                <option value="http">HTTP 远程服务（推荐）</option>
+                <option value="stdio">本地子进程（stdio）</option>
               </select>
             </FormField>
             <FormField v-if="form.transport === 'http'" label="端点地址">
@@ -384,9 +400,9 @@ onMounted(async () => {
             </FormField>
             <FormField label="鉴权方式">
               <select v-model="form.auth" class="input-field">
-                <option value="oauth">oauth（浏览器账号授权，如 Suno 官方）</option>
-                <option value="static">static（静态 token）</option>
-                <option value="none">none（免鉴权）</option>
+                <option value="oauth">账号授权（浏览器登录，如 Suno 官方）</option>
+                <option value="static">静态令牌</option>
+                <option value="none">免鉴权</option>
               </select>
             </FormField>
             <FormField v-if="form.auth === 'static'" label="Bearer Token">

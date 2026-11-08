@@ -32,6 +32,10 @@ import type { BrowserRenderService, RenderedImage } from '../../../packages/brow
 import { createImageProgress, type ImageProgressKind, type ImageProgressHandle } from './image-progress.js';
 import { buildHelpText } from './help-text.js';
 import { stripInlineImagePayloads } from '../../../packages/agent-runtime/src/index.js';
+import { sunoShareUrl } from './suno-downloader.js';
+
+/** Suno clip id（标准 UUID）；只对带该 id 的音频产物尝试下载 mp3。 */
+const SUNO_CLIP_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Napcat(OneBot) 上报的消息事件(只取本环需要的字段)。 */
 export interface NapcatMessageEvent {
@@ -165,6 +169,11 @@ export interface BotRuntimeOptions {
   materializeImages?: (images: string[]) => Promise<string[]>;
   /** 把能力语音（base64）落到 Napcat 共享目录，返回 file:// 容器路径。 */
   materializeAudio?: (audios: string[]) => Promise<string[]>;
+  /**
+   * Suno 歌曲产出后下载为本地 mp3（方案 A：匿名 rights 解密）。
+   * 返回可直接发送的文件引用；失败返回 null，由发送链路降级为分享链接，绝不阻断整条回复。
+   */
+  downloadSunoAudio?: (input: { clipId: string; title?: string }) => Promise<{ fileRef: string; name: string } | null>;
   /** 撤回机器人发出的图片（群聊自动撤回用）。 */
   deleteMessage?: (messageId: number | string) => Promise<boolean>;
   voice?: (text: string, context: { chatType: 'group' | 'private'; groupId?: number | string; userId?: number | string }) => Promise<string | null | undefined>;
@@ -2205,6 +2214,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           compressImages: options.compressImages,
           materializeImages: options.materializeImages,
           materializeAudio: options.materializeAudio,
+          downloadSunoAudio: options.downloadSunoAudio,
         });
     } catch (error) {
       stageEnd('send');
@@ -2521,6 +2531,7 @@ armAutoContinue(chatType, event.group_id, userId, result.text || '', source !== 
           compressImages: options.compressImages,
           materializeImages: options.materializeImages,
           materializeAudio: options.materializeAudio,
+          downloadSunoAudio: options.downloadSunoAudio,
         });
       return { handled: true, kind: 'chat' };
     } catch (error) {
@@ -2806,10 +2817,36 @@ async function postProcessReplyPlanOutputs(plan: any, options: {
   compressImages?: (images: string[]) => Promise<string[]>;
   materializeImages?: (images: string[]) => Promise<string[]>;
   materializeAudio?: (audios: string[]) => Promise<string[]>;
+  downloadSunoAudio?: (input: { clipId: string; title?: string }) => Promise<{ fileRef: string; name: string } | null>;
 }, ctx: ReplyContext): Promise<any> {
   const outputs = allReplyPlanOutputs(plan);
   for (const output of outputs) {
     if (typeof output?.text === 'string') output.text = stripInlineImagePayloads(output.text);
+  }
+  // Suno 歌曲：能下载成 mp3 就转成 file 输出走文件发送；失败降级分享链接。
+  // 放在物化之前，避免已本地化的 mp3 再被 materializeAudio 当 base64 处理。
+  if (options.downloadSunoAudio) {
+    for (const output of outputs) {
+      if (output?.kind !== 'audio') continue;
+      const meta = output.meta && typeof output.meta === 'object' ? output.meta : {};
+      const clipId = typeof meta.audioId === 'string' ? meta.audioId.trim() : '';
+      if (!SUNO_CLIP_ID_RE.test(clipId)) continue;
+      const title = String(meta.title || '').trim() || undefined;
+      let downloaded: { fileRef: string; name: string } | null = null;
+      try {
+        downloaded = await options.downloadSunoAudio({ clipId, title });
+      } catch { /* 下载失败不阻断回复，按分享链接降级 */ }
+      if (downloaded?.fileRef) {
+        output.kind = 'file';
+        output.url = downloaded.fileRef;
+        output.meta = { ...meta, name: downloaded.name, sunoFile: true, shareUrl: sunoShareUrl(clipId) };
+        continue;
+      }
+      output.kind = 'text';
+      output.url = undefined;
+      output.text = title ? `${title}\n${sunoShareUrl(clipId)}` : sunoShareUrl(clipId);
+      output.meta = { ...meta, shareUrl: sunoShareUrl(clipId), skipTts: true, disableVoice: true, role: 'suno-share-link' };
+    }
   }
   const imageOutputs = outputs.filter((output) => output?.kind === 'image' && String(output?.url || '').trim());
   const gallerySyncOutputs = imageOutputs.filter(isGallerySyncEligibleImageOutput);
@@ -3012,6 +3049,7 @@ async function sendResultUnlocked(
     compressImages?: (images: string[]) => Promise<string[]>;
     materializeImages?: (images: string[]) => Promise<string[]>;
     materializeAudio?: (audios: string[]) => Promise<string[]>;
+    downloadSunoAudio?: (input: { clipId: string; title?: string }) => Promise<{ fileRef: string; name: string } | null>;
   },
 ): Promise<import('../../../packages/reply/src/index.js').ReplyDispatchResult | null> {
   if (result.text) result = { ...result, text: stripInlineImagePayloads(String(result.text)) };
@@ -3028,6 +3066,7 @@ async function sendResultUnlocked(
         compressImages: postProcess?.compressImages,
         materializeImages: postProcess?.materializeImages,
         materializeAudio: postProcess?.materializeAudio ?? materializeAudio,
+        downloadSunoAudio: postProcess?.downloadSunoAudio,
       }, ctx);
       const planPolicy = planToSend.policy;
       const effectiveMaxMessages = Math.max(1, Math.min(

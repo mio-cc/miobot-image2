@@ -1,0 +1,1774 @@
+{
+  "source": "https://api.suno.com/mcp",
+  "serverId": "suno-official",
+  "capturedAt": "2026-11-08T06:03:06.122Z",
+  "protocolVersion": "2025-06-18",
+  "serverInfo": {
+    "name": "Suno",
+    "version": "76fd2d0"
+  },
+  "toolCount": 41,
+  "calls": {
+    "initialize": 1,
+    "notifications/initialized": 1,
+    "tools/list": 1,
+    "tools/call": 0
+  },
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Get the signed-in user\n\nReturns the signed-in suno.com user's public profile. Only a suno.com sign-in can call it; an API key receives 403 `user_principal_required`.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "account-me",
+      "title": "Get the signed-in user"
+    },
+    {
+      "_meta": {
+        "ui": {
+          "resourceUri": "ui://suno/upgrade.html"
+        },
+        "ui/resourceUri": "ui://suno/upgrade.html"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Get more credits\n\nCall this when a user signed in with Suno is out of credits (a creation tool\nanswered 402) or asks how to get more. Shows a button that opens suno.com to\nupgrade their plan or buy credits, and returns the same link as `url` to\nshare where the button can't show.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "account-upgrade",
+      "title": "Get more credits"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Get account usage\n\nReturns the account's plan and current usage against metered features. For a suno.com sign-in, `suno_account` reports song-generation credits: uploads, library reads and organizing spend none, and uploads have no count limit.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "account-usage",
+      "title": "Get account usage"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Retrieve audio analysis\n\nReturns what the clip sounds like and its musical timing map. `terms` and\n`labels` describe the audio itself, as heard by a tagging model rather than\ntaken from the prompt: the voice, instruments, genre, mood and how polished\nthe mix is. Use them to check a take against what was asked for, or to\ncompare takes and pick one, e.g. for a video.\n\nThe timing map has every beat with its position in the bar, the tempo, the\nmeter, structural sections and the key. This is what syncing video to music\nneeds, e.g. cutting on every downbeat (`bar_position: 1`) or changing scene\nwhere a section starts. Sections that share a `label` repeat the same\nmaterial, so a recurring label is usually the chorus. For word timings use\n`GET /v0/audio/{id}/lyrics-alignment`.\n\nAnalysis is a separate model run, so it is not ready the moment the clip\nis. The first request starts the run; it is not charged, and repeating it\ndoes not start a second one. The beats (with `bpm`, `time_signature` and\n`key`), the sections (with `duration_s`) and the description (`terms` and\n`labels`) are separate runs, and each part is served as soon as its run\ncompletes, even while `status` is still `processing`. A run that fails is\ntried again, up to three times in all, so a part can arrive minutes later.\n\n`status` is `processing` while a run is expected, in flight or due to be\ntried again; poll until it leaves `processing`, typically within a minute.\nIt is then `complete` when at least one part succeeded, or `unavailable`\nwhen none did. Either way no further run starts, so stop polling; a part\nleft empty or null failed every try. `key` can also be null when the key\ncould not be determined.\n\nA song in the caller's own suno.com library is analysed too, for a token\nwith `library:read`, five at a time: the rest read `processing` until one\nof those finishes.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Audio clip ID.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "audio-analysis",
+      "title": "Retrieve audio analysis"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Create a cover\n\nCreates a new audio clip by covering an existing one with a new style or voice. The source must be `complete` (`400` otherwise). A voice always sings, so supplying voice_id keeps the vocals even with no lyrics. Signed in with Suno, the source may also be any suno.com song you may remix there: `404` if you can't see it, `403` if you can't remix it, `503` while it is still finishing. A cover takes its source's title unless you set `title`.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "controls": {
+            "description": "Optional generation-control sliders, each a 0–1 fraction (suno.com shows the same values as 0–100%) but `variety`, a whole number 0–4. Omit a slider to leave the model's own default alone — there is no value that means \"no change\", so `0` is a real setting, not an unset one. Requires the advanced-controls grant on your plan; sending one without it returns 403, and a value outside 0–1 returns 400.",
+            "properties": {
+              "audio_influence": {
+                "description": "How closely the result resembles the source clip's audio. Low reinterprets freely; high stays near the original.",
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              "style_influence": {
+                "description": "How strongly the `style` tags are followed. Low is loose interpretation; high adheres tightly.",
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              "variety": {
+                "description": "suno.com's Variety: how far the `style` tags are reinterpreted before the song is made. 0 Off (the tags as written), 1 Normal, 2 High, 3 Extra, 4 Max (a radical departure). A whole number; anything else returns 400. Omit it to keep the model's default. Signed in with Suno, it is not a paid feature.",
+                "maximum": 4,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "weirdness": {
+                "description": "How far the result may drift from expected results. Low stays conventional; high goes experimental.",
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "duration": {
+            "description": "Target length of the generated audio in seconds, 15–360. Omit to let the model choose. A value outside the range returns 400; the result is a target, not a guarantee.",
+            "maximum": 360,
+            "minimum": 15,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Audio clip ID.",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Opaque key for safely retrying a creation request. Keys contain 1–255 bytes,\nare scoped to the authenticated account across all supported creation\noperations, and are retained for at least 24 hours. Repeating the same key\nwith the same operation and parameters returns the original resource and sets\n`Idempotency-Replayed: true`; reusing it with different input returns `409`.\nA replay never re-emits webhooks. Audio replays return the current clip\nstatus from a live read.\n",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "lyrics": {
+            "description": "Lyrics to sing. The source's lyrics are not carried over: omitted, the cover is instrumental unless `voice_id` is set, so pass the source's lyrics to keep its vocals.",
+            "maxLength": 5000,
+            "type": "string"
+          },
+          "max_mode": {
+            "description": "suno.com's Max Mode: more compute to keep the song consistent throughout, at a multiple of the song's credits. Set it only when the user asks for Max Mode by name, and only on the songs they ask it for; never turn it on yourself to improve a song. Only for a suno.com user's song on a plan with Max Mode: an API key or `test_mode` returns 400, and a plan without it returns 403.",
+            "type": "boolean"
+          },
+          "model": {
+            "description": "Generation model label. Omit to use your plan's default. Labels beyond the default are granted per plan: an unknown label returns 400, one your plan does not hold returns 403. `GET /v0/account/usage` lists the labels you may send as `allowed_models`.",
+            "type": "string"
+          },
+          "negative_style": {
+            "description": "Styles to steer away from (e.g. \"polka, accordion\"). Requires the advanced- controls grant on your plan; sending it without returns 403.",
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "style": {
+            "description": "New style or genre tags to apply.",
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "title": {
+            "description": "Defaults to the source clip's title.",
+            "maxLength": 256,
+            "type": "string"
+          },
+          "voice_id": {
+            "description": "ID of a voice to use, from POST /v0/voices. A voice always sings, so supplying one keeps the vocals even with no lyrics. The voice must belong to your account and be \"ready\" — an unknown voice returns 404, one still processing returns 400. Signed in with Suno, it is instead one of your suno.com voices, from GET /v0/voices.",
+            "type": "string"
+          },
+          "workspace_id": {
+            "description": "A workspace to file the new song in, from `GET /v0/workspaces`. Only for a suno.com user's song: an API key or `test_mode` returns 400, and a workspace the user may not add to returns 403.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "audio-covers-create",
+      "title": "Create a cover"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Generate audio\n\nGenerates a new audio clip in one of two modes. **Simple:** `description`\nalone; the lyrics and style are written for you. **Custom:** `lyrics`, usually\nwith `style` and `title`. Mixing the modes returns a `400`: `description` takes\nno `style`, and no `lyrics` unless `instrumental` is `true`. With\n`instrumental: true`, `lyrics` and `description` may both be omitted. For a\nsuno.com user, simple mode can also work from up to 10 of their songs in\n`reference_audio_ids`, to remix, sample, remaster, restyle, mash up or split\nstems from them, or to edit one, with `description` saying what to do. For a\nstraight cover, extension or two-song mashup, the dedicated routes give more\ncontrol. Through MCP, a suno.com sign-in gets 2 songs per call, charged to their\ncredits, so confirm before making several calls at once; for a sound effect, a\nloop or a sting of a few seconds, use sounds-create. Poll `GET /v0/audio/{id}`\nfor the result: the clip is playable once `status` is `streaming`.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "controls": {
+            "description": "Optional generation-control sliders, each a 0–1 fraction (suno.com shows the same values as 0–100%) but `variety`, a whole number 0–4. Omit a slider to leave the model's own default alone — there is no value that means \"no change\", so `0` is a real setting, not an unset one. Requires the advanced-controls grant on your plan; sending one without it returns 403, and a value outside 0–1 returns 400.",
+            "properties": {
+              "audio_influence": {
+                "description": "How closely the vocals resemble the voice supplied as `voice_id`. Only valid alongside a `voice_id` — a generation that conditions on no audio returns 400. Use the cover, mashup, or extension endpoints to influence a source clip.",
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              "style_influence": {
+                "description": "How strongly the `style` tags are followed. Low is loose interpretation; high adheres tightly.",
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              "variety": {
+                "description": "suno.com's Variety: how far the `style` tags are reinterpreted before the song is made. 0 Off (the tags as written), 1 Normal, 2 High, 3 Extra, 4 Max (a radical departure). A whole number; anything else returns 400. Omit it to keep the model's default. Signed in with Suno, it is not a paid feature.",
+                "maximum": 4,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "weirdness": {
+                "description": "How far the result may drift from expected results. Low stays conventional; high goes experimental.",
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "description": {
+            "description": "Natural language description; the AI generates lyrics and style. Simple mode: send it without `lyrics` or `style`.",
+            "maxLength": 3000,
+            "type": "string"
+          },
+          "duration": {
+            "description": "Target length of the generated audio in seconds, 15–360. Omit to let the model choose. A value outside the range returns 400; the result is a target, not a guarantee.",
+            "maximum": 360,
+            "minimum": 15,
+            "type": "integer"
+          },
+          "duration_guidance": {
+            "description": "Size AI-written lyrics to `duration` so short targets produce short songs (on by default when `duration` is set). Only meaningful with `duration` — sending it alone returns 400. Set false to restore length-unaware lyrics; custom `lyrics` are never rewritten either way.",
+            "type": "boolean"
+          },
+          "duration_strict": {
+            "description": "Guarantee the clip never runs longer than `duration` (on by default when `duration` is set): generation is hard-capped at the target, so a song that would overrun is truncated at the cap instead of running long. Combined with the default duration-sized lyrics, most clips end naturally before the cap; a clip that does hit the cap ends abruptly rather than with an outro. Set false to keep `duration` as a soft target the model may overshoot. Only meaningful with `duration` — sending it alone returns 400.",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "description": "Opaque key for safely retrying a creation request. Keys contain 1–255 bytes,\nare scoped to the authenticated account across all supported creation\noperations, and are retained for at least 24 hours. Repeating the same key\nwith the same operation and parameters returns the original resource and sets\n`Idempotency-Replayed: true`; reusing it with different input returns `409`.\nA replay never re-emits webhooks. Audio replays return the current clip\nstatus from a live read.\n",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "instrumental": {
+            "default": false,
+            "description": "Generate an instrumental with no vocals. A voice_id always sings, so it takes precedence over this flag.",
+            "type": "boolean"
+          },
+          "lyrics": {
+            "description": "Custom lyrics for the audio. Custom mode; not valid with `description` unless `instrumental` is `true`.",
+            "maxLength": 5000,
+            "type": "string"
+          },
+          "max_mode": {
+            "description": "suno.com's Max Mode: more compute to keep the song consistent throughout, at a multiple of the song's credits. Set it only when the user asks for Max Mode by name, and only on the songs they ask it for; never turn it on yourself to improve a song. Needs `lyrics` or `style`; with only a `description` it returns 400. Only for a suno.com user's song on a plan with Max Mode: an API key or `test_mode` returns 400, and a plan without it returns 403.",
+            "type": "boolean"
+          },
+          "midi_upload_id": {
+            "description": "A MIDI score for the song to play, from midi-upload-complete (`POST /v0/midi/uploads`). Say how to use it in `description`, e.g. \"a synthwave track that plays my melody\", or send the score alone to have the song written from it; simple mode only, so no `lyrics` or `style`. Needs `model` `v6-wild`, which is the default with a score; any other model returns 400. It counts as one of `reference_audio_ids`' 10. As on suno.com, the song stays `queued` until a copyright check on the score passes, so it never streams early; a match fails it uncharged. Only for a suno.com user's song: an API key or `test_mode` returns 400.",
+            "type": "string"
+          },
+          "model": {
+            "description": "Generation model label. Omit to use your plan's default. Labels beyond the default are granted per plan: an unknown label returns 400, one your plan does not hold returns 403. `GET /v0/account/usage` lists the labels you may send as `allowed_models`. If the user hasn't picked one, tell them which label you're sending, or that their default applies.",
+            "type": "string"
+          },
+          "negative_style": {
+            "description": "Styles to steer away from (e.g. \"polka, accordion\"). Only valid alongside caller-supplied tags — sending it with `description` returns 400, since there are no tags of your own to steer. Requires the advanced-controls grant on your plan; sending it without returns 403.",
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "reference_audio_ids": {
+            "description": "Up to 10 suno.com songs for the AI to work from. Use it to sample or chop a song, remaster it, cover it in a new style, mash songs up, pull out or drop a stem (an instrumental, an a cappella, the drums), take inspiration from a song, or edit one: change a few words or lines of its lyrics, redo a time range, add or cut a section, or add or drop an instrument. A small edit keeps the rest of the song's own audio; changing words in more than 5 places re-sings the whole song as a cover. For an edit, pass just that song and send no `duration`, `instrumental` or `vocal_gender`, which make the song regenerate whole. Say what to do in `description`, naming the songs by title, e.g. \"chop the vocal hook from Sunrise into a lo-fi beat\" or \"in Sunrise, change 'the light is gone' to 'the light came home'\"; never put an id or link in `description`. Simple mode only, so no `lyrics` or `style`. Ids come from `GET /v0/library` (and its search and liked lists), a playlist, or a song made earlier; each must be finished, and the user's own or one suno.com lets them remix (else 403, or 404 if they can't see it). Only for a suno.com user's song: an API key or `test_mode` returns 400.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 10,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "style": {
+            "description": "Genre and style tags (e.g. \"jazz melancholic\"). Not valid with `description`.",
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 256,
+            "type": "string"
+          },
+          "vocal_gender": {
+            "description": "Force the gender of the generated vocals. Omit to let the model choose. A `voice_id` takes precedence — a named voice already has a gender — and any other value returns 400. Requires the advanced-controls grant on your plan; sending it without returns 403.",
+            "enum": [
+              "male",
+              "female"
+            ],
+            "type": "string"
+          },
+          "voice_id": {
+            "description": "ID of a voice to use, from POST /v0/voices. A voice always sings, so supplying one overrides instrumental. The voice must belong to your account and be \"ready\" — an unknown voice returns 404, one still processing returns 400. Signed in with Suno, it is instead one of your suno.com voices, from GET /v0/voices.",
+            "type": "string"
+          },
+          "workspace_id": {
+            "description": "A workspace to file the new song in, from `GET /v0/workspaces`. Only for a suno.com user's song: an API key or `test_mode` returns 400, and a workspace the user may not add to returns 403.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "audio-create",
+      "title": "Generate audio"
+    },
+    {
+      "_meta": {
+        "ui": {
+          "resourceUri": "ui://suno/download.html"
+        },
+        "ui/resourceUri": "ui://suno/download.html"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Download audio\n\nReturns a URL for one of the signed-in suno.com user's own songs, as `mp3`\n(default) or `wav`, under suno.com's own download rules and download\ncredits. Requires the `audio.download` feature. Only for a suno.com user\nwhose token grants `download`; an API key gets 403.\n\nCall without `confirm` first. If the answer is `requires_credit`, the\ndownload would spend one of the user's download credits: ask the user,\nand only with their approval call again with `confirm: true`. Any format\nmay answer `processing` while suno.com prepares the file, including for a\nsong that is still finishing; call again, no more than once a second. The\n`audio-download` MCP tool waits out `processing` itself for up to about 50\nseconds: if it still answers `processing`, call audio-download again, never\naudio-wait.\n\n`url` saves the file under the song's title. Hosts that show apps render a\ndownload button for it; elsewhere, share or fetch `url`.\n\nRefusals from suno.com carry a `reason` alongside `error` and `code`:\n`quota_exhausted` (402, `insufficient_credits`), `no_permission` (403,\n`forbidden`), `plan_required` (403, `feature_not_on_plan`), `invalid_asset`\n(404, `not_found`), `format_unsupported` / `invalid_format` (400,\n`invalid_request`), `rate_limited` (429, `rate_limited`; back off) and\n`daily_limit_exceeded` (429, `quota_exceeded`; stop until it resets).",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirm": {
+            "default": false,
+            "description": "Spend a download credit if the song needs one. Send only after the user approves a `requires_credit` answer.",
+            "type": "boolean"
+          },
+          "format": {
+            "default": "mp3",
+            "enum": [
+              "mp3",
+              "wav"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "description": "Audio clip ID.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "audio-download",
+      "title": "Download audio"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Edit a song\n\nChanges the title, lyrics, caption or any combination of them on a song in the\nsigned-in suno.com user's library. The caption is the song's description on its\nsuno.com page; an empty string clears it. It never changes who can see the song.\nOnly for a suno.com user whose token grants `library:write`; an API key gets 403.\n\nTitles, lyrics and captions pass the same content check suno.com runs:\ndisallowed text returns 400, and so does a caption over 500 characters.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "caption": {
+            "description": "The song's description on its suno.com page. An empty string clears it.\nAn @handle in it stays plain text; no one is notified.\n",
+            "maxLength": 500,
+            "type": "string"
+          },
+          "id": {
+            "description": "Audio clip ID.",
+            "type": "string"
+          },
+          "lyrics": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "audio-edit",
+      "title": "Edit a song"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Create an extension\n\nContinues the source clip (`id`) from `continue_at` seconds. The new clip\ncontains **only the continuation**, not the source followed by it — join the\nchain with `POST /v0/audio/{id}/full-song` to get the whole song. The source\nmust be `complete` (`400` otherwise), and `continue_at` is relative to the\nsource clip's own audio.\nA response with `clip_ids` made one continuation per id, each the end of its\nown chain: extend or join the one you want, not both.\nSigned in with Suno, the source may also be any suno.com song you may remix\nthere: `404` if you can't see it, `403` if you can't remix it, `503` while it\nis still finishing. A chain that starts at such a song joins with `full-song`\nlike any other.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "continue_at": {
+            "description": "Seconds into the source clip to continue from.",
+            "minimum": 0.4,
+            "type": "number"
+          },
+          "controls": {
+            "description": "Optional generation-control sliders, each a 0–1 fraction (suno.com shows the same values as 0–100%) but `variety`, a whole number 0–4. Omit a slider to leave the model's own default alone — there is no value that means \"no change\", so `0` is a real setting, not an unset one. Requires the advanced-controls grant on your plan; sending one without it returns 403, and a value outside 0–1 returns 400.",
+            "properties": {
+              "audio_influence": {
+                "description": "How closely the continuation resembles the source clip's audio. Low drifts from the original; high stays near it.",
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              "style_influence": {
+                "description": "How strongly the `style` tags are followed. Low is loose interpretation; high adheres tightly.",
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              "variety": {
+                "description": "suno.com's Variety: how far the `style` tags are reinterpreted before the song is made. 0 Off (the tags as written), 1 Normal, 2 High, 3 Extra, 4 Max (a radical departure). A whole number; anything else returns 400. Omit it to keep the model's default. Signed in with Suno, it is not a paid feature.",
+                "maximum": 4,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "weirdness": {
+                "description": "How far the result may drift from expected results. Low stays conventional; high goes experimental.",
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "duration": {
+            "description": "Target length of the generated audio in seconds, 15–360. Omit to let the model choose. A value outside the range returns 400; the result is a target, not a guarantee.",
+            "maximum": 360,
+            "minimum": 15,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Audio clip ID.",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Opaque key for safely retrying a creation request. Keys contain 1–255 bytes,\nare scoped to the authenticated account across all supported creation\noperations, and are retained for at least 24 hours. Repeating the same key\nwith the same operation and parameters returns the original resource and sets\n`Idempotency-Replayed: true`; reusing it with different input returns `409`.\nA replay never re-emits webhooks. Audio replays return the current clip\nstatus from a live read.\n",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "instrumental": {
+            "description": "Force a vocal-free continuation. Omitted, the extension matches the source: a source with vocals keeps singing, an instrumental source stays instrumental. A voice_id always sings, so it takes precedence over this flag.",
+            "type": "boolean"
+          },
+          "lyrics": {
+            "description": "Lyrics for the continuation. Omit to let the model continue the source's lyrics.",
+            "maxLength": 5000,
+            "type": "string"
+          },
+          "max_mode": {
+            "description": "suno.com's Max Mode: more compute to keep the song consistent throughout, at a multiple of the song's credits. Set it only when the user asks for Max Mode by name, and only on the songs they ask it for; never turn it on yourself to improve a song. Only for a suno.com user's song on a plan with Max Mode: an API key or `test_mode` returns 400, and a plan without it returns 403.",
+            "type": "boolean"
+          },
+          "model": {
+            "description": "Generation model label. Omit to use your plan's default. Labels beyond the default are granted per plan: an unknown label returns 400, one your plan does not hold returns 403. `GET /v0/account/usage` lists the labels you may send as `allowed_models`.",
+            "type": "string"
+          },
+          "negative_style": {
+            "description": "Styles to steer away from (e.g. \"polka, accordion\"). Requires the advanced- controls grant on your plan; sending it without returns 403.",
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "style": {
+            "description": "Style or genre tags for the continuation.",
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "title": {
+            "description": "Defaults to the source clip's title.",
+            "maxLength": 256,
+            "type": "string"
+          },
+          "voice_id": {
+            "description": "ID of a voice to sing the continuation. Supplying one implies vocals, so it overrides an instrumental source. The voice must belong to your account and be \"ready\" — an unknown voice returns 404, one still processing returns 400. Signed in with Suno, it is instead one of your suno.com voices, from GET /v0/voices.",
+            "type": "string"
+          },
+          "workspace_id": {
+            "description": "A workspace to file the new song in, from `GET /v0/workspaces`. Only for a suno.com user's song: an API key or `test_mode` returns 400, and a workspace the user may not add to returns 403.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "continue_at"
+        ],
+        "type": "object"
+      },
+      "name": "audio-extensions-create",
+      "title": "Create an extension"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Get the whole song\n\nJoins an extension (`id`) and everything it continues from into a single\ntrack. The whole chain is resolved automatically, so you only name the last\nextension. When an extension call returned `clip_ids`, name the one you\nwant: each is a separate chain end. Every clip in the chain must be `complete` (`400` otherwise), and\na chain is joinable up to 20 segments — the source plus 19 extensions. A\nlonger chain returns `400` and there is no partial join.\n\nSigned in with Suno, a chain may start at a suno.com song you extended: the\njoin begins with that song and the songs it continues on suno.com, and\n`concat_clip_ids` starts with its id; those earlier suno.com songs don't\ncount toward the 20. `404` if you can no longer see it,\n`403` if you can no longer remix it.\n\nJoining is free: no credits, no usage limit, since the extends that built\nthe chain were already metered. It is idempotent per chain — joining the\nsame chain again returns the first join's clip (with its current status)\ninstead of producing a second one, so retries are safe. A failed join can\nbe retried up to 3 times per chain; after that the failed clip is returned\ninstead of starting another job. A join that never reports back is retried\nthe same way once no worker could still finish it (30 minutes), which\nalso counts against the 3 attempts. Requires the same `generate.extend`\nfeature as creating the extension.\n\nPoll `GET /v0/audio/{id}` for the result rather than blocking on the stream\nendpoint — a cold join can exceed its wait window.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Audio clip ID.",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Opaque key for safely retrying a creation request. Keys contain 1–255 bytes,\nare scoped to the authenticated account across all supported creation\noperations, and are retained for at least 24 hours. Repeating the same key\nwith the same operation and parameters returns the original resource and sets\n`Idempotency-Replayed: true`; reusing it with different input returns `409`.\nA replay never re-emits webhooks. Audio replays return the current clip\nstatus from a live read.\n",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "audio-full-song",
+      "title": "Get the whole song"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Like or dislike a song\n\nLikes a song for the signed-in suno.com user, as suno.com's like button does,\nor with `dislike: true` dislikes it, as its dislike button does. Either one\nreplaces the other. Any song the user can open by link may be liked or\ndisliked; one they cannot is a 404. Only for a suno.com user whose token\ngrants `library:write`; an API key gets 403.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "dislike": {
+            "default": false,
+            "description": "Dislike the song instead of liking it.",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Audio clip ID.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "audio-like",
+      "title": "Like or dislike a song"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Ask about audio\n\nAsks a question about a finished clip. Suno's music agent listens to it\nand measures it, then replies in text. Ask about anything you can hear:\nthe genre, mood and instruments, what the vocals do, how a section builds,\nhow polished the mix is, or how two parts compare. Tempo and key are\nmeasured by Suno's own models. To get data back, ask for JSON and name the\nfields, e.g. \"End with a JSON block with bpm and key\". The answer then ends\nwith a fenced `json` block holding those fields.\n\nReturns a listen with `status: processing` at once. Read the answer with\ngetAudioListen (the `audio-listen-wait` MCP tool) by its `id`; it usually\ntakes under a minute. Nothing is made or changed and nothing is charged. A\ncaller may have five questions unanswered at once; one more is a 429\n`concurrency_limit_exceeded`, and reading an answer frees its place. Past\n200 questions in a UTC day, one more is a 429 `quota_exceeded`. The\nanswer never names a real artist or recording and quotes at most two lines\nof lyrics. For a beat-by-beat timing map use audio-analysis, and for word\ntimings audio-lyrics-alignment.\n\nOnly a suno.com sign-in can call it; an API key receives 403\n`user_principal_required`. A song in the caller's own suno.com library can\nbe asked about too, for a token with `library:read`.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Audio clip ID.",
+            "type": "string"
+          },
+          "question": {
+            "description": "What to ask about the audio. Name the fields you want when asking for JSON.",
+            "maxLength": 2000,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "question"
+        ],
+        "type": "object"
+      },
+      "name": "audio-listen",
+      "title": "Ask about audio"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Wait for an answer about audio\n\nReads a question asked with listenToAudio (the `audio-listen` MCP tool) by\nthe `id` it returned. `status` is `processing` until the agent answers, then\n`complete` with the `answer`, or `error` with the reason. The\n`audio-listen-wait` MCP tool checks every few seconds for up to about 50: if\nit still answers `processing`, call audio-listen-wait again with the same id.\nAn answer stays readable for a day. Only a suno.com sign-in can call it; an\nAPI key receives 403 `user_principal_required`.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "The listen id listenToAudio returned.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "audio-listen-wait",
+      "title": "Wait for an answer about audio"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Retrieve lyric alignment\n\nReturns the clip's lyrics with the span of audio each word is sung over —\nwhat a karaoke or caption display needs.\n\nAlignment is produced by a separate model run, so it is not ready the\nmoment the clip is. Poll until `status` leaves `processing`, or subscribe\nto the `audio.alignment.ready` webhook. The first request for a clip that\nhas no alignment yet starts the run; it is not charged, and repeating it\ndoes not start a second one.\n\n`status` is `complete` once the words are in hand (`words` is legitimately\nempty for an instrumental), `processing` while a run is expected or in\nflight, and `unavailable` when no alignment could be produced — a final\nanswer, so stop polling on it. Word timings are best-effort: a word the\naligner could not place carries `success: false` and a span inferred from\nits neighbour.\n\nA song in the caller's own suno.com library, for a token with\n`library:read`, gets the alignment suno.com stored for it. No run starts\nfor one, so a song suno.com never aligned is `unavailable`, though one made\nin the last ten minutes reads `processing` while suno.com aligns it.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Audio clip ID.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "audio-lyrics-alignment",
+      "title": "Retrieve lyric alignment"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Create a mashup\n\nBlends the source clip (`id`) with one additional clip. Mashups currently take\nexactly two parents. Both must be `complete` (`400` otherwise).\nSigned in with Suno, either may also be any suno.com song you may remix there:\n`404` if you can't see it, `403` if you can't remix it, `503` while it is still\nfinishing.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "additional_audio_id": {
+            "description": "Audio clip ID to blend with the source clip.",
+            "type": "string"
+          },
+          "controls": {
+            "description": "Optional generation-control sliders, each a 0–1 fraction (suno.com shows the same values as 0–100%) but `variety`, a whole number 0–4. Omit a slider to leave the model's own default alone — there is no value that means \"no change\", so `0` is a real setting, not an unset one. Requires the advanced-controls grant on your plan; sending one without it returns 403, and a value outside 0–1 returns 400.",
+            "properties": {
+              "audio_influence": {
+                "description": "How closely the result resembles the two source clips' audio. Low reinterprets freely; high stays near the originals.",
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              "style_influence": {
+                "description": "How strongly the `style` tags are followed. Low is loose interpretation; high adheres tightly.",
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              },
+              "variety": {
+                "description": "suno.com's Variety: how far the `style` tags are reinterpreted before the song is made. 0 Off (the tags as written), 1 Normal, 2 High, 3 Extra, 4 Max (a radical departure). A whole number; anything else returns 400. Omit it to keep the model's default. Signed in with Suno, it is not a paid feature.",
+                "maximum": 4,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "weirdness": {
+                "description": "How far the result may drift from expected results. Low stays conventional; high goes experimental.",
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "duration": {
+            "description": "Target length of the generated audio in seconds, 15–360. Omit to let the model choose. A value outside the range returns 400; the result is a target, not a guarantee.",
+            "maximum": 360,
+            "minimum": 15,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Audio clip ID.",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Opaque key for safely retrying a creation request. Keys contain 1–255 bytes,\nare scoped to the authenticated account across all supported creation\noperations, and are retained for at least 24 hours. Repeating the same key\nwith the same operation and parameters returns the original resource and sets\n`Idempotency-Replayed: true`; reusing it with different input returns `409`.\nA replay never re-emits webhooks. Audio replays return the current clip\nstatus from a live read.\n",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "lyrics": {
+            "maxLength": 5000,
+            "type": "string"
+          },
+          "max_mode": {
+            "description": "suno.com's Max Mode: more compute to keep the song consistent throughout, at a multiple of the song's credits. Set it only when the user asks for Max Mode by name, and only on the songs they ask it for; never turn it on yourself to improve a song. Only for a suno.com user's song on a plan with Max Mode: an API key or `test_mode` returns 400, and a plan without it returns 403.",
+            "type": "boolean"
+          },
+          "model": {
+            "description": "Generation model label. Omit to use your plan's default. Labels beyond the default are granted per plan: an unknown label returns 400, one your plan does not hold returns 403. `GET /v0/account/usage` lists the labels you may send as `allowed_models`.",
+            "type": "string"
+          },
+          "negative_style": {
+            "description": "Styles to steer away from (e.g. \"polka, accordion\"). Requires the advanced- controls grant on your plan; sending it without returns 403.",
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "style": {
+            "description": "Style or genre tags.",
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 256,
+            "type": "string"
+          },
+          "workspace_id": {
+            "description": "A workspace to file the new song in, from `GET /v0/workspaces`. Only for a suno.com user's song: an API key or `test_mode` returns 400, and a workspace the user may not add to returns 403.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "additional_audio_id"
+        ],
+        "type": "object"
+      },
+      "name": "audio-mashups-create",
+      "title": "Create a mashup"
+    },
+    {
+      "_meta": {
+        "ui": {
+          "resourceUri": "ui://suno/download.html"
+        },
+        "ui/resourceUri": "ui://suno/download.html"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Transcribe audio to MIDI\n\nTranscribes one of the signed-in suno.com user's own finished songs into a\nmulti-track MIDI file, as suno.com's Studio does. Any song in their library\nworks, including a stem. Requires the `audio.midi` feature (otherwise `403`\n`feature_not_on_plan`), a token that grants `library:read` and\n`credits:spend`, and a suno.com plan with Studio (Premier; otherwise `403`\nwith reason `plan_required`). An API key gets 403.\n\nThe first call starts the transcription and answers `processing`; call\nagain with the same id until `status` is `ok`, usually within a minute.\nA transcription\ncosts 10 of the user's suno.com credits (none for a stem from suno.com's generative Get Stems), charged once when it finishes; a\nsong already transcribed, here or in Studio, is served again for free.\nTell the user the cost before the first call.\n\nOn `ok`, `url` downloads the `.mid` file under the song's title, and\n`instruments` lists its tracks with how many notes each has. Hosts that\nshow apps render a download button for `url`; elsewhere, share it.\n`failed` means the transcription errored and nothing was charged.\n\nRefusals carry a `reason`: `plan_required` (403, `feature_not_on_plan`),\n`quota_exhausted` (402, `insufficient_credits`), `invalid_asset` (404,\n`not_found`, a song that failed to generate) and `not_ready` (422,\n`not_ready`, a song still generating; call again once it has finished).",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Audio clip ID.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "audio-midi",
+      "title": "Transcribe audio to MIDI"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Retrieve audio\n\nRetrieves the current state of an audio clip. Poll after any creation call.\nA generated clip is playable once `status` reaches `streaming`: play it\nthrough `GET /v0/audio/{id}/stream`, or share `song_url` when it is present.\nKeep polling until `complete` or `error` only when you need the finished\nfile or its duration. It reads one clip per call, by `id`; through MCP,\naudio-wait takes several clips' `ids` at once.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Audio clip ID.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "audio-retrieve",
+      "title": "Retrieve audio"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Publish, unpublish, or allow or stop remixing of a song\n\nChanges the settings on one of the signed-in suno.com user's songs, as the\ncontrols on its suno.com page do. Send `visibility`, `can_remix` or both;\nanything omitted is left as it is.\n\n- `visibility: public` publishes the song: anyone can find it on the user's\n  profile and in search. It is never entered in a remix contest. A song\n  already streaming is held and published when it finishes, answering\n  `publish_pending: true` with `visibility` still `private`; one not yet\n  streaming is a retryable 409, so wait a moment or use `audio-wait`. A song\n  suno.com won't let its owner publish, such as one with vocals from a\n  source they can't publish, is a 403. Only publishes that succeed count\n  toward 100 in a UTC day; past that, one more is a 429 `quota_exceeded`\n  that changes nothing. `private` unpublishes it, withdraws it from any open\n  remix contest, and is never capped.\n- `can_remix: false` stops other users from covering, extending or mashing\n  up the song; the user's own remixes are unaffected. More than 20 changes a\n  minute is a 429. Refused with 403: a contest entry (its remix setting\n  belongs to the contest), opening a remix of registered-catalog music to\n  further remixing, and an account outside suno.com's remix feature. The\n  error names which.\n\n`can_remix` is applied first. If it succeeds and `visibility` then fails,\nthe error says `can_remix` was changed. Only the song's owner can change\nits settings. Only for a suno.com user whose token grants `library:write`;\nan API key gets 403.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "can_remix": {
+            "description": "Whether other users may cover, extend or mash up the song.",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Audio clip ID.",
+            "type": "string"
+          },
+          "visibility": {
+            "description": "`public` publishes the song, as suno.com's publish button does: anyone can find it on the user's profile and in search. `private` unpublishes it. Set it only when the user asked to.",
+            "enum": [
+              "public",
+              "private"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "audio-settings",
+      "title": "Publish, unpublish, or allow or stop remixing of a song"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Separate audio into stems\n\nSplits a finished clip (`id`) into stems, as suno.com's Get Stems does: two\ntakes of the mode's parts, each stem marked with its `take`. `two` is vocals\nand instrumental, 4 stems in all. `twelve` is the 12 parts (vocals, backing\nvocals, drums, bass, guitar, keyboard, percussion, strings, synth, FX, brass,\nwoodwinds), 24 stems in all. A part the song doesn't have still completes, as\na near-silent stem. Each stem is an ordinary clip, so `GET /v0/audio/{id}`, the stream and\nplayback tokens work on its `audio_id`. Requires the `generate.stems`\nfeature. A stem can't be separated again, and the source can be at most\n16 minutes long.\n\nOnly a suno.com user can call it for now; an API key receives 403\n`user_principal_required`. Signed in with Suno, the stems are songs in the user's suno.com library and\nthe split costs suno.com's stem price in the user's credits: 5 per take for\n`two` (10) and 25 per take for `twelve` (50), charged as each take's vocals\nstem finishes. A take whose vocals stem fails costs nothing, and its other\nstems are still delivered. The source must be a song in the user's suno.com library, whether\nit was made through this API or on suno.com itself.\n\nThe split runs in the background: poll\n`GET /v0/audio/{id}/stems/{group_id}` until `status` leaves `pending`,\ntypically within a minute or two. `partial` means some stems failed and\nthe rest are ready. Send an `Idempotency-Key` to retry\nsafely: the same key and source return the first group instead of\nstarting, and paying for, another.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Audio clip ID.",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Opaque key for safely retrying the split. Reusing it for another source or mode returns `409` `idempotency_key_reused`; a retry while the first request is still running returns `409` `idempotency_in_progress`, so retry with the same key.",
+            "type": "string"
+          },
+          "mode": {
+            "description": "`two`: two takes of a vocals stem and an instrumental stem. `twelve`: two takes of 12 stems. Both as suno.com's Get Stems makes them.",
+            "enum": [
+              "two",
+              "twelve"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "mode"
+        ],
+        "type": "object"
+      },
+      "name": "audio-stems-create",
+      "title": "Separate audio into stems"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Retrieve stems\n\nReturns a stem group made by `POST /v0/audio/{id}/stems`. `status` is\n`pending` until every stem has finished, then `complete`, `error`, or\n`partial` when only some stems succeeded. Each stem's `audio_id` is a clip.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "group_id": {
+            "description": "The `id` the stem split returned.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Audio clip ID.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "group_id"
+        ],
+        "type": "object"
+      },
+      "name": "audio-stems-retrieve",
+      "title": "Retrieve stems"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Unlike a song\n\nClears the signed-in suno.com user's like or dislike on a song. Only for a\nsuno.com user whose token grants `library:write`; an API key gets 403.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Audio clip ID.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "audio-unlike",
+      "title": "Unlike a song"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Complete an upload\n\nStarts processing the file sent to an upload session's `upload_url` or\n`upload_page_url`, exactly as `POST /v0/audio/uploads` would. Returns `409`\nif the file is sent again while this call runs, and while no file has arrived: if the user is uploading through the page, wait\nuntil they say it finished. Completing the same session again returns `409`\nwhile the first call is still starting it, then the clip that call started.\n\nPoll `GET /v0/audio/{id}` until `status` is `complete` or `error`.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Upload session ID, from POST /v0/audio/upload-sessions.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Optional display title, replacing the one the session was created with.",
+            "maxLength": 256,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "audio-upload-complete",
+      "title": "Complete an upload"
+    },
+    {
+      "_meta": {
+        "openai/fileParams": [
+          "file"
+        ],
+        "ui": {
+          "resourceUri": "ui://suno/upload.html"
+        },
+        "ui/resourceUri": "ui://suno/upload.html"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Start an upload\n\nStarts an upload whose file goes straight to storage rather than through the\nrequest body. Use it for files too large to send inline, and whenever the\nfile's bytes are not at hand, such as a file the user attached in a chat.\nCall it as soon as the user wants to use their own audio, before they attach\nanything, so the uploader is where they drop the file.\n\nWhen the user attached the file in this chat, pass it as `file`: the upload\nstarts at once and the response is the clip, as from\n`POST /v0/audio/upload-sessions/{id}/complete`, with nothing left to send.\n\nOtherwise the response holds the clip `id` the upload will become and two ways to send\nthe file, each good for one file for one hour:\n\n- `upload_url`: send the raw file bytes in one HTTP `PUT`, for example\n  `curl -T song.mp3 \"<upload_url>\"`. Quote the URL.\n- `upload_page_url`: a page where the user picks the file in their browser.\n  Give it to the user when you cannot read the file yourself.\n\nIf the user attached a file in the chat but you passed no `file`, or the call\nrefused it, and you can't `PUT` it yourself, still call this endpoint so the\nuploader opens, then ask them to pick the same file there or at `upload_page_url`.\n\nBoth are credentials for this one upload, so share them only with the\nperson uploading. Once the file is sent, call\n`POST /v0/audio/upload-sessions/{id}/complete`, then poll\n`GET /v0/audio/{id}` as for `POST /v0/audio/uploads`. Formats and limits are\nthe same as that endpoint's. When the uploader reports the upload, carry on\nwith what the user asked for, such as a cover of it, without asking again.\n\nThis endpoint requires the `audio.upload` feature.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "description": "The audio file the user attached in this chat. Pass the attachment\nitself; the chat app turns it into this object.\n",
+            "properties": {
+              "download_url": {
+                "type": "string"
+              },
+              "file_id": {
+                "type": "string"
+              },
+              "file_name": {
+                "type": "string"
+              },
+              "mime_type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "download_url",
+              "file_id"
+            ],
+            "type": "object"
+          },
+          "title": {
+            "description": "Optional display title. Pass the file's name if you know it.",
+            "maxLength": 256,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "audio-upload-create",
+      "title": "Start an upload"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Wait for an audio clip to become playable\n\nCall this after audio-create, audio-covers-create, audio-mashups-create,\naudio-extensions-create or audio-full-song instead of polling audio-retrieve.\nIt checks every few seconds and returns the clip as soon as `status` is\n`streaming` (the clip plays live and `song_url` works), `complete` or `error`,\nor after about 50 seconds with the clip still pending. If it is still pending,\ncall audio-wait again. A creation that returned `clip_ids` made one song per id:\ncall audio-wait once with all of them in `ids`, so one player shows every song. Once\nevery one is settled it returns the first song's fields with every song, in order, under\n`clips`, a clip it couldn't read as its `id` and `error`.\nTo hear how a finished song turned out, ask audio-listen.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "description": "Audio clip ID returned by a creation tool.",
+            "type": "string"
+          },
+          "ids": {
+            "description": "Every clip ID a creation returned in `clip_ids`, instead of `id`. At most 12 per call: for more, call audio-wait again with the rest.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "type": "array"
+          },
+          "until": {
+            "default": "playable",
+            "description": "`playable` returns once the clip is streaming; `complete` waits for the finished file.",
+            "enum": [
+              "playable",
+              "complete"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "audio-wait",
+      "title": "Wait for audio"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "List liked suno.com songs\n\nFor a user signed in with Suno whose token grants `library:read`: lists the songs\nthey liked on suno.com, by anyone, most recently liked first, as Liked Songs does.\nEach item is the audio-retrieve object with the creator's `handle`; play it at its\n`song_url`. Songs since hidden, trashed, or by a creator who blocked the user are\nleft out, so a page can be short; keep paging with `next_cursor`. Through MCP,\nitems leave out `metadata.lyrics`. An API-key account, or a token without the\nscope, gets a 403.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "The `next_cursor` of the previous page.",
+            "type": "string"
+          },
+          "limit": {
+            "default": 10,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "library-liked",
+      "title": "List liked suno.com songs"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List suno.com songs\n\nFor a user signed in with Suno whose token grants `library:read`: lists the\nfinished songs in their suno.com library, newest first, as My Songs does. Each\nitem is the audio-retrieve object; play it at its `song_url`. Page with\n`next_cursor`. Pass `workspace_id` to list what is in a workspace, and `liked`,\n`visibility`, `downloaded` or `origin` to filter as My Songs does. For songs the\nuser liked by anyone, use library-liked. Through MCP, items leave out\n`metadata.lyrics`; audio-retrieve returns them for the user's own songs. An\nAPI-key account, or a token without the scope, gets a 403.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "The `next_cursor` of the previous page.",
+            "type": "string"
+          },
+          "downloaded": {
+            "default": false,
+            "description": "Only songs the user has downloaded, or exported from Studio.",
+            "type": "boolean"
+          },
+          "liked": {
+            "default": false,
+            "description": "Only the user's own songs they have liked.",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 10,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "origin": {
+            "description": "Only songs made this way, as My Songs' type filter names it.",
+            "enum": [
+              "upload",
+              "cover",
+              "extension",
+              "remaster"
+            ],
+            "type": "string"
+          },
+          "visibility": {
+            "description": "Only public songs, or only private ones.",
+            "enum": [
+              "public",
+              "private"
+            ],
+            "type": "string"
+          },
+          "workspace_id": {
+            "description": "Only the user's own songs filed in this workspace, from workspaces-list. Collaborators' songs in a shared workspace are not listed.",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "library-list",
+      "title": "List suno.com songs"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Search suno.com songs\n\nFor a user signed in with Suno whose token grants `library:search`: lists the\nfinished songs in their suno.com library whose title or style contains `query`,\nnewest first. Use it to find a song the user names. Items, paging and filters are\nthose of library-list. An API-key account, or a token without the scope, gets a 403.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "The `next_cursor` of the previous page.",
+            "type": "string"
+          },
+          "downloaded": {
+            "default": false,
+            "description": "Only songs the user has downloaded, or exported from Studio.",
+            "type": "boolean"
+          },
+          "liked": {
+            "default": false,
+            "description": "Only the user's own songs they have liked.",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 10,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "origin": {
+            "description": "Only songs made this way, as My Songs' type filter names it.",
+            "enum": [
+              "upload",
+              "cover",
+              "extension",
+              "remaster"
+            ],
+            "type": "string"
+          },
+          "query": {
+            "description": "Text the song's title or style contains.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "visibility": {
+            "description": "Only public songs, or only private ones.",
+            "enum": [
+              "public",
+              "private"
+            ],
+            "type": "string"
+          },
+          "workspace_id": {
+            "description": "Only the user's own songs filed in this workspace, from workspaces-list. Collaborators' songs in a shared workspace are not listed.",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "library-search",
+      "title": "Search suno.com songs"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Finish uploading a MIDI file\n\nFinishes a midi-upload-create upload once its file is sent. The file must be\na MIDI score with notes, under 256 KB; anything else is a 400, and a file not\nsent yet is a 404. Pass the answer's `midi_upload_id` to `POST /v0/audio`.\nCalling it again for a finished upload returns the same answer. Only for a\nuser signed in with Suno; an API key gets 403.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "The upload's `midi_upload_id`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "midi-upload-complete",
+      "title": "Finish uploading a MIDI file"
+    },
+    {
+      "_meta": {
+        "openai/fileParams": [
+          "file"
+        ],
+        "ui": {
+          "resourceUri": "ui://suno/upload.html"
+        },
+        "ui/resourceUri": "ui://suno/upload.html"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Start uploading a MIDI file\n\nStarts uploading a MIDI file (.mid or .midi, up to 256 KB) a song can play\nfrom: pass the finished upload's `midi_upload_id` to `POST /v0/audio`. Call\nit as soon as the user wants a song from their own MIDI, before they attach\nanything, so the uploader is where they drop the file.\n\nWhen the user attached a MIDI file in this chat, pass it as `file`: it is\nuploaded and checked at once, and the response is the finished upload, as\nfrom midi-upload-complete, with nothing left to send.\n\nOtherwise POST the file to `upload_url` as `multipart/form-data` within 10\nminutes, every `upload_fields` entry first and the file last as `file`, for\nexample `curl -F 'key=…' -F 'policy=…' … -F 'file=@score.mid' '<upload_url>'`,\nand call midi-upload-complete. If you can't send the file yourself, the\nuploader shown with this call lets the user pick it; when it reports the\nupload, carry on with what the user asked for without asking again.\n`upload_url` and its fields are credentials for this one upload. Only for a\nuser signed in with Suno; an API key gets 403.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "description": "The MIDI file the user attached in this chat. Pass the attachment itself;\nthe chat app turns it into this object.\n",
+            "properties": {
+              "download_url": {
+                "type": "string"
+              },
+              "file_id": {
+                "type": "string"
+              },
+              "file_name": {
+                "type": "string"
+              },
+              "mime_type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "download_url",
+              "file_id"
+            ],
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "name": "midi-upload-create",
+      "title": "Start uploading a MIDI file"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Add songs to a playlist\n\nAdds songs to a playlist the signed-in suno.com user owns. Each song that\ncould not be added is listed in `failed` with the reason.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "type": "array"
+          },
+          "id": {
+            "description": "Playlist ID.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "clip_ids"
+        ],
+        "type": "object"
+      },
+      "name": "playlists-add-clips",
+      "title": "Add songs to a playlist"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Create a playlist\n\nCreates a playlist in the signed-in suno.com user's library, private unless\n`visibility` is `public`. The name passes the same content check suno.com\nruns: disallowed text returns 400.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "maxLength": 2000,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "visibility": {
+            "default": "private",
+            "enum": [
+              "public",
+              "private"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "playlists-create",
+      "title": "Create a playlist"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List playlists\n\nLists the playlists the signed-in suno.com user owns, most recently updated\nfirst. Pass `next_cursor` back as `cursor`, with the same `query`, for the next\npage; it is absent on the last. Use `query` to find a playlist the user names.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "default": 25,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "description": "Text the playlist's name contains, ignoring case.",
+            "maxLength": 200,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "playlists-list",
+      "title": "List playlists"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "List the songs in a playlist\n\nLists the songs in a playlist the signed-in suno.com user owns, in the\nplaylist's order. Each item is the audio-retrieve object with the creator's\n`handle`; play it at its `song_url`. Songs since hidden, trashed, or by a creator\nwho blocked the user are left out, so a page can be short; keep paging with\n`next_cursor`. Through MCP, items leave out `metadata.lyrics`. Another user's\nplaylist, an album, or an unknown id returns 404.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "The `next_cursor` of the previous page.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Playlist ID, from playlists-list.",
+            "type": "string"
+          },
+          "limit": {
+            "default": 10,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "playlists-list-clips",
+      "title": "List the songs in a playlist"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Remove songs from a playlist\n\nTakes songs out of a playlist the signed-in suno.com user owns. The songs stay\nin their library. Every requested id is listed in `removed`, including any that\nwere not in the playlist. Adding a song back puts it at the end, not where it was.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "type": "array"
+          },
+          "id": {
+            "description": "Playlist ID.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "clip_ids"
+        ],
+        "type": "object"
+      },
+      "name": "playlists-remove-clips",
+      "title": "Remove songs from a playlist"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Generate a sound\n\nGenerates two short sound effects, one-shots or loops from a description, not\nsongs, as suno.com's Sounds does. Set `loop` for a seamless loop, and `tempo` and\n`key` to fit it to a track. Both are ordinary clips, named in `clip_ids` — poll\n`GET /v0/audio/{id}` for each. The model is chosen for you, and the length is up\nto the model. Only a signed-in suno.com user can call it: the sounds land in their\nsuno.com library, each charged 1 credit like suno.com's Sounds. An API key receives 403 `user_principal_required`, and a\nuser on a suno.com plan below Pro (Free or Basic) 403 `feature_not_on_plan`.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "description": "What the sound is, e.g. \"rain on a tin roof\" or \"boom bap drums\".",
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Opaque key for safely retrying a creation request. Keys contain 1–255 bytes,\nare scoped to the authenticated account across all supported creation\noperations, and are retained for at least 24 hours. Repeating the same key\nwith the same operation and parameters returns the original resource and sets\n`Idempotency-Replayed: true`; reusing it with different input returns `409`.\nA replay never re-emits webhooks. Audio replays return the current clip\nstatus from a live read.\n",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "key": {
+            "description": "Musical key, major or minor. Omit to let the model choose.",
+            "enum": [
+              "C",
+              "C#",
+              "D",
+              "D#",
+              "E",
+              "F",
+              "F#",
+              "G",
+              "G#",
+              "A",
+              "A#",
+              "B",
+              "Cm",
+              "C#m",
+              "Dm",
+              "D#m",
+              "Em",
+              "Fm",
+              "F#m",
+              "Gm",
+              "G#m",
+              "Am",
+              "A#m",
+              "Bm"
+            ],
+            "type": "string"
+          },
+          "loop": {
+            "default": false,
+            "description": "Make a seamless loop rather than a one-shot.",
+            "type": "boolean"
+          },
+          "tempo": {
+            "description": "Beats per minute. Omit to let the model choose.",
+            "maximum": 300,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "title": {
+            "description": "Defaults to the description.",
+            "maxLength": 256,
+            "type": "string"
+          }
+        },
+        "required": [
+          "description"
+        ],
+        "type": "object"
+      },
+      "name": "sounds-create",
+      "title": "Generate a sound"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Generate speech\n\nGenerates spoken-word audio. Exactly one of `script` (spoken verbatim) or\n`prompt` (the AI writes the words) must be provided. Providing `style`\nalongside `prompt` returns a `400`. The result is an ordinary clip — poll\n`GET /v0/audio/{id}`, and stream or mint a playback URL for it the same way.\nSpeech always generates on the default model, so there is no `model` to\nchoose, and no `instrumental` — speech is the voice. Requires the speech grant\non your plan.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "backing_music": {
+            "default": false,
+            "description": "Keep a music bed under the speech. Default is no music at all.",
+            "type": "boolean"
+          },
+          "duration": {
+            "description": "Target length of the generated audio in seconds, 15–360. Omit to let the model choose. A value outside the range returns 400; the result is a target, not a guarantee.",
+            "maximum": 360,
+            "minimum": 15,
+            "type": "integer"
+          },
+          "duration_guidance": {
+            "description": "Size AI-written words to `duration` so short targets produce short speech (on by default when `duration` is set). Only meaningful with `duration` — sending it alone returns 400. A `script` is never rewritten either way.",
+            "type": "boolean"
+          },
+          "duration_strict": {
+            "description": "Guarantee the clip never runs longer than `duration` (on by default when `duration` is set): generation is hard-capped at the target, so audio that would overrun is truncated at the cap. Set false to keep `duration` as a soft target. Only meaningful with `duration` — sending it alone returns 400.",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "description": "Opaque key for safely retrying a creation request. Keys contain 1–255 bytes,\nare scoped to the authenticated account across all supported creation\noperations, and are retained for at least 24 hours. Repeating the same key\nwith the same operation and parameters returns the original resource and sets\n`Idempotency-Replayed: true`; reusing it with different input returns `409`.\nA replay never re-emits webhooks. Audio replays return the current clip\nstatus from a live read.\n",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "negative_style": {
+            "description": "Styles to steer away from (e.g. \"polka, accordion\"). Only valid alongside caller-supplied tags — sending it with `prompt` returns 400, since there are no tags of your own to steer. Requires the advanced-controls grant on your plan; sending it without returns 403.",
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "prompt": {
+            "description": "What the speech should say; the AI writes the words. Exactly one of `script` or `prompt` is required. The spoken-word instruction shares the engine's prompt budget, so the cap is 2947 characters, or 2887 with `backing_music`.",
+            "maxLength": 2947,
+            "type": "string"
+          },
+          "script": {
+            "description": "The words to speak, performed verbatim. Exactly one of `script` or `prompt` is required.",
+            "maxLength": 5000,
+            "type": "string"
+          },
+          "style": {
+            "description": "Delivery tags (e.g. \"calm narrator, warm\"), and the music bed's style when `backing_music` is set. Only valid with `script` — sending it with `prompt` returns 400.",
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 256,
+            "type": "string"
+          },
+          "vocal_gender": {
+            "description": "Force the gender of the generated vocals. Omit to let the model choose. A `voice_id` takes precedence — a named voice already has a gender — and any other value returns 400. Requires the advanced-controls grant on your plan; sending it without returns 403.",
+            "enum": [
+              "male",
+              "female"
+            ],
+            "type": "string"
+          },
+          "voice_id": {
+            "description": "Optional voice ID to speak in. Choose from the preset voices listed in the Quickstart, or, if your plan includes voice cloning, one of your own voices. The voice must belong to your account and be \"ready\" — an unknown voice returns 404, one still processing returns 400. Signed in with Suno, it is instead one of your suno.com voices, from GET /v0/voices.",
+            "type": "string"
+          },
+          "workspace_id": {
+            "description": "A workspace to file the new clip in, from `GET /v0/workspaces`. Only for a suno.com user's clip: an API key or `test_mode` returns 400, and a workspace the user may not add to returns 403.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "speech-create",
+      "title": "Generate speech"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List suno.com voices\n\nFor a user signed in with Suno: lists the voices in their suno.com library, newest\nfirst. Pass a voice's `id` as `voice_id` to audio-create, speech-create,\naudio-covers-create or audio-extensions-create to sing in it. `collection` picks\nthe user's own voices (the default) or the ones they loved, which holds the voices\nthey saved or favorited on suno.com. Page with `next_cursor`. Pass `query` to find a\nvoice by name or id instead of paging. A name is searched only within `collection`,\nso when a voice isn't in `own`, check `loved` before saying it isn't there. An\nAPI-key account gets a 403.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "default": "own",
+            "enum": [
+              "own",
+              "loved"
+            ],
+            "type": "string"
+          },
+          "cursor": {
+            "description": "The `next_cursor` of the previous page.",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "description": "Text the voice's name contains, searched within `collection`, or a voice's id, which finds the user's own voice or any public one they may sing in.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "voices-list",
+      "title": "List suno.com voices"
+    },
+    {
+      "_meta": {
+        "ui": {
+          "resourceUri": "ui://suno/voice-start.html"
+        },
+        "ui/resourceUri": "ui://suno/voice-start.html"
+      },
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Start creating a voice\n\nCall this as soon as a user signed in with Suno wants a custom voice, before\nasking for any audio. Never ask them for recordings or files.\n\nReturns a suno.com `url` where the user creates and verifies the voice. Once\nit's ready it appears in voices-list, and its `id` sings as `voice_id`.\nAn API-key account gets a 409 and creates\nvoices with the recording, verification and create endpoints instead.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "name": "voices-start",
+      "title": "Start creating a voice"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Create a workspace\n\nCreates a workspace in the signed-in suno.com user's library. The name and\ndescription pass the same content check suno.com runs: disallowed text\nreturns 400, and 503 means the check could not run — retry later.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "maxLength": 2000,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "workspaces-create",
+      "title": "Create a workspace"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List workspaces\n\nLists the workspaces the signed-in suno.com user owns or was invited to, most\nrecent activity first. Pass `next_cursor` back as `cursor`, with the same\n`query`, for the next page; it is absent on the last. Songs in no workspace are\nnot listed as one. Use `query` to find a workspace the user names.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "query": {
+            "description": "Text the workspace's name contains, ignoring case.",
+            "maxLength": 200,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "workspaces-list",
+      "title": "List workspaces"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "File songs in a workspace\n\nAdds songs to a workspace and takes others out of it. A song is in at most one\nworkspace, so adding moves it out of the one it was in. A song the user may not\nfile or remove is left where it is and listed in `skipped`, so check it rather\nthan assuming every id moved. Workspace ids and playlist ids are different.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "add": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "type": "array"
+          },
+          "id": {
+            "description": "Workspace ID.",
+            "type": "string"
+          },
+          "remove": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "type": "array"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "workspaces-update-clips",
+      "title": "File songs in a workspace"
+    }
+  ]
+}

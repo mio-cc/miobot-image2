@@ -380,9 +380,21 @@ export class McpClient {
   }
 }
 
-/** T4.1：按工具描述推断 effect——检索类 retrieve、生成类 generate、写副作用类 mutate，拿不准 unknown。 */
-export function inferEffectFromDescription(description: string): CapabilityDescriptor['effect'] {
+/**
+ * 工具副作用推断。annotations 优先：readOnlyHint=true → retrieve；readOnlyHint=false → 只按写动词归类，
+ * 不再被描述里的 "GET /v0/audio/{id}" 之类文档片段误判成读取。
+ */
+export function inferEffectFromDescription(description: string, annotations?: Record<string, unknown>): CapabilityDescriptor['effect'] {
   const text = String(description || '').toLowerCase();
+  if (annotations && typeof annotations === 'object') {
+    if (annotations.destructiveHint === true) return 'delete';
+    if (annotations.readOnlyHint === true) return 'retrieve';
+    if (annotations.readOnlyHint === false) {
+      if (/\b(delete|remove|drop|purge)\b|删除|移除|清空/.test(text)) return 'delete';
+      if (/\b(create|generate|draw|make|build|compose|synthesize)\b|生成|创建|绘制|作曲/.test(text)) return 'generate';
+      return 'mutate';
+    }
+  }
   if (/\b(delete|remove|drop)\b|删除|移除/.test(text)) return 'delete';
   if (/\b(read|list|get|query|search|fetch|find)\b|读取|查询|搜索|获取|列表/.test(text)) return 'retrieve';
   if (/\b(create|generate|draw|make|build)\b|生成|创建|绘制/.test(text)) return 'generate';
@@ -390,7 +402,28 @@ export function inferEffectFromDescription(description: string): CapabilityDescr
   return 'unknown';
 }
 
-/** MCP tool → CapabilityDescriptor：id 形如 mcp.<server>.<tool>，riskLevel 默认 medium，enabled 默认 false（默认全 deny，逐工具在面板开启）。 */
+/**
+ * 工具风险等级（权限门禁默认值）。annotations 优先：
+ * - destructiveHint=true / readOnlyHint=false（写库、扣额度、不可逆）→ high，默认需要确认；
+ * - readOnlyHint=true → low；
+ * - 无 annotations 时退回描述关键词推断（旧行为）。
+ */
+export function inferMcpToolRisk(tool: McpToolInfo): NonNullable<CapabilityDescriptor['riskLevel']> {
+  const annotations = tool.annotations;
+  if (annotations && typeof annotations === 'object') {
+    if (annotations.destructiveHint === true) return 'high';
+    if (annotations.readOnlyHint === true) return 'low';
+    if (annotations.readOnlyHint === false) return 'high';
+  }
+  const text = String(tool.description || '').toLowerCase();
+  if (/\b(delete|remove|drop|purge|reset)\b|删除|移除|清空|重置|不可逆/.test(text)) return 'high';
+  if (/\b(credit|billing|charge|purchase|pay)\b|额度|计费|扣费|支付/.test(text)) return 'high';
+  if (/\b(read|list|get|query|search|fetch|find)\b|读取|查询|搜索|获取|列表/.test(text)) return 'low';
+  if (/\b(write|update|modify|create|generate|send|post|publish|upload)\b|写入|更新|创建|生成|发送|上传/.test(text)) return 'medium';
+  return 'medium';
+}
+
+/** MCP tool → CapabilityDescriptor：id 形如 mcp.<server>.<tool>，enabled 默认 false（默认全 deny，逐工具在面板开启）。 */
 export function mcpToolToDescriptor(serverId: string, tool: McpToolInfo): CapabilityDescriptor {
   const description = String(tool.description || '');
   return {
@@ -401,11 +434,11 @@ export function mcpToolToDescriptor(serverId: string, tool: McpToolInfo): Capabi
     provider: `mcp:${serverId}`,
     presentationHint: '',
     mode: 'sync',
-    riskLevel: 'medium',
+    riskLevel: inferMcpToolRisk(tool),
     enabled: false,
     mergeable: true,
     outputKinds: ['text'],
-    effect: inferEffectFromDescription(description),
+    effect: inferEffectFromDescription(description, tool.annotations),
     sideEffects: ['external_call'],
     inputSchema: (tool.inputSchema && typeof tool.inputSchema === 'object'
       ? tool.inputSchema

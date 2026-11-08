@@ -22,6 +22,7 @@ import type { NapcatHistoryMessage } from './group-context.js';
 import { normalizeForwardPayload } from './message-enrichment.js';
 import { FeatureGate } from './feature-gate.js';
 import { createOutboundImageCompressor, materializeImagesForNapcat, materializeAudioForNapcat } from './image-output.js';
+import { downloadSunoClipMp3 } from './suno-downloader.js';
 import { ApprovalRuntime } from './approval-runtime.js';
 import { buildCommandIntentPlan, createPermissionPolicyFromDefaults, hashApprovalPayload, resolvePermission, formatFlowCatalogMarker, formatFlowHint, type CapabilityDescriptor, type UserRole } from '../../../packages/orchestration/src/index.js';
 import { ApprovalActionConsumer } from './approval-actions.js';
@@ -1985,6 +1986,40 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         containerDir: napcat.mountOutputContainerDir,
         logger,
       });
+    },
+    // Suno 歌曲：下载解密为本地 mp3 走文件发送；失败返回 null，发送链路自动降级分享链接。
+    downloadSunoAudio: async ({ clipId, title }) => {
+      const napcat = getConfig().napcat;
+      try {
+        const result = await downloadSunoClipMp3({ clipId, title }, {
+          cacheDir: path.join(dataDir, 'suno-audio'),
+          logger,
+        });
+        const name = path.basename(result.filePath);
+        if (napcat.mountOutputDir && napcat.mountOutputContainerDir) {
+          try {
+            const hostDir = path.join(napcat.mountOutputDir, 'suno-audio');
+            await fs.mkdir(hostDir, { recursive: true });
+            await fs.copyFile(result.filePath, path.join(hostDir, name));
+            const containerDir = String(napcat.mountOutputContainerDir).replace(/\/+$/, '');
+            return { fileRef: `file://${containerDir}/suno-audio/${name}`, name };
+          } catch (error) {
+            logger.warn('Suno mp3 写入 Napcat 共享目录失败，改用本地路径', {
+              clipId,
+              error: String((error as Error)?.message || error),
+            });
+          }
+        }
+        return { fileRef: result.filePath, name };
+      } catch (error) {
+        logger.warn('Suno 音频下载失败，降级分享链接', {
+          clipId,
+          title,
+          code: (error as { code?: string })?.code,
+          error: String((error as Error)?.message || error),
+        });
+        return null;
+      }
     },
     deleteMessage: (messageId) => adapter.deleteMessage(messageId),
     downloadFile: downloadIncomingFile,

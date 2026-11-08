@@ -132,11 +132,38 @@ test('mcp root: 预算断言——N 子项服务器 loadout 工具数 +1、根 s
   assert.equal(schemaBytesByN[1], schemaBytesByN[32], '根 schema 字节与子项数量无关（O(1) 常驻，树形预算压缩）');
 });
 
-test('mcp root: formatChildCatalog——空树与超长截断', () => {
+test('mcp root: formatChildCatalog——空树与「不漏任何子项」分级输出', () => {
   assert.ok(formatChildCatalog('demo', []).includes('没有已进树的子操作'));
   const many = buildMcpChildTools('demo', Array.from({ length: 45 }, (_, index) => ({ name: `t${index}`, description: `Tool ${index}` })));
   const text = formatChildCatalog('demo', many);
-  assert.ok(text.includes('仅显示前 40 项'));
+  assert.ok(!text.includes('仅显示前 40 项'), '不再硬截断 40 行');
+  for (let index = 0; index < 45; index += 1) assert.ok(text.includes(`- t${index}`), `第 ${index} 项必须出现`);
+  assert.ok(text.includes('45 项'));
+});
+
+test('mcp root: 目录行内展示关键枚举与 anyOf 条件必填；写操作按 annotations 判高风险', () => {
+  const children = buildMcpChildTools('suno-official', [
+    {
+      name: 'audio-download',
+      description: 'Download an audio file. This spend download credits.',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' }, format: { type: 'string', enum: ['mp3', 'wav'], default: 'mp3' } }, required: ['id'], additionalProperties: false },
+      annotations: { readOnlyHint: false },
+    },
+    {
+      name: 'audio-create',
+      description: 'Generate audio and poll GET /v0/audio/{id}.',
+      inputSchema: { type: 'object', properties: { description: { type: 'string' }, lyrics: { type: 'string' }, instrumental: { type: 'boolean' }, midi_upload_id: { type: 'string' } } },
+      annotations: { readOnlyHint: false },
+    },
+  ]);
+  const catalog = formatChildCatalog('suno-official', children);
+  assert.ok(catalog.includes('format: mp3|wav'), 'audio-download 的 format 枚举行内可见');
+  assert.ok(catalog.includes('任一必填：description 或 lyrics 或 instrumental=true 或 midi_upload_id'), 'audio-create 条件必填可见');
+  const download = children.find((child) => child.name === 'audio-download');
+  const create = children.find((child) => child.name === 'audio-create');
+  assert.equal(download.riskLevel, 'high', 'readOnlyHint=false → high（默认需确认）');
+  assert.equal(create.riskLevel, 'high');
+  assert.equal(create.effect, 'generate', '不被描述里的 GET 片段误判成 retrieve');
 });
 
 test('mcp root: 歌词规范注入——子项 schema 含 lyrics 字段时根描述/params 描述/list_actions 带规范（方案 B，2026-11-07）', () => {
@@ -149,6 +176,8 @@ test('mcp root: 歌词规范注入——子项 schema 含 lyrics 字段时根描
   assert.ok(descriptor.description.includes('[Verse 1]'), '根描述含结构标记清单');
   assert.ok(descriptor.description.includes('[Chorus]'));
   assert.ok(descriptor.description.includes('歌名必须原创'), '根描述含歌名原创约束');
+  assert.ok(descriptor.description.includes('人设隔离'), '根描述含人设隔离（复用共享常量）');
+  assert.ok(descriptor.description.includes('规避内容审核'), '根描述含审核规避（复用共享常量）');
   assert.ok(descriptor.description.length <= 800, '上限 800（2026-11-07 由 500 放宽）');
   const paramsDesc = String(descriptor.inputSchema.properties.params.description);
   assert.ok(paramsDesc.includes('结构标记'), 'params 描述带歌词提示');

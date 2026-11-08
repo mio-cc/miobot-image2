@@ -1,7 +1,7 @@
 import type { CapabilityDescriptor, CapabilityHandler, CapabilityInvocation, ExecutionResult } from '../../../packages/orchestration/src/index.js';
 import { validateCapabilityArgs } from '../../../packages/orchestration/src/validation.js';
 import type { McpClient, McpToolInfo } from './mcp-client.js';
-import { inferEffectFromDescription } from './mcp-client.js';
+import { inferEffectFromDescription, inferMcpToolRisk } from './mcp-client.js';
 export type { McpParamDefaultRule } from './mcp-client.js';
 import type { McpParamDefaultRule } from './mcp-client.js';
 // 方案 B（2026-11-07）：歌词结构规范单一来源——子项 schema 含 lyrics 字段时自动注入（通用判据，不认品牌）。
@@ -16,14 +16,6 @@ import { MCP_LYRICS_SPEC_HINT } from './suno-lyrics-spec.js';
  * - 子项级覆盖统一走 `orchestration.capabilityOverrides['mcp.<server>' / 'mcp.<server>.<tool>']`（D22）；
  * - 输出前缀 `[mcp.<server>/<action>]` 标注来源子项，执行错误/诊断均带 action 上下文。
  */
-
-/** MCP 工具 annotations（服务器自述，仅作初筛，D8：不可信，覆盖一票否决）。 */
-export interface McpToolAnnotations {
-  readOnlyHint?: boolean;
-  destructiveHint?: boolean;
-  idempotentHint?: boolean;
-  openWorldHint?: boolean;
-}
 
 /** 树内子项元数据（不进注册表）。 */
 export interface McpChildTool {
@@ -50,24 +42,29 @@ export interface McpCapabilityOverrideInput {
   timeoutMs?: number;
 }
 
-function annotationsOf(tool: McpToolInfo): McpToolAnnotations {
-  const raw = (tool as { annotations?: unknown }).annotations;
-  return raw && typeof raw === 'object' ? raw as McpToolAnnotations : {};
-}
-
 function summarize(description: unknown): string {
   return String(description || '').replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 
-/** D8 风险初筛：annotations 优先（readOnly→low / destructive→high），正则兜底，默认 medium。 */
-function inferChildRisk(tool: McpToolInfo): NonNullable<CapabilityDescriptor['riskLevel']> {
-  const annotations = annotationsOf(tool);
-  if (annotations.destructiveHint === true) return 'high';
-  if (annotations.readOnlyHint === true) return 'low';
-  const description = String(tool.description || '').toLowerCase();
-  if (/\b(delete|remove|drop)\b|删除|移除/.test(description)) return 'high';
-  if (/\b(read|list|get|query|search|fetch|find)\b|读取|查询|搜索|获取/.test(description)) return 'low';
-  return 'medium';
+/**
+ * 上游 schema 条件必填补丁（按 `serverId.tool` 键）。
+ * audio-create 上游没有 required：简单模式要 description、自定义模式要 lyrics、
+ * 纯器乐可只传 instrumental=true、MIDI 可只传 midi_upload_id。空 params 应本地即拒，
+ * 因此用 anyOf 表达「四选一」，不硬加 required（避免误伤其它模式）。
+ */
+const CONDITIONAL_REQUIRED_PATCHES: Record<string, unknown[]> = {
+  'suno-official.audio-create': [
+    { required: ['description'] },
+    { required: ['lyrics'] },
+    { required: ['instrumental'], properties: { instrumental: { const: true } } },
+    { required: ['midi_upload_id'] },
+  ],
+};
+
+function applyConditionalRequired(serverId: string, toolName: string, schema: Record<string, unknown>): Record<string, unknown> {
+  const anyOf = CONDITIONAL_REQUIRED_PATCHES[`${serverId}.${toolName}`];
+  if (!anyOf || Array.isArray(schema.anyOf)) return schema;
+  return { ...schema, anyOf };
 }
 
 /**
@@ -84,15 +81,16 @@ export function buildMcpChildTools(
     const name = String(tool.name || '').trim();
     if (!name) continue;
     const override = overrides[`mcp.${serverId}.${name}`];
-    const effect = inferEffectFromDescription(String(tool.description || ''));
+    const effect = inferEffectFromDescription(String(tool.description || ''), tool.annotations);
+    const baseSchema = (tool.inputSchema && typeof tool.inputSchema === 'object'
+      ? tool.inputSchema
+      : { type: 'object', properties: {}, additionalProperties: true }) as Record<string, unknown>;
     children.push({
       name,
       summary: summarize(tool.description),
-      inputSchema: (tool.inputSchema && typeof tool.inputSchema === 'object'
-        ? tool.inputSchema
-        : { type: 'object', properties: {}, additionalProperties: true }) as Record<string, unknown>,
+      inputSchema: applyConditionalRequired(serverId, name, baseSchema),
       effect,
-      riskLevel: override?.riskLevel ?? inferChildRisk(tool),
+      riskLevel: override?.riskLevel ?? inferMcpToolRisk(tool),
       enabled: override?.enabled ?? true,
       ...(override?.name ? { displayName: String(override.name).slice(0, 120) } : {}),
     });
@@ -131,24 +129,40 @@ export function formatParamDefaultsNote(rules: Record<string, McpParamDefaultRul
   return `${hasLock ? '参数默认/锁定：' : '参数默认：'}${text}。`;
 }
 
-/** 根 descriptor：id `mcp.<server>`，默认 deny，description 分层摘要（上限 800 字符：协议说明 +
- *  歌词规范 + 根级参数默认值注入后的预算；2026-11-07 拍板由 500 放宽）。 */
+/** 子项级参数默认值的模型可见摘要（根描述用）：只列配置了默认值的子项，最多 4 条。 */
+export function formatChildParamDefaultsSummary(
+  childParamDefaults?: Record<string, Record<string, McpParamDefaultRule>>,
+): string {
+  if (!childParamDefaults) return '';
+  const entries = Object.entries(childParamDefaults)
+    .filter(([, rules]) => rules && Object.keys(rules).length);
+  if (!entries.length) return '';
+  const shown = entries.slice(0, 4).map(([tool, rules]) => {
+    const keys = Object.entries(rules).slice(0, 2).map(([key, rule]) => `${key}=${formatRuleValue(rule)}`).join('、');
+    return `${tool}(${keys})`;
+  });
+  return `子项参数默认（缺省自动填入，params 显式传值可覆盖）：${shown.join('；')}${entries.length > 4 ? '…' : ''}。`;
+}
+
 export function buildMcpRootDescriptor(
   serverId: string,
   children: McpChildTool[],
   override: McpCapabilityOverrideInput = {},
   paramDefaults?: Record<string, McpParamDefaultRule>,
+  childParamDefaults?: Record<string, Record<string, McpParamDefaultRule>>,
 ): CapabilityDescriptor {
   const enabledCount = children.filter((child) => child.enabled).length;
   const lyricsCapable = hasLyricsField(children);
   const defaultsNote = formatParamDefaultsNote(paramDefaults);
+  const childDefaultsNote = formatChildParamDefaultsSummary(childParamDefaults);
   const description = [
     `MCP 服务器 ${serverId} 的统一入口工具（树形根，预算按 1 个工具计）。`,
     `含 ${children.length} 个子操作（${enabledCount} 个已启用）。`,
     '调用时传 action（子工具名）与 params（该子工具的参数对象）；',
     'action 传 list_actions 或留空可查看子项清单与参数说明。',
-    ...(lyricsCapable ? [`歌词/文本参数规范：${MCP_LYRICS_SPEC_HINT}`] : []),
     ...(defaultsNote ? [defaultsNote] : []),
+    ...(childDefaultsNote ? [childDefaultsNote] : []),
+    ...(lyricsCapable ? [`歌词/文本参数规范：${MCP_LYRICS_SPEC_HINT}`] : []),
   ].join('').slice(0, 800);
   return {
     id: `mcp.${serverId}`,
@@ -185,20 +199,65 @@ function suggestActions(children: McpChildTool[], action: string): string[] {
     .slice(0, 3);
 }
 
-/** 子项目录文本（list_actions）：名称 + 一行摘要 + required 参数提示（D17）+ 参数默认值说明（2026-11-07）。 */
+/** 目录分级：前 N 项带摘要，其余只列名称/必填/默认，保证任何工具都不会漏。 */
+const MAX_DETAIL_ROWS = 60;
+const MAX_ENUM_PARAMS = 2;
+const MAX_ENUM_VALUES = 8;
+
+/** 行内枚举摘要：只取顶层 enum（含数组 items.enum），最多 2 个参数、每个 8 个值。 */
+function formatEnumNote(schema: Record<string, unknown>): string {
+  const props = (schema as { properties?: Record<string, { enum?: unknown[]; items?: { enum?: unknown[] } }> })?.properties;
+  if (!props || typeof props !== 'object') return '';
+  const parts: string[] = [];
+  for (const [name, prop] of Object.entries(props)) {
+    const values = Array.isArray(prop?.enum) ? prop.enum : (Array.isArray(prop?.items?.enum) ? prop.items.enum : null);
+    if (!values?.length) continue;
+    const shown = values.slice(0, MAX_ENUM_VALUES).map(String).join('|');
+    parts.push(`${name}: ${shown}${values.length > MAX_ENUM_VALUES ? '…' : ''}`);
+    if (parts.length >= MAX_ENUM_PARAMS) break;
+  }
+  return parts.join('；');
+}
+
+/** anyOf 条件必填摘要（如 audio-create 四选一），帮助模型在目录就能看懂。 */
+function formatAnyOfNote(schema: Record<string, unknown>): string {
+  const anyOf = (schema as { anyOf?: unknown[] })?.anyOf;
+  if (!Array.isArray(anyOf) || !anyOf.length) return '';
+  const alternatives = anyOf
+    .map((branch) => {
+      const node = branch as { required?: unknown; properties?: Record<string, { const?: unknown }> } | null;
+      const required = Array.isArray(node?.required) ? node.required.map(String) : [];
+      if (!required.length) return '';
+      return required
+        .map((key) => {
+          const constValue = node?.properties?.[key]?.const;
+          return constValue === undefined ? key : `${key}=${JSON.stringify(constValue)}`;
+        })
+        .join('+');
+    })
+    .filter(Boolean);
+  return alternatives.length ? `任一必填：${alternatives.join(' 或 ')}` : '';
+}
+
+/** 子项目录文本（list_actions）：名称 + 一行摘要 + required/anyOf 参数提示 + 枚举 + 参数默认值说明。 */
 export function formatChildCatalog(
   serverId: string,
   children: McpChildTool[],
   childParamDefaults?: Record<string, Record<string, McpParamDefaultRule>>,
 ): string {
   if (!children.length) return `mcp.${serverId} 当前没有已进树的子操作（allowlist 为空或目录为空）。`;
-  const lines = children.slice(0, 40).map((child) => {
+  const lines = children.map((child, index) => {
     const required = Array.isArray((child.inputSchema as any)?.required) ? (child.inputSchema as any).required.map(String) : [];
     const defaultsNote = formatParamDefaultsNote(childParamDefaults?.[child.name]);
-    return `- ${child.name}${child.displayName ? `（${child.displayName}）` : ''}：${child.summary || '（无描述）'}${required.length ? `｜必填参数：${required.join(', ')}` : ''}${defaultsNote ? `｜${defaultsNote}` : ''}${child.enabled ? '' : '｜已停用'}`;
+    const enumNote = formatEnumNote(child.inputSchema);
+    const anyOfNote = formatAnyOfNote(child.inputSchema);
+    const detail = index < MAX_DETAIL_ROWS
+      ? `${child.summary || '（无描述）'}${required.length ? `｜必填参数：${required.join(', ')}` : ''}${anyOfNote ? `｜${anyOfNote}` : ''}${enumNote ? `｜枚举：${enumNote}` : ''}${defaultsNote ? `｜${defaultsNote}` : ''}`
+      : `（详情见子项 schema）${required.length ? `｜必填参数：${required.join(', ')}` : ''}${defaultsNote ? `｜${defaultsNote}` : ''}`;
+    return `- ${child.name}${child.displayName ? `（${child.displayName}）` : ''}：${detail}${child.enabled ? '' : '｜已停用'}`;
   });
   return [
-    `mcp.${serverId} 子操作清单（${children.length} 项${children.length > 40 ? '，仅显示前 40 项' : ''}）：`,
+    `mcp.${serverId} 子操作清单（${children.length} 项${children.length > MAX_DETAIL_ROWS ? `，前 ${MAX_DETAIL_ROWS} 项含摘要，其余仅列名称与必填` : ''}）：`,
     ...lines,
     '调用方式：action=子操作名，params=该子操作的参数对象。',
     ...(hasLyricsField(children) ? ['歌词/文本参数请遵循工具说明中的结构标记规范（[Intro]/[Verse]/[Chorus] 等标记独占一行，标记后只写歌词）。'] : []),

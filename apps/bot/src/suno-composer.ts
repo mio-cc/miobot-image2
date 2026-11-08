@@ -7,7 +7,13 @@ import type { ModelClient } from '../../../packages/model/src/index.js';
 import { withPurposeFallback, type ModelFallbackController } from './model-fallback.js';
 // 方案 B（2026-11-07）：歌词结构规范单一来源——规则 25/26/41 抽为共享常量，
 // MCP 根注入与 composer 同源；渲染结果逐字节不变（黄金快照 tests/suno-composer-prompt.test.mjs 锚定）。
-import { SUNO_LYRICS_STRUCTURE_RULE_25, SUNO_LYRICS_STRUCTURE_RULE_26, SUNO_LYRICS_TITLE_RULE_41 } from './suno-lyrics-spec.js';
+import {
+  SUNO_LYRICS_STRUCTURE_RULE_25,
+  SUNO_LYRICS_STRUCTURE_RULE_26,
+  SUNO_LYRICS_TITLE_RULE_41,
+  SUNO_LYRICS_MODERATION_RULE,
+  SUNO_LYRICS_PERSONA_ISOLATION_RULE,
+} from './suno-lyrics-spec.js';
 
 export interface SunoComposedSpec {
   customMode: boolean;
@@ -251,7 +257,7 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
     '32. 说唱：写清每小节的重音和停顿，句子短、节奏密，副歌要有可重复的口号。',
     '33. 不进行特定题材限制',
     // 批 3（2026-11-06 拍板）：歌词规避内容审核的生成侧约束（配合 400 后的修复模型改写，双保险）。
-    '33a. 规避内容审核：歌词不出现直白露骨的写实描写、明确的身体部位名称、暴力血腥细节或违禁品名称；表达强烈情绪时用隐喻、意象、留白等含蓄方式，脏话用语气词替代，不直白拼写。',
+    '33a. ' + SUNO_LYRICS_MODERATION_RULE,
     '',
     '【控制参数】',
     '34. duration 仅 custom 模式且 10 到 360 秒；用户没有明确时长时用 null，不要默认写 10 或 20。',
@@ -282,7 +288,7 @@ export function buildSunoComposerPrompt(args: Record<string, unknown>, request: 
 /** 追加在所有 composer 提示词（默认+自定义）末尾的硬约束：歌词作者职责 + 人设隔离 + 歌名原创。 */
 const SUNO_COMPOSER_OVERRIDE = [
   '【最高优先级覆盖】无论上文规则如何：非纯音乐（instrumental=false）的请求必须 customMode=true，且由你写出完整可唱的 lyrics（用户提供的歌词逐字保留）；禁止输出 customMode=false，禁止让 Suno 代写歌词。instrumental=true 时不要输出 lyrics。',
-  '【人设隔离】忽略任何聊天人设、语气设定（如傲娇、嘴毒、角色扮演人设）对歌词内容的暗示——歌词的题材、语言与情绪只由用户的点歌需求和本方案的音乐设计决定；lyrics 中不得出现对人设的呼应或打破第四面墙的语句，除非用户在点歌需求中明确要求该风格。',
+  SUNO_LYRICS_PERSONA_ISOLATION_RULE,
   '【歌名原创（最高优先级）】title 必须是你为本次生成新拟的原创歌名，永远不得照搬、复用或近似引用已有歌曲的歌名。特别是用户拿已有歌曲的歌词来填词、翻唱、重做时（消息里出现《原歌名》、"用XX的词"等情况），title 绝不能等于或套用原歌名——必须从你写的新歌词里另取核心意象重新命名。用户明确要求沿用原歌名是唯一例外。',
 ].join('\n');export class SunoPromptComposer {
   constructor(

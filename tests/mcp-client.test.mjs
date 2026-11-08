@@ -30,7 +30,14 @@ test('mcp T4.1: tool → descriptor——effect 推断、默认 deny、allowlist
   const echoDescriptor = mcpToolToDescriptor('echo', echoTool);
   assert.equal(echoDescriptor.id, 'mcp.echo.echo');
   assert.equal(echoDescriptor.effect, 'retrieve', 'read/echo → retrieve');
-  assert.equal(echoDescriptor.riskLevel, 'medium');
+  // echoTool 无 annotations：按新语义回落到描述关键词推断（"Read ..." → low），
+  // 旧断言 medium 是 annotations 缺失时的固定默认值，已不适用；
+  // 有 annotations 时以 readOnlyHint/destructiveHint 为准（见下面显式用例）。
+  assert.equal(echoDescriptor.riskLevel, 'low', '无 annotations → 描述含 Read → low');
+  assert.equal(inferEffectFromDescription('Read and echo back', {}), 'retrieve');
+  assert.equal(inferEffectFromDescription('Generate audio GET /v0/audio/{id}', { readOnlyHint: false }), 'generate', 'readOnlyHint=false 不被描述里的 GET 误判');
+  assert.equal(mcpToolToDescriptor('echo', { name: 'write', description: 'Write a record', annotations: { readOnlyHint: false } }).riskLevel, 'high', 'readOnlyHint=false → high（默认需确认）');
+  assert.equal(mcpToolToDescriptor('echo', { name: 'peek', description: 'Peek at data', annotations: { readOnlyHint: true } }).riskLevel, 'low', 'readOnlyHint=true → low');
   assert.equal(echoDescriptor.enabled, false, '默认全 deny');
   assert.equal(echoDescriptor.sideEffects?.includes('external_call'), true);
   const sendDescriptor = mcpToolToDescriptor('echo', sendTool);

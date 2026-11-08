@@ -265,6 +265,48 @@ test('P0-5: sendResult post-processes reply plan image outputs through gallery/c
   assert.ok(String(imageSent?.[1] || '').startsWith('file:///share/'), `materialized url expected, got ${imageSent?.[1]}`);
 });
 
+// ── Suno 音频下载接入 ──
+test('Suno: reply plan audio downloads to mp3 file and falls back to share link', async () => {
+  const { sendResult } = await import('../dist/apps/bot/src/runtime.js');
+  const { createReplyStrategyEngine } = await import('../dist/packages/reply/src/index.js');
+  const clipId = '327395af-2544-44b9-bdcf-606810e1f0d4';
+  const sent = [];
+  const client = {
+    sendPrivateText: async (userId, text) => { sent.push(['text', text]); return { success: true }; },
+    sendPrivateFile: async (userId, file, name) => { sent.push(['file', file, name]); return { success: true }; },
+    sendPrivateRecord: async (userId, file) => { sent.push(['record', file]); return { success: true }; },
+  };
+  const strategies = { text: 'plain', image: 'plain', multiImage: 'plain', video: 'plain', file: 'plain', multiFile: 'plain', mixed: 'plain' };
+  const plan = () => ({
+    policy: { enabled: true, maxMessages: 12, maxChars: 20000, mode: 'auto', voice: 'off', reference: 'auto', forcedForward: false },
+    groups: [{
+      kind: 'audio',
+      outputs: [{
+        kind: 'audio',
+        url: 'https://studio-api.prod.suno.com/api/forbidden',
+        priority: 10,
+        mergeable: false,
+        meta: { title: '雨音', audioId: clipId },
+      }],
+    }],
+  });
+  const engine = createReplyStrategyEngine(client, strategies);
+  const ctx = { chatType: 'private', userId: '7', botName: 'Mio' };
+
+  const ok = await sendResult(engine, ctx, { kind: 'chat', handled: true, replyPlan: plan() }, undefined, undefined, client, async () => {}, 12, undefined, {
+    downloadSunoAudio: async ({ title }) => ({ fileRef: `file:///share/${title}-${clipId}.mp3`, name: `${title}-${clipId}.mp3` }),
+  });
+  assert.ok(ok?.success);
+  assert.deepEqual(sent[0], ['file', `file:///share/雨音-${clipId}.mp3`, `雨音-${clipId}.mp3`], '下载成功必须走文件发送');
+
+  sent.length = 0;
+  const failed = await sendResult(engine, ctx, { kind: 'chat', handled: true, replyPlan: plan() }, undefined, undefined, client, async () => {}, 12, undefined, {
+    downloadSunoAudio: async () => null,
+  });
+  assert.ok(failed?.success, '下载失败不能阻断整条回复');
+  assert.deepEqual(sent[0], ['text', `雨音\nhttps://suno.com/song/${clipId}`], '下载失败降级分享链接');
+});
+
 // ── P1-7 副作用串行 ──
 test('P1-7: side-effect tools execute serially while read-only tools may batch', async () => {
   const { AgentRuntime, InMemoryAgentSessionManager: SM } = await import('../dist/packages/agent-runtime/src/index.js');
