@@ -35,6 +35,8 @@ tmp/
 
 # Generated frontend leftovers
 web-panel/src/**/*.js
+# 例外：装饰器的数据/渲染脚本是手写源码，不是编译产物，必须随仓库走（否则线上构建解析不到 ../decor/decor-mist）
+!web-panel/src/decor/*.js
 web-panel/src/components/HelloWorld.vue
 web-panel/src/assets/vite.svg
 web-panel/src/assets/vue.svg
