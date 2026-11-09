@@ -1,0 +1,329 @@
+/* ─────────────────────────────────────────────────────────────
+   山雾 A · 落地装饰层
+   只做一件事：在纸页外壳里铺一张「长城 · 边墙」的描摹墨稿。
+   不改变任何布局、尺寸、层级顺序与点击路径。
+
+   挂载点（见 decor-mist.js）：
+     纸页外壳 .mb-mist  →  .mb-yard（正文大图）
+     侧栏 .sidebar      →  .mb-side（下沿完整轮廓）
+   关掉：任意祖先加 .no-atmosphere
+   深色：:root[data-theme="dark"]，未显式设主题时跟随系统
+   ───────────────────────────────────────────────────────────── */
+
+.mb-yard,
+.mb-side {
+  position: absolute;
+  pointer-events: none;
+}
+
+.mb-yard {
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  transform: translate3d(0, var(--mb-par, 0px), 0);
+  transition: transform 0.6s linear;
+  will-change: transform;
+}
+.mb-yard > svg {
+  position: absolute;
+  bottom: 0;
+  right: 1%;
+  width: 58%;
+  height: 25%;
+  color: var(--ink);
+  overflow: visible;
+}
+
+.mb-side {
+  z-index: 0;
+  color: var(--ink);
+}
+
+/* 内容抬到装饰之上：只加 z-index，不动 position 之外的东西 */
+.mb-mist .sidebar,
+.mb-mist .mb-content {
+  position: relative;
+  z-index: 2;
+}
+/* 侧栏内部元素压在轮廓之上（轮廓是 z:0；同样只改层级，不改布局） */
+.mb-mist .sidebar > *:not(.mb-side) {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── 正文大图：落在分页下方的空白带，上缘渐变收进纸里 ── */
+.mb-mist { --mb-tint: #c3a97d; }
+
+/* 大图不留自己的边框：不缩放、不改构图，四边只靠「浓淡曲线」化开 ——
+   左：在侧栏右沿归零，向右长距离升起；右：在画的右边界之前回落到 0；
+   上：从 0 长出来；下：伸出纸页之外。 */
+.mb-mist .mb-yard > svg {
+  right: 16%;
+  bottom: -8%;
+  width: 72%;
+  height: 44%;
+  opacity: 0.72;
+  -webkit-mask-image: linear-gradient(to right,
+      transparent 0%, transparent 6%,
+      rgba(0, 0, 0, 0.26) 18%, rgba(0, 0, 0, 0.52) 30%,
+      rgba(0, 0, 0, 0.82) 44%, #000 56%,
+      #000 72%, rgba(0, 0, 0, 0.8) 80%, rgba(0, 0, 0, 0.5) 87%,
+      rgba(0, 0, 0, 0.26) 93%, rgba(0, 0, 0, 0.06) 98%,
+      transparent 100%),
+    linear-gradient(to top,
+      #000 0%, #000 36%,
+      rgba(0, 0, 0, 0.94) 52%, rgba(0, 0, 0, 0.8) 68%,
+      rgba(0, 0, 0, 0.6) 80%, rgba(0, 0, 0, 0.34) 90%,
+      rgba(0, 0, 0, 0.12) 96%, transparent 100%);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(to right,
+      transparent 0%, transparent 6%,
+      rgba(0, 0, 0, 0.26) 18%, rgba(0, 0, 0, 0.52) 30%,
+      rgba(0, 0, 0, 0.82) 44%, #000 56%,
+      #000 72%, rgba(0, 0, 0, 0.8) 80%, rgba(0, 0, 0, 0.5) 87%,
+      rgba(0, 0, 0, 0.26) 93%, rgba(0, 0, 0, 0.06) 98%,
+      transparent 100%),
+    linear-gradient(to top,
+      #000 0%, #000 36%,
+      rgba(0, 0, 0, 0.94) 52%, rgba(0, 0, 0, 0.8) 68%,
+      rgba(0, 0, 0, 0.6) 80%, rgba(0, 0, 0, 0.34) 90%,
+      rgba(0, 0, 0, 0.12) 96%, transparent 100%);
+  mask-composite: intersect;
+}
+/* 描摹墨稿是填充的，覆盖通用的等粗描边 */
+.mb-mist .mb-yard svg path,
+.mb-mist .mb-side svg path {
+  fill: currentColor;
+  stroke: none;
+}
+
+.mb-mist .mb-yard {
+  -webkit-mask-image: radial-gradient(120% 118% at 68% 100%, #000 0%, #000 58%, transparent 96%);
+  mask-image: radial-gradient(120% 118% at 68% 100%, #000 0%, #000 58%, transparent 96%);
+}
+
+/* 两团极淡暖雾：让远山有空气，不是贴上去的 */
+.mb-mist .mb-yard::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(52% 38% at 64% 34%, color-mix(in srgb, var(--mb-tint) 9%, transparent) 0%, transparent 72%),
+    radial-gradient(70% 34% at 52% 98%, color-mix(in srgb, var(--mb-tint) 8%, transparent) 0%, transparent 78%);
+  animation: mb-mist-haze 58s ease-in-out infinite alternate;
+}
+
+/* 极轻颗粒：只铺在大图实际占的那块，跟随同一套渐隐，到不了文字与控件。
+   再叠一层「墨色密度」遮罩：颗粒在墙体实处才出现，纯雾、天空与画面外缘同步退场，
+   不会在没有笔触的地方孤零零浮出来，也不会在深色下变成噪点。 */
+.mb-mist .mb-yard::after {
+  content: "";
+  position: absolute;
+  right: 16%;
+  bottom: -8%;
+  width: 72%;
+  height: 44%;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='170' height='170'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0.33%200.33%200.33%200%200%200.33%200.33%200.33%200%200%200.33%200.33%200.33%200%200%200%200%200%201%200'/%3E%3C/filter%3E%3Crect width='170' height='170' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 170px 170px;
+  opacity: 0.55;
+  mix-blend-mode: soft-light;
+  -webkit-mask-image: linear-gradient(to right,
+      transparent 0%, transparent 6%,
+      rgba(0, 0, 0, 0.26) 18%, rgba(0, 0, 0, 0.52) 30%,
+      rgba(0, 0, 0, 0.82) 44%, #000 56%,
+      #000 72%, rgba(0, 0, 0, 0.8) 80%, rgba(0, 0, 0, 0.5) 87%,
+      rgba(0, 0, 0, 0.26) 93%, rgba(0, 0, 0, 0.06) 98%,
+      transparent 100%),
+    linear-gradient(to top,
+      #000 0%, #000 36%,
+      rgba(0, 0, 0, 0.94) 52%, rgba(0, 0, 0, 0.8) 68%,
+      rgba(0, 0, 0, 0.6) 80%, rgba(0, 0, 0, 0.34) 90%,
+      rgba(0, 0, 0, 0.12) 96%, transparent 100%),
+    radial-gradient(74% 64% at 52% 78%,
+      #000 0%, #000 54%,
+      rgba(0, 0, 0, 0.66) 74%, rgba(0, 0, 0, 0.2) 90%,
+      transparent 98%);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(to right,
+      transparent 0%, transparent 6%,
+      rgba(0, 0, 0, 0.26) 18%, rgba(0, 0, 0, 0.52) 30%,
+      rgba(0, 0, 0, 0.82) 44%, #000 56%,
+      #000 72%, rgba(0, 0, 0, 0.8) 80%, rgba(0, 0, 0, 0.5) 87%,
+      rgba(0, 0, 0, 0.26) 93%, rgba(0, 0, 0, 0.06) 98%,
+      transparent 100%),
+    linear-gradient(to top,
+      #000 0%, #000 36%,
+      rgba(0, 0, 0, 0.94) 52%, rgba(0, 0, 0, 0.8) 68%,
+      rgba(0, 0, 0, 0.6) 80%, rgba(0, 0, 0, 0.34) 90%,
+      rgba(0, 0, 0, 0.12) 96%, transparent 100%),
+    radial-gradient(74% 64% at 52% 78%,
+      #000 0%, #000 54%,
+      rgba(0, 0, 0, 0.66) 74%, rgba(0, 0, 0, 0.2) 90%,
+      transparent 98%);
+  mask-composite: intersect;
+}
+
+/* ── 侧栏下沿：横向吃满侧栏（slice 裁掉图的左右边框），只在页脚一带露头；
+   轮廓上方盖一层「侧栏底色雾」，从下往上把剪影溶进侧栏纸色。 ── */
+.mb-mist .mb-side {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: auto;
+  height: 148px;
+  opacity: 1;
+  z-index: 0;
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 9%, #000 88%, transparent 100%);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(to right, transparent 0%, #000 9%, #000 88%, transparent 100%);
+  mask-composite: intersect;
+}
+.mb-mist .mb-side svg {
+  width: 100%;
+  height: 100%;
+  opacity: 0.26;
+  filter: blur(0.9px);
+}
+.mb-mist .mb-side::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(to top,
+    transparent 0%,
+    color-mix(in srgb, var(--sidebar-bg, #fbfaf7) 38%, transparent) 34%,
+    color-mix(in srgb, var(--sidebar-bg, #fbfaf7) 78%, transparent) 62%,
+    color-mix(in srgb, var(--sidebar-bg, #fbfaf7) 96%, transparent) 84%,
+    var(--sidebar-bg, #fbfaf7) 100%);
+}
+
+/* ── 深色：墨色变浅，整体压一档，避免装饰抢过正文 ── */
+:root[data-theme="dark"] .mb-mist .mb-yard > svg { opacity: 0.5; }
+:root[data-theme="dark"] .mb-mist .mb-yard::after { opacity: 0.38; }
+:root[data-theme="dark"] .mb-mist .mb-side svg { opacity: 0.38; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .mb-mist .mb-yard > svg { opacity: 0.5; }
+  :root:not([data-theme="light"]) .mb-mist .mb-yard::after { opacity: 0.38; }
+  :root:not([data-theme="light"]) .mb-mist .mb-side svg { opacity: 0.38; }
+}
+
+/* ── 能力卡片四态：悬停只改「状态」不改「内容」 ──
+   抬 1px 表达层级，边缘转暖、纸面受光表达被点到，图标由缩放改为静止内描边；
+   不叠任何会移动的图层。键盘焦点不位移（目标不能从指针下逃走）；
+   禁用不响应悬停。位移 ≤1px、160ms 缓出；深浅同构。 */
+.mb-mist .mb-cap { --cap-tint: var(--mb-tint, #c3a97d); }
+
+.mb-mist .mb-cap,
+.mb-mist .mb-cap > div:first-of-type,
+.mb-mist .mb-cap > div:nth-of-type(3) {
+  transition: transform 0.16s var(--ease, cubic-bezier(0.22, 1, 0.36, 1)),
+              border-color 0.16s var(--ease, cubic-bezier(0.22, 1, 0.36, 1)),
+              background-color 0.16s var(--ease, cubic-bezier(0.22, 1, 0.36, 1)),
+              box-shadow 0.16s var(--ease, cubic-bezier(0.22, 1, 0.36, 1)),
+              color 0.16s var(--ease, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+.mb-mist a.group:not([aria-disabled="true"]):hover > .mb-cap {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--cap-tint) 38%, var(--hairline-2));
+  background-color: color-mix(in srgb, var(--cap-tint) 6%, var(--surface));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--cap-tint) 14%, transparent),
+    0 6px 16px -10px color-mix(in srgb, var(--ink) 38%, transparent),
+    var(--sh-1);
+}
+.mb-mist a.group:not([aria-disabled="true"]):hover > .mb-cap > div:first-of-type {
+  transform: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 20%, transparent),
+              0 0 0 1px color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.mb-mist a.group:not([aria-disabled="true"]):hover > .mb-cap > div:nth-of-type(3) {
+  color: var(--ink-2);
+}
+
+/* 键盘焦点：靠 accent 环 + 暖边确认，不位移 */
+.mb-mist a.group:focus-visible > .mb-cap {
+  transform: none;
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--hairline-2));
+  background-color: color-mix(in srgb, var(--cap-tint) 6%, var(--surface));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent), var(--sh-1);
+}
+.mb-mist a.group:focus-visible > .mb-cap > div:first-of-type {
+  transform: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 20%, transparent),
+              0 0 0 1px color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
+/* 禁用：纸面转灰、不抬不亮、图标降饱和；悬停也不响应 */
+.mb-mist a.group[aria-disabled="true"] > .mb-cap,
+.mb-mist a.group[aria-disabled="true"]:hover > .mb-cap {
+  transform: none;
+  border-color: var(--hairline-2);
+  background-color: var(--surface-2);
+  box-shadow: none;
+  opacity: 0.78;
+  cursor: default;
+}
+.mb-mist a.group[aria-disabled="true"] > .mb-cap > div:first-of-type,
+.mb-mist a.group[aria-disabled="true"]:hover > .mb-cap > div:first-of-type {
+  transform: none;
+  filter: saturate(0.55);
+  opacity: 0.85;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
+/* 深色：靠内高光与更深的地影落住，不用更亮的描边 */
+:root[data-theme="dark"] .mb-mist a.group:not([aria-disabled="true"]):hover > .mb-cap {
+  border-color: color-mix(in srgb, var(--cap-tint) 34%, var(--hairline-2));
+  background-color: color-mix(in srgb, var(--cap-tint) 8%, var(--surface));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #ffffff 5%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--cap-tint) 16%, transparent),
+    0 10px 22px -14px rgba(0, 0, 0, 0.6);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .mb-mist a.group:not([aria-disabled="true"]):hover > .mb-cap {
+    border-color: color-mix(in srgb, var(--cap-tint) 34%, var(--hairline-2));
+    background-color: color-mix(in srgb, var(--cap-tint) 8%, var(--surface));
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, #ffffff 5%, transparent),
+      0 0 0 1px color-mix(in srgb, var(--cap-tint) 16%, transparent),
+      0 10px 22px -14px rgba(0, 0, 0, 0.6);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mb-mist .mb-cap { transition: none; }
+  .mb-mist a.group:not([aria-disabled="true"]):hover > .mb-cap { transform: none; }
+}
+
+/* ── 开关：与面板既有的「氛围效果」一致 ── */
+.no-atmosphere .mb-yard,
+.no-atmosphere .mb-side { display: none !important; }
+
+/* ── 首帧淡入：懒加载完成后不要让装饰「跳出来」；只做一次，之后补挂也直接可见 ── */
+.mb-mist .mb-yard,
+.mb-mist .mb-side {
+  opacity: 0;
+  transition: transform 0.6s linear, opacity 1.1s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.mb-mist.mb-ready .mb-yard,
+.mb-mist.mb-ready .mb-side { opacity: 1; }
+
+/* ── 窄屏与动效偏好：与面板断点对齐（面板 max-[860px] 是开区间，故用 859.98） ── */
+@media (max-width: 859.98px) {
+  .mb-mist .mb-side { display: none; }
+}
+@media (max-width: 680px) {
+  .mb-mist .mb-yard { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mb-yard { transform: none !important; transition: none; }
+  .mb-mist .mb-yard::before { animation: none; }
+  .mb-mist .mb-yard,
+  .mb-mist .mb-side { opacity: 1; transition: none; }
+}
+
+@keyframes mb-mist-haze {
+  from { transform: translate3d(-1.4%, 0, 0) scale(1); opacity: 0.85; }
+  to { transform: translate3d(1.4%, 0, 0) scale(1.03); opacity: 1; }
+}

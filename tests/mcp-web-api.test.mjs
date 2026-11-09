@@ -139,6 +139,12 @@ test('mcp web-api: capabilities 接口合并 MCP 根（P4 二期）——覆盖�
   const off = res3.body.capabilities.find((item) => item.id === 'mcp.off');
   assert.equal(off.health.status, 'disabled', 'server.enabled:false → health disabled');
   assert.equal(off.health.detail, '已停用');
+  // 内置 OAuth 项首次出现（从未授权、还没有快照）→ 卡片必须存在且状态是待授权。
+  const pendingBefore = res3.body.capabilities.find((item) => item.id === 'mcp.auth-pending');
+  assert.ok(pendingBefore, '未授权也合成卡片');
+  assert.ok(pendingBefore.description.includes('待授权'), '无快照 OAuth 按待授权描述');
+  assert.equal(pendingBefore.health.status, 'unconfigured');
+  assert.equal(pendingBefore.health.detail, '未连接 · 待授权');
   fs.writeFileSync(path.join(dataDir, 'mcp-status.json'), JSON.stringify({
     version: 1,
     servers: [{ serverId: 'auth-pending', state: 'needs-auth', toolCount: 0, enabledToolCount: 0, lastChangedAt: '2026-11-07T00:00:00Z' }],

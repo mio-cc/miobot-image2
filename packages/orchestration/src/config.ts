@@ -61,6 +61,10 @@ export interface OrchestrationConfig {
     paramDefaults?: Record<string, { value: string | number | boolean; locked?: boolean }>;
     /** 参数默认值（子项级）：键=子项工具名；同键整条覆盖根级。 */
     childParamDefaults?: Record<string, Record<string, { value: string | number | boolean; locked?: boolean }>>;
+    /** P2-MCP：鉴权模式（缺省=静态 token/免鉴权；oauth=浏览器账号授权）。 */
+    auth?: 'static' | 'oauth';
+    /** 系统预置项标记：自动注入、不可删除，只允许停用/断开（用户不填此字段）。 */
+    builtin?: boolean;
   }>;
   voice: {
     enabled: boolean;
@@ -221,6 +225,35 @@ export interface OrchestrationConfig {
   };
 }
 
+/**
+ * 内置 MCP 预置项：作为模块能力随配置默认值注入，用户打开面板即可看到并直接授权，
+ * 不需要手填 URL/传输/鉴权。已存在同 id 的用户配置时只补 `builtin` 标记，
+ * 不覆盖用户字段（尤其是 enabled:false 必须保持停用）。
+ */
+export const BUILTIN_MCP_SERVERS: OrchestrationConfig['mcpServers'] = [
+  {
+    id: 'suno-official',
+    enabled: true,
+    transport: 'http',
+    url: 'https://api.suno.com/mcp',
+    auth: 'oauth',
+    builtin: true,
+  },
+];
+
+/** 合并内置项：不存在则补默认值；已存在则只补 builtin 标记，保留用户已有配置。 */
+function mergeBuiltinMcpServers(servers: OrchestrationConfig['mcpServers']): OrchestrationConfig['mcpServers'] {
+  for (const preset of BUILTIN_MCP_SERVERS) {
+    const existing = servers.find((server) => server.id === preset.id);
+    if (existing) {
+      existing.builtin = true;
+      continue;
+    }
+    servers.push({ ...preset });
+  }
+  return servers;
+}
+
 export function defaultOrchestrationConfig(): OrchestrationConfig {
   return {
     enabled: false,
@@ -230,7 +263,7 @@ export function defaultOrchestrationConfig(): OrchestrationConfig {
       enabled: false,
       allowlist: ['suno-official'],
     },
-    mcpServers: [],
+    mcpServers: BUILTIN_MCP_SERVERS.map((server) => ({ ...server })),
     voice: {
       enabled: false,
       provider: 'fish-audio',
@@ -518,7 +551,7 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
       allowlist: Array.isArray(record(raw.externalProviders).allowlist) ? record(raw.externalProviders).allowlist.map(String).filter(Boolean) : d.externalProviders.allowlist,
     },
     // T4.1：MCP server 配置规整——只保留形态完整的条目（transport 与对应必填项齐全），其余丢弃。
-    mcpServers: (Array.isArray(raw.mcpServers) ? raw.mcpServers : []).flatMap((entry: unknown) => {
+    mcpServers: mergeBuiltinMcpServers((Array.isArray(raw.mcpServers) ? raw.mcpServers : []).flatMap((entry: unknown) => {
       const item = record(entry);
       const id = String(item.id || '').trim();
       const transport = item.transport === 'http' ? 'http' as const : 'stdio' as const;
@@ -555,7 +588,7 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
           },
         } : {}),
       }];
-    }),
+    })),
     voice: (() => {
       const v = record(raw.voice);
       return {

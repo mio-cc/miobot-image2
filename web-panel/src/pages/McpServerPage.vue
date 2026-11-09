@@ -170,7 +170,9 @@ function riskLabel(value: unknown): string {
 }
 const exposure = computed(() => configStore.config?.toolRegistry?.exposure?.[`mcp.${serverId.value}`] as string | undefined);
 const stateBadge = computed(() => {
-    const state = serverStatus.value?.state || (server.value?.enabled === false ? 'disabled' : 'unknown');
+    // 无快照时：停用 → 已停用；OAuth 内置项 → 需要授权（首次出现尚未授权，不消耗额度）；其余 → 未知。
+    const state = serverStatus.value?.state
+        || (server.value?.enabled === false ? 'disabled' : server.value?.auth === 'oauth' ? 'needs-auth' : 'unknown');
     return { state, label: stateLabels[state] || state };
 });
 const isOAuth = computed(() => server.value?.auth === 'oauth');
@@ -417,7 +419,7 @@ onUnmounted(() => {
       <button class="btn !px-3 !py-1 !text-xs ml-auto" :disabled="configStore.saving" @click="enableToolSearch">开启工具检索</button>
     </div>
 
-    <SectionCard :title="`MCP 服务器：${rootName || serverId}`" :hint="isOAuth ? '远程 MCP 服务 · 用 OAuth 账号授权 · 模型只看到 1 个入口工具（树形根）' : '远程/本地 MCP 服务 · 模型只看到 1 个入口工具（树形根）'">
+    <SectionCard :title="`MCP 服务器：${rootName || serverId}`" :hint="isOAuth ? '远程 MCP 服务 · 用账号授权接入 · 模型只看到一个入口，具体工具有需要时再检索' : '远程/本地 MCP 服务 · 模型只看到一个入口，具体工具有需要时再检索'">
       <template #actions>
         <button class="btn-outline !px-3" :disabled="statusRefreshing || busy" @click="refreshStatus()">
           {{ statusRefreshing ? '刷新中…' : '刷新状态' }}
@@ -437,7 +439,9 @@ onUnmounted(() => {
           已接入工具 {{ serverStatus.toolCount ?? 0 }} 个（其中启用 {{ serverStatus.enabledToolCount ?? 0 }} 个）
           <template v-if="serverStatus.fetchedAt"> · 清单更新于 {{ String(serverStatus.fetchedAt).slice(0, 19).replace('T', ' ') }}</template>
         </span>
-        <span v-else class="text-xs text-[color:var(--ink-3)]">还没有状态：可能未配置、bot 未运行，或正在第一次连接。</span>
+        <span v-else class="text-xs text-[color:var(--ink-3)]">
+          {{ isOAuth ? '该服务尚未授权：点下方「连接账号」完成登录授权，不会消耗额度。' : '还没有状态：可能未配置、bot 未运行，或正在第一次连接。' }}
+        </span>
         <span v-if="serverStatus?.lastChangedAt" class="text-xs text-[color:var(--ink-3)]">状态变化于 {{ String(serverStatus.lastChangedAt).slice(0, 19).replace('T', ' ') }}</span>
       </div>
 
@@ -513,7 +517,7 @@ onUnmounted(() => {
     <!-- 根工具级设置 -->
     <SectionCard v-if="server" title="根工具设置" hint="模型实际看到的是一个叫 mcp.<服务器 id> 的入口工具，这里改它的显示名、开放开关和风险等级">
       <p class="text-xs text-[color:var(--ink-3)] mb-3">
-        所有子项工具都通过这个入口调用。默认情况下它<strong>不开放给模型</strong>（默认 deny）；需要先在下面打开「根工具启用」，模型才会看到它。
+        所有子项工具都通过这个入口调用。默认<strong>不开放给模型</strong>；需要先在下面打开「根工具启用」，模型才会看到它。
         风险等级只用于展示和审批判断，不会改变实际权限。
       </p>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">

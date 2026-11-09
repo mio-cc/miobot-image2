@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { navRoutes } from '../router';
 import { useAuthStore } from '../stores/auth';
 import { useConfigStore } from '../stores/config';
 import { useCapabilityStore } from '../stores/capabilities';
 import AppIcon from './AppIcon.vue';
+import '../decor/decor-mist.css';
 
 const route = useRoute();
 const router = useRouter();
@@ -17,6 +18,27 @@ const importInput = ref<HTMLInputElement | null>(null);
 const theme = ref<'auto' | 'light' | 'dark'>((localStorage.getItem('miobot_theme') as any) || 'auto');
 /* P15：氛围层（光斑/纸纹）用户开关——低配设备或嫌晃时可关闭；reduced-motion 只停动画不停渲染。 */
 const atmosphere = ref(localStorage.getItem('miobot_atmosphere') !== 'off');
+
+/* 山雾装饰：纸页外壳的懒加载挂载点（只读开关初值，不新增状态）。 */
+const shellEl = ref<HTMLElement | null>(null);
+let mist: { destroy(): void } | null = null;
+
+onMounted(() => {
+    const start = () => {
+        import('../decor/decor-mist').then(({ mountMist }) => {
+            if (!shellEl.value) return;
+            mist = mountMist({ host: shellEl.value, sidebar: '.sidebar', scroller: 'main' });
+        });
+    };
+    if (atmosphere.value) {
+        // 空闲后再拉装饰包，首屏不参与
+        (window as any).requestIdleCallback
+            ? (window as any).requestIdleCallback(start, { timeout: 2000 })
+            : setTimeout(start, 400);
+    }
+});
+
+onBeforeUnmount(() => { mist?.destroy(); mist = null; });
 
 applyTheme();
 
@@ -76,17 +98,15 @@ const crumbs = computed<Crumb[]>(() => {
     if (path.startsWith('/tools/')) {
         return [{ label: '工具与权限', to: '/tools' }, ...current(String(route.params.id || label))];
     }
-    // P4-MCP：/mcp 列表与 /mcp/<id> 配置页——面包屑挂回能力中心 MCP 分类视图
-    //（?cat=MCP 深链；返回落点是分类视图而非首页）。末级显示名取注册表（60s 共享缓存）。
+    // P4-MCP：/mcp 已成为主导航一级模块（不再挂在能力中心下）——详情页父级是 MCP 列表。
     if (path === '/mcp') {
-        return [{ label: '能力中心', to: '/capabilities?cat=MCP' }, ...current('MCP')];
+        return current('MCP 服务器');
     }
     if (path.startsWith('/mcp/')) {
         const serverId = String(route.params.serverId || '');
         const registered = (capabilities.registry as Array<{ id?: string; name?: string }> | null)?.find?.((item) => item?.id === `mcp.${serverId}`);
         return [
-            { label: '能力中心', to: '/capabilities?cat=MCP' },
-            { label: 'MCP', to: '/mcp' },
+            { label: 'MCP 服务器', to: '/mcp' },
             ...current(String(registered?.name || serverId)),
         ];
     }
@@ -151,7 +171,7 @@ function handleLogout() {
   <!-- 桌面层：四周留白（原型量级 + 一档：桌面 24~32px），680 断点收窄到 8px，纸页浮在桌面上 -->
   <div class="h-screen p-2 lg:p-6 xl:p-8 bg-[color:var(--desk)] overflow-hidden" :class="{ 'no-atmosphere': !atmosphere }">
     <!-- 纸页外壳（原型 .win）：大圆角 + 细描边 + 桌面投影，整页摊在桌面上 -->
-    <div class="relative h-full grid grid-cols-[224px_1fr] max-[860px]:grid-cols-[62px_1fr] rounded-[14px] border border-[color:var(--hairline-2)] bg-[color:var(--page)] overflow-hidden"
+    <div ref="shellEl" class="relative h-full grid grid-cols-[224px_1fr] max-[860px]:grid-cols-[62px_1fr] rounded-[14px] border border-[color:var(--hairline-2)] bg-[color:var(--page)] overflow-hidden"
       style="box-shadow: var(--shell-shadow);">
     <!-- 宣纸氛围层：极淡双色光斑 + 纸纹颗粒（纯装饰，不拦截交互） -->
     <div class="aurora a" aria-hidden="true"></div>
@@ -196,7 +216,7 @@ function handleLogout() {
       </div>
     </aside>
 
-    <div class="flex flex-col overflow-hidden">
+    <div class="mb-content flex flex-col overflow-hidden">
       <header class="flex items-center gap-3 px-5 h-[54px] flex-none border-b border-[color:var(--hairline-2)] bg-[color:var(--topbar-bg)] backdrop-blur-md">
         <!-- R21-g 面包屑：父级可点击返回上层，当前页加粗不可点 -->
         <nav class="text-[13px] flex items-center gap-1.5 max-sm:hidden min-w-0" aria-label="面包屑">

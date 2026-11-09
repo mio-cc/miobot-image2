@@ -295,28 +295,6 @@ function removeExposure(id: string) {
       </div>
     </SectionCard>
 
-    <!-- ═══ R21: MCP 服务器配置（此前无页面）═══ -->
-    <SectionCard title="MCP 服务器" hint="orchestration.mcpServers · Model Context Protocol 外部工具接入" class="mb-4">
-      <div v-if="!(orchestration?.mcpServers as any)?.length" class="space-y-2">
-        <div class="text-xs text-[color:var(--ink-3)]">暂未配置 MCP 服务器——一个服务器 = 一个树形根工具（预算按 1 个工具计，默认 deny）。</div>
-        <router-link class="btn-outline !px-3" to="/mcp">去新增 MCP 服务器</router-link>
-      </div>
-      <div v-else class="space-y-2">
-        <div v-for="(server, idx) in (orchestration as any).mcpServers" :key="idx" class="field-box">
-          <div class="min-w-0">
-            <span class="font-semibold text-sm">{{ server.id }}</span>
-            <span class="ml-2 tag">{{ server.enabled ? '已启用' : '已停用' }}</span>
-            <div class="font-mono text-xs text-[color:var(--ink-3)] mt-0.5 truncate">{{ server.url }}</div>
-          </div>
-          <div class="flex gap-2 items-center">
-            <router-link class="btn-outline !px-2" :to="`/mcp/${encodeURIComponent(server.id)}`">配置</router-link>
-            <button class="btn-outline !px-2" @click="(server as any).enabled = !(server as any).enabled">{{ server.enabled ? '停用' : '启用' }}</button>
-          </div>
-        </div>
-        <router-link class="btn-outline !px-3" to="/mcp">管理 MCP 服务器（新增 / 删除）</router-link>
-      </div>
-    </SectionCard>
-
     <!-- ═══ R21: HuggingFace 模型接入（此前无页面）═══ -->
     <SectionCard v-if="huggingFace" title="HuggingFace 接入" hint="huggingFace · 免费推理 API 接入" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">

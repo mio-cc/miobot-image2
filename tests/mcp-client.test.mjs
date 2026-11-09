@@ -77,7 +77,10 @@ test('mcp T4.1: 注册进 enforcer 后（显式启用）可被规划执行', asy
 
 test('mcp T4.1: 配置规整——mcpServers 非法条目丢弃', async () => {
   const cfg = createDefaultConfig();
-  assert.deepEqual(cfg.orchestration.mcpServers, []);
+  // 内置预置：默认配置自带 Suno（未授权前是待授权，不消耗额度）。
+  assert.equal(cfg.orchestration.mcpServers.length, 1);
+  assert.equal(cfg.orchestration.mcpServers[0].id, 'suno-official');
+  assert.equal(cfg.orchestration.mcpServers[0].builtin, true);
   const { importConfig } = await import('../dist/packages/config/src/index.js');
   const result = importConfig({ orchestration: { mcpServers: [
     { id: 'ok-http', enabled: true, transport: 'http', url: 'http://mcp.local/mcp' },
@@ -87,11 +90,20 @@ test('mcp T4.1: 配置规整——mcpServers 非法条目丢弃', async () => {
     { id: 'no-url', transport: 'http' },
   ] } });
   const servers = result.config.orchestration.mcpServers;
-  assert.equal(servers.length, 2, '缺 id/command/url 的条目丢弃');
+  assert.equal(servers.length, 3, '缺 id/command/url 的条目丢弃 + 内置预置补一条');
   assert.equal(servers[0].id, 'ok-http');
   assert.equal(servers[0].enabled, true);
   assert.equal(servers[1].command, 'node');
   assert.deepEqual(servers[1].allowlist, ['echo']);
+  assert.equal(servers[2].id, 'suno-official');
+
+  // 内置合并绝不能覆盖用户已有配置：生产手写 suno-official 且停用的环境，升级后必须保持停用。
+  const existing = importConfig({ orchestration: { mcpServers: [
+    { id: 'suno-official', enabled: false, transport: 'http', url: 'https://api.suno.com/mcp', auth: 'oauth' },
+  ] } }).config.orchestration.mcpServers;
+  assert.equal(existing.length, 1, '不重复追加内置项');
+  assert.equal(existing[0].enabled, false, '用户停用状态保持');
+  assert.equal(existing[0].builtin, true, '只补内置标记');
 });
 
 // ═══ Phase 1（传输层硬化）：会话保持 / 分页 / 404 自愈 / structuredContent / 通知流 / stdio 自愈 ═══

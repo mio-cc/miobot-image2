@@ -679,8 +679,12 @@ export class WebApi {
         }
         const redirectUri = `${panelOrigin(request)}/api/mcp/callback`;
         const store = mcpCredentialStore();
-        const registered = store.getClient(serverId)
-          ?? await registerClient(metadata.registrationEndpoint, { clientName: `miobot-${serverId}`, redirectUris: [redirectUri] });
+        const cachedClient = store.getClient(serverId);
+        // 复用已注册 client 的前提是 redirect_uri 完全一致：生产域名/反代变化后旧注册会
+        // 把回调打到错误地址（表现为授权完不回跳）。不一致就重新 DCR，拿到新 client。
+        const registered = cachedClient && cachedClient.redirectUri === redirectUri
+          ? cachedClient
+          : await registerClient(metadata.registrationEndpoint, { clientName: `miobot-${serverId}`, redirectUris: [redirectUri] });
         store.setClient(serverId, { clientId: registered.clientId, redirectUri });
         const pkce = generatePkce();
         const state = `mcpst-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -1467,7 +1471,7 @@ function readMcpStatusSnapshot(): unknown {
  * health 为合成三态（能力中心 MCP 分类卡片的状态点/副标题数据源）：
  * disabled=已停用（server.enabled:false）· unconfigured=未连接/待授权 · ok=已连接/连接中。
  */
-function mcpRootDescriptors(cfg: { orchestration?: { mcpServers?: Array<{ id: string; transport: string; enabled?: boolean }>; capabilityOverrides?: Record<string, any> } }): CapabilityDescriptor[] {
+function mcpRootDescriptors(cfg: { orchestration?: { mcpServers?: Array<{ id: string; transport: string; enabled?: boolean; auth?: 'static' | 'oauth' }>; capabilityOverrides?: Record<string, any> } }): CapabilityDescriptor[] {
   const servers = cfg.orchestration?.mcpServers || [];
   if (!servers.length) return [];
   const snapshot = readMcpStatusSnapshot() as { servers?: Array<{ serverId: string; state: string; toolCount: number; enabledToolCount?: number }> };
@@ -1476,15 +1480,19 @@ function mcpRootDescriptors(cfg: { orchestration?: { mcpServers?: Array<{ id: st
   return servers.map((server) => {
     const override = overrides[`mcp.${server.id}`] || {};
     const status = statusMap.get(server.id);
+    // 内置 OAuth 项首次出现时通常还没有快照（从未连接过）：按「未连接 · 待授权」展示，
+    // 保证能力中心一定有卡片且状态可解释，而不是空白或误报未配置。
     const stateLabel = status
       ? status.state === 'connected' ? `已连接（${status.toolCount} 子项）`
         : status.state === 'connected-no-tools' ? '已连接·无子项'
         : status.state === 'needs-auth' ? '待授权' : status.state
-      : '未连接';
+      : server.auth === 'oauth' ? '待授权' : '未连接';
     const health = server.enabled === false
       ? { status: 'disabled' as const, detail: '已停用' }
       : !status
-        ? { status: 'unconfigured' as const, detail: '未连接' }
+        ? server.auth === 'oauth'
+          ? { status: 'unconfigured' as const, detail: '未连接 · 待授权' }
+          : { status: 'unconfigured' as const, detail: '未连接' }
         : status.state === 'connected'
           ? { status: 'ok' as const, detail: `已连接（${status.toolCount} 子项）` }
           : status.state === 'connected-no-tools'
@@ -1498,7 +1506,7 @@ function mcpRootDescriptors(cfg: { orchestration?: { mcpServers?: Array<{ id: st
       id: `mcp.${server.id}`,
       version: '1.0.0',
       name: String(override.name || `${server.id} MCP`).slice(0, 120),
-      description: `MCP 服务器 ${server.id} 的树形根工具（${server.transport} 传输，${stateLabel}）；调用传 action（子工具名）与 params，action=list_actions 可查看子项清单`,
+      description: `MCP 服务器 ${server.id}（${server.transport} 传输，${stateLabel}）；模型通过一个入口调用全部子工具，action=list_actions 可查看可用子项清单`,
       provider: `mcp:${server.id}`,
       presentationHint: '',
       mode: 'sync',
@@ -1515,18 +1523,34 @@ function mcpRootDescriptors(cfg: { orchestration?: { mcpServers?: Array<{ id: st
   });
 }
 
-/** 面板对外可达 origin（OAuth redirect_uri 用；优先反代头，回退环境变量）。 */
+/**
+ * 面板对外可达 origin（OAuth redirect_uri 用）。生产是域名访问 + 可能反代，
+ * 不能回退到本地端口或硬编码 host：优先反代头（X-Forwarded-Host/Proto/Port），
+ * 其次浏览器 Origin 头，再次直连 Host 头，最后才是环境变量与本地回退。
+ */
 function panelOrigin(request: WebApiRequest): string {
-  const forwardedHost = String(request.headers?.['x-forwarded-host'] || '').split(',')[0].trim();
+  const header = (name: string): string => String(request.headers?.[name] || '').split(',')[0].trim();
+  const forwardedHost = header('x-forwarded-host');
+  const forwardedProto = header('x-forwarded-proto');
+  const forwardedPort = header('x-forwarded-port');
   if (forwardedHost) {
-    const proto = String(request.headers?.['x-forwarded-proto'] || 'https').split(',')[0].trim() || 'https';
-    return `${proto}://${forwardedHost}`;
+    const isLocal = /^(localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?$/.test(forwardedHost);
+    const proto = forwardedProto || (isLocal ? 'http' : 'https');
+    const host = forwardedPort && !/:\d+$/.test(forwardedHost) ? `${forwardedHost}:${forwardedPort}` : forwardedHost;
+    return `${proto}://${host}`;
+  }
+  const originHeader = header('origin');
+  if (/^https?:\/\/[^/]+$/i.test(originHeader)) return originHeader.replace(/\/$/, '');
+  const hostHeader = header('host');
+  if (hostHeader) {
+    const isLocal = /^(localhost|127\.0\.0\.1|\[?::1\]?)(?::\d+)?$/.test(hostHeader);
+    const proto = forwardedProto || (isLocal ? 'http' : 'https');
+    return `${proto}://${hostHeader}`;
   }
   const configured = String(process.env.MIOBOT_PANEL_ORIGIN || '').trim();
   if (configured) return configured.replace(/\/$/, '');
-  // 默认端口对齐 local-verify-server-v2（MIOBOT_PORT/VERIFY_PORT/PORT → 3018）；
-  // host 用 localhost（与 v2 server 的 listen host 一致——Windows 上它只绑 ::1，
-  // 硬编码 127.0.0.1 会被拒绝连接，走查实测发现）。
+  // 本地回退：端口对齐 local-verify-server-v2（MIOBOT_PORT/VERIFY_PORT/PORT → 3018）；
+  // host 用 localhost（与 v2 server 的 listen host 一致——Windows 上它只绑 ::1）。
   const port = String(process.env.MIOBOT_PORT || process.env.MIOBOT_VERIFY_PORT || process.env.PORT || '3018').trim();
   return `http://localhost:${port}`;
 }

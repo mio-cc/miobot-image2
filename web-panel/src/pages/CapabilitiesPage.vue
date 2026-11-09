@@ -134,10 +134,10 @@ const registryCards = computed<Card[]>(() => {
           id: item.id,
           label: item.name || item.id,
           category: 'MCP',
-          sub: connected && !rootOn ? `${detail} · 根关闭` : detail,
+          sub: connected && !rootOn ? `${detail} · 入口未开放` : detail,
           ok: connected && rootOn,
           enabled: status !== 'disabled',
-          reason: connected && !rootOn ? '已连接 · 根能力关闭（默认 deny，进配置页开启）' : (item.health?.detail || status || ''),
+          reason: connected && !rootOn ? '已连接 · 入口工具未开放给模型（进配置页开启）' : (item.health?.detail || status || ''),
           href: `/mcp/${encodeURIComponent(item.id.slice(4))}`,
         };
       }
@@ -156,6 +156,15 @@ const registryCards = computed<Card[]>(() => {
 
 /** MCP 分类空态判定（首用引导）：注册表里一个 mcp.* 都没有时，MCP 分类显示「去新增」CTA。 */
 const mcpNotConfigured = computed(() => !registry.value.some((item) => String(item.id).startsWith('mcp.')));
+
+/** 卡片区常驻「添加 MCP 服务器」入口：生产新装时 mcpServers 默认为空，
+ *  能力清单里不会出现任何 mcp.* 卡片——不能只在 MCP 分类空态里藏一个按钮，
+ *  否则用户在「全部」视图根本看不到入口，也不知道该去哪个 URL。
+ *  搜索态下隐藏，避免干扰搜索结果。 */
+const showMcpAddCard = computed(() => view.value === 'registry'
+  && mcpNotConfigured.value
+  && !keyword.value.trim()
+  && (category.value === '全部' || category.value === 'MCP'));
 
 /* ── 辅视图：模型体检绑定卡（节点+模型可用性） ── */
 const healthCards = computed<Card[]>(() => {
@@ -267,7 +276,7 @@ watch(() => route.query.cat, (value) => {
     <!-- 能力卡片：原型小卡片高密度网格（6 列 / 每页 18；1240→4 列，680→2 列） -->
     <div v-else class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-2.5">
       <router-link v-for="card in pagedCards" :key="view + ':' + card.id" :to="card.href" class="block group">
-        <div class="relative bg-[color:var(--surface)] border border-[color:var(--hairline-2)] rounded-[10px] px-3 py-2.5 shadow-[var(--sh-1)] transition-all duration-200 group-hover:-translate-y-[2px] group-hover:shadow-[var(--sh-2)] group-hover:border-[color:var(--accent-line)] cursor-pointer h-full">
+        <div class="mb-cap relative bg-[color:var(--surface)] border border-[color:var(--hairline-2)] rounded-[10px] px-3 py-2.5 shadow-[var(--sh-1)] transition-all duration-200 group-hover:-translate-y-[2px] group-hover:shadow-[var(--sh-2)] group-hover:border-[color:var(--accent-line)] cursor-pointer h-full">
           <!-- 健康状态点（token 语义色，暗色自动适配） -->
           <span class="absolute top-2.5 right-2.5 dot"
             :class="!card.enabled ? 'dot-idle' : card.ok ? 'dot-good' : 'dot-warn'"
@@ -296,6 +305,24 @@ watch(() => route.query.cat, (value) => {
           </div>
         </div>
       </router-link>
+
+      <!-- MCP 空态常驻卡片：生产未配置服务器时，「全部」页也有可见入口，直达 /mcp 新增流程。 -->
+      <router-link v-if="showMcpAddCard" to="/mcp" class="block group" aria-label="添加 MCP 服务器">
+        <div class="relative h-full rounded-[10px] px-3 py-2.5 border border-dashed border-[color:var(--accent-line)] bg-[color:var(--surface)] transition-all duration-200 group-hover:-translate-y-[2px] group-hover:shadow-[var(--sh-2)] cursor-pointer">
+          <span class="absolute top-2.5 right-2.5 dot dot-warn" title="尚未配置 MCP 服务器" />
+          <div class="w-[22px] h-[22px] rounded-md grid place-items-center mb-1.5 bg-[color:var(--accent-soft)] text-[color:var(--accent)] transition-transform duration-200 group-hover:scale-[1.08]">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </div>
+          <div class="text-[12.5px] font-semibold tracking-[-0.01em] truncate">添加 MCP 服务器</div>
+          <div class="text-[10px] text-[color:var(--ink-3)] mt-0.5 mb-1.5 font-mono truncate">mcp.add</div>
+          <div class="flex items-center gap-1.5 text-[color:var(--ink-2)] min-w-0">
+            <span class="text-[9.5px] font-semibold rounded-[4px] px-1.5 py-px flex-none tag-info">MCP</span>
+            <span class="truncate text-[10.5px]" title="接入外部工具：HTTP 远程服务或本地进程，选模板即可">接入外部工具 · 选模板即可</span>
+          </div>
+        </div>
+      </router-link>
     </div>
 
     <!-- 分页（窗口化页码） -->
@@ -311,11 +338,7 @@ watch(() => route.query.cat, (value) => {
 
     <div v-if="!registryLoading && !store.loading && !cards.length" class="empty-state">
       <div class="empty-title">没有匹配的能力</div>
-      <div class="empty-sub">换个关键词或分类试试；新能力注册后会自动出现在这里</div>
-      <!-- MCP 分类空态（首用引导）：没接入任何 MCP 服务器时不是死路——直达模板新增。 -->
-      <router-link v-if="view === 'registry' && category === 'MCP' && mcpNotConfigured" class="btn !px-4 mt-2" to="/mcp">
-        去新增 MCP 服务器（选模板即用）
-      </router-link>
+      <div class="empty-sub">换个关键词或分类试试；新能力注册后会自动出现在这里{{ showMcpAddCard ? '。MCP 服务器尚未配置，可点上方「添加 MCP 服务器」接入' : '' }}</div>
     </div>
   </div>
 </template>

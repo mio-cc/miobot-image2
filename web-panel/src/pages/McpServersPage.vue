@@ -1,17 +1,11 @@
 <script setup lang="ts">
 /**
- * P4-MCP 重做：MCP 服务器列表页（/mcp）——能力中心「MCP」分类的管理页（新增/删除/状态总览）。
- * 面包屑：能力中心 › MCP（AppShell）；移动端页顶「‹ 返回能力中心」→ /capabilities?cat=MCP。
- * - 列表：显示名（capabilityOverrides['mcp.<id>'].name）、传输、地址、三态徽章
- *   （已停用 / 未连接·待授权 / 已连接——已连接但根能力关闭时明确标注，默认 deny 语义可见）、
- *   子项数、进入配置、删除。
- * - 新增（默认路径）：预置服务模板——地址/传输/鉴权全部预填（Suno 官方值取方案 §5.4 Phase 0 实测：
- *   https://api.suno.com/mcp · streamable HTTP · OAuth，AS/DCR/PKCE 由客户端发现链自动完成），
- *   用户只选模板、给显示名；id 由模板自动生成（如 suno-official），不暴露 mcp.<id> 内部标识。
- *   添加成功即跳转 /mcp/<id> 引导账号授权（「然后去授权」闭环）。
- * - 新增（高级选项，默认收起）：自定义服务器——手填 id/传输/地址/鉴权的原表单原样保留。
- * - 删除：二次确认 + 移除条目 + 清孤儿覆盖（mcp.<id> 与 mcp.<id>.*）+ disconnect 端点清凭据并
- *   触发 bot 即时热重载。
+ * P4-MCP：MCP 服务器模块（/mcp，主导航一级入口）——内置预置项 + 自定义接入 + 状态总览。
+ * - 内置项（server.builtin）随配置默认值注入，打开即见、地址/传输/鉴权已预填，点进详情直接授权；
+ *   内置项不可删除，只允许停用/断开。
+ * - 自定义服务器入口收为右上角次要操作，展开后才显示手填表单。
+ * - 列表：显示名、传输、地址、三态徽章、子项数、进入配置。
+ * - 删除（仅自定义）：二次确认 + 移除条目 + 清孤儿覆盖 + disconnect 清凭据。
  */
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
@@ -45,7 +39,8 @@ function stateOf(id: string): { label: string; ok: boolean } {
   const server = servers.value.find((item) => String(item.id) === id);
   if (!server || server.enabled === false) return { label: '已停用', ok: false };
   const status = statusMap.value[id];
-  if (!status) return { label: '未连接', ok: false };
+  // 内置 OAuth 项首次出现时没有状态快照（从未连接过）：按待授权展示，而不是笼统的「未连接」。
+  if (!status) return { label: server.auth === 'oauth' ? '待授权' : '未连接', ok: false };
   if (status.state === 'connected') return { label: '已连接', ok: true };
   if (status.state === 'connected-no-tools') return { label: '已连接·无子项', ok: true };
   if (status.state === 'needs-auth') return { label: '待授权', ok: false };
@@ -74,11 +69,6 @@ function transportLabel(value: unknown): string {
   const key = String(value || '');
   return key === 'http' ? 'HTTP 远程' : key === 'stdio' ? '本地进程' : key;
 }
-function authLabel(value: unknown): string {
-  const key = String(value || '');
-  return key === 'oauth' ? '账号授权' : key === 'static' ? '静态令牌' : key === 'none' || !key ? '免鉴权' : key;
-}
-
 /* 实测障碍 #2（2026-11-07）：MCP 根默认 searchable，检索关闭时模型完全不可见——列表页强引导。 */
 const toolSearchDisabled = computed(() => (configStore.config as any)?.toolRegistry?.toolSearchEnabled !== true);
 async function enableToolSearch() {
@@ -90,86 +80,7 @@ async function enableToolSearch() {
   else actionError.value = configStore.saveStatus || '保存失败';
 }
 
-/* ── 新增（默认路径）：预置服务模板 ── */
-/** 模板预填值来源：方案 §5.4 Phase 0 实测（2026-11-06，经代理完成协议探测）——不凭记忆编造。
- *  OAuth 发现链（RFC 9728 资源元数据 → RFC 8414 AS 元数据 → RFC 7591 DCR → PKCE S256）
- *  由 bot 客户端按端点自动完成，模板只需端点/传输/鉴权三要素。 */
-const TEMPLATES = [
-  {
-    id: 'suno-official',
-    name: 'Suno 官方',
-    defaultName: 'Suno 官方',
-    description: '音乐生成/续写/人声等官方工具（约 32 个，授权后以实际清单为准）· 浏览器账号授权，凭据存独立 secret 文件 · 默认 model=v6-mini（账号当前仅可用此模型，可在配置页「参数默认值」按账号可用模型调整）',
-    transport: 'http',
-    url: 'https://api.suno.com/mcp',
-    auth: 'oauth',
-    /** 参数默认值（2026-11-07 用户拍板）：账号目前只能使用 v6-mini——仅作默认（不锁死），模型可显式覆盖。 */
-    paramDefaults: { model: { value: 'v6-mini' } },
-    /** 流程编排（2026-11-07 拍板）：模板预置默认链——创作规范（承载于根工具描述的歌词结构规范注入）→ 生成 → 查询确认。 */
-    flow: {
-      steps: [
-        { capability: 'mcp.suno-official', hint: '按工具说明中的歌词结构规范（[Intro]/[Verse]/[Chorus] 等）创作歌词并提交生成，歌名必须原创' },
-        { capability: 'audio.music.history', hint: '查询歌曲历史确认结果', when: '生成成功且用户想查结果' },
-      ],
-    },
-  },
-];
-const selectedTemplateId = ref(TEMPLATES[0].id);
-const selectedTemplate = computed(() => TEMPLATES.find((item) => item.id === selectedTemplateId.value) || TEMPLATES[0]);
-const templateName = ref('');
-const templateError = ref('');
-
-function templateExists(id: string): boolean {
-  return servers.value.some((item) => String(item.id) === id);
-}
-
-async function addFromTemplate() {
-  templateError.value = '';
-  actionMessage.value = '';
-  actionError.value = '';
-  const template = selectedTemplate.value;
-  if (templateExists(template.id)) {
-    templateError.value = `「${template.name}」已接入——直接进入配置页管理即可`;
-    return;
-  }
-  saving.value = true;
-  try {
-    const orch = orchestration.value;
-    orch.mcpServers = orch.mcpServers || [];
-    orch.mcpServers.push({
-      id: template.id,
-      enabled: true,
-      transport: template.transport,
-      url: template.url,
-      ...(template.auth ? { auth: template.auth } : {}),
-      ...(template.paramDefaults ? { paramDefaults: structuredClone(template.paramDefaults) } : {}),
-    });
-    orch.capabilityOverrides ||= {};
-    orch.capabilityOverrides[`mcp.${template.id}`] = {
-      ...(orch.capabilityOverrides[`mcp.${template.id}`] || {}),
-      name: templateName.value.trim() || template.defaultName,
-    };
-    // 流程编排：模板预置默认链（用户已配置过则不覆盖）。
-    if (template.flow) {
-      orch.capabilityFlows ||= {};
-      orch.capabilityFlows[`mcp.${template.id}`] ??= template.flow;
-    }
-    const result = await configStore.save();
-    if (!result.ok) {
-      actionError.value = configStore.saveStatus || '保存失败';
-      return;
-    }
-    actionMessage.value = `已添加 ${template.name}（bot 即时热重载）——进入配置页完成账号授权`;
-    templateName.value = '';
-    window.setTimeout(refreshStatus, 2000);
-    // 添加即引导：「然后去授权」闭环——配置页就是 OAuth 连接账号的落点。
-    await router.push(`/mcp/${encodeURIComponent(template.id)}`);
-  } finally {
-    saving.value = false;
-  }
-}
-
-/* ── 新增（高级选项，默认收起）：自定义服务器——手填 id/地址/传输/鉴权 ── */
+/* ── 自定义服务器（次要入口）：右上角展开后手填 id/地址/传输/鉴权 ── */
 const showCustom = ref(false);
 const form = reactive({
   id: '',
@@ -196,7 +107,7 @@ async function addServer() {
     return;
   }
   if (servers.value.some((item) => String(item.id) === id)) {
-    formError.value = `id「${id}」已存在——id 即能力标识 mcp.${id}，创建后不可修改，请删除后重建`;
+    formError.value = `标识「${id}」已存在——标识用于生成能力名称，创建后不可修改，请换一个`;
     return;
   }
   if (form.transport === 'http' && !/^https?:\/\//i.test(form.url.trim())) {
@@ -255,7 +166,12 @@ async function addServer() {
 async function removeServer(id: string) {
   actionMessage.value = '';
   actionError.value = '';
-  const confirmed = window.confirm(`删除 MCP 服务器「${displayName(id)}」？\n\n将同时清除：配置条目、能力覆盖（mcp.${id} 与 mcp.${id}.*）与已保存的授权凭据。\n此操作不可撤销。`);
+  const target = servers.value.find((item) => String(item.id) === id);
+  if (target?.builtin) {
+    actionError.value = '内置服务不可删除，只允许停用或断开连接。';
+    return;
+  }
+  const confirmed = window.confirm(`删除自定义 MCP 服务器「${displayName(id)}」？\n\n将同时清除配置条目、相关设置与已保存的授权凭据。\n此操作不可撤销。`);
   if (!confirmed) return;
   saving.value = true;
   try {
@@ -292,38 +208,43 @@ onUnmounted(() => {
 
 <template>
   <div class="max-w-4xl mx-auto space-y-4">
-    <!-- 移动端返回（<640px 面包屑隐藏）：确定性层级返回——上级是能力中心 MCP 分类视图 -->
+    <!-- 主导航一级页面：无需「返回上级」；详情页才有返回 MCP 列表 -->
     <div>
-      <div class="sm:hidden -mb-1 flex items-center gap-2">
-        <router-link to="/capabilities?cat=MCP" class="btn-outline !px-2.5 !py-1 !text-xs">‹ 返回能力中心</router-link>
-      </div>
-      <h1 class="page-title mb-0.5 mt-2 sm:mt-0">MCP 服务器</h1>
-      <p class="text-[color:var(--ink-3)] text-xs">外部 MCP 能力接入——能力中心「MCP」分类的卡片来自这里 · 一个服务器 = 一个入口工具（预算按 1 个工具计，默认不开放给模型）</p>
+      <h1 class="page-title mb-0.5">MCP 服务器</h1>
+      <p class="text-[color:var(--ink-3)] text-xs">外部工具接入模块——内置服务已经预置好，点进详情直接连接账号；需要接入其他服务时用右上角「添加自定义」。</p>
     </div>
 
-    <SectionCard title="服务器列表" hint="接入状态总览；点击「配置」进入该服务器的专属配置页">
-      <!-- 实测障碍 #2（2026-11-07）：检索关闭 = MCP 对模型完全不可见（loadout/目录双缺席）——最后一公里引导。 -->
+    <SectionCard title="服务器列表" hint="已预置与自定义接入的 MCP 服务；点「配置」进入详情完成授权或调整设置">
+      <template #actions>
+        <button class="btn-outline !px-3" :disabled="saving || configStore.saving" @click="showCustom = !showCustom">
+          {{ showCustom ? '收起添加表单' : '添加自定义' }}
+        </button>
+      </template>
+      <!-- 实测障碍 #2（2026-11-07）：检索关闭 = MCP 工具对模型完全不可见——最后一公里引导。 -->
       <div v-if="servers.length && toolSearchDisabled" class="mb-3 p-3 rounded-lg bg-amber-500/10 border border-amber-400/40 flex flex-wrap items-center gap-3">
-        <span class="text-xs text-amber-600">工具检索（toolRegistry.toolSearchEnabled）当前关闭——MCP 根能力默认 searchable，关闭时模型既看不到工具也搜不到能力目录，接入后无法使用</span>
+        <span class="text-xs text-amber-600">工具检索当前关闭：MCP 工具按需检索，关闭后模型既看不到也搜不到它们，接入后无法使用。</span>
         <button class="btn !px-3 !py-1 !text-xs ml-auto" :disabled="saving || configStore.saving" @click="enableToolSearch">开启工具检索</button>
       </div>
       <div v-if="!servers.length" class="empty-state !py-6">
-        <div class="empty-title">还没有接入任何 MCP 服务器</div>
-        <div class="empty-sub">在下方选一个预置模板即可接入（如 Suno 官方）；接入后能力中心「MCP」分类会出现对应卡片，模型经能力目录可检索其子项</div>
+        <div class="empty-title">还没有 MCP 服务器</div>
+        <div class="empty-sub">正常情况下内置服务会自动出现；如果这里为空，点右上角「添加自定义」接入一个服务。</div>
+        <button class="btn !px-4 mt-2" @click="showCustom = true">添加自定义 MCP 服务器</button>
       </div>
       <div v-else class="space-y-2">
         <div v-for="server in servers" :key="server.id" class="field-box">
           <div class="flex flex-wrap items-center gap-2 min-w-0">
             <span class="font-semibold text-sm">{{ displayName(server.id) }}</span>
             <span class="font-mono text-[11px] text-[color:var(--ink-3)]">mcp.{{ server.id }}</span>
+            <span v-if="server.builtin" class="tag !bg-sky-500/15 !text-sky-600">内置</span>
             <span class="tag">{{ transportLabel(server.transport) }}</span>
             <span class="tag" :class="stateOf(server.id).ok ? '!bg-green-500/15 !text-green-600' : stateOf(server.id).label === '待授权' ? '!bg-amber-500/15 !text-amber-600' : ''">{{ stateOf(server.id).label }}</span>
             <span v-if="stateOf(server.id).ok && !rootEnabled(server.id)" class="tag !bg-amber-500/15 !text-amber-600" title="入口工具默认不开放给模型——进入配置页开启后才可调用">未开放给模型</span>
             <span class="text-xs text-[color:var(--ink-3)] truncate flex-1 font-mono">{{ server.url || server.command }}</span>
-            <span class="text-xs text-[color:var(--ink-3)] flex-none">{{ childCountMap[server.id] || 0 }} 子项</span>
+            <span class="text-xs text-[color:var(--ink-3)] flex-none">{{ childCountMap[server.id] || 0 }} 个工具</span>
             <div class="flex gap-2 flex-none">
               <router-link class="btn-outline !px-2" :to="`/mcp/${encodeURIComponent(server.id)}`">配置</router-link>
-              <button class="btn-outline !px-2 !text-red-500" :disabled="saving" @click="removeServer(server.id)">删除</button>
+              <span v-if="server.builtin" class="text-[11px] text-[color:var(--ink-3)] self-center" title="内置服务不可删除，可在详情页停用或断开">内置不可删除</span>
+              <button v-else class="btn-outline !px-2 !text-red-500" :disabled="saving" @click="removeServer(server.id)">删除</button>
             </div>
           </div>
         </div>
@@ -333,97 +254,55 @@ onUnmounted(() => {
       <div v-if="actionError" class="mt-2 text-xs text-red-500 break-all">{{ actionError }}</div>
     </SectionCard>
 
-    <SectionCard title="新增 MCP 服务器" hint="选一个预置服务，起个名字就能用——地址/传输/鉴权已预填，添加后去授权">
-      <!-- 模板选择卡（默认路径）：id 自动生成，用户不面对 mcp.<id> 内部标识 -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <button v-for="t in TEMPLATES" :key="t.id" type="button" class="text-left rounded-lg border p-3 transition-colors"
-          :class="selectedTemplateId === t.id && !templateExists(t.id)
-            ? 'border-[color:var(--accent-line)] bg-[color:var(--surface-2)]'
-            : 'border-[color:var(--hairline-2)] hover:border-[color:var(--accent-line)]'"
-          :disabled="templateExists(t.id)"
-          @click="selectedTemplateId = t.id">
-          <div class="flex flex-wrap items-center gap-2">
-            <span class="font-semibold text-sm">{{ t.name }}</span>
-            <span class="tag">{{ transportLabel(t.transport) }}</span>
-            <span class="tag">{{ authLabel(t.auth) }}</span>
-            <span v-if="templateExists(t.id)" class="tag !bg-green-500/15 !text-green-600">已接入</span>
-          </div>
-          <div class="text-xs text-[color:var(--ink-3)] mt-1.5">{{ t.description }}</div>
-          <div class="text-[10.5px] font-mono text-[color:var(--ink-3)] mt-1.5 truncate" :title="t.url">{{ t.url }}</div>
-          <div v-if="templateExists(t.id)" class="mt-2 text-xs">
-            <router-link :to="`/mcp/${encodeURIComponent(t.id)}`" class="text-[color:var(--accent)] hover:underline" @click.stop>已接入过 → 进入配置页</router-link>
-          </div>
-        </button>
-      </div>
-      <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-        <FormField label="显示名（可选）" hint="能力中心与模型目录的展示名；不填用模板默认名，配置页随时可改">
-          <input v-model="templateName" class="input-field" :placeholder="selectedTemplate.defaultName" />
+    <!-- 自定义服务器（次要入口）：点右上角「添加自定义」才展开；内置项已预置，不再提供重复新增 -->
+    <SectionCard v-if="showCustom" title="添加自定义 MCP 服务器" hint="用于接入内置服务未覆盖的远程服务或本地进程">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <FormField label="服务器标识" hint="用于生成能力名称，创建后不可修改">
+          <input v-model="form.id" class="input-field font-mono" placeholder="my-mcp-server" />
+        </FormField>
+        <FormField label="显示名（可选）" hint="能力中心与模型目录里的展示名，随时可改">
+          <input v-model="form.name" class="input-field" placeholder="我的 MCP 服务" />
+        </FormField>
+        <FormField label="连接方式">
+          <select v-model="form.transport" class="input-field">
+            <option value="http">远程 HTTP 服务（推荐）</option>
+            <option value="stdio">本机子进程（stdio）</option>
+          </select>
+        </FormField>
+        <FormField v-if="form.transport === 'http'" label="服务地址">
+          <input v-model="form.url" class="input-field font-mono" placeholder="https://example.com/mcp" />
+        </FormField>
+        <FormField v-if="form.transport === 'stdio'" label="启动命令">
+          <input v-model="form.command" class="input-field font-mono" placeholder="node" />
+        </FormField>
+        <FormField v-if="form.transport === 'stdio'" label="启动参数（空格分隔）" hint="如 server.mjs --port 3987">
+          <input v-model="form.args" class="input-field font-mono" placeholder="server.mjs" />
+        </FormField>
+        <FormField label="鉴权方式">
+          <select v-model="form.auth" class="input-field">
+            <option value="oauth">账号授权（浏览器登录）</option>
+            <option value="static">静态令牌</option>
+            <option value="none">免鉴权</option>
+          </select>
+        </FormField>
+        <FormField v-if="form.auth === 'static'" label="访问令牌">
+          <input v-model="form.token" class="input-field font-mono" type="password" placeholder="静态访问令牌" />
+        </FormField>
+        <FormField label="网络代理（可选）" hint="仅在需要代理才能访问对方服务时填写">
+          <input v-model="form.proxyUrl" class="input-field font-mono" placeholder="http://127.0.0.1:7890" />
+        </FormField>
+        <FormField v-if="form.transport === 'stdio'" label="崩溃重启次数上限">
+          <input v-model.number="form.maxAttempts" class="input-field" type="number" min="1" />
+        </FormField>
+        <FormField v-if="form.transport === 'stdio'" label="重启间隔（毫秒）">
+          <input v-model.number="form.delayMs" class="input-field" type="number" min="0" />
         </FormField>
       </div>
-      <div v-if="templateError" class="mt-3 text-xs text-red-500">{{ templateError }}</div>
+      <div v-if="formError" class="mt-3 text-xs text-red-500">{{ formError }}</div>
       <div class="mt-3 flex flex-wrap items-center gap-3">
-        <button class="btn !px-4" :disabled="saving || configStore.saving || templateExists(selectedTemplate.id)" @click="addFromTemplate">
-          {{ saving || configStore.saving ? '保存中…' : `添加「${selectedTemplate.name}」并去授权` }}
-        </button>
-        <span class="text-xs text-[color:var(--ink-3)]">添加后进入配置页点「连接账号」完成浏览器 OAuth 授权</span>
-      </div>
-
-      <!-- 高级选项：自定义服务器（手填地址）——默认收起，默认路径永远是选模板 -->
-      <div class="mt-5 pt-4 border-t border-[color:var(--hairline-2)]">
-        <button type="button" class="btn-outline !px-3 !py-1 !text-xs" @click="showCustom = !showCustom">
-          {{ showCustom ? '收起自定义表单' : '高级：自定义服务器（手填地址）' }}
-        </button>
-        <p v-if="!showCustom" class="mt-2 text-xs text-[color:var(--ink-3)]">接预置模板未收录的 MCP 服务、本地 stdio 子进程或静态 token 服务时展开填写。</p>
-
-        <div v-if="showCustom" class="mt-4">
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <FormField label="服务器 id" hint="能力标识 mcp.<id> 的组成部分——创建后不可修改（改名等于换能力 id）">
-              <input v-model="form.id" class="input-field font-mono" placeholder="suno-official" />
-            </FormField>
-            <FormField label="显示名（可选）" hint="能力中心与目录展示名，可在配置页随时改">
-              <input v-model="form.name" class="input-field" placeholder="Suno 官方" />
-            </FormField>
-            <FormField label="连接方式">
-              <select v-model="form.transport" class="input-field">
-                <option value="http">HTTP 远程服务（推荐）</option>
-                <option value="stdio">本地子进程（stdio）</option>
-              </select>
-            </FormField>
-            <FormField v-if="form.transport === 'http'" label="端点地址">
-              <input v-model="form.url" class="input-field font-mono" placeholder="https://api.suno.com/mcp" />
-            </FormField>
-            <FormField v-if="form.transport === 'stdio'" label="启动命令">
-              <input v-model="form.command" class="input-field font-mono" placeholder="node" />
-            </FormField>
-            <FormField v-if="form.transport === 'stdio'" label="参数（空格分隔）" hint="如 server.mjs --port 3987">
-              <input v-model="form.args" class="input-field font-mono" placeholder="server.mjs" />
-            </FormField>
-            <FormField label="鉴权方式">
-              <select v-model="form.auth" class="input-field">
-                <option value="oauth">账号授权（浏览器登录，如 Suno 官方）</option>
-                <option value="static">静态令牌</option>
-                <option value="none">免鉴权</option>
-              </select>
-            </FormField>
-            <FormField v-if="form.auth === 'static'" label="Bearer Token">
-              <input v-model="form.token" class="input-field font-mono" type="password" placeholder="静态访问令牌" />
-            </FormField>
-            <FormField label="代理（可选·本地调试）" hint="默认不填即直连；生产部署不需要配置">
-              <input v-model="form.proxyUrl" class="input-field font-mono" placeholder="http://127.0.0.1:7890" />
-            </FormField>
-            <FormField label="崩溃重启上限（stdio）">
-              <input v-model.number="form.maxAttempts" class="input-field" type="number" min="1" />
-            </FormField>
-            <FormField label="重启间隔 ms（stdio）">
-              <input v-model.number="form.delayMs" class="input-field" type="number" min="0" />
-            </FormField>
-          </div>
-          <div v-if="formError" class="mt-3 text-xs text-red-500">{{ formError }}</div>
-          <div class="mt-3 flex items-center gap-3">
-            <button class="btn !px-4" :disabled="saving || configStore.saving" @click="addServer">{{ saving || configStore.saving ? '保存中…' : '添加并热重载' }}</button>
-            <span class="text-xs text-[color:var(--ink-3)]">保存走配置版本锁通道；已存在的 id 会被拒绝</span>
-          </div>
-        </div>
+        <button class="btn !px-4" :disabled="saving || configStore.saving" @click="addServer">{{ saving || configStore.saving ? '保存中…' : '添加并进入配置' }}</button>
+        <button class="btn-outline !px-4" :disabled="saving || configStore.saving" @click="showCustom = false">取消</button>
+        <span class="text-xs text-[color:var(--ink-3)]">添加后保存配置，并自动进入详情页完成连接或授权</span>
       </div>
     </SectionCard>
   </div>
