@@ -43,12 +43,23 @@ export function isMcpAuthError(message: string): boolean {
 
 /** D16：配置摘要——参与 diff 的字段（不含 toolOverrides；覆盖经 capabilityOverrides 即时生效）。
  * token 参与 diff：静态 token 变更即重连（旧 client 持旧 token 会一直 401）；OAuth 服务器凭据在
- * 独立 secret 文件（config 内 token 通常为空），401 走刷新链路，不受此处影响。 */
+ * 独立 secret 文件（config 内 token 通常为空），401 走刷新链路，不受此处影响。
+ * L1/L2（2026-11-10）：rootDescription 与 guide（按内容哈希）参与 diff——描述/指南变更即重建根工具。 */
+function hashText(text: string | undefined): number {
+  let hash = 0;
+  const value = text || '';
+  for (let index = 0; index < value.length; index++) {
+    hash = (hash * 31 + value.charCodeAt(index)) | 0;
+  }
+  return hash;
+}
+
 export function mcpServerConfigSummary(server: McpServerConfig): string {
   return JSON.stringify([
     server.id, server.enabled, server.transport, server.url ?? null, server.command ?? null,
     server.args ?? null, server.allowlist ?? null, server.token ?? null, server.auth ?? null,
     server.proxyUrl ?? null, server.reconnect ?? null, server.toolsCacheTtlMs ?? null,
+    server.rootDescription ?? null, hashText(server.guide),
   ]);
 }
 
@@ -61,6 +72,8 @@ export interface McpServerManagerOptions {
   credentialStore?: McpCredentialStore;
   /** Phase 3：状态快照文件（data 目录，面板进程读取；缺省不写）。 */
   statusFilePath?: string;
+  /** L2（2026-11-10）：指南解析器——mcpServers[].guide 为空时按 serverId 兜底取指南全文（如 dataDir/mcp-guides/<id>.md）。 */
+  guideResolver?: (serverId: string) => string | undefined;
   /** 测试注入：构造 client 的工厂。 */
   createClient?: (server: McpServerConfig, options: { logger?: StructuredLogger; onNotification: (method: string) => void }) => McpClient;
   now?: () => number;
@@ -129,8 +142,17 @@ export class McpServerManager {
   }
 
   private registerRoot(managed: ManagedServer): void {
-    const descriptor = buildMcpRootDescriptor(managed.config.id, managed.children, this.overrideFor(managed.config.id), managed.config.paramDefaults, managed.config.childParamDefaults);
-    const handler = new McpRootToolHandler(managed.client!, managed.config.id, managed.children, this.resolvedParamDefaults(managed.config, managed.children));
+    // L1/L2（2026-11-10）：根描述覆写（config.rootDescription）；指南全文 = config.guide ?? guideResolver 兜底。
+    const guideText = (managed.config.guide && managed.config.guide.trim())
+      || (this.options.guideResolver ? this.options.guideResolver(managed.config.id) : undefined)
+      || undefined;
+    const guide = guideText ? String(guideText).trim() : undefined;
+    const descriptor = buildMcpRootDescriptor(
+      managed.config.id, managed.children, this.overrideFor(managed.config.id),
+      managed.config.paramDefaults, managed.config.childParamDefaults,
+      managed.config.rootDescription, Boolean(guide),
+    );
+    const handler = new McpRootToolHandler(managed.client!, managed.config.id, managed.children, this.resolvedParamDefaults(managed.config, managed.children), guide);
     this.options.registerCapability(descriptor, handler);
     managed.status.toolCount = managed.children.length;
     managed.status.enabledToolCount = managed.children.filter((child) => child.enabled).length;

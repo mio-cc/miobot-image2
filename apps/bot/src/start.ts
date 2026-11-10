@@ -1370,6 +1370,21 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     filePath: process.env.MIOBOT_MCP_CREDENTIALS_FILE || path.join(dataDir, 'mcp-credentials.json'),
     logger,
   });
+  // L2（2026-11-10，box MCP 接入）：指南按需递送——模型 action=guide 时才读全文。
+  // 解析顺序：dataDir/mcp-guides/<id>.md（用户可改，优先）→ 仓库 docs（内置兜底，box 预设对应 BOX-MCP-GUIDE.md）。
+  // 同步读：registerRoot 在连接路径上调用，避免与异步拷贝竞态。
+  const bundledGuidesDir = path.resolve(process.env.MIOBOT_BUNDLED_GUIDES_DIR || path.join(process.cwd(), 'docs'));
+  const resolveMcpGuide = (serverId: string): string | undefined => {
+    const targets = [
+      path.join(dataDir, 'mcp-guides', `${serverId}.md`),
+      path.join(bundledGuidesDir, `${serverId}.md`),
+      ...(serverId === 'box' ? [path.join(bundledGuidesDir, 'BOX-MCP-GUIDE.md')] : []),
+    ];
+    for (const target of targets) {
+      try { return readFileSync(target, 'utf8'); } catch { /* 试下一个 */ }
+    }
+    return undefined;
+  };
   const mcpManager = new McpServerManager({
     getConfig,
     registerCapability: (descriptor, handler) => orchestrationEnforcer.registerCapability(descriptor, handler),
@@ -1377,6 +1392,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     logger,
     credentialStore: mcpCredentialStore,
     statusFilePath: path.join(dataDir, 'mcp-status.json'),
+    guideResolver: resolveMcpGuide,
   });
   mcpSearchIndex = () => mcpManager.searchIndex();
   void mcpManager.reload().catch((error) => logger.warn('MCP 初始装配失败', { error: String((error as Error)?.message || error) }));

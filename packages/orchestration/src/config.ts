@@ -63,6 +63,10 @@ export interface OrchestrationConfig {
     childParamDefaults?: Record<string, Record<string, { value: string | number | boolean; locked?: boolean }>>;
     /** P2-MCP：鉴权模式（缺省=静态 token/免鉴权；oauth=浏览器账号授权）。 */
     auth?: 'static' | 'oauth';
+    /** L1：根工具描述覆写——模型检索工具时看到的短简介，替代自动生成的目录式描述。 */
+    rootDescription?: string;
+    /** L2：使用指南全文——模型 action=guide 时返回；缺省由运行时 guideResolver 从 dataDir 读文件兜底。 */
+    guide?: string;
     /** 系统预置项标记：自动注入、不可删除，只允许停用/断开（用户不填此字段）。 */
     builtin?: boolean;
   }>;
@@ -238,6 +242,16 @@ export const BUILTIN_MCP_SERVERS: OrchestrationConfig['mcpServers'] = [
     url: 'https://api.suno.com/mcp',
     auth: 'oauth',
     builtin: true,
+  },
+  {
+    id: 'box',
+    enabled: false,
+    transport: 'http',
+    url: 'https://mcp.box.simular.ai/mcp',
+    auth: 'oauth',
+    builtin: true,
+    // L1（检索期简介）：模型扫工具目录时看到的短文本；指南全文由运行时从 dataDir/mcp-guides/box.md 读取（L2）。
+    rootDescription: 'Box 云桌面：可远程操作的 Linux（Ubuntu 24.04，Chrome + LibreOffice，联网，可装软件）。能力：跑 shell/脚本、读写文件、浏览器浏览与交互、桌面 GUI 自动化、截图。入口：action=工具名、params=参数。先 list_actions 看清单；深度使用前先 guide 取使用指南。注意：截图原图不会回传给你，视觉判断请用文本层工具或在脚本里调 desk 的 ask/decide。',
   },
 ];
 
@@ -579,6 +593,9 @@ export function normalizeOrchestrationConfig(input: unknown): OrchestrationConfi
         } : {}),
         // P2-MCP：鉴权模式（static 默认 | oauth）、代理（本地调试可选项）、目录缓存 TTL、stdio 重连策略。
         ...(item.auth === 'oauth' ? { auth: 'oauth' as const } : {}),
+        // L1/L2（2026-11-10，box MCP 接入）：根描述覆写与使用指南全文，截断防配置膨胀。
+        ...(typeof item.rootDescription === 'string' && item.rootDescription.trim() ? { rootDescription: item.rootDescription.trim().slice(0, 600) } : {}),
+        ...(typeof item.guide === 'string' && item.guide.trim() ? { guide: item.guide.trim().slice(0, 65536) } : {}),
         ...(typeof item.proxyUrl === 'string' && /^https?:\/\//i.test(item.proxyUrl.trim()) ? { proxyUrl: item.proxyUrl.trim() } : {}),
         ...(item.toolsCacheTtlMs !== undefined && Number.isFinite(Number(item.toolsCacheTtlMs)) ? { toolsCacheTtlMs: Math.max(0, Math.trunc(Number(item.toolsCacheTtlMs))) } : {}),
         ...(item.reconnect && typeof item.reconnect === 'object' ? {

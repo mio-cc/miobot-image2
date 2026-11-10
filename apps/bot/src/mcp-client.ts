@@ -44,8 +44,32 @@ export interface McpServerConfig {
   reconnect?: { maxAttempts?: number; delayMs?: number };
   /** 参数默认值（根级）：作用于该服务器全部子项的指定参数。子项级同键整条覆盖（含锁定标志）。 */
   paramDefaults?: Record<string, McpParamDefaultRule>;
-  /** 参数默认值（子项级）：键=子项工具名。 */
+  /** 参数默认值（子项级）：键=子工具名。 */
   childParamDefaults?: Record<string, Record<string, McpParamDefaultRule>>;
+  /** 根工具描述覆写（L1 简介）：给模型检索工具时看的短文本，替代自动生成的目录式描述。 */
+  rootDescription?: string;
+  /** 使用指南全文（L2）：模型调 action=guide 时返回；缺省时 manager 的 guideResolver 兜底读文件。 */
+  guide?: string;
+}
+
+/**
+ * tools/call 结果 → 模型可见文本（补丁 A，2026-11-10）：
+ * 优先取 content 里的 text 块；一个 text 块都没有时把 structuredContent 序列化为缩进 JSON 兜底，
+ * 避免只返回结构化数据的上游工具（如 box 的 box_status/usage）被判 mcp_tool_empty_output。
+ * 返回 null 表示该结果确实没有可消费内容。
+ */
+export function mcpContentToTexts(
+  content: Array<Record<string, unknown>>,
+  structuredContent?: Record<string, unknown>,
+): string[] | null {
+  const texts = content
+    .filter((item) => String(item?.type) === 'text' && String(item?.text || '').trim())
+    .map((item) => String(item.text).trim());
+  if (texts.length) return texts;
+  if (structuredContent && typeof structuredContent === 'object' && Object.keys(structuredContent).length) {
+    return [JSON.stringify(structuredContent, null, 2)];
+  }
+  return null;
 }
 
 export interface McpToolInfo {
@@ -460,12 +484,11 @@ export class McpToolCapabilityHandler implements CapabilityHandler {
       if (result.isError) {
         return { ...base, status: 'failed', outputs: [], error: 'mcp_tool_error', retryable: false };
       }
-      const outputs = result.content
-        .filter((item) => String(item?.type) === 'text' && String(item?.text || '').trim())
-        .map((item) => ({ kind: 'text' as const, text: String(item.text), priority: 10, mergeable: true }));
-      if (!outputs.length) {
+      const texts = mcpContentToTexts(result.content, result.structuredContent);
+      if (!texts) {
         return { ...base, status: 'failed', outputs: [], error: 'mcp_tool_empty_output', retryable: true };
       }
+      const outputs = texts.map((text) => ({ kind: 'text' as const, text, priority: 10, mergeable: true }));
       return { ...base, status: 'success', outputs };
     } catch (error) {
       return { ...base, status: 'failed', outputs: [], error: String((error as Error)?.message || error), retryable: true };

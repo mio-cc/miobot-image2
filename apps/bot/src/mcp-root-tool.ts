@@ -1,7 +1,7 @@
 import type { CapabilityDescriptor, CapabilityHandler, CapabilityInvocation, ExecutionResult } from '../../../packages/orchestration/src/index.js';
 import { validateCapabilityArgs } from '../../../packages/orchestration/src/validation.js';
 import type { McpClient, McpToolInfo } from './mcp-client.js';
-import { inferEffectFromDescription, inferMcpToolRisk } from './mcp-client.js';
+import { inferEffectFromDescription, inferMcpToolRisk, mcpContentToTexts } from './mcp-client.js';
 export type { McpParamDefaultRule } from './mcp-client.js';
 import type { McpParamDefaultRule } from './mcp-client.js';
 // 方案 B（2026-11-07）：歌词结构规范单一来源——子项 schema 含 lyrics 字段时自动注入（通用判据，不认品牌）。
@@ -150,20 +150,29 @@ export function buildMcpRootDescriptor(
   override: McpCapabilityOverrideInput = {},
   paramDefaults?: Record<string, McpParamDefaultRule>,
   childParamDefaults?: Record<string, Record<string, McpParamDefaultRule>>,
+  /** L1：根工具描述覆写（来自 mcpServers[].rootDescription）；给模型检索期看的简介。 */
+  rootDescription?: string,
+  /** 是否有可用指南（config.guide 或 guideResolver 兜底命中）——描述与目录末尾给模型提示 action=guide。 */
+  guideAvailable?: boolean,
 ): CapabilityDescriptor {
   const enabledCount = children.filter((child) => child.enabled).length;
   const lyricsCapable = hasLyricsField(children);
   const defaultsNote = formatParamDefaultsNote(paramDefaults);
   const childDefaultsNote = formatChildParamDefaultsSummary(childParamDefaults);
-  const description = [
-    `MCP 服务器 ${serverId} 的统一入口工具（树形根，预算按 1 个工具计）。`,
-    `含 ${children.length} 个子操作（${enabledCount} 个已启用）。`,
-    '调用时传 action（子工具名）与 params（该子工具的参数对象）；',
-    'action 传 list_actions 或留空可查看子项清单与参数说明。',
-    ...(defaultsNote ? [defaultsNote] : []),
-    ...(childDefaultsNote ? [childDefaultsNote] : []),
-    ...(lyricsCapable ? [`歌词/文本参数规范：${MCP_LYRICS_SPEC_HINT}`] : []),
-  ].join('').slice(0, 800);
+  const guideHint = guideAvailable ? '传 action=guide 可获取该服务的完整使用指南（首次使用前建议先读）。' : '';
+  const description = (rootDescription && rootDescription.trim()
+    ? (rootDescription.trim().includes('guide') ? rootDescription.trim() : `${rootDescription.trim()}${guideHint}`)
+    : [
+      `MCP 服务器 ${serverId} 的统一入口工具（树形根，预算按 1 个工具计）。`,
+      `含 ${children.length} 个子操作（${enabledCount} 个已启用）。`,
+      '调用时传 action（子工具名）与 params（该子工具的参数对象）；',
+      'action 传 list_actions 或留空可查看子项清单与参数说明。',
+      ...(guideHint ? [guideHint] : []),
+      ...(defaultsNote ? [defaultsNote] : []),
+      ...(childDefaultsNote ? [childDefaultsNote] : []),
+      ...(lyricsCapable ? [`歌词/文本参数规范：${MCP_LYRICS_SPEC_HINT}`] : []),
+    ].join('')
+  ).slice(0, 800);
   return {
     id: `mcp.${serverId}`,
     version: '1.0.0',
@@ -244,6 +253,7 @@ export function formatChildCatalog(
   serverId: string,
   children: McpChildTool[],
   childParamDefaults?: Record<string, Record<string, McpParamDefaultRule>>,
+  guideAvailable?: boolean,
 ): string {
   if (!children.length) return `mcp.${serverId} 当前没有已进树的子操作（allowlist 为空或目录为空）。`;
   const lines = children.map((child, index) => {
@@ -260,6 +270,7 @@ export function formatChildCatalog(
     `mcp.${serverId} 子操作清单（${children.length} 项${children.length > MAX_DETAIL_ROWS ? `，前 ${MAX_DETAIL_ROWS} 项含摘要，其余仅列名称与必填` : ''}）：`,
     ...lines,
     '调用方式：action=子操作名，params=该子操作的参数对象。',
+    ...(guideAvailable ? ['深度使用前建议先传 action=guide 获取该服务的完整使用指南。'] : []),
     ...(hasLyricsField(children) ? ['歌词/文本参数请遵循工具说明中的结构标记规范（[Intro]/[Verse]/[Chorus] 等标记独占一行，标记后只写歌词）。'] : []),
   ].join('\n');
 }
@@ -276,6 +287,8 @@ export class McpRootToolHandler implements CapabilityHandler {
     private readonly children: McpChildTool[],
     /** 每子项已解析的参数默认值规则（根级+子项级，键=子项名）。 */
     private readonly childParamDefaults: Record<string, Record<string, McpParamDefaultRule>> = {},
+    /** L2 使用指南全文：action=guide 时返回（缺省 → 回退子项目录）。 */
+    private readonly guide?: string,
   ) {}
 
   async execute(invocation: CapabilityInvocation): Promise<ExecutionResult> {
@@ -287,7 +300,21 @@ export class McpRootToolHandler implements CapabilityHandler {
       return {
         ...base,
         status: 'success',
-        outputs: [{ kind: 'text', text: formatChildCatalog(this.serverId, this.children, this.childParamDefaults), priority: 10, mergeable: true }],
+        outputs: [{ kind: 'text', text: formatChildCatalog(this.serverId, this.children, this.childParamDefaults, Boolean(this.guide && this.guide.trim())), priority: 10, mergeable: true }],
+      };
+    }
+
+    // L2 指南按需递送（补丁 B，2026-11-10）：模型主动请求时才把全文带回上下文，
+    // 检索期只付根描述+目录的成本。未配置指南时回退目录（保持可用，不报错）。
+    if (action === 'guide') {
+      const guideText = this.guide && this.guide.trim() ? this.guide.trim() : '';
+      const text = guideText
+        ? `[mcp.${this.serverId}/guide] ${guideText}`
+        : formatChildCatalog(this.serverId, this.children, this.childParamDefaults, false) + '\n（本服务器未配置使用指南，上方为子项清单。）';
+      return {
+        ...base,
+        status: 'success',
+        outputs: [{ kind: 'text', text, priority: 10, mergeable: true }],
       };
     }
 
@@ -352,11 +379,9 @@ export class McpRootToolHandler implements CapabilityHandler {
       const result = await this.client.callTool(child.name, merged);
       if (result.isError) {
         // 失败可诊断（2026-11-07 拍板）：上游拒绝（如账号无该模型权限）时透传错误文本，不退化成一句参数错误。
-        const upstreamText = result.content
-          .filter((item) => String(item?.type) === 'text' && String(item?.text || '').trim())
-          .map((item) => String(item.text).trim())
-          .join(' ')
-          .slice(0, 200);
+        // 补丁 A（2026-11-10）：无 text 块时以 structuredContent JSON 兜底，纯结构化上游错误也得可见。
+        const upstream = mcpContentToTexts(result.content, result.structuredContent);
+        const upstreamText = upstream ? upstream.join(' ').slice(0, 200) : '';
         return {
           ...base,
           status: 'failed',
@@ -366,12 +391,13 @@ export class McpRootToolHandler implements CapabilityHandler {
           diagnostics: { action, serverId: this.serverId, ...(appliedLocked.length || appliedDefault.length ? { appliedParamDefaults: { locked: appliedLocked, default: appliedDefault } } : {}) },
         };
       }
-      const outputs = result.content
-        .filter((item) => String(item?.type) === 'text' && String(item?.text || '').trim())
-        .map((item) => ({ kind: 'text' as const, text: `[mcp.${this.serverId}/${action}] ${String(item.text)}`, priority: 10, mergeable: true }));
-      if (!outputs.length) {
+      // 补丁 A（2026-11-10）：无 text 块时把 structuredContent 序列化为 JSON 文本，
+      // 否则只返回结构化数据的子项（如 box 的 box_status/usage）会判 mcp_tool_empty_output，模型拿不到结果。
+      const texts = mcpContentToTexts(result.content, result.structuredContent);
+      if (!texts) {
         return { ...base, status: 'failed', outputs: [], error: `mcp_tool_empty_output:${action}`, retryable: true, diagnostics: { action, serverId: this.serverId } };
       }
+      const outputs = texts.map((text) => ({ kind: 'text' as const, text: `[mcp.${this.serverId}/${action}] ${text}`, priority: 10, mergeable: true }));
       return {
         ...base,
         status: 'success',

@@ -174,6 +174,19 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
       status: 'active',
       order: 10,
     });
+    // L0（2026-11-10，box MCP 接入）：已注册的 mcp.* 根工具各注入一行存在性提示，
+    // 让主脑检索工具前就知道有远程 MCP 服务可用；详细描述在工具声明里（L1），全文指南 action=guide 取（L2）。
+    const mcpHintContent = buildMcpRootPromptSection([...bindings.values()].map((binding) => binding.spec));
+    if (mcpHintContent) {
+      promptRegistry.register({
+        id: 'mcp-remote-hint',
+        title: 'Remote MCP capabilities',
+        content: mcpHintContent,
+        version: 'r1',
+        status: 'active',
+        order: 11,
+      });
+    }
     const runtime = new AgentRuntime({
       // 方案 D（2026-11-06 拍板）：审核修复管线包装 modelPort——切备（状态机层）失败后的审核拒绝
       // 由这里统一「修复一次 → 重试一次 → 仍败登记+告知」；不传 contentRepair 时 port 原样透传。
@@ -420,6 +433,18 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
         : {}),
     };
   };
+}
+
+/**
+ * L0（2026-11-10，box MCP 接入）：为已注册的 mcp.* 根工具生成系统提示段。
+ * 每个根工具一行存在性提示——让主脑在检索工具前就知道有远程 MCP 服务可用；
+ * 详细描述在工具声明里（L1），全文指南经 action=guide 按需取（L2），不常驻上下文。
+ */
+export function buildMcpRootPromptSection(specs: ReadonlyArray<{ name: string }>): string | null {
+  const rootSpecs = specs.filter((spec) => /^mcp\.[^.]+$/.test(spec.name));
+  if (!rootSpecs.length) return null;
+  const lines = rootSpecs.map((spec) => `- 远程能力 ${spec.name}：一个外部 MCP 服务（action=子工具名，params=参数）。先传 action=list_actions 看子项清单；复杂任务前传 action=guide 取使用指南。远程操作成本较高，本地能力能完成时优先用本地能力。`);
+  return ['## 远程 MCP 服务', ...lines].join('\n');
 }
 
 export function resolveHostMode(cfg: AppConfig): AgentRuntimeMode {
