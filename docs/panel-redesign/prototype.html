@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MioBot 控制台 · 重设计原型 v2</title>
+<style>
+/* ════════════════════════════════════════════════
+   v2：1:1 复刻 web-panel 真实外壳（AppShell.vue）与
+   组件形态（SectionCard / FormField / ToggleField / AppIcon），
+   颜色按反馈调整：主区白底、侧栏灰一档、整体去灰。
+   ════════════════════════════════════════════════ */
+:root {
+  color-scheme: light;
+  /* ── 纸面与墨色（Codex 亮色取向：纯白主区 + 三档灰墨阶梯 + 单一强调色） ── */
+  --page:       #ffffff;   /* 主区：白（Codex/ChatGPT light 背景） */
+  --surface:    #ffffff;   /* 卡片面：白（靠描边与 hairline 分层） */
+  --surface-2:  #f4f4f1;   /* hover / 嵌入底：浅灰一档 */
+  --ink:        #22241f;   /* 主墨（≈ ChatGPT #0D0D0D 与 Codex #444 之间） */
+  --ink-2:      #595c55;   /* 次级墨（Codex comment #626262） */
+  --ink-3:      #7c7f76;   /* 弱墨（Codex 阶梯第三档） */
+  --hairline:   rgba(34,36,31,.07);
+  --hairline-2: #e5e5e0;   /* 边框（ChatGPT border #E5E5E5） */
+  --hairline-3: #d5d5cf;
+  /* ── 侧栏与桌面（侧栏改白：与主区同底，靠 border-right 分界；桌面灰阶托起白纸页） ── */
+  --sidebar-bg: #ffffff;
+  --desk:       #e6e6e2;   /* 桌面外层：再灰一档 */
+  --topbar-bg:  rgba(255,255,255,.88);
+  /* ── 松绿主色 ── */
+  --accent:     #37655a; --accent-ink: #fff; --accent-soft: #eef3ee; --accent-line: #cfdfd7;
+  /* ── 语义三态 ── */
+  --good: #2f9e6b; --good-text: #1f7a4d; --good-soft: #e8f5ee;
+  --warning: #b96f07; --warning-soft: #fbf3e4;
+  --serious: #c26a4a; --critical: #c0453b; --critical-soft: #f7e9e2;
+  --off: #8b9081; --off-soft: #f1f1ee;
+  /* ── 分类色 ── */
+  --c-gen: #37655a; --c-gen-soft: #eef3ee;
+  --c-info: #3f5e74; --c-info-soft: #e9eff4;
+  --c-parse: #8a6d3b; --c-parse-soft: #f4efe4;
+  --c-input: #64707c; --c-input-soft: #eff1f2;
+  /* ── 阴影 ── */
+  --sh-1: 0 1px 2px rgba(26,29,24,.05), 0 1px 3px rgba(26,29,24,.05);
+  --sh-2: 0 4px 8px -2px rgba(26,29,24,.05), 0 12px 28px -8px rgba(26,29,24,.13);
+  --ease: cubic-bezier(.22,1,.36,1);
+  --shell-shadow: 0 1px 2px rgba(26,29,24,.05), 0 24px 60px -30px rgba(26,29,24,.22);
+  --serif: "Noto Serif SC","Noto Serif CJK SC","Source Han Serif SC","SimSun",serif;
+  --mono: "JetBrains Mono",ui-monospace,"SF Mono","Cascadia Mono","Sarasa Mono SC",Consolas,monospace;
+  --sans: "PingFang SC","HarmonyOS Sans SC","Microsoft YaHei UI","Segoe UI",system-ui,sans-serif;
+  /* ── 节奏 token（新增） ── */
+  --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:20px; --s-6:24px; --s-7:32px; --s-8:48px;
+  --fs-cap:11px; --fs-sm:12px; --fs-base:13px; --fs-sec:14px; --fs-page:22px;
+  --r-sm:6px; --r-md:8px; --r-lg:10px; --r-xl:12px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--desk); color: var(--ink);
+  font-family: var(--sans); font-size: var(--fs-base); line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "tnum" 1;
+}
+::selection { background: var(--accent-soft); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--mono); }
+
+/* ═══ 滚动条：美化到接近隐形 ── 6px、透明轨道、半透明圆角滑块，悬停才加深 ═══ */
+* { scrollbar-width: thin; scrollbar-color: rgba(20,22,18,.16) transparent; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(20,22,18,.16); border-radius: 99px;
+  border: 1px solid transparent; background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover, ::-webkit-scrollbar-thumb:active { background: rgba(20,22,18,.32); background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* ═══ 桌面层 + 纸页外壳（1:1 复刻 AppShell.vue） ═══ */
+.desk {
+  height: 100vh; padding: 8px; overflow: hidden;
+}
+@media (min-width: 1024px) { .desk { padding: 24px; } }
+@media (min-width: 1280px) { .desk { padding: 32px; } }
+.shell {
+  position: relative; height: 100%;
+  display: grid; grid-template-columns: 224px 1fr;
+  border-radius: 14px; border: 1px solid var(--hairline-2);
+  background: var(--page); overflow: hidden;
+  box-shadow: var(--shell-shadow);
+}
+@media (max-width: 860px) { .shell { grid-template-columns: 62px 1fr; } }
+
+/* 宣纸氛围层（默认关，开关在顶栏；开时极淡光斑+颗粒） */
+.aurora { position: absolute; border-radius: 50%; filter: blur(72px); opacity: .12; pointer-events: none; }
+.aurora.a { width: 440px; height: 440px; background: #9db8a8; top: -180px; left: 28%; }
+.aurora.b { width: 400px; height: 400px; background: #d9c9a4; bottom: -200px; right: 6%; }
+.paper-grain { position: absolute; inset: 0; pointer-events: none; opacity: .04; mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='0.4'/%3E%3C/svg%3E"); }
+.no-atmosphere .aurora, .no-atmosphere .paper-grain { display: none; }
+
+/* ═══ 侧栏（1:1） ═══ */
+.sidebar {
+  background: var(--sidebar-bg); border-right: 1px solid var(--hairline-2);
+  display: flex; flex-direction: column; min-height: 0; overflow-y: auto;
+  position: relative; z-index: 2;
+}
+.brand-row { padding: var(--s-4); border-bottom: 1px solid var(--hairline-2); display: flex; align-items: center; gap: var(--s-3); }
+.brand-tile {
+  flex: none; width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
+  color: var(--accent-ink); background: var(--accent);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.brand-name { font-family: var(--serif); font-size: 15px; letter-spacing: .04em; color: var(--ink); }
+.brand-sub { font-size: 10.5px; color: var(--ink-3); margin-top: 2px; }
+@media (max-width: 860px) { .brand-name, .brand-sub { display: none; } }
+nav.sidenav { flex: 1; padding: 10px; display: flex; flex-direction: column; gap: 2px; }
+.nav-label {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .12em; color: var(--ink-3);
+  padding: 14px 10px 6px;
+}
+@media (max-width: 860px) { .nav-label { display: none; } }
+.sidebar-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 7px 12px; border-radius: var(--r-xl); border: none; background: transparent;
+  font-size: var(--fs-base); font-weight: 500; cursor: pointer; text-decoration: none;
+  transition: background .16s var(--ease), color .16s var(--ease);
+}
+.sidebar-item svg { flex: none; opacity: .75; }
+.sidebar-item-inactive { color: var(--ink-2); }
+.sidebar-item-inactive:hover { color: var(--ink); background: var(--surface-2); }
+.sidebar-item-active {
+  color: var(--accent); background: var(--surface);
+  border: 1px solid var(--hairline-2); box-shadow: 0 1px 3px rgba(26,29,24,.07);
+  font-weight: 600;
+}
+.sidebar-item-active svg { color: var(--accent); opacity: 1; }
+@media (max-width: 860px) {
+  .sidebar-item { justify-content: center; padding: 9px; }
+  .sidebar-item span.label { display: none; }
+}
+.sidebar-foot { padding: 10px; border-top: 1px solid var(--hairline-2); }
+.nav-badge { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: var(--critical); flex: none; }
+
+/* ═══ 顶栏（1:1） ═══ */
+.mb-content { display: flex; flex-direction: column; overflow: hidden; min-width: 0; position: relative; z-index: 1; }
+.topbar {
+  flex: none; height: 54px; display: flex; align-items: center; gap: var(--s-3);
+  padding: 0 var(--s-5); border-bottom: 1px solid var(--hairline-2);
+  background: var(--topbar-bg); backdrop-filter: blur(10px);
+}
+.crumbs { display: flex; align-items: center; gap: 6px; font-size: var(--fs-base); color: var(--ink-3); min-width: 0; }
+.crumbs a { color: var(--ink-3); text-decoration: none; transition: color .15s; }
+.crumbs a:hover { color: var(--accent); }
+.crumbs b { color: var(--ink); font-weight: 600; }
+.crumbs .sep { color: var(--hairline-3); }
+.topbar-right { margin-left: auto; display: flex; align-items: center; gap: var(--s-2); }
+.save-state { display: flex; align-items: center; gap: 6px; font-size: var(--fs-sm); }
+.tag { display: inline-block; padding: 2px 9px; border-radius: var(--r-sm); background: var(--off-soft); color: var(--ink-2); font-size: var(--fs-cap); font-weight: 600; font-family: var(--mono); }
+.tag-warn { background: var(--warning-soft); color: var(--warning); }
+.status-warn { color: var(--warning); }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+.dot-warn { background: var(--warning); box-shadow: 0 0 0 3px var(--warning-soft); }
+
+/* ═══ 主区 ═══ */
+.main-scroll { flex: 1; overflow-y: auto; padding: var(--s-5); }
+.page-wrap { max-width: 1280px; margin: 0 auto; }
+.page-head { margin-bottom: var(--s-4); }
+.page-title { font-family: var(--serif); font-size: var(--fs-page); font-weight: 700; margin: 0 0 2px; line-height: 1.25; }
+.page-desc { color: var(--ink-3); font-size: var(--fs-sm); margin: 0; }
+
+/* ═══ SectionCard（1:1 复刻组件形态） ═══ */
+.card { background: var(--surface); border: 1px solid var(--hairline-2); border-radius: var(--r-xl); box-shadow: var(--sh-1); }
+.sec-card { margin-bottom: var(--s-4); }
+.sec-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3); padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--hairline-2); }
+.sec-title { font-family: var(--serif); font-size: var(--fs-sec); font-weight: 600; margin: 0; }
+.sec-hint { font-size: var(--fs-cap); color: var(--ink-3); margin: 2px 0 0; }
+.sec-actions { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
+.sec-body { padding: var(--s-4); }
+.sec-sub { margin-top: var(--s-4); padding-top: var(--s-4); border-top: 1px solid var(--hairline-2); }
+.sec-sub-label { font-size: var(--fs-sm); font-weight: 600; margin: 0 0 var(--s-3); }
+
+/* ═══ 网格字段（FormField 形态，告别通长条） ═══ */
+.grid { display: grid; gap: var(--s-4); }
+.g2 { grid-template-columns: repeat(2, 1fr); }
+.g3 { grid-template-columns: repeat(3, 1fr); }
+.g4 { grid-template-columns: repeat(4, 1fr); }
+.g6 { grid-template-columns: repeat(6, 1fr); }
+.g-auto { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+@media (max-width: 900px) { .g2, .g3, .g4, .g6 { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 640px) { .g2, .g3, .g4, .g6, .g-auto { grid-template-columns: 1fr; } }
+.f-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.f-label { font-size: var(--fs-cap); font-weight: 600; letter-spacing: .06em; color: var(--ink-2); }
+.f-hint { font-size: var(--fs-cap); color: var(--ink-3); }
+.f-end { align-self: flex-end; }
+
+.input-field {
+  width: 100%; background: var(--surface); border: 1px solid var(--hairline-3); border-radius: var(--r-md);
+  padding: 7px 10px; font-size: var(--fs-sm); color: var(--ink); outline: none; font-family: inherit;
+  transition: border-color .16s var(--ease), box-shadow .16s var(--ease);
+}
+.input-field:hover:not(:disabled) { border-color: var(--hairline-2); }
+.input-field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
+.input-field::placeholder { color: var(--ink-3); }
+.input-field:disabled { background: var(--surface-2); color: var(--ink-3); cursor: not-allowed; }
+select.input-field { cursor: pointer; }
+
+/* ═══ 按钮（1:1，含 quiet 行内档） ═══ */
+.btn-primary { background: var(--accent); color: var(--accent-ink); font-weight: 600; padding: 7px 14px; border-radius: var(--r-md); border: 1px solid var(--accent); cursor: pointer; font-size: var(--fs-sm); transition: all .16s var(--ease); }
+.btn-primary:hover { box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 28%, transparent); }
+.btn-primary:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
+.btn-outline { background: var(--surface); color: var(--ink-2); font-weight: 500; padding: 6px 12px; border-radius: var(--r-md); border: 1px solid var(--hairline-3); cursor: pointer; font-size: var(--fs-sm); transition: all .16s var(--ease); display: inline-flex; align-items: center; gap: 6px; }
+.btn-outline:hover { border-color: var(--hairline-2); color: var(--ink); }
+.btn-outline:disabled { opacity: .4; cursor: not-allowed; }
+.btn-outline.icon-only { padding: 6px 8px; }
+.btn-danger { background: transparent; color: var(--critical); font-weight: 500; padding: 6px 12px; border-radius: var(--r-md); border: 1px solid color-mix(in srgb, var(--critical) 28%, transparent); cursor: pointer; font-size: var(--fs-cap); }
+.btn-danger:hover { background: color-mix(in srgb, var(--critical) 8%, transparent); }
+.btn-quiet { background: transparent; color: var(--ink-3); border: none; cursor: pointer; font-size: var(--fs-cap); padding: 4px var(--s-2); border-radius: var(--r-sm); transition: color .15s, background .15s; }
+.btn-quiet:hover { color: var(--ink); background: var(--surface-2); }
+
+/* ═══ 开关（34×20，ToggleField = field-box 横条网格单元） ═══ */
+.field-box { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); border: 1px solid var(--hairline-2); border-radius: var(--r-lg); background: var(--surface); padding: 8px var(--s-3); }
+.f-label-block { display: block; font-size: var(--fs-sm); font-weight: 500; }
+.f-hint-block { display: block; font-size: var(--fs-cap); color: var(--ink-3); margin-top: 2px; }
+.toggle { position: relative; display: inline-block; width: 34px; height: 20px; flex: none; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-slider { position: absolute; cursor: pointer; inset: 0; background: var(--hairline-3); border-radius: 99px; transition: background .2s var(--ease); }
+.toggle-slider::before { content: ''; position: absolute; width: 16px; height: 16px; left: 2px; top: 2px; background: var(--surface); border-radius: 50%; transition: transform .22s cubic-bezier(.34,1.4,.44,1); box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+.toggle input:checked + .toggle-slider { background: var(--accent); }
+.toggle input:checked + .toggle-slider::before { transform: translateX(14px); }
+
+/* ═══ 分段选择器 / chip ═══ */
+.segmented { display: inline-flex; border-radius: 9px; border: 1px solid var(--hairline-2); background: var(--surface-2); gap: 2px; padding: 3px; }
+.segmented > button { padding: 4px 12px; font-size: var(--fs-sm); cursor: pointer; border: none; border-radius: var(--r-md); background: transparent; color: var(--ink-2); transition: all .15s var(--ease); }
+.segmented > button:hover { color: var(--ink); }
+.segmented > button.on { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 1px 3px rgba(26,29,24,.1); }
+.chip { display: inline-flex; align-items: center; gap: 3px; border-radius: 999px; padding: 5px 12px; cursor: pointer; background: transparent; border: 1px solid var(--hairline-2); color: var(--ink-2); font-size: var(--fs-sm); transition: all .18s var(--ease); user-select: none; }
+.chip:hover { border-color: var(--hairline-3); color: var(--ink); }
+.chip.on { background: var(--ink); border-color: var(--ink); color: var(--page); }
+.chip .n { opacity: .55; margin-left: 3px; font-family: var(--mono); font-size: var(--fs-cap); }
+
+/* ═══ 标签与状态 ═══ */
+.tag-good { background: var(--good-soft); color: var(--good-text); }
+.tag-bad  { background: var(--critical-soft); color: var(--critical); }
+.tag-acc  { background: var(--accent-soft); color: var(--accent); }
+.tag-gen  { background: var(--c-gen-soft); color: var(--c-gen); }
+.tag-info { background: var(--c-info-soft); color: var(--c-info); }
+.tag-parse{ background: var(--c-parse-soft); color: var(--c-parse); }
+.tag-input{ background: var(--c-input-soft); color: var(--c-input); }
+.status { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); white-space: nowrap; }
+.status-good { color: var(--good-text); } .status-idle { color: var(--ink-3); } .status-crit { color: var(--critical); }
+.dot-good { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 15%, transparent); }
+.dot-idle { background: var(--ink-3); opacity: .45; }
+
+/* ═══ 数据表 ═══ */
+.tbl-wrap { overflow-x: auto; }
+.data-tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.data-tbl th { padding: 9px var(--s-4); text-align: left; font-size: var(--fs-cap); font-weight: 600; letter-spacing: .05em; color: var(--ink-3); border-bottom: 1px solid var(--hairline-2); background: var(--page); white-space: nowrap; }
+.data-tbl td { padding: 9px var(--s-4); border-bottom: 1px solid var(--hairline-2); vertical-align: middle; }
+.data-tbl tr:last-child td { border-bottom: 0; }
+.data-tbl tbody tr { transition: background .15s var(--ease); }
+.data-tbl tbody tr:hover td { background: var(--surface-2); }
+.col-name { font-weight: 600; }
+.col-sub { font-size: var(--fs-cap); color: var(--ink-3); font-family: var(--mono); }
+
+/* ═══ 能力卡片 ═══ */
+.cap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); gap: var(--s-3); }
+.cap-card { background: var(--surface); border: 1px solid var(--hairline-2); border-radius: var(--r-lg); padding: var(--s-3); cursor: pointer; transition: all .16s var(--ease); text-align: left; }
+.cap-card:hover { border-color: var(--hairline-3); box-shadow: var(--sh-1); }
+.cap-card-top { display: flex; align-items: center; gap: var(--s-2); margin-bottom: 6px; }
+.cap-name { font-weight: 600; font-size: var(--fs-sm); }
+.cap-id { font-family: var(--mono); font-size: var(--fs-cap); color: var(--ink-3); }
+.cap-desc { font-size: var(--fs-cap); color: var(--ink-2); line-height: 1.5; }
+
+/* ═══ 统计卡 ═══ */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--s-3); }
+.stat-card { background: var(--surface); border: 1px solid var(--hairline-2); border-radius: var(--r-xl); padding: var(--s-4); box-shadow: var(--sh-1); }
+.stat-label { font-size: var(--fs-cap); color: var(--ink-3); letter-spacing: .05em; }
+.stat-value { font-family: var(--serif); font-size: 30px; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.stat-value small { font-size: var(--fs-base); color: var(--ink-3); font-weight: 600; font-family: var(--sans); }
+.delta { display: inline-flex; align-items: center; font-size: var(--fs-cap); font-weight: 600; padding: 1px 7px; border-radius: 999px; font-variant-numeric: tabular-nums; }
+.delta.up { background: var(--good-soft); color: var(--good-text); }
+.delta.down { background: var(--critical-soft); color: var(--critical); }
+.delta.flat { background: var(--off-soft); color: var(--ink-3); }
+
+/* ═══ 行内提示条 ═══ */
+.inline-note { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3); margin-bottom: var(--s-3); padding: var(--s-3); border-radius: var(--r-lg); background: var(--warning-soft); border: 1px solid color-mix(in srgb, var(--warning) 26%, transparent); font-size: var(--fs-sm); color: var(--warning); }
+.inline-note .btn-quiet { color: var(--warning); }
+.inline-note .btn-quiet:hover { background: color-mix(in srgb, var(--warning) 12%, transparent); color: var(--warning); }
+
+/* ═══ 折叠 ═══ */
+details.fold { border: 1px solid var(--hairline-2); border-radius: var(--r-lg); background: var(--surface); overflow: hidden; }
+details.fold > summary { list-style: none; cursor: pointer; padding: 9px 14px; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); display: flex; align-items: center; gap: var(--s-2); user-select: none; transition: background .15s, color .15s; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary::before { content: ''; width: 0; height: 0; flex: none; border-left: 4px solid var(--ink-3); border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent; transition: transform .18s var(--ease); }
+details.fold[open] > summary::before { transform: rotate(90deg); }
+details.fold > summary:hover { background: var(--surface-2); color: var(--ink); }
+details.fold[open] > summary { border-bottom: 1px solid var(--hairline-2); color: var(--ink); }
+details.fold > .fold-body { padding: var(--s-3) 14px; color: var(--ink-2); }
+code.fi { font-family: var(--mono); font-size: .92em; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; color: var(--ink-2); }
+
+/* ═══ 原型工具 ═══ */
+.proto-switch { position: fixed; right: var(--s-4); bottom: var(--s-4); z-index: 99; display: flex; gap: 2px; padding: 3px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--hairline-2); box-shadow: var(--sh-1); }
+.proto-switch button { border: none; background: transparent; padding: 5px 12px; border-radius: 6px; font-size: var(--fs-sm); cursor: pointer; color: var(--ink-2); }
+.proto-switch button.on { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 1px 3px rgba(26,29,24,.1); }
+.view { display: none; }
+.view.on { display: block; }
+</style>
+</head>
+<body>
+
+<div class="proto-switch" id="protoSwitch">
+  <button data-view="overview" class="on">总览</button>
+  <button data-view="capabilities">能力中心</button>
+  <button data-view="agent">Agent 与工具</button>
+  <button data-view="settings">系统设置</button>
+</div>
+
+<!-- 桌面层：四周留白，纸页浮在桌面上（1:1 复刻） -->
+<div class="desk" id="desk">
+  <div class="shell" id="shell">
+    <div class="aurora a" aria-hidden="true"></div>
+    <div class="aurora b" aria-hidden="true"></div>
+    <div class="paper-grain" aria-hidden="true"></div>
+
+    <!-- ═════════ 侧栏：新 IA（MCP 并入能力中心，12 一级页 / 5 组） ═════════ -->
+    <aside class="sidebar">
+      <div class="brand-row">
+        <div class="brand-tile">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h4M13 5h6a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-6z"/><path d="M4 18h3a3 3 0 0 0 3-3V9a3 3 0 0 0-3-3H4z"/></svg>
+        </div>
+        <div>
+          <div class="brand-name">Miobot</div>
+          <div class="brand-sub">管理控制台 v2</div>
+        </div>
+      </div>
+
+      <nav class="sidenav">
+        <div class="nav-label">总览</div>
+        <a class="sidebar-item sidebar-item-active" data-nav="overview" href="#overview">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="1.5" width="5" height="5" rx="1"/><rect x="8.5" y="1.5" width="5" height="5" rx="1"/><rect x="1.5" y="8.5" width="5" height="5" rx="1"/><rect x="8.5" y="8.5" width="5" height="5" rx="1"/></svg>
+          <span class="label">总览</span>
+        </a>
+
+        <div class="nav-label">接入</div>
+        <a class="sidebar-item sidebar-item-inactive" href="#access">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H6l-2.6 2.2V10.5H4a2 2 0 0 1-2-2z"/></svg>
+          <span class="label">接入与准入</span>
+        </a>
+
+        <div class="nav-label">能力</div>
+        <a class="sidebar-item sidebar-item-inactive" data-nav="capabilities" href="#capabilities">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 2.2l1.1 3 3 1.1-3 1.1-1.1 3-1.1-3-3-1.1 3-1.1z"/><path d="M11.8 9.6l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7z"/></svg>
+          <span class="label">能力中心</span>
+        </a>
+        <a class="sidebar-item sidebar-item-inactive" href="#models">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2" width="12" height="4.4" rx="1.2"/><rect x="1.5" y="8.6" width="12" height="4.4" rx="1.2"/><circle cx="4.2" cy="4.2" r="0.8" fill="currentColor" stroke="none"/><circle cx="4.2" cy="10.8" r="0.8" fill="currentColor" stroke="none"/></svg>
+          <span class="label">模型与节点</span>
+          <span class="nav-badge" title="2 项能力配置有问题"></span>
+        </a>
+        <a class="sidebar-item sidebar-item-inactive" href="#prompts">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="11" height="11" rx="1.5"/><path d="M2 5.8h11M5.8 5.8V13"/></svg>
+          <span class="label">提示词与模板</span>
+        </a>
+
+        <div class="nav-label">行为规则</div>
+        <a class="sidebar-item sidebar-item-inactive" data-nav="agent" href="#agent">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3.5h11M2 7.5h11M2 11.5h11"/><circle cx="5" cy="3.5" r="1.5" fill="var(--surface)"/><circle cx="10" cy="7.5" r="1.5" fill="var(--surface)"/><circle cx="6.5" cy="11.5" r="1.5" fill="var(--surface)"/></svg>
+          <span class="label">Agent 与工具</span>
+        </a>
+        <a class="sidebar-item sidebar-item-inactive" href="#permissions">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 7.8l3.2 3.2L12.5 4"/></svg>
+          <span class="label">权限与审批</span>
+        </a>
+        <a class="sidebar-item sidebar-item-inactive" href="#reply">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5.6" y="1.6" width="3.8" height="7.2" rx="1.9"/><path d="M3.2 7.2a4.3 4.3 0 0 0 8.6 0M7.5 11.5V13.4M5.4 13.4h4.2"/></svg>
+          <span class="label">回复与呈现</span>
+        </a>
+        <a class="sidebar-item sidebar-item-inactive" href="#features">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.7" cy="6.7" r="4.2"/><path d="M9.8 9.8l3.1 3.1"/></svg>
+          <span class="label">命令与意图</span>
+        </a>
+
+        <div class="nav-label">运行观测</div>
+        <a class="sidebar-item sidebar-item-inactive" href="#jobs">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12.5 6.5A5 5 0 1 0 12 10"/><path d="M12.8 2.8v3.7h-3.7"/></svg>
+          <span class="label">异步任务</span>
+        </a>
+        <a class="sidebar-item sidebar-item-inactive" href="#observability">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 3h10M2.5 6h10M2.5 9h6.5M2.5 12h4"/></svg>
+          <span class="label">观测中心</span>
+        </a>
+
+        <div class="nav-label">系统</div>
+        <a class="sidebar-item sidebar-item-inactive" href="#canvas">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.8" y="2.4" width="11.4" height="8.4" rx="1.2"/><path d="M4.5 13h6M7.5 10.8V13M4 8.2l2.2-2.4 1.8 1.7 2.6-3"/></svg>
+          <span class="label">画布与图库</span>
+        </a>
+        <a class="sidebar-item sidebar-item-inactive" data-nav="settings" href="#settings">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="7.5" r="2.2"/><path d="M7.5 1.8v1.9M7.5 11.3v1.9M1.8 7.5h1.9M11.3 7.5h1.9M3.5 3.5l1.3 1.3M10.2 10.2l1.3 1.3M11.5 3.5l-1.3 1.3M4.8 10.2l-1.3 1.3"/></svg>
+          <span class="label">系统设置</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-foot">
+        <a class="sidebar-item sidebar-item-inactive" href="#logout">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5.8 2.5H3.2a1.2 1.2 0 0 0-1.2 1.2v7.6a1.2 1.2 0 0 0 1.2 1.2h2.6M9.5 10.5L12.5 7.5 9.5 4.5M12.5 7.5H5.5"/></svg>
+          <span class="label">退出登录</span>
+        </a>
+      </div>
+    </aside>
+
+    <!-- ═════════ 主区 ═════════ -->
+    <div class="mb-content">
+      <header class="topbar">
+        <nav class="crumbs" aria-label="面包屑">
+          <a href="#overview">控制台</a>
+          <span class="sep">/</span>
+          <b id="crumbCurrent">总览</b>
+        </nav>
+        <div class="topbar-right">
+          <span class="save-state" title="未保存的分区：agent、toolRegistry">
+            <span class="dot dot-warn"></span>
+            <span class="status-warn">未保存</span>
+            <span class="tag tag-warn">agent</span>
+            <span class="tag tag-warn">toolRegistry</span>
+          </span>
+          <button class="btn-outline">导出</button>
+          <button class="btn-outline">导入</button>
+          <button class="btn-outline icon-only" title="主题：跟随系统" aria-label="切换主题"><svg width="14" height="14" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12.6 8.9A5.6 5.6 0 1 1 5.8 2a4.5 4.5 0 0 0 6.8 6.9z"/></svg></button>
+          <button class="btn-outline icon-only" id="atmoBtn" title="氛围效果：开" aria-label="切换氛围效果"><svg width="14" height="14" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 2.2l1.1 3 3 1.1-3 1.1-1.1 3-1.1-3-3-1.1 3-1.1z"/><path d="M11.8 9.6l.7 1.9 1.9.7-1.9.7-.7 1.9-.7-1.9-1.9-.7 1.9-.7z"/></svg></button>
+          <button class="btn-primary">保存并热重载</button>
+        </div>
+      </header>
+
+      <main class="main-scroll">
+        <div class="page-wrap">
+
+          <!-- ═════════ 总览 ═════════ -->
+          <div class="view on" id="view-overview">
+            <header class="page-head">
+              <h1 class="page-title">总览</h1>
+              <p class="page-desc">Bot 运行状态、24 小时活动与能力健康度。</p>
+            </header>
+
+            <div class="stat-grid" style="margin-bottom: var(--s-6)">
+              <div class="stat-card"><div class="stat-label">今日消息</div><div class="stat-value">1,284 <small>条</small></div><div style="margin-top:6px"><span class="delta up">+12.4%</span></div></div>
+              <div class="stat-card"><div class="stat-label">生图任务</div><div class="stat-value">63 <small>张</small></div><div style="margin-top:6px"><span class="delta flat">持平</span></div></div>
+              <div class="stat-card"><div class="stat-label">工具调用</div><div class="stat-value">412 <small>次</small></div><div style="margin-top:6px"><span class="delta up">+3.1%</span></div></div>
+              <div class="stat-card"><div class="stat-label">审批待处理</div><div class="stat-value">2 <small>条</small></div><div style="margin-top:6px"><span class="delta down">超时 1 条</span></div></div>
+            </div>
+
+            <section class="card sec-card">
+              <div class="sec-head">
+                <div><h2 class="sec-title">接入状态</h2><p class="sec-hint">连接与身份配置统一在「接入与准入」</p></div>
+              </div>
+              <div class="sec-body grid g2">
+                <label class="field-box">
+                  <span>
+                    <span class="f-label-block">Napcat WebSocket</span>
+                    <span class="f-hint-block mono">ws://127.0.0.1:3001</span>
+                  </span>
+                  <span class="status status-good">● 已连接</span>
+                </label>
+                <label class="field-box">
+                  <span>
+                    <span class="f-label-block">主脑模型</span>
+                    <span class="f-hint-block mono">glm-4.6 · 节点 1</span>
+                  </span>
+                  <span class="status status-good">● 正常</span>
+                </label>
+                <label class="field-box">
+                  <span>
+                    <span class="f-label-block">Box 云桌面</span>
+                    <span class="f-hint-block mono">mcp.box · 24 子操作</span>
+                  </span>
+                  <span class="status status-idle">○ 休眠（自动唤醒）</span>
+                </label>
+                <label class="field-box">
+                  <span>
+                    <span class="f-label-block">Suno 音乐</span>
+                    <span class="f-hint-block mono">mcp.suno-official · oauth</span>
+                  </span>
+                  <span class="status status-crit">● 待授权</span>
+                </label>
+              </div>
+            </section>
+
+            <section class="card sec-card">
+              <div class="sec-head">
+                <div><h2 class="sec-title">能力健康度</h2><p class="sec-hint">最近一次体检结果；明细见「能力中心」</p></div>
+                <div class="sec-actions"><div class="segmented"><button class="on">注册表</button><button>模型体检</button></div></div>
+              </div>
+              <div class="tbl-wrap">
+                <table class="data-tbl">
+                  <thead><tr><th>能力</th><th>分类</th><th>绑定模型</th><th>状态</th><th>最近调用</th><th></th></tr></thead>
+                  <tbody>
+                    <tr><td><div class="col-name">image.generate</div><div class="col-sub">图像生成</div></td><td><span class="tag tag-gen">生成</span></td><td><code class="fi">gpt-image-2</code></td><td><span class="status status-good">● 健康</span></td><td class="mono" style="color:var(--ink-3)">12 分钟前</td><td style="text-align:right"><button class="btn-quiet">体检</button></td></tr>
+                    <tr><td><div class="col-name">web.search</div><div class="col-sub">网页搜索</div></td><td><span class="tag tag-info">信息</span></td><td><code class="fi">glm-4.6</code></td><td><span class="status status-good">● 健康</span></td><td class="mono" style="color:var(--ink-3)">3 分钟前</td><td style="text-align:right"><button class="btn-quiet">体检</button></td></tr>
+                    <tr><td><div class="col-name">audio.music.generate</div><div class="col-sub">音乐生成</div></td><td><span class="tag tag-gen">生成</span></td><td><code class="fi">suno-v6</code></td><td><span class="status status-crit">● 授权过期</span></td><td class="mono" style="color:var(--ink-3)">昨天</td><td style="text-align:right"><button class="btn-quiet">去授权</button></td></tr>
+                    <tr><td><div class="col-name">tts.speak</div><div class="col-sub">语音合成</div></td><td><span class="tag tag-gen">生成</span></td><td><code class="fi">fish-audio</code></td><td><span class="status status-idle">○ 未启用</span></td><td class="mono" style="color:var(--ink-3)">—</td><td style="text-align:right"><button class="btn-quiet">启用</button></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+
+          <!-- ═════════ 能力中心（MCP 并入此处） ═════════ -->
+          <div class="view" id="view-capabilities">
+            <header class="page-head">
+              <h1 class="page-title">能力中心</h1>
+              <p class="page-desc">Bot 全部能力的唯一目录：内置能力、MCP 服务器、插件与 HTTP 能力。能力开关、风险等级与审批要求都在这里编辑。</p>
+            </header>
+
+            <section class="card sec-card">
+              <div class="sec-head">
+                <div><h2 class="sec-title">能力注册表</h2><p class="sec-hint">60 个描述符 · 注册进注册表即自动出现，零代码</p></div>
+                <div class="sec-actions">
+                  <input class="input-field" style="width:200px" placeholder="搜索能力 / 描述 / 参数名…">
+                  <div class="segmented"><button class="on">卡片</button><button>模型体检</button></div>
+                </div>
+              </div>
+              <div class="sec-body">
+                <div style="display:flex; gap:var(--s-2); align-items:center; flex-wrap:wrap; margin-bottom: var(--s-4)">
+                  <span class="chip on">全部 <span class="n">60</span></span>
+                  <span class="chip">生成 <span class="n">9</span></span>
+                  <span class="chip">解析 <span class="n">7</span></span>
+                  <span class="chip">信息 <span class="n">12</span></span>
+                  <span class="chip">输入 <span class="n">8</span></span>
+                  <span class="chip">MCP <span class="n">2</span></span>
+                  <span style="flex:1"></span>
+                  <span class="tag tag-good">18 启用</span>
+                  <span class="tag">6 停用</span>
+                </div>
+                <div class="cap-grid">
+                  <button class="cap-card">
+                    <div class="cap-card-top"><span class="tag tag-gen">生成</span><span class="cap-name">图像生成</span></div>
+                    <div class="cap-id">image.generate</div>
+                    <div class="cap-desc">文生图；结果写入图库后回图，支持 gpt-image / dall-e / gemini-image 等</div>
+                  </button>
+                  <button class="cap-card">
+                    <div class="cap-card-top"><span class="tag tag-gen">生成</span><span class="cap-name">图像改图</span></div>
+                    <div class="cap-id">image.edit</div>
+                    <div class="cap-desc">参考图 / 遮罩改图；原图与遮罩走同一上传通道</div>
+                  </button>
+                  <button class="cap-card">
+                    <div class="cap-card-top"><span class="tag tag-info">信息</span><span class="cap-name">网页搜索</span></div>
+                    <div class="cap-id">web.search</div>
+                    <div class="cap-desc">多引擎搜索：DeepSeek / Tavily / Brave / Serper / SearXNG</div>
+                  </button>
+                  <button class="cap-card">
+                    <div class="cap-card-top"><span class="tag tag-parse">解析</span><span class="cap-name">文件读取</span></div>
+                    <div class="cap-id">file.read</div>
+                    <div class="cap-desc">txt/md/csv/json/xml/PDF/DOCX/XLSX/PPTX/ZIP 按需解析</div>
+                  </button>
+                  <button class="cap-card">
+                    <div class="cap-card-top"><span class="tag tag-input">交互</span><span class="cap-name">追问用户</span></div>
+                    <div class="cap-id">ask_user</div>
+                    <div class="cap-desc">关键信息缺失时的结构化追问，最多 10 个备选项</div>
+                  </button>
+                  <button class="cap-card">
+                    <div class="cap-card-top"><span class="tag tag-info">信息</span><span class="cap-name">向量记忆</span></div>
+                    <div class="cap-id">memory.recall</div>
+                    <div class="cap-desc">长期记忆检索；需先配置 embedding 模型与维度</div>
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <section class="card sec-card">
+              <div class="sec-head">
+                <div><h2 class="sec-title">MCP 服务器</h2><p class="sec-hint">外部工具接入——内置服务已预置好，点进详情连接账号或授权；子工具随根能力进 loadout</p></div>
+                <div class="sec-actions"><button class="btn-outline">＋ 添加自定义</button></div>
+              </div>
+              <div class="sec-body">
+                <div class="inline-note">
+                  <span>工具检索已开启：MCP 工具按 searchable 曝光并入 loadout（关闭后模型看不到也搜不到它们）。</span>
+                  <button class="btn-quiet" style="margin-left:auto">去关闭</button>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:var(--s-2)">
+                  <div class="field-box">
+                    <span>
+                      <span class="f-label-block">Box 云桌面 <span class="tag tag-acc">内置</span></span>
+                      <span class="f-hint-block mono">mcp.box · 24 个子操作（shell / script_run / browser_* / desk …）</span>
+                    </span>
+                    <span style="display:flex; align-items:center; gap:var(--s-2); flex:none">
+                      <span class="status status-good">● 已连接</span>
+                      <button class="btn-outline">配置</button>
+                    </span>
+                  </div>
+                  <div class="field-box">
+                    <span>
+                      <span class="f-label-block">Suno 官方 <span class="tag tag-acc">内置</span></span>
+                      <span class="f-hint-block mono">mcp.suno-official · 41 个子操作 · oauth</span>
+                    </span>
+                    <span style="display:flex; align-items:center; gap:var(--s-2); flex:none">
+                      <span class="status status-crit">● 待授权</span>
+                      <button class="btn-outline">去授权</button>
+                    </span>
+                  </div>
+                  <div class="field-box">
+                    <span>
+                      <span class="f-label-block">本地向量库</span>
+                      <span class="f-hint-block mono">mcp.qdrant · stdio · qdrant-server</span>
+                    </span>
+                    <span style="display:flex; align-items:center; gap:var(--s-2); flex:none">
+                      <span class="status status-idle">○ 未启用</span>
+                      <button class="btn-outline">配置</button>
+                      <button class="btn-outline">删除</button>
+                    </span>
+                  </div>
+                </div>
+                <p class="sec-hint" style="margin-top: var(--s-3)">MCP 详情页（面包屑：能力中心 / MCP / <span class="mono">box</span>）承载：根开关、子工具 enable、风险等级、参数默认值、使用指南与授权。</p>
+              </div>
+            </section>
+          </div>
+
+          <!-- ═════════ Agent 与工具（合并 /tools，网格化） ═════════ -->
+          <div class="view" id="view-agent">
+            <header class="page-head">
+              <h1 class="page-title">Agent 与工具</h1>
+              <p class="page-desc">AgentRuntime、工具注册表与上下文预算。原「工具与权限」页已并入此处，不再两处可编辑。</p>
+            </header>
+
+            <section class="card sec-card">
+              <div class="sec-head">
+                <div><h2 class="sec-title">Agent 运行时</h2><p class="sec-hint">enforce 会接管 chat/freeMode；精确命令仍由命令网关优先处理</p></div>
+              </div>
+              <div class="sec-body">
+                <div class="grid g3">
+                  <label class="field-box"><span><span class="f-label-block">启用 Agent Runtime</span><span class="f-hint-block">enforce 失败会受控终止，不回退旧链</span></span><span class="toggle"><input type="checkbox" checked><span class="toggle-slider"></span></span></label>
+                  <div class="f-field"><label class="f-label">运行模式</label><select class="input-field"><option>enforce</option><option>shadow</option><option>off</option></select></div>
+                  <div class="f-field"><label class="f-label">工具选择策略</label><select class="input-field"><option>auto</option><option>required</option><option>none</option></select></div>
+                </div>
+                <div class="sec-sub">
+                  <h3 class="sec-sub-label">预算与超时</h3>
+                  <div class="grid g6">
+                    <div class="f-field"><label class="f-label">最大模型轮次</label><input class="input-field" type="number" value="8" min="1"></div>
+                    <div class="f-field"><label class="f-label">最大工具轮次</label><input class="input-field" type="number" value="16" min="0"></div>
+                    <div class="f-field"><label class="f-label">并行工具数</label><input class="input-field" type="number" value="4" min="1"></div>
+                    <div class="f-field"><label class="f-label">并发 Turn 上限</label><input class="input-field" type="number" value="4" min="0"></div>
+                    <div class="f-field"><label class="f-label">Max Tokens</label><input class="input-field" type="number" value="8192" min="1"></div>
+                    <div class="f-field"><label class="f-label">调用超时 (ms)</label><input class="input-field" type="number" value="60000" min="1000"></div>
+                    <div class="f-field"><label class="f-label">整轮超时 (ms)</label><input class="input-field" type="number" value="180000" min="1000"></div>
+                    <div class="f-field"><label class="f-label">收口预算 (ms)</label><input class="input-field" type="number" value="12000" min="500"></div>
+                    <div class="f-field"><label class="f-label">Temperature</label><input class="input-field" type="number" value="0.7" step="0.1" min="0" max="2"></div>
+                    <div class="f-field"><label class="f-label">Reasoning Effort</label><input class="input-field" placeholder="high"></div>
+                  </div>
+                </div>
+                <div class="sec-sub">
+                  <h3 class="sec-sub-label">输出修复预算</h3>
+                  <div class="grid g6">
+                    <div class="f-field"><label class="f-label">协议修复次数</label><input class="input-field" type="number" value="2" min="0"></div>
+                    <div class="f-field"><label class="f-label">单调用 schema 修复</label><input class="input-field" type="number" value="2" min="0"></div>
+                    <div class="f-field"><label class="f-label">总输出修复次数</label><input class="input-field" type="number" value="4" min="0"></div>
+                    <div class="f-field"><label class="f-label">重复错误上限</label><input class="input-field" type="number" value="3" min="1"></div>
+                    <div class="f-field"><label class="f-label">修复温度</label><input class="input-field" type="number" value="0.3" step="0.05" min="0" max="1"></div>
+                    <label class="field-box f-end" style="height:100%"><span><span class="f-label-block">安全纯文本兜底</span></span><span class="toggle"><input type="checkbox" checked><span class="toggle-slider"></span></span></label>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="card sec-card">
+              <div class="sec-head">
+                <div><h2 class="sec-title">工具注册表</h2><p class="sec-hint">toolRegistry · 唯一编辑处（原「工具与权限」页已合并）；HTTP/插件/MCP 动态工具默认 core，不被上限裁掉</p></div>
+              </div>
+              <div class="sec-body">
+                <div class="grid g6">
+                  <label class="field-box"><span><span class="f-label-block">启用新工具注册表</span></span><span class="toggle"><input type="checkbox" checked><span class="toggle-slider"></span></span></label>
+                  <div class="f-field"><label class="f-label">每轮最多工具</label><input class="input-field" type="number" value="24" min="1" max="128"></div>
+                  <div class="f-field"><label class="f-label">Schema 字节上限</label><input class="input-field" type="number" value="48000" min="1000"></div>
+                  <div class="f-field"><label class="f-label">默认超时 (ms)</label><input class="input-field" type="number" value="180000" min="1000"></div>
+                  <div class="f-field"><label class="f-label">默认重试</label><input class="input-field" type="number" value="0" min="0" max="10"></div>
+                  <div class="f-field"><label class="f-label">默认并发</label><input class="input-field" type="number" value="4" min="1" max="64"></div>
+                </div>
+                <div class="sec-sub">
+                  <h3 class="sec-sub-label">已注册工具 <span style="font-weight:400;color:var(--ink-3)">（按曝光分组；单工具覆写在详情页）</span></h3>
+                  <div class="tbl-wrap">
+                    <table class="data-tbl">
+                      <thead><tr><th>工具</th><th>来源</th><th>曝光</th><th>风险</th><th>超时</th><th></th></tr></thead>
+                      <tbody>
+                        <tr><td><div class="col-name">web.search</div><div class="col-sub">builtin</div></td><td><span class="tag">内置</span></td><td><select class="input-field" style="padding:4px 8px"><option>core</option><option selected>domain</option><option>searchable</option><option>hidden</option></select></td><td><span class="tag tag-good">低</span></td><td class="mono" style="color:var(--ink-3)">默认</td><td style="text-align:right"><button class="btn-quiet">详情</button></td></tr>
+                        <tr><td><div class="col-name">mcp.box</div><div class="col-sub">tree root · 24 子操作</div></td><td><span class="tag tag-acc">MCP</span></td><td><select class="input-field" style="padding:4px 8px"><option>core</option><option selected>domain</option><option>searchable</option><option>hidden</option></select></td><td><span class="tag">中</span></td><td class="mono">180000 ms</td><td style="text-align:right"><button class="btn-quiet">详情</button></td></tr>
+                        <tr><td><div class="col-name">novel.platform</div><div class="col-sub">plugin · bundled</div></td><td><span class="tag">插件</span></td><td><select class="input-field" style="padding:4px 8px"><option selected>core</option><option>domain</option><option>searchable</option><option>hidden</option></select></td><td><span class="tag">中</span></td><td class="mono" style="color:var(--ink-3)">默认</td><td style="text-align:right"><button class="btn-quiet">详情</button></td></tr>
+                        <tr><td><div class="col-name">image.generate</div><div class="col-sub">builtin</div></td><td><span class="tag">内置</span></td><td><select class="input-field" style="padding:4px 8px"><option selected>core</option><option>domain</option><option>searchable</option><option>hidden</option></select></td><td><span class="tag">中</span></td><td class="mono" style="color:var(--ink-3)">默认</td><td style="text-align:right"><button class="btn-quiet">详情</button></td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="card sec-card">
+              <div class="sec-head">
+                <div><h2 class="sec-title">上下文策略</h2><p class="sec-hint">注入预算与裁剪：分块上限各自独立，总预算管整个模型请求</p></div>
+              </div>
+              <div class="sec-body">
+                <div class="grid g4">
+                  <div class="f-field"><label class="f-label">历史上限轮数</label><input class="input-field" type="number" value="24" min="1"></div>
+                  <div class="f-field"><label class="f-label">请求总字符预算</label><input class="input-field" type="number" value="48000" min="500"></div>
+                  <div class="f-field"><label class="f-label">群上下文消息数</label><input class="input-field" type="number" value="20" min="1"></div>
+                  <div class="f-field"><label class="f-label">群上下文字符上限</label><input class="input-field" type="number" value="6000" min="200"></div>
+                  <div class="f-field"><label class="f-label">记忆 Top-K</label><input class="input-field" type="number" value="5" min="1"></div>
+                  <div class="f-field"><label class="f-label">记忆最低分</label><input class="input-field" type="number" value="0.35" step="0.05" min="0" max="1"></div>
+                  <div class="f-field"><label class="f-label">记忆字符上限</label><input class="input-field" type="number" value="2000" min="200"></div>
+                  <div class="f-field"><label class="f-label">工具结果字符上限</label><input class="input-field" type="number" value="6000" min="500"></div>
+                </div>
+                <div class="grid g4" style="margin-top: var(--s-4)">
+                  <label class="field-box"><span><span class="f-label-block">群上下文</span></span><span class="toggle"><input type="checkbox" checked><span class="toggle-slider"></span></span></label>
+                  <label class="field-box"><span><span class="f-label-block">跳过合并转发</span></span><span class="toggle"><input type="checkbox" checked><span class="toggle-slider"></span></span></label>
+                  <label class="field-box"><span><span class="f-label-block">带上图片</span><span class="f-hint-block">不支持视觉的模型会自动忽略</span></span><span class="toggle"><input type="checkbox"><span class="toggle-slider"></span></span></label>
+                  <label class="field-box"><span><span class="f-label-block">上下文压缩</span><span class="f-hint-block">摘要裁剪已接线</span></span><span class="toggle"><input type="checkbox" checked><span class="toggle-slider"></span></span></label>
+                </div>
+              </div>
+            </section>
+
+            <details class="fold">
+              <summary>旧引擎兼容（仅 <code class="fi">agent.mode=off</code> 生效，默认折叠）</summary>
+              <div class="fold-body">
+                自由模式规划、意图识别与旧会话限制。生产默认 enforce 接管，以下参数仅兼容旧部署时使用。
+                <div style="margin-top:var(--s-3); display:flex; gap:var(--s-2)">
+                  <button class="btn-outline">导出旧配置</button>
+                  <button class="btn-danger">永久清除旧引擎参数</button>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- ═════════ 系统设置 ═════════ -->
+          <div class="view" id="view-settings">
+            <header class="page-head">
+              <h1 class="page-title">系统设置</h1>
+              <p class="page-desc">面板、数据目录与错误分诊。Napcat 连接配置在「接入与准入」，不在此处。</p>
+            </header>
+
+            <section class="card sec-card">
+              <div class="sec-head"><div><h2 class="sec-title">面板</h2><p class="sec-hint">panel.*</p></div></div>
+              <div class="sec-body grid g3">
+                <div class="f-field"><label class="f-label">访问密码</label><input class="input-field" type="password" placeholder="留空 = 免登录令牌"></div>
+                <div class="f-field"><label class="f-label">监听端口</label><input class="input-field" type="number" value="3018"></div>
+                <label class="field-box"><span><span class="f-label-block">纸面氛围层</span><span class="f-hint-block">光斑+颗粒；关闭后为纯白底</span></span><span class="toggle"><input type="checkbox"><span class="toggle-slider"></span></span></label>
+              </div>
+            </section>
+
+            <section class="card sec-card">
+              <div class="sec-head"><div><h2 class="sec-title">错误分诊</h2><p class="sec-hint">bot.errorTriage.* · 新增（此前仅后端有 schema，面板无入口）</p></div></div>
+              <div class="sec-body grid g4">
+                <label class="field-box"><span><span class="f-label-block">启用错误分诊</span><span class="f-hint-block">异常分类后定向通知管理员</span></span><span class="toggle"><input type="checkbox" checked><span class="toggle-slider"></span></span></label>
+                <div class="f-field"><label class="f-label">同类错误冷却（分）</label><input class="input-field" type="number" value="15" min="1"></div>
+                <div class="f-field"><label class="f-label">每小时上限</label><input class="input-field" type="number" value="5" min="1"></div>
+                <div class="f-field"><label class="f-label">通知方式</label><select class="input-field"><option>私聊管理员</option><option>仅审计记录</option></select></div>
+              </div>
+            </section>
+
+            <section class="card sec-card">
+              <div class="sec-head"><div><h2 class="sec-title">配置版本</h2><p class="sec-hint">每次保存留档，可回滚；完整记录在「观测中心」</p></div></div>
+              <div class="tbl-wrap">
+                <table class="data-tbl">
+                  <thead><tr><th>时间</th><th>来源</th><th>变更摘要</th><th></th></tr></thead>
+                  <tbody>
+                    <tr><td class="mono" style="color:var(--ink-2)">11-10 04:25</td><td>面板</td><td style="color:var(--ink-2)">启用 mcp.box 根能力 · toolRegistry 预算调整</td><td style="text-align:right"><button class="btn-quiet">回滚</button></td></tr>
+                    <tr><td class="mono" style="color:var(--ink-2)">11-09 21:50</td><td>导入</td><td style="color:var(--ink-2)">整配置导入（v3 信封）</td><td style="text-align:right"><button class="btn-quiet">回滚</button></td></tr>
+                    <tr><td class="mono" style="color:var(--ink-2)">11-08 15:02</td><td>面板</td><td style="color:var(--ink-2)">新增审批规则：高风险写操作需管理员确认</td><td style="text-align:right"><button class="btn-quiet">回滚</button></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+
+        </div>
+      </main>
+    </div>
+  </div>
+</div>
+
+<script>
+const switchBar = document.getElementById('protoSwitch');
+const crumb = document.getElementById('crumbCurrent');
+const titles = { overview: '总览', capabilities: '能力中心', agent: 'Agent 与工具', settings: '系统设置' };
+function show(view) {
+  for (const item of switchBar.querySelectorAll('button')) item.classList.toggle('on', item.dataset.view === view);
+  for (const node of document.querySelectorAll('.view')) node.classList.toggle('on', node.id === `view-${view}`);
+  for (const link of document.querySelectorAll('[data-nav]')) {
+    link.classList.toggle('sidebar-item-active', link.dataset.nav === view);
+    link.classList.toggle('sidebar-item-inactive', link.dataset.nav !== view);
+  }
+  crumb.textContent = titles[view];
+}
+switchBar.addEventListener('click', (event) => {
+  const button = event.target.closest('button');
+  if (button) show(button.dataset.view);
+});
+document.querySelectorAll('[data-nav]').forEach((link) => {
+  link.addEventListener('click', (event) => {
+    event.preventDefault();
+    show(link.dataset.nav);
+  });
+});
+// 氛围层开关（与真实 AppShell 行为一致）
+const atmoBtn = document.getElementById('atmoBtn');
+atmoBtn.addEventListener('click', () => {
+  const desk = document.getElementById('desk');
+  const off = desk.classList.toggle('no-atmosphere');
+  atmoBtn.title = `氛围效果：${off ? '关' : '开'}`;
+});
+</script>
+</body>
+</html>

@@ -23,6 +23,7 @@ const serverId = computed(() => String(route.params.serverId || ''));
 
 const statusRefreshing = ref(false);
 const statusError = ref('');
+const configError = ref('');
 const busyAction = ref<'' | 'connect' | 'reconnect' | 'disconnect'>('');
 const actionPhase = ref('');
 const confirmingDisconnect = ref(false);
@@ -39,9 +40,19 @@ const orchestration = computed(() => configStore.config?.orchestration as any);
 const server = computed(() => (orchestration.value?.mcpServers || []).find((item: any) => String(item.id) === serverId.value));
 
 const busy = computed(() => busyAction.value !== '');
-/** 连接/重连的前置条件：配置存在、未被停用、填了地址。 */
-const serverReady = computed(() => Boolean(server.value && server.value.enabled !== false && String(server.value.url || '').trim()));
-
+/** 连接端点是否已填写：HTTP 看 url，stdio 看启动命令。 */
+const serverHasEndpoint = computed(() => {
+    const config = server.value as any;
+    if (!config) return false;
+    return config.transport === 'stdio'
+        ? Boolean(String(config.command || '').trim())
+        : Boolean(String(config.url || '').trim());
+});
+const serverDisabled = computed(() => server.value?.enabled === false);
+const serverEnabled = computed({
+    get: () => server.value?.enabled !== false,
+    set: (value: boolean) => { if (server.value) server.value.enabled = value; },
+});
 /* ── 提示与文案 ── */
 
 function showToast(kind: 'success' | 'error', message: string) {
@@ -60,12 +71,15 @@ function friendlyError(raw: unknown): string {
     if (lower.includes('invalid_grant')) return '刷新令牌已失效（可能被对方撤销）：请点「连接账号」重新授权。';
     if (lower.includes('invalid_scope')) return '授权范围不足且刷新令牌不支持扩权：请点「连接账号」重新授权。';
     if (lower.includes('mcp_server_not_found')) return '配置里找不到这个服务器，可能已被删除：请回 MCP 列表重新进入。';
-    if (lower.includes('mcp_server_disabled')) return '该服务器在配置中被停用：请先在「根工具设置」里启用，再连接。';
+    if (lower.includes('mcp_server_disabled')) return '该服务器已停用：点「连接账号」会自动启用并保存，也可以在下方「根工具设置」手动启用后保存。';
     if (lower.includes('mcp_no_resource_metadata')) return '这个地址没有声明 OAuth 资源信息：请核对连接地址；如果对方本来就不需要登录，请把鉴权方式改掉。';
     if (lower.includes('mcp_dcr_unsupported')) return '对方授权服务器不支持自动注册应用：需要先在对方平台手动注册 client_id。';
     if (lower.includes('econnrefused') || lower.includes('etimedout') || lower.includes('fetch failed') || lower.includes('enotfound')) return '连不上服务器：请检查网络/代理与连接地址后重试。';
     if (lower.includes('mcp_stdio')) return '本地进程启动失败：请检查启动命令、参数与运行环境。';
     if (lower.includes('unauthorized')) return '面板登录已过期，请重新登录后再操作。';
+    if (lower.includes('502') || lower.includes('bad gateway')) return '面板后端暂时不可用（502 Bad Gateway）：通常是 Miobot web 服务正在重启，或 nginx 的上游连接失败。请确认服务恢复后再重试。';
+    if (lower.includes('503') || lower.includes('504') || lower.includes('gateway timeout')) return '面板后端暂时不可用（503/504）：请检查 Miobot web 服务与反向代理是否正常。';
+    if (lower.includes('network error') || lower.includes('failed to fetch')) return '请求没有到达面板后端：请检查网络、反向代理与 Miobot web 服务是否运行。';
     return text;
 }
 
@@ -170,9 +184,10 @@ function riskLabel(value: unknown): string {
 }
 const exposure = computed(() => configStore.config?.toolRegistry?.exposure?.[`mcp.${serverId.value}`] as string | undefined);
 const stateBadge = computed(() => {
-    // 无快照时：停用 → 已停用；OAuth 内置项 → 需要授权（首次出现尚未授权，不消耗额度）；其余 → 未知。
-    const state = serverStatus.value?.state
-        || (server.value?.enabled === false ? 'disabled' : server.value?.auth === 'oauth' ? 'needs-auth' : 'unknown');
+    // 停用优先于旧快照：后端热重载后快照可能滞后一拍，不能把已停用显示成已连接。
+    const state = server.value?.enabled === false
+        ? 'disabled'
+        : (serverStatus.value?.state || (server.value?.auth === 'oauth' ? 'needs-auth' : 'unknown'));
     return { state, label: stateLabels[state] || state };
 });
 const isOAuth = computed(() => server.value?.auth === 'oauth');
@@ -189,18 +204,52 @@ async function refreshStatus(options: { silent?: boolean } = {}) {
         statusError.value = '';
     }
     try {
-        const res = await client.get('/mcp/status');
+        const res = await client.get('/mcp/status', { timeout: 20_000 });
         const snapshot = res.data?.status || {};
         const found = (snapshot.servers || []).find((item: any) => item.serverId === serverId.value) || null;
         serverStatus.value = found;
         serverChildren.value = (snapshot.children || []).filter((item: any) => item.serverId === serverId.value);
+        statusError.value = '';
         return found;
     } catch (error: any) {
-        if (!options.silent) statusError.value = errorMessage(error, '状态获取失败');
+        // 静默轮询失败也要显示原因：后端 502/重启时不能只留一个无反应的按钮。
+        statusError.value = friendlyError(errorMessage(error, '状态获取失败'));
         return serverStatus.value;
     } finally {
         if (!options.silent) statusRefreshing.value = false;
     }
+}
+
+/** 配置加载失败会阻断整页渲染；单独兜住并允许恢复后重试。 */
+async function loadConfig(force = false): Promise<boolean> {
+    if (!force && configStore.loaded) return true;
+    configError.value = '';
+    try {
+        await configStore.fetchConfig();
+        return true;
+    } catch (error: any) {
+        configError.value = friendlyError(errorMessage(error, '配置加载失败'));
+        return false;
+    }
+}
+
+async function retryLoad() {
+    await loadConfig(true);
+    await refreshStatus();
+}
+
+/** 连接账号/重连是明确用户动作：若服务器还是内置预置的停用状态，先自动启用并落盘。 */
+async function ensureServerEnabled(): Promise<void> {
+    if (!server.value || server.value.enabled !== false) return;
+    const previous = server.value.enabled;
+    actionPhase.value = '服务器当前停用，正在启用并保存配置…';
+    server.value.enabled = true;
+    const result = await configStore.save();
+    if (!result.ok) {
+        server.value.enabled = previous;
+        throw new Error(configStore.saveStatus || '启用服务器失败');
+    }
+    actionPhase.value = '服务器已启用，正在发起连接…';
 }
 
 /** 轮询直到条件成立；onTick 用来更新阶段文案。超时返回最后一次状态（不抛错）。 */
@@ -228,10 +277,11 @@ const terminalState = (state: string) => state === 'connected' || state === 'con
 
 async function doConnect() {
     if (!server.value) return showToast('error', '配置里找不到这个服务器，无法连接。');
-    if (!serverReady.value) return showToast('error', '请先在「根工具设置」里启用该服务器并填写连接地址。');
+    if (!serverHasEndpoint.value) return showToast('error', '请先在下方「根工具设置」填写连接地址并保存后再连接。');
     busyAction.value = 'connect';
-    actionPhase.value = isOAuth.value ? '正在向对方服务器发起授权…' : '正在建立连接…';
     try {
+        await ensureServerEnabled();
+        actionPhase.value = isOAuth.value ? '正在向对方服务器发起授权…' : '正在建立连接…';
         if (isOAuth.value) {
             const res = await client.post('/mcp/connect', { serverId: serverId.value });
             const url = String(res.data?.authorizationUrl || '');
@@ -292,10 +342,11 @@ async function doConnect() {
 
 async function doReconnect(forceTokenRefresh = false) {
     if (!server.value) return showToast('error', '配置里找不到这个服务器，无法重连。');
-    if (!serverReady.value) return showToast('error', '请先在「根工具设置」里启用该服务器并填写连接地址。');
+    if (!serverHasEndpoint.value) return showToast('error', '请先在下方「根工具设置」填写连接地址并保存后再重连。');
     busyAction.value = 'reconnect';
-    actionPhase.value = forceTokenRefresh ? '正在请求强制刷新令牌并重连…' : '正在请求重连…';
     try {
+        await ensureServerEnabled();
+        actionPhase.value = forceTokenRefresh ? '正在请求强制刷新令牌并重连…' : '正在请求重连…';
         const res = await client.post('/mcp/reconnect', { serverId: serverId.value, forceTokenRefresh });
         if (!res.data?.success) throw new Error(res.data?.error || '重连请求失败');
         actionPhase.value = '正在断开旧连接…';
@@ -364,6 +415,7 @@ async function doDisconnect() {
 
 async function save() {
     statusError.value = '';
+    configError.value = '';
     const result = await configStore.save();
     if (!result.ok) showToast('error', configStore.saveStatus || '保存失败');
     else showToast('success', '已保存，bot 会即时热重载。');
@@ -382,10 +434,16 @@ async function enableToolSearch() {
 }
 
 onMounted(async () => {
-    if (!configStore.loaded) await configStore.fetchConfig();
+    await loadConfig();
     await refreshStatus();
     // 页面停留期间每 10 秒静默刷新：授权回调、bot 巡检、别的标签页操作都能自己反映出来。
-    autoRefreshTimer = setInterval(() => { void refreshStatus({ silent: true }); }, 10_000);
+    // 首次配置加载遇到 502 时也继续轮询，后端恢复后页面可自愈，不需要用户手动刷新。
+    autoRefreshTimer = setInterval(() => {
+        void (async () => {
+            if (!configStore.loaded) await loadConfig();
+            await refreshStatus({ silent: true });
+        })();
+    }, 10_000);
     if (authorizedViaCallback.value) {
         showToast('success', '授权结果已返回，正在自动连接…');
         const status = await waitForStatus(
@@ -413,6 +471,11 @@ onUnmounted(() => {
       <router-link to="/mcp" class="btn-outline !px-2.5 !py-1 !text-xs">‹ 返回 MCP 列表</router-link>
     </div>
 
+    <div v-if="configError" class="card p-3 flex flex-wrap items-center gap-3">
+      <span class="text-xs text-red-600">配置加载失败：{{ configError }}</span>
+      <button class="btn-outline !px-3 !py-1 !text-xs ml-auto" :disabled="configStore.saving" @click="retryLoad">重试加载</button>
+    </div>
+
     <!-- 检索关闭 = MCP 对模型完全不可见——最后一公里引导 -->
     <div v-if="toolSearchDisabled" class="card p-3 flex flex-wrap items-center gap-3">
       <span class="text-xs text-amber-600">「工具检索」当前关闭：MCP 工具默认按需检索，关闭时模型既看不到也搜不到它们，接进来等于没用。</span>
@@ -424,7 +487,7 @@ onUnmounted(() => {
         <button class="btn-outline !px-3" :disabled="statusRefreshing || busy" @click="refreshStatus()">
           {{ statusRefreshing ? '刷新中…' : '刷新状态' }}
         </button>
-        <button class="btn-outline !px-3" :disabled="!serverReady || busy" :title="serverReady ? '' : '需要先启用服务器并填写连接地址'" @click="doReconnect(false)">
+        <button class="btn-outline !px-3" :disabled="!serverHasEndpoint || busy" :title="serverHasEndpoint ? (serverDisabled ? '服务器已停用，点击会自动启用并保存后重连' : '') : '需要先填写连接地址'" @click="doReconnect(false)">
           {{ busyAction === 'reconnect' ? '重连中…' : '重连' }}
         </button>
       </template>
@@ -485,7 +548,7 @@ onUnmounted(() => {
             </p>
           </div>
           <div class="flex flex-wrap gap-2 w-full sm:w-auto">
-            <button class="btn !px-3 w-full sm:w-auto" :disabled="!serverReady || busy" :title="serverReady ? '' : '需要先启用服务器并填写连接地址'" @click="doConnect">
+            <button class="btn !px-3 w-full sm:w-auto" :disabled="!serverHasEndpoint || busy" :title="serverHasEndpoint ? (serverDisabled ? '服务器已停用，点击会自动启用并保存后授权' : '') : '需要先填写连接地址'" @click="doConnect">
               {{ busyAction === 'connect' ? '授权中…' : '连接账号' }}
             </button>
             <button class="btn-outline !px-3 w-full sm:w-auto" :class="confirmingDisconnect ? '!text-red-600 !border-red-400/60' : ''" :disabled="busy" @click="doDisconnect">
@@ -493,7 +556,8 @@ onUnmounted(() => {
             </button>
           </div>
         </div>
-        <p v-if="!serverReady" class="mt-2 text-[11px] text-amber-600">当前不可连接：服务器被停用或没有填写连接地址（见下方「根工具设置」）。</p>
+        <p v-if="!serverHasEndpoint" class="mt-2 text-[11px] text-amber-600">当前不可连接：请先在下方「根工具设置」填写连接地址并保存。</p>
+        <p v-else-if="serverDisabled" class="mt-2 text-[11px] text-amber-600">服务器当前已停用：点「连接账号」会自动启用并保存；也可以在下方「根工具设置」手动启用后保存。</p>
         <p v-if="authUrl" class="mt-2 text-[11px] text-[color:var(--ink-3)]">
           授权页面没有自动打开？
           <a :href="authUrl" target="_blank" rel="noopener noreferrer" class="text-[color:var(--accent)] hover:underline">手动打开授权页面</a>
@@ -521,6 +585,7 @@ onUnmounted(() => {
         风险等级只用于展示和审批判断，不会改变实际权限。
       </p>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <ToggleField v-model="serverEnabled" label="启用服务器（bot 接入开关）" hint="关闭后 bot 不再连接，本页也无法发起授权；修改后点下方「保存」生效" />
         <FormField label="入口工具显示名" hint="能力目录与面板里展示的名字；留空用默认名">
           <input v-model="rootName" class="input-field" :placeholder="`${serverId} MCP`" />
         </FormField>
@@ -544,7 +609,10 @@ onUnmounted(() => {
             <option value="hidden">完全隐藏（模型不可见）</option>
           </select>
         </FormField>
-        <FormField label="连接地址" hint="对方 MCP 服务的地址；改动后需要点「重连」才生效">
+        <FormField v-if="server.transport === 'stdio'" label="启动命令" hint="本地 MCP 进程的启动命令；改动后需要点「重连」才生效">
+          <input v-model="server.command" class="input-field font-mono" placeholder="node" />
+        </FormField>
+        <FormField v-else label="连接地址" hint="对方 MCP 服务的地址；改动后需要点「重连」才生效">
           <input v-model="server.url" class="input-field font-mono" placeholder="https://api.suno.com/mcp" />
         </FormField>
       </div>
