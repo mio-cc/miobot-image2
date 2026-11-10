@@ -24,11 +24,12 @@ import { detectComfyUiPromptNodeIds, inspectComfyUiWorkflow, validateComfyUiProf
 // 注：模块物理位置在 apps/bot/src（方案落点），web-api 经相对路径引用（monorepo 单 tsconfig 无包边界强制）。
 import {
   buildAuthorizationUrl,
-  discoverAuthorizationServers,
+  discoverProtectedResourceMetadata,
   exchangeCode,
   fetchAuthorizationServerMetadata,
   generatePkce,
   parseResourceMetadataUrl,
+  parseScopeFromWwwAuthenticate,
   registerClient,
 } from '../../../apps/bot/src/mcp-oauth.js';
 import { McpCredentialStore } from '../../../apps/bot/src/mcp-credential-store.js';
@@ -668,24 +669,37 @@ export class WebApi {
         }
         // 无凭据探测 MCP 端点：401 的 WWW-Authenticate → RFC 9728 资源元数据 → RFC 8414 AS 元数据。
         const probe = await fetch(String(server.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
-        const resourceMetadataUrl = parseResourceMetadataUrl(probe.headers.get('www-authenticate'));
+        const wwwAuthenticate = probe.headers.get('www-authenticate');
+        const resourceMetadataUrl = parseResourceMetadataUrl(wwwAuthenticate);
         if (!resourceMetadataUrl) {
           return json(400, { success: false, error: 'mcp_no_resource_metadata（服务器未声明 OAuth 资源元数据；若是免鉴权服务器请去掉 auth:"oauth" 配置）' });
         }
-        const servers = await discoverAuthorizationServers(resourceMetadataUrl);
-        const metadata = await fetchAuthorizationServerMetadata(servers[0]);
+        const challengeScope = parseScopeFromWwwAuthenticate(wwwAuthenticate);
+        const resourceMetadata = await discoverProtectedResourceMetadata(resourceMetadataUrl);
+        const metadata = await fetchAuthorizationServerMetadata(resourceMetadata.authorizationServers[0]);
         if (!metadata.registrationEndpoint) {
           return json(400, { success: false, error: 'mcp_dcr_unsupported（授权服务器不支持动态注册，需人工预注册 client_id）' });
         }
+        // scope 必须按每个资源服务器自己的 RFC 9728 元数据选择；不同 MCP 的 scope 名完全不同
+        // （Suno: api:v0/...，Box: boxes/connect），不能硬编码成某一个服务的清单。
+        const requestedScope = (
+          resourceMetadata.scopesSupported.join(' ')
+          || challengeScope
+          || (metadata.scopesSupported || []).join(' ')
+        ).trim();
         const redirectUri = `${panelOrigin(request)}/api/mcp/callback`;
         const store = mcpCredentialStore();
         const cachedClient = store.getClient(serverId);
-        // 复用已注册 client 的前提是 redirect_uri 完全一致：生产域名/反代变化后旧注册会
-        // 把回调打到错误地址（表现为授权完不回跳）。不一致就重新 DCR，拿到新 client。
-        const registered = cachedClient && cachedClient.redirectUri === redirectUri
+        // 复用已注册 client 的前提是 redirect_uri 和 DCR scope 都一致：
+        // scope 变更后旧 client 可能被服务端绑定到旧权限集，必须重新注册。
+        const registered = cachedClient && cachedClient.redirectUri === redirectUri && (cachedClient.scope || '') === requestedScope
           ? cachedClient
-          : await registerClient(metadata.registrationEndpoint, { clientName: `miobot-${serverId}`, redirectUris: [redirectUri] });
-        store.setClient(serverId, { clientId: registered.clientId, redirectUri });
+          : await registerClient(metadata.registrationEndpoint, {
+              clientName: `miobot-${serverId}`,
+              redirectUris: [redirectUri],
+              ...(requestedScope ? { scope: requestedScope } : {}),
+            });
+        store.setClient(serverId, { clientId: registered.clientId, redirectUri, ...(requestedScope ? { scope: requestedScope } : {}) });
         const pkce = generatePkce();
         const state = `mcpst-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         mcpOAuthPending.set(state, {
@@ -701,11 +715,7 @@ export class WebApi {
           authorizationEndpoint: metadata.authorizationEndpoint,
           clientId: registered.clientId,
           redirectUri,
-          // Suno MCP 资源元数据（RFC 9728）声明的完整 scope 集：任一工具调用都先校验 profile:read
-          // （仅 api:v0 会得到 insufficient_scope，实测 2026-11-08）；生成需 credits:spend，
-          // 库/下载/设置分别对应 library:read|search|write、download。刷新令牌无法扩权（invalid_scope），
-          // 改本清单后需重新授权一次。
-          scope: 'api:v0 offline_access profile:read credits:spend library:read library:search library:write download',
+          ...(requestedScope ? { scope: requestedScope } : {}),
           state,
           codeChallenge: pkce.challenge,
           resource: String(server.url),

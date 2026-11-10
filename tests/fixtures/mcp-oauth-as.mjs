@@ -13,7 +13,12 @@ function base64Url(buffer) {
   return buffer.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-export async function startMockAuthorizationServer() {
+export async function startMockAuthorizationServer(options = {}) {
+  const scopesSupported = Array.isArray(options.scopesSupported) && options.scopesSupported.length
+    ? options.scopesSupported.map(String)
+    : ['api:v0', 'offline_access'];
+  const challengeScope = typeof options.challengeScope === 'string' ? options.challengeScope : undefined;
+  const expectedScope = typeof options.expectedScope === 'string' ? options.expectedScope : undefined;
   const requests = [];
   const codeChallenges = new Map(); // code → challenge
   const refreshTokens = new Map();  // refreshToken → { valid: boolean }
@@ -27,7 +32,7 @@ export async function startMockAuthorizationServer() {
     if (req.method === 'GET' && url.pathname === '/mcp') {
       res.writeHead(401, {
         'content-type': 'application/json',
-        'www-authenticate': `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`,
+        'www-authenticate': `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"${challengeScope ? `, scope="${challengeScope}"` : ''}`,
       });
       res.end(JSON.stringify({ error: 'sign in to use this server' }));
       return;
@@ -38,7 +43,7 @@ export async function startMockAuthorizationServer() {
       req.on('end', () => {
         res.writeHead(401, {
           'content-type': 'application/json',
-          'www-authenticate': `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`,
+          'www-authenticate': `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"${challengeScope ? `, scope="${challengeScope}"` : ''}`,
         });
         res.end(JSON.stringify({ error: 'sign in to use this server' }));
       });
@@ -49,7 +54,7 @@ export async function startMockAuthorizationServer() {
       res.end(JSON.stringify({
         authorization_servers: [`${base}${issuerPath}`],
         resource: `${base}/mcp`,
-        scopes_supported: ['api:v0', 'offline_access'],
+        scopes_supported: scopesSupported,
       }));
       return;
     }
@@ -65,7 +70,7 @@ export async function startMockAuthorizationServer() {
         grant_types_supported: ['authorization_code', 'refresh_token'],
         code_challenge_methods_supported: ['S256'],
         token_endpoint_auth_methods_supported: ['none'],
-        scopes_supported: ['api:v0', 'offline_access'],
+        scopes_supported: scopesSupported,
       }));
       return;
     }
@@ -93,7 +98,7 @@ export async function startMockAuthorizationServer() {
           grant_types: ['authorization_code', 'refresh_token'],
           response_types: ['code'],
           token_endpoint_auth_method: 'none',
-          scope: 'api:v0 offline_access',
+          scope: scopesSupported.join(' '),
         }));
         return;
       }
@@ -105,6 +110,9 @@ export async function startMockAuthorizationServer() {
         }
         if (!q.redirect_uri || !q.state || !q.code_challenge || q.code_challenge_method !== 'S256' || !q.resource) {
           res.writeHead(400, { 'content-type': 'text/html' }); res.end('Missing required OAuth parameters'); return;
+        }
+        if (expectedScope !== undefined && q.scope !== expectedScope) {
+          res.writeHead(400, { 'content-type': 'text/html' }); res.end(`invalid_scope: expected ${expectedScope}, got ${q.scope || '(empty)'}`); return;
         }
         const code = `code-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         codeChallenges.set(code, q.code_challenge);
@@ -135,7 +143,7 @@ export async function startMockAuthorizationServer() {
           const refreshToken = `rt-${Date.now()}`;
           refreshTokens.set(refreshToken, { valid: true });
           res.writeHead(200, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ access_token: `at-${Date.now()}`, refresh_token: refreshToken, expires_in: 3600, scope: 'api:v0 offline_access', token_type: 'Bearer' }));
+          res.end(JSON.stringify({ access_token: `at-${Date.now()}`, refresh_token: refreshToken, expires_in: 3600, scope: scopesSupported.join(' '), token_type: 'Bearer' }));
           return;
         }
         if (q.grant_type === 'refresh_token') {
@@ -166,6 +174,7 @@ export async function startMockAuthorizationServer() {
   return {
     port,
     mcpUrl: `http://127.0.0.1:${port}/mcp`,
+    scopesSupported,
     requests,
     get registeredClientId() { return registeredClient?.clientId ?? null; },
     invalidateRefreshToken(token) { const entry = refreshTokens.get(token); if (entry) entry.valid = false; },

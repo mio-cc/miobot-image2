@@ -27,6 +27,8 @@ export interface McpStoredCredential {
 export interface McpStoredClient {
   clientId: string;
   redirectUri: string;
+  /** DCR 时声明的 scope；变更后必须重新注册，不能复用旧 client。 */
+  scope?: string;
 }
 
 interface McpCredentialFile {

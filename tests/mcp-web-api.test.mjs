@@ -46,6 +46,9 @@ test('mcp web-api: connect→callback 全链——授权 URL、code 交换、凭
     const { authorizationUrl, state } = connect.body;
     assert.ok(authorizationUrl.includes('/authorize/'), '授权 URL 指向 AS');
     assert.ok(state.startsWith('mcpst-'));
+    assert.equal(new URL(authorizationUrl).searchParams.get('scope'), 'api:v0 offline_access', 'scope 来自资源元数据');
+    const registerRequest = server.requests.find((request) => request.path.endsWith('/register/'));
+    assert.equal(registerRequest.body.scope, 'api:v0 offline_access', 'DCR 同步声明相同 scope');
 
     // 浏览器访问授权 URL：mock AS 校验参数后 302 回 redirect_uri?code&state。
     const authorizeResponse = await fetch(authorizationUrl, { redirect: 'manual' });
@@ -72,6 +75,40 @@ test('mcp web-api: connect→callback 全链——授权 URL、code 交换、凭
     const badCallback = await api.handle({ method: 'GET', path: `/api/mcp/callback?code=x&state=forged` });
     assert.equal(badCallback.status, 400);
     assert.ok(badCallback.body.error.includes('state_mismatch'));
+  } finally {
+    await server.close();
+  }
+});
+
+test('mcp web-api: Box OAuth uses boxes connect from resource metadata', async () => {
+  const server = await startMockAuthorizationServer({
+    scopesSupported: ['boxes', 'connect'],
+    challengeScope: 'boxes connect',
+    expectedScope: 'boxes connect',
+  });
+  try {
+    const api = createWebApi({
+      initialConfig: {
+        panel: { passwordSeed: SEED },
+        orchestration: {
+          mcpServers: [{
+            id: 'box',
+            enabled: true,
+            transport: 'http',
+            url: server.mcpUrl,
+            auth: 'oauth',
+          }],
+        },
+      },
+    });
+    const connect = await api.handle({ method: 'POST', path: '/api/mcp/connect', headers: authHeaders, body: { serverId: 'box' } });
+    assert.equal(connect.status, 200, JSON.stringify(connect.body));
+    const authorizationUrl = new URL(connect.body.authorizationUrl);
+    assert.equal(authorizationUrl.searchParams.get('scope'), 'boxes connect', '不能把 Suno 的 scope 发给 Box');
+    const registration = server.requests.find((request) => request.path.endsWith('/register/'));
+    assert.equal(registration.body.scope, 'boxes connect', 'Box DCR 声明 boxes connect');
+    const authorizeResponse = await fetch(authorizationUrl, { redirect: 'manual' });
+    assert.equal(authorizeResponse.status, 302, await authorizeResponse.text());
   } finally {
     await server.close();
   }

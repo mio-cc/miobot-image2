@@ -9,7 +9,9 @@ import path from 'node:path';
 
 import {
   parseResourceMetadataUrl,
+  parseScopeFromWwwAuthenticate,
   discoverAuthorizationServers,
+  discoverProtectedResourceMetadata,
   fetchAuthorizationServerMetadata,
   registerClient,
   generatePkce,
@@ -40,6 +42,26 @@ test('mcp oauth: 发现链——401 WWW-Authenticate → 资源元数据 → AS 
     assert.ok(metadata.registrationEndpoint?.includes('/register/'));
     assert.deepEqual(metadata.codeChallengeMethodsSupported, ['S256']);
     assert.ok(metadata.grantTypesSupported?.includes('refresh_token'));
+  } finally {
+    await server.close();
+  }
+});
+
+test('mcp oauth: scope comes from challenge/resource metadata', async () => {
+  assert.equal(parseScopeFromWwwAuthenticate('Bearer resource_metadata="https://x/meta", scope="boxes connect"'), 'boxes connect');
+  assert.equal(parseScopeFromWwwAuthenticate('Bearer resource_metadata="https://x/meta"'), undefined);
+
+  const server = await startMockAuthorizationServer({
+    scopesSupported: ['boxes', 'connect'],
+    challengeScope: 'boxes connect',
+  });
+  try {
+    const probe = await fetch(server.mcpUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    const metadataUrl = parseResourceMetadataUrl(probe.headers.get('www-authenticate'));
+    assert.ok(metadataUrl);
+    const metadata = await discoverProtectedResourceMetadata(metadataUrl);
+    assert.deepEqual(metadata.authorizationServers, [`http://127.0.0.1:${server.port}/api/v2/external/oauth`]);
+    assert.deepEqual(metadata.scopesSupported, ['boxes', 'connect']);
   } finally {
     await server.close();
   }

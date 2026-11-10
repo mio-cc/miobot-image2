@@ -16,6 +16,12 @@ export interface McpOAuthFetchOptions {
   timeoutMs?: number;
 }
 
+export interface McpProtectedResourceMetadata {
+  authorizationServers: string[];
+  scopesSupported: string[];
+  resource?: string;
+}
+
 export interface McpAuthorizationServerMetadata {
   issuer: string;
   authorizationEndpoint: string;
@@ -62,16 +68,36 @@ export function parseResourceMetadataUrl(wwwAuthenticate: string | null | undefi
   return match ? match[1] : undefined;
 }
 
-/** 取资源元数据（RFC 9728）：返回 authorization_servers 列表。 */
-export async function discoverAuthorizationServers(resourceMetadataUrl: string, options: McpOAuthFetchOptions = {}): Promise<string[]> {
+/** Parse the scope parameter from a Bearer challenge (RFC 6750 / RFC 9728). */
+export function parseScopeFromWwwAuthenticate(wwwAuthenticate: string | null | undefined): string | undefined {
+  const raw = String(wwwAuthenticate || '');
+  const quoted = raw.match(/scope="([^"]*)"/i);
+  if (quoted) return quoted[1].trim() || undefined;
+  const unquoted = raw.match(/scope=([^,\s]+)/i);
+  return unquoted ? unquoted[1].trim() || undefined : undefined;
+}
+
+/** Fetch protected resource metadata (RFC 9728): authorization servers and declared scopes. */
+export async function discoverProtectedResourceMetadata(resourceMetadataUrl: string, options: McpOAuthFetchOptions = {}): Promise<McpProtectedResourceMetadata> {
   const response = await resolveFetch(options)(resourceMetadataUrl, { signal: AbortSignal.timeout(timeoutMs(options)) });
   if (!response.ok) throw new Error(`mcp_oauth_resource_metadata_${response.status}`);
-  const metadata = await response.json() as { authorization_servers?: unknown };
+  const metadata = await response.json() as Record<string, unknown>;
   const servers = Array.isArray(metadata?.authorization_servers)
     ? metadata.authorization_servers.map(String).filter(Boolean)
     : [];
   if (!servers.length) throw new Error('mcp_oauth_no_authorization_server');
-  return servers;
+  return {
+    authorizationServers: servers,
+    scopesSupported: Array.isArray(metadata?.scopes_supported)
+      ? metadata.scopes_supported.map(String).map((item) => item.trim()).filter(Boolean)
+      : [],
+    ...(typeof metadata?.resource === 'string' ? { resource: metadata.resource } : {}),
+  };
+}
+
+/** Backward-compatible helper: only returns authorization_servers. */
+export async function discoverAuthorizationServers(resourceMetadataUrl: string, options: McpOAuthFetchOptions = {}): Promise<string[]> {
+  return (await discoverProtectedResourceMetadata(resourceMetadataUrl, options)).authorizationServers;
 }
 
 /** 取 AS 元数据（RFC 8414）：先试规范位置（issuer 路径中插），失败再试 issuer 后缀位置。 */
