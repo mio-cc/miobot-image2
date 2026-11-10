@@ -314,6 +314,27 @@ export class ModelBindingSwitchCapabilityHandler implements CapabilityHandler {
   }
 }
 
+/** Keep MCP roots visible even when the catalog is truncated to 40 lines. */
+export function prioritizeMcpCatalogDescriptors<T extends { id: string }>(descriptors: T[]): T[] {
+  return [...descriptors].sort((left, right) => {
+    const rank = (item: T) => String(item.id || '').startsWith('mcp.') ? 0 : 1;
+    return rank(left) - rank(right);
+  });
+}
+
+/** Catalog output is bounded by characters, not an arbitrary line count. */
+export function fitCatalogLines(lines: string[], maxChars = 12_000): { lines: string[]; omitted: number; usedChars: number } {
+  const kept: string[] = [];
+  let usedChars = 0;
+  for (const line of lines) {
+    const extra = line.length + (kept.length ? 1 : 0);
+    if (usedChars + extra > maxChars) break;
+    kept.push(line);
+    usedChars += extra;
+  }
+  return { lines: kept, omitted: Math.max(0, lines.length - kept.length), usedChars };
+}
+
 /**
  * P0 装配修复：capability.catalog 的目录过滤——只列"装配链完整且对当前上下文可见"的能力，
  * 杜绝"目录里有、工具里没有"的脱节（模型实证 2026-11-03：目录登记了 model.catalog.list /

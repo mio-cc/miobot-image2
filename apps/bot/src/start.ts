@@ -56,7 +56,7 @@ import { RuntimeAdapterCapabilityHandler, executionFromBotResult } from './capab
 import { ImageStitchCapabilityHandler } from './capability-image.js';
 import { CanvasGalleryCapabilityHandler } from './capability-canvas.js';
 // P0 装配修复：owner.model.list 执行体（isOwner 纵深防御）+ capability.catalog 目录过滤纯函数。
-import { OwnerModelListCapabilityHandler, ModelBindingSwitchCapabilityHandler, filterCatalogDescriptors } from './capability-basic.js';
+import { OwnerModelListCapabilityHandler, ModelBindingSwitchCapabilityHandler, filterCatalogDescriptors, fitCatalogLines, prioritizeMcpCatalogDescriptors } from './capability-basic.js';
 import { isOwner } from './owner.js';
 // P1 7a/7b：模型绑定同源服务（/切换 命令与 model.binding.switch 工具共用）。
 import { createModelBindingService, MODEL_BINDING_PURPOSES } from './model-binding.js';
@@ -1007,6 +1007,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     const keyword = String(args.keyword || '').trim().toLowerCase();
     const category = String(args.category || '').trim();
     const CATEGORY_PATTERNS: Array<[string, RegExp]> = [
+      ['MCP', /^mcp\./],
       ['生成', /^(image|video|audio|code|report)/],
       ['解析', /^(file|memory|ocr|interrogate)/],
       ['信息', /^(web|search|render|browser)/],
@@ -1037,6 +1038,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       descriptors = descriptors.filter((d) =>
         `${d.id} ${d.name} ${d.description || ''}`.toLowerCase().includes(keyword));
     }
+    // MCP roots are appended after built-ins/plugins. Put them first before any budget cut.
+    descriptors = prioritizeMcpCatalogDescriptors(descriptors);
     // P2-MCP（D19）：子项命中渲染为「根工具 → 子项」并给出精确 action 名（≤10 行，防膨胀）。
     const mcpLines = keyword
       ? mcpSearchIndex()
@@ -1044,7 +1047,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         .slice(0, 10)
         .map((entry) => `- ${entry.rootId} → ${entry.childName}${entry.displayName ? `（${entry.displayName}）` : ''}：${entry.summary}｜调用 ${entry.rootId} 并传 action=${entry.childName}`)
       : [];
-    const lines = descriptors.slice(0, 40).map((d) => {
+    const renderedLines = descriptors.map((d) => {
       // enabled 语义与 loadout 同源（实测障碍 #1 修复，2026-11-07）：目录读 descriptor 的有效值
       // （内置=覆盖后默认；MCP 根=覆盖 ?? false 默认 deny），不再读原始 override——否则默认 deny 的
       // MCP 根在目录里不带「已停用」标记，模型会看到「目录有、工具无」的矛盾。
@@ -1054,8 +1057,14 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
       const known = DEDICATED_CAP_PAGES.has(String(d.id));
       return `- ${d.id}（${d.name}）：${String(d.description || '').slice(0, 80)}${d.presentationHint ? '【展示方式推荐：' + d.presentationHint + '】' : ''}${known ? '［有专属配置页］' : ''}${flowMarker}${enabled ? '' : '［已停用］'}`;
     });
+    // 当前 66 项能力全文约 4.3k 字符，远低于 12k 预算；不再按固定 40 行硬截断。
+    const fitted = fitCatalogLines(renderedLines);
+    const lines = fitted.lines;
+    const omittedHint = fitted.omitted
+      ? `\n（目录较长：当前显示 ${lines.length}/${descriptors.length} 项，另有 ${fitted.omitted} 项未显示；请用 keyword 或 category 缩小检索范围。）`
+      : '';
     const text = lines.length || mcpLines.length
-      ? `可用能力目录（${descriptors.length} 项${mcpLines.length ? `，另含 ${mcpLines.length} 个 MCP 子操作` : ''}）：\n${[...lines, ...mcpLines].join('\n')}`
+      ? `可用能力目录（${descriptors.length} 项${mcpLines.length ? `，另含 ${mcpLines.length} 个 MCP 子操作` : ''}）：\n${[...lines, ...mcpLines].join('\n')}${omittedHint}`
       : '没有匹配的能力。';
     return {
       jobId: invocation.plan.planId, stepId: invocation.step.id, status: 'success',

@@ -97,7 +97,12 @@ export const useCapabilityStore = defineStore('capabilities', () => {
                 return;
             }
             registryEtag.value = String(res.headers?.etag || '');
-            registry.value = res.data.capabilities || [];
+            // MCP roots are appended by the API. Pin them to the front so 18-card pagination cannot hide them.
+            registry.value = [...(Array.isArray(res.data.capabilities) ? res.data.capabilities : [])]
+                .sort((a: any, b: any) => {
+                    const rank = (item: any) => String(item?.id || '').startsWith('mcp.') ? 0 : 1;
+                    return rank(a) - rank(b);
+                });
             registryFetchedAt.value = Date.now();
         } catch (e: any) {
             registryError.value = e?.response?.data?.error || e?.message || '读取能力注册表失败';
