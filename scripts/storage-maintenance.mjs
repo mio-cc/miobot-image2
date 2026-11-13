@@ -46,7 +46,7 @@ const BOOL_OPTIONS = {
   '--include-logs': 'includeLogs',
   '--help': 'help',
 };
-const COMMANDS = new Set(['scan', 'clean', 'journal', 'help']);
+const COMMANDS = new Set(['scan', 'clean', 'memory', 'journal', 'help']);
 
 export function parseArgs(argv = process.argv.slice(2)) {
   const options = { command: 'scan', apply: false, yes: false, json: false, includeGenerated: false, includeLogs: false, help: false, top: DEFAULTS.top, backupDays: DEFAULTS.backupDays, tempDays: DEFAULTS.tempDays, retentionBackupDays: DEFAULTS.retentionBackupDays, capabilityBackupDays: DEFAULTS.capabilityBackupDays, generatedDays: DEFAULTS.generatedDays, logDays: DEFAULTS.logDays, journalDays: DEFAULTS.journalDays };
@@ -173,7 +173,7 @@ export function parseFindOutput(output) {
 function findFiles(directory, opts = {}) {
   if (!fs.existsSync(directory)) return [];
   const args = [directory, "-xdev", "-type", "f"];
-  if (opts.olderThanDays > 0) args.push("-mtime", "+" + Math.max(0, Number(opts.olderThanDays) || 0));
+  if (opts.olderThanDays > 0) args.push("-mmin", "+" + Math.max(1, Math.round(Number(opts.olderThanDays) * 1440) - 1));
   if (opts.name) args.push("-name", opts.name);
   args.push("-printf", "%T@\\t%s\\t%p\\n");
   return parseFindOutput(run("find", args, { allowFailure: true }));
@@ -371,12 +371,13 @@ export async function applyCleanup(plan) {
 }
 
 function printHelp() {
-  console.log("Usage: node scripts/storage-maintenance.mjs <scan|clean|journal> [options]");
+  console.log("Usage: node scripts/storage-maintenance.mjs <scan|clean|memory|journal> [options]");
   console.log("");
   console.log("Commands:");
   console.log("  scan      show disk, top-level dirs, largest files, memory/retention and backup state (default)");
   console.log("  clean     build a cleanup plan; dry-run unless --apply is provided");
   console.log("  journal   show journald usage; vacuum only with --apply");
+  console.log("  memory    show memory retention state; queue a real retention cleanup with --apply");
   console.log("");
   console.log("Options:");
   console.log("  --data-dir PATH            default /var/lib/miobot-v2 (or DATA_DIR from /etc/miobot-v2.env)");
@@ -415,6 +416,60 @@ async function runJournal(options, paths) {
   return { applied: true, before, after, vacuumDays: options.journalDays, output };
 }
 
+function memoryActionPaths(paths) {
+  const envFile = readEnvFile();
+  return {
+    actionFile: process.env.MIOBOT_MEMORY_ACTION_FILE || envFile.MIOBOT_MEMORY_ACTION_FILE || path.join(paths.runtimeDir, 'orchestration-memory-actions.jsonl'),
+    resultFile: process.env.MIOBOT_MEMORY_RESULT_FILE || envFile.MIOBOT_MEMORY_RESULT_FILE || path.join(paths.runtimeDir, 'orchestration-memory-results.json'),
+  };
+}
+
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+export async function runMemory(options, paths) {
+  const actionPaths = memoryActionPaths(paths);
+  const state = retentionState(paths.memoryDir);
+  const directory = directorySummary(paths.memoryDir);
+  if (!options.apply) {
+    const result = { dryRun: true, retention: state, directory, actionFile: actionPaths.actionFile, resultFile: actionPaths.resultFile };
+    if (!options.json) {
+      console.log('Miobot memory retention');
+      console.log('memory: ' + paths.memoryDir);
+      console.log('files: ' + directory.files + ', bytes: ' + formatBytes(directory.bytes));
+      console.log('retention-state: ' + (state ? JSON.stringify(state) : 'missing'));
+      console.log('action-file: ' + actionPaths.actionFile);
+      console.log('No action queued. Re-run: memory --apply --yes');
+    }
+    return result;
+  }
+  if (process.platform !== 'linux') throw new Error('memory --apply is supported on Linux only');
+  if (typeof process.getuid === 'function' && process.getuid() !== 0) throw new Error('memory --apply must run as root');
+  if (!options.yes) {
+    const ok = await confirmDelete();
+    if (!ok) return { canceled: true, retention: state, directory };
+  }
+  const id = 'mem_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  const action = { id, type: 'retention_now', dryRun: false, createdAt: new Date().toISOString() };
+  fs.mkdirSync(path.dirname(actionPaths.actionFile), { recursive: true });
+  fs.appendFileSync(actionPaths.actionFile, JSON.stringify(action) + '\n', 'utf8');
+  let result;
+  for (let i = 0; i < 120; i += 1) {
+    await sleep(1000);
+    try {
+      const parsed = JSON.parse(fs.readFileSync(actionPaths.resultFile, 'utf8'));
+      result = (Array.isArray(parsed.results) ? parsed.results : []).find((item) => String(item.id || '') === id);
+    } catch {}
+    if (result) break;
+  }
+  const out = { queued: true, actionId: id, retentionBefore: state, result: result || undefined, retentionAfter: retentionState(paths.memoryDir), directoryAfter: directorySummary(paths.memoryDir), actionFile: actionPaths.actionFile, resultFile: actionPaths.resultFile };
+  if (!options.json) {
+    console.log('memory retention action queued: ' + id);
+    console.log(result ? 'result: ' + JSON.stringify(result) : 'result: pending (timeout)');
+    console.log('retention-state: ' + (out.retentionAfter ? JSON.stringify(out.retentionAfter) : 'missing'));
+    console.log('memory after: ' + formatBytes(out.directoryAfter.bytes));
+  }
+  return out;
+}
 export async function main(argv = process.argv.slice(2)) {
   let options;
   try { options = parseArgs(argv); } catch (error) { console.error(String(error.message || error)); printHelp(); process.exitCode = 2; return; }
@@ -434,6 +489,11 @@ export async function main(argv = process.argv.slice(2)) {
     const result = await applyCleanup(plan);
     if (options.json) console.log(JSON.stringify({ plan, result }, null, 2)); else { printCleanupPlan(plan); console.log(""); console.log("removed=" + result.removed + " failed=" + result.failed + " bytes=" + formatBytes(result.removedBytes)); }
     if (result.failed) process.exitCode = 1;
+    return;
+  }
+  if (options.command === "memory") {
+    const result = await runMemory(options, paths);
+    if (options.json) console.log(JSON.stringify(result, null, 2));
     return;
   }
   if (options.command === "journal") {

@@ -21,6 +21,8 @@ sudo node scripts/storage-maintenance.mjs scan
 
 默认路径会自动读取 `/etc/miobot-v2.env` 中的 `DATA_DIR`、`MIOBOT_RUNTIME_DIR`、`LOG_DIR`，也可以用参数覆盖。
 
+生产环境部署脚本会把应用时区固定为 `TZ=Asia/Shanghai`；记忆保留的日桶也显式按 Asia/Shanghai 计算，不依赖服务器本地时区。
+
 ## 扫描
 
 ```bash
@@ -92,6 +94,22 @@ sudo bash scripts/storage-maintenance.sh clean --include-generated --apply --yes
 sudo bash scripts/storage-maintenance.sh clean --include-logs
 sudo bash scripts/storage-maintenance.sh clean --include-logs --apply --yes
 ```
+
+## 记忆保留清理
+
+查看记忆目录和 retention 状态：
+
+```bash
+sudo bash scripts/storage-maintenance.sh memory
+```
+
+实际触发一次记忆保留清理：
+
+```bash
+sudo bash scripts/storage-maintenance.sh memory --apply --yes
+```
+
+脚本会向 `orchestration-memory-actions.jsonl` 投递 `retention_now`，等待结果并打印 `retention-state.json`。这需要 `miobot-v2` 服务正在运行。实际清理会自动备份被删文档，dry-run 不会写 retention 状态。
 
 ## journald
 

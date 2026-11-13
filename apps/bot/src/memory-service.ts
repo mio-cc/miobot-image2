@@ -1,4 +1,4 @@
-﻿import { createHash } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { promises as fs, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { count, create, insert, remove, search, type AnyOrama } from '@orama/orama';
@@ -7,6 +7,23 @@ import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 import { withPurposeFallback, type ModelFallbackController } from './model-fallback.js';
 
+const MEMORY_TIME_ZONE = process.env.MIOBOT_MEMORY_TIMEZONE || 'Asia/Shanghai';
+
+export function memoryDayKey(value: string | number | Date): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: MEMORY_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const part = (type: string) => parts.find((item) => item.type === type)?.value || '';
+  const year = part('year');
+  const month = part('month');
+  const day = part('day');
+  return year && month && day ? year + '-' + month + '-' + day : date.toISOString().slice(0, 10);
+}
 export interface EmbeddingProvider {
   readonly model: string;
   readonly dimensions: number;
@@ -811,7 +828,7 @@ export class ChatMemoryService {
     if (!input.dryRun && !input.force && !this.shouldRunRetention(now, state)) return { ...base, reason: 'not_due' };
     const retentionDays = Math.max(1, memory.retentionDays);
     const floor = new Date(now - (retentionDays - 1) * 24 * 60 * 60 * 1000);
-    const cutoffDay = `${floor.getFullYear()}-${String(floor.getMonth() + 1).padStart(2, '0')}-${String(floor.getDate()).padStart(2, '0')}`;
+    const cutoffDay = memoryDayKey(floor);
     const manifest = await this.loadManifest();
     const keys = [...new Set<string>([...Object.keys(manifest), ...this.dbs.keys()])];
     const staleDocs: MemoryDocument[] = [];
@@ -823,7 +840,7 @@ export class ChatMemoryService {
       try { result = await search(db, { term: '', limit: 10000 } as any); } catch { continue; }
       const stale = (result.hits as any[])
         .map((hit) => hit.document as MemoryDocument)
-        .filter((doc) => String(doc.createdAt || '').slice(0, 10) < cutoffDay);
+        .filter((doc) => memoryDayKey(doc.createdAt) < cutoffDay);
       if (!stale.length) continue;
       namespaces += 1;
       if (input.dryRun) { staleDocs.push(...stale); continue; }

@@ -736,6 +736,7 @@ write_env_file() {
   log "写入环境文件：$ENV_FILE"
   cat > "$ENV_FILE" <<EOF
 NODE_ENV=production
+TZ=Asia/Shanghai
 MIOBOT_HOST=${env_host}
 MIOBOT_PORT=${env_port}
 MIOBOT_VERIFY_PORT=${env_port}
