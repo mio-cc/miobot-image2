@@ -279,7 +279,9 @@ export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConf
     // 直接 String(b.token || ...) 会把 abc••••••••wxyz 当成真 token 发给 NapCat。
     const submittedToken = String(b.token || '').trim();
     const token = (submittedToken && !isMasked(submittedToken) ? submittedToken : String(cfg.napcat.token || '').trim()) || undefined;
-    if (!wsUrl) return fail(400, '请填写 Napcat WebSocket 地址。');
+    const backend = (String(b.backend || (cfg.napcat as { backend?: string }).backend || 'napcat').toLowerCase() === 'miohh') ? 'miohh' : 'napcat';
+    const backendLabel = backend === 'miohh' ? 'miohh' : 'NapCat';
+    if (!wsUrl) return fail(400, `请填写 ${backendLabel} WebSocket 地址。`);
     const adapter = new NapcatAdapter({ wsUrl, token, autoReconnect: false, actionTimeoutMs: 8000 });
     const startedAt = Date.now();
     try {
@@ -304,7 +306,7 @@ export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConf
 
       return ok({
         success: true,
-        message: selfQqId ? `已连接 NapCat，登录账号 ${nickname || selfQqId}。` : '已连接 NapCat（未取到账号信息）。',
+        message: selfQqId ? `已连接 ${backendLabel}，登录账号 ${nickname || selfQqId}。` : `已连接 ${backendLabel}（未取到账号信息）。`,
         latencyMs: Date.now() - startedAt,
         selfQqId,
         nickname,

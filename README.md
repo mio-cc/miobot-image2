@@ -343,3 +343,31 @@ bash deploy-linux.sh git-update
 - 画布前端二次开发来源：[CookSleep/gpt_image_playground](https://github.com/CookSleep/gpt_image_playground)
 - 上游许可证：MIT License（请以该上游仓库当前许可证文件为准）
 - 本项目包含对上游画布能力的集成与二次开发，以及 Miobot / Napcat 相关后台、Bot runtime 与部署脚本。
+
+## 接入 miohh（OneBot v11）
+
+miobot 的 OneBot 适配层现在支持 `miohh` 后端（与 NapCat 同协议，复用同一适配器实现）：
+
+```json
+{
+  "napcat": {
+    "backend": "miohh",
+    "wsUrl": "ws://127.0.0.1:3001",
+    "token": "<miohh OneBot WS accessToken>",
+    "mountOutputDir": "/var/lib/miobot/out",
+    "mountOutputContainerDir": "/var/lib/miobot/out"
+  }
+}
+```
+
+或使用环境变量：
+
+```bash
+MIOBOT_ONEBOT_BACKEND=miohh
+MIOBOT_ONEBOT_WS_URL=ws://127.0.0.1:3001
+MIOBOT_ONEBOT_TOKEN=<ws accessToken>
+```
+
+- `backend=miohh`：miobot 与 miohh 同机部署，图片/语音/文件走宿主路径直传；
+- `backend=napcat`（默认）：保持 NapCat 容器目录映射语义；
+- token 来源与详细验收：见 [docs/MIOHH-ADAPTER.md](docs/MIOHH-ADAPTER.md)。

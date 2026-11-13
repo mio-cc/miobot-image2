@@ -553,6 +553,8 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     // 由 bot 进程读回并转 base64 重发一次，消息不丢）。
     resolveLocalFile: (uri) => {
       const current = getConfig().napcat;
+      // miohh：与 bot 同机运行，直接使用宿主路径，不做容器目录映射。
+      if ((current.backend || 'napcat') === 'miohh') return null;
       const container = String(current.mountOutputContainerDir || '').replace(/\/+$/, '');
       const hostDir = String(current.mountOutputDir || '').replace(/\/+$/, '');
       if (!container || !hostDir || !uri.startsWith('file://' + container + '/')) return null;
@@ -561,6 +563,10 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     logger,
   });
 
+  logger.info('OneBot 适配器初始化', {
+    backend: (nap.backend || 'napcat'),
+    wsUrl: nap.wsUrl,
+  });
   const resolveLocalImageReference = createNapcatImageReferenceResolver({
     // 超时跟随后台「通用 action」配置（此前被硬顶 30s，配置调大不生效）。
     callGetImage: (file) => adapter.callAction<NonNullable<NapcatGetImageResponse['data']>>('get_image', { file }, getConfig().napcat.actionTimeoutMs),
@@ -1996,21 +2002,20 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     compressImages: createOutboundImageCompressor({ getConfig, uploadFile: uploadGeneratedFile, logger }),
     materializeImages: async (images) => {
       const napcat = getConfig().napcat;
-      if (!napcat.mountOutputDir || !napcat.mountOutputContainerDir) return images;
-      return materializeImagesForNapcat(images, {
-        hostDir: napcat.mountOutputDir,
-        containerDir: napcat.mountOutputContainerDir,
-        logger,
-      });
+      const backend = napcat.backend === 'miohh' ? 'miohh' : 'napcat';
+      const hostDir = String(napcat.mountOutputDir || '').replace(/\/+$/, '');
+      // miohh 与 bot 同机：容器目录即宿主目录（runtime 直接读宿主路径）。
+      const containerDir = backend === 'miohh' ? hostDir : String(napcat.mountOutputContainerDir || '').replace(/\/+$/, '');
+      if (!hostDir || !containerDir) return images;
+      return materializeImagesForNapcat(images, { hostDir, containerDir, logger });
     },
     materializeAudio: async (audios) => {
       const napcat = getConfig().napcat;
-      if (!napcat.mountOutputDir || !napcat.mountOutputContainerDir) return audios;
-      return materializeAudioForNapcat(audios, {
-        hostDir: napcat.mountOutputDir,
-        containerDir: napcat.mountOutputContainerDir,
-        logger,
-      });
+      const backend = napcat.backend === 'miohh' ? 'miohh' : 'napcat';
+      const hostDir = String(napcat.mountOutputDir || '').replace(/\/+$/, '');
+      const containerDir = backend === 'miohh' ? hostDir : String(napcat.mountOutputContainerDir || '').replace(/\/+$/, '');
+      if (!hostDir || !containerDir) return audios;
+      return materializeAudioForNapcat(audios, { hostDir, containerDir, logger });
     },
     // Suno 歌曲：下载解密为本地 mp3 走文件发送；失败返回 null，发送链路自动降级分享链接。
     downloadSunoAudio: async ({ clipId, title }) => {
@@ -2021,12 +2026,15 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
           logger,
         });
         const name = path.basename(result.filePath);
-        if (napcat.mountOutputDir && napcat.mountOutputContainerDir) {
+        const backend = napcat.backend === 'miohh' ? 'miohh' : 'napcat';
+        const sunoHostRoot = String(napcat.mountOutputDir || '').replace(/\/+$/, '');
+        const sunoContainerRoot = backend === 'miohh' ? sunoHostRoot : String(napcat.mountOutputContainerDir || '').replace(/\/+$/, '');
+        if (sunoHostRoot && sunoContainerRoot) {
           try {
-            const hostDir = path.join(napcat.mountOutputDir, 'suno-audio');
+            const hostDir = path.join(sunoHostRoot, 'suno-audio');
             await fs.mkdir(hostDir, { recursive: true });
             await fs.copyFile(result.filePath, path.join(hostDir, name));
-            const containerDir = String(napcat.mountOutputContainerDir).replace(/\/+$/, '');
+            const containerDir = sunoContainerRoot;
             return { fileRef: `file://${containerDir}/suno-audio/${name}`, name };
           } catch (error) {
             logger.warn('Suno mp3 写入 Napcat 共享目录失败，改用本地路径', {
@@ -2092,10 +2100,13 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         // 省 99KB base64 的 WS 上行（实测 4.6s）；失败回退 base64 原样发送。
         try {
           const napcat = getConfig().napcat;
-          if (audio.file && napcat.mountOutputDir && napcat.mountOutputContainerDir) {
+          const backend = napcat.backend === 'miohh' ? 'miohh' : 'napcat';
+          const hostDir = String(napcat.mountOutputDir || '').replace(/\/+$/, '');
+          const containerDir = backend === 'miohh' ? hostDir : String(napcat.mountOutputContainerDir || '').replace(/\/+$/, '');
+          if (audio.file && hostDir && containerDir) {
             const [materialized] = await materializeAudioForNapcat([audio.file], {
-              hostDir: napcat.mountOutputDir,
-              containerDir: napcat.mountOutputContainerDir,
+              hostDir,
+              containerDir,
               logger,
             });
             return materialized || audio.file;

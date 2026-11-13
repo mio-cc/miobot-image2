@@ -14,6 +14,12 @@ const friendRequestModeOptions = [
     { value: 'notify', label: 'notify 私聊通知 owner' },
 ];
 
+/* OneBot 后端选择：NapCat（容器/共享目录语义）或 miohh（同机宿主路径语义）。 */
+const onebotBackendOptions = [
+    { value: 'napcat', label: 'NapCat' },
+    { value: 'miohh', label: 'miohh' },
+];
+
 /**
  * 接入与准入页（用户层）。
  * NapCat 连接（自系统设置迁入）+ 身份与人员（owner/审批管理员合一双写）+
@@ -47,6 +53,7 @@ async function testNapcat() {
         // 不发的话后端会回落到磁盘上的旧 token——刚粘上的新 token 根本测不到。
         const typedToken = String(config.value.napcat.token || '');
         const res = await client.post('/test-napcat', {
+            backend: config.value.napcat.backend || 'napcat',
             wsUrl: config.value.napcat.wsUrl,
             ...(typedToken.includes('••••') ? {} : { token: typedToken }),
         });
@@ -126,18 +133,21 @@ const DEFAULT_POKE_REPLIES = ['戳我干嘛呀', '别戳啦，在的呢', '收�
     <header class="mb-4">
       <h1 class="page-title mb-0.5">接入与准入</h1>
       <p class="text-[color:var(--ink-3)] text-xs">
-        用户层：NapCat 连接、人员与角色、触发方式（含事件源）、名单与全局限流。
+        用户层：OneBot 连接（NapCat / miohh）、人员与角色、触发方式（含事件源）、名单与全局限流。
       </p>
     </header>
 
-    <SectionCard title="NapCat 连接" class="mb-4">
+    <SectionCard title="OneBot 连接（NapCat / miohh）" class="mb-4">
       <template #actions>
         <button class="btn-outline text-xs" :disabled="napcatTesting" @click="testNapcat">
           {{ napcatTesting ? '测试中...' : '测试连接' }}
         </button>
       </template>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <FormField label="WebSocket 地址" hint="NapCat 的正向 WebSocket 服务端口">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <FormField label="接入后端" hint="NapCat：容器共享目录语义；miohh：与 bot 同机、宿主路径直传">
+          <AppSelect v-model="config.napcat.backend" :options="onebotBackendOptions" />
+        </FormField>
+        <FormField label="WebSocket 地址" :hint="(config.napcat.backend || 'napcat') === 'miohh' ? 'miohh 默认 ws://127.0.0.1:3001' : 'NapCat 的正向 WebSocket 服务端口'">
           <input v-model="config.napcat.wsUrl" class="input-field font-mono" placeholder="ws://127.0.0.1:3001" />
         </FormField>
         <FormField label="Token" hint="留着打码值表示不修改">
@@ -170,6 +180,15 @@ const DEFAULT_POKE_REPLIES = ['戳我干嘛呀', '别戳啦，在的呢', '收�
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
         <FormField label="文件发送重试次数"><input v-model.number="config.napcat.fileSendRetryCount" type="number" min="0" max="10" class="input-field" /></FormField>
         <FormField label="文件重试间隔 (ms)"><input v-model.number="config.napcat.fileSendRetryDelayMs" type="number" min="0" step="200" class="input-field" /></FormField>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
+        <FormField label="文件落盘目录（宿主）" hint="出站图片/语音/文件写入此目录；留空则走 base64">
+          <input v-model="config.napcat.mountOutputDir" class="input-field font-mono" placeholder="/var/lib/miobot/out" />
+        </FormField>
+        <FormField label="容器内可见目录" hint="NapCat 容器路径；miohh 同机时填与上一行相同的路径">
+          <input v-model="config.napcat.mountOutputContainerDir" class="input-field font-mono" placeholder="miohh 同机时与宿主目录相同" />
+        </FormField>
       </div>
 
       <p class="text-[color:var(--ink-3)] text-[11px] mt-3 leading-relaxed">
