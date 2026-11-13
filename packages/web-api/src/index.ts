@@ -989,8 +989,9 @@ export class WebApi {
       }
       if (method === 'POST' && path === '/api/orchestration/memory/actions') {
         const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
-        const type = String(body.type || '').trim();
-        if (!['list', 'search', 'clear_group', 'clear_user', 'prune'].includes(type)) return json(400, { success: false, error: 'memory_action_invalid' });
+        const requestedType = String(body.type || '').trim();
+        const type = requestedType === 'prune' ? 'retention_now' : requestedType;
+        if (!['list', 'search', 'clear_group', 'clear_user', 'retention_now', 'observer_stats'].includes(type)) return json(400, { success: false, error: 'memory_action_invalid' });
         const actionFile = process.env.MIOBOT_MEMORY_ACTION_FILE || nodePath.join(miobotDataDir(), 'orchestration-memory-actions.jsonl');
         const actionId = `mem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         await fs.mkdir(nodePath.dirname(actionFile), { recursive: true });
@@ -1002,6 +1003,7 @@ export class WebApi {
           groupId: body.groupId === undefined ? undefined : String(body.groupId),
           userId: body.userId === undefined ? undefined : String(body.userId),
           query: body.query === undefined ? undefined : String(body.query),
+          dryRun: body.dryRun === true ? true : undefined,
           createdAt: new Date().toISOString(),
         }) + '\n', 'utf8');
         return ok({ success: true, queued: true, actionId, status: 'queued' });
