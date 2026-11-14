@@ -682,13 +682,13 @@ export class WebApi {
         if (!metadata.registrationEndpoint) {
           return json(400, { success: false, error: 'mcp_dcr_unsupported（授权服务器不支持动态注册，需人工预注册 client_id）' });
         }
-        // scope 不能只取 RFC 9728 资源元数据：Suno 只在 AS metadata 中声明部分
-        // write scope，单取资源元数据会得到只读/不完整授权。取并集，但仍以当前
-        // 资源的 metadata/challenge 为主，不跨服务器硬编码 scope 名。
-        const requestedScope = mergeOAuthScopes(
-          resourceMetadata.scopesSupported,
-          challengeScope,
-          metadata.scopesSupported,
+        // RFC 9728 的 resource scopes 是这个 MCP resource 实际接受的 scope 集。
+        // AS metadata 会列出其他客户端/资源可用的 scope（Suno 的 profile:write/create:*
+        // 就是典型），把它们一并请求会让 Suno 直接返回 invalid_scope。因此只合并
+        // resource + challenge；只有 resource 没声明 scope 时才回退 AS。
+        const requestedScope = (
+          mergeOAuthScopes(resourceMetadata.scopesSupported, challengeScope)
+          || mergeOAuthScopes(metadata.scopesSupported)
         );
         const redirectUri = `${panelOrigin(request)}/api/mcp/callback`;
         const store = mcpCredentialStore();

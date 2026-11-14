@@ -68,10 +68,10 @@ test('mcp oauth: scope comes from challenge/resource metadata', async () => {
   }
 });
 
-test('mcp oauth: scope union includes AS-only write scopes without duplicates', () => {
+test('mcp oauth: scope merge deduplicates resource/challenge scopes', () => {
   assert.equal(
-    mergeOAuthScopes(['api:v0', 'library:read'], 'api:v0 profile:read', ['library:read', 'library:write', 'profile:write', 'studio:write']),
-    'api:v0 library:read profile:read library:write profile:write studio:write',
+    mergeOAuthScopes(['api:v0', 'library:read'], 'api:v0 profile:read library:read'),
+    'api:v0 library:read profile:read',
   );
   assert.equal(mergeOAuthScopes(undefined, null, ''), '');
 });
