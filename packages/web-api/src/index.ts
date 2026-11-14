@@ -987,7 +987,49 @@ export class WebApi {
         } catch { approvals = []; }
         return ok({ success: true, approvals });
       }
-      if (method === 'GET' && path === '/api/orchestration/memory/backend') {
+      if (method === 'POST' && path === '/api/orchestration/memory/backend') {
+        const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
+        const backend = String(body.backend || 'orama').trim().toLowerCase();
+        if (!['orama', 'qdrant'].includes(backend)) return json(400, { success: false, error: 'memory_backend_invalid' });
+        const qdrantUrl = String(body.qdrantUrl || '').trim().replace(/\/+$/, '');
+        const collection = String(body.collection || 'miobot_memory').trim();
+        const incomingKey = String(body.apiKey || '').trim();
+        if (!/^[A-Za-z0-9_-]{1,80}$/.test(collection)) return json(400, { success: false, error: 'qdrant_collection_invalid' });
+        if (backend === 'qdrant' && !/^https?:\/\//i.test(qdrantUrl)) return json(400, { success: false, error: 'qdrant_url_invalid' });
+        const envFile = process.env.MIOBOT_ENV_FILE || '/etc/miobot-v2.env';
+        let lines: string[] = [];
+        try { lines = (await fs.readFile(envFile, 'utf8')).split(/\r?\n/); } catch { lines = []; }
+        const current = new Map<string, string>();
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) continue;
+          const eq = trimmed.indexOf('=');
+          if (eq > 0) current.set(trimmed.slice(0, eq), trimmed.slice(eq + 1));
+        }
+        const key = incomingKey || current.get('QDRANT_API_KEY') || '';
+        if (backend === 'qdrant' && !key) return json(400, { success: false, error: 'qdrant_api_key_required' });
+        const updates: Record<string, string> = {
+          MIOBOT_MEMORY_BACKEND: backend,
+          QDRANT_URL: qdrantUrl,
+          QDRANT_COLLECTION: collection,
+        };
+        if (incomingKey) updates.QDRANT_API_KEY = incomingKey;
+        const keys = new Set(Object.keys(updates));
+        const kept = lines.filter((line) => {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) return true;
+          const eq = trimmed.indexOf('=');
+          return eq < 1 || !keys.has(trimmed.slice(0, eq));
+        });
+        while (kept.length && !kept[kept.length - 1]) kept.pop();
+        for (const [name, value] of Object.entries(updates)) kept.push(name + '=' + value);
+        await fs.mkdir(nodePath.dirname(envFile), { recursive: true });
+        const temp = envFile + '.qdrant-' + process.pid + '.tmp';
+        await fs.writeFile(temp, kept.join('\n') + '\n', { encoding: 'utf8', mode: 0o600 });
+        await fs.rename(temp, envFile);
+        try { await fs.chmod(envFile, 0o600); } catch {}
+        return ok({ success: true, restartRequired: true, backend, configured: Boolean(qdrantUrl && key), collection, qdrantUrl });
+      }      if (method === 'GET' && path === '/api/orchestration/memory/backend') {
         const backend = String(process.env.MIOBOT_MEMORY_BACKEND || 'orama').toLowerCase();
         const qdrantUrl = String(process.env.QDRANT_URL || '').replace(/\/+$/, '');
         const qdrantKey = String(process.env.QDRANT_API_KEY || '');

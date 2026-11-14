@@ -26,13 +26,48 @@ const memoryGroupId = ref('');
 const memoryUserId = ref('');
 const memoryQuery = ref('');
 const memoryDryRun = ref(true);
-const memoryActionResult = ref<any>(null);const memoryBackendStatus = ref<any>(null);
+const memoryActionResult = ref<any>(null);const memoryBackendStatus = ref<any>(null);const memoryBackendDraft = ref({ backend: 'orama', qdrantUrl: '', collection: 'miobot_memory', apiKey: '' });
+const memoryBackendSaving = ref(false);
+const memoryBackendMessage = ref('');
+const memoryBackendOptions = [
+    { value: 'orama', label: 'Orama 本地索引' },
+    { value: 'qdrant', label: 'Qdrant Cloud/外部' },
+];
+function syncMemoryBackendDraft() {
+    const s = memoryBackendStatus.value || {};
+    memoryBackendDraft.value.backend = s.backend || 'orama';
+    memoryBackendDraft.value.qdrantUrl = s.qdrantUrl || '';
+    memoryBackendDraft.value.collection = s.collection || 'miobot_memory';
+    memoryBackendDraft.value.apiKey = '';
+}
+async function saveMemoryBackend() {
+    memoryBackendSaving.value = true;
+    memoryBackendMessage.value = '';
+    try {
+        const res = await client.post('/orchestration/memory/backend', {
+            backend: memoryBackendDraft.value.backend,
+            qdrantUrl: memoryBackendDraft.value.qdrantUrl,
+            collection: memoryBackendDraft.value.collection,
+            apiKey: memoryBackendDraft.value.apiKey || undefined,
+        });
+        memoryBackendMessage.value = res.data?.restartRequired
+            ? '已保存到服务器环境配置；需要重启 miobot-v2 后生效。'
+            : '已保存。';
+        memoryBackendDraft.value.apiKey = '';
+        await loadMemoryBackendStatus();
+    } catch (error: any) {
+        memoryBackendMessage.value = error?.response?.data?.error || String(error?.message || error);
+    } finally {
+        memoryBackendSaving.value = false;
+    }
+}
 const memoryBackendLoading = ref(false);
 async function loadMemoryBackendStatus() {
     memoryBackendLoading.value = true;
     try {
         const res = await client.get('/orchestration/memory/backend');
         memoryBackendStatus.value = res.data;
+        syncMemoryBackendDraft();
     } catch (error: any) {
         memoryBackendStatus.value = { success: false, error: error?.response?.data?.error || String(error?.message || error) };
     } finally {
@@ -94,6 +129,26 @@ async function runMemoryAction() {
     </header>
 
     <SectionCard title="外部记忆后端" hint="Qdrant 配置来自服务器环境变量；API key 不会回传前端" class="mb-4">
+<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-3">
+        <FormField label="后端">
+          <AppSelect v-model="memoryBackendDraft.backend" :options="memoryBackendOptions" />
+        </FormField>
+        <FormField label="Qdrant URL" hint="例如 https://...cloud.qdrant.io">
+          <input v-model="memoryBackendDraft.qdrantUrl" class="input-field font-mono" placeholder="https://..." />
+        </FormField>
+        <FormField label="Collection">
+          <input v-model="memoryBackendDraft.collection" class="input-field font-mono" />
+        </FormField>
+        <FormField label="API Key" hint="留空表示保持现有 key；只写入服务器环境文件">
+          <input v-model="memoryBackendDraft.apiKey" type="password" class="input-field font-mono" autocomplete="new-password" />
+        </FormField>
+        <div class="flex items-end">
+          <button class="btn-primary" type="button" :disabled="memoryBackendSaving" @click="saveMemoryBackend">
+            {{ memoryBackendSaving ? '保存中…' : '保存后端配置' }}
+          </button>
+        </div>
+      </div>
+      <p v-if="memoryBackendMessage" class="text-xs mb-3 text-[color:var(--ink-2)]">{{ memoryBackendMessage }}</p>
       <div class="flex flex-wrap items-center gap-3 mb-3">
         <button class="btn-secondary" type="button" :disabled="memoryBackendLoading" @click="loadMemoryBackendStatus">
           {{ memoryBackendLoading ? '检查中…' : '刷新状态' }}

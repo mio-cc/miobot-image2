@@ -11,6 +11,10 @@ test('memory actions API: retention_now/observer_stats queue correctly and prune
   const actionFile = path.join(dir, 'orchestration-memory-actions.jsonl');
   const oldData = process.env.MIOBOT_DATA_DIR;
   const oldAction = process.env.MIOBOT_MEMORY_ACTION_FILE;
+  const oldEnvFile = process.env.MIOBOT_ENV_FILE;
+  const envFile = path.join(dir, 'miobot.env');
+  fs.writeFileSync(envFile, 'EXISTING=1\\n');
+  process.env.MIOBOT_ENV_FILE = envFile;
   process.env.MIOBOT_DATA_DIR = dir;
   process.env.MIOBOT_MEMORY_ACTION_FILE = actionFile;
   try {
@@ -26,6 +30,14 @@ test('memory actions API: retention_now/observer_stats queue correctly and prune
     const legacy = await api.handle({ method: 'POST', path: '/api/orchestration/memory/actions', headers, body: { type: 'prune' } });
     assert.equal(legacy.status, 200, JSON.stringify(legacy.body));
 
+    const saveBackend = await api.handle({ method: 'POST', path: '/api/orchestration/memory/backend', headers, body: { backend: 'qdrant', qdrantUrl: 'https://qdrant.example', collection: 'miobot_memory', apiKey: 'test-secret-key' } });
+    assert.equal(saveBackend.status, 200, JSON.stringify(saveBackend.body));
+    assert.equal(saveBackend.body.restartRequired, true);
+    assert.ok(!JSON.stringify(saveBackend.body).includes('test-secret-key'), 'API key must not be returned');
+    const envText = fs.readFileSync(envFile, 'utf8');
+    assert.match(envText, /^MIOBOT_MEMORY_BACKEND=qdrant$/m);
+    assert.match(envText, /^QDRANT_URL=https:\/\/qdrant\.example$/m);
+    assert.match(envText, /^QDRANT_API_KEY=test-secret-key$/m);
     const backend = await api.handle({ method: 'GET', path: '/api/orchestration/memory/backend', headers });
     assert.equal(backend.status, 200, JSON.stringify(backend.body));
     assert.equal(backend.body.success, true);
@@ -37,6 +49,7 @@ test('memory actions API: retention_now/observer_stats queue correctly and prune
   } finally {
     if (oldData === undefined) delete process.env.MIOBOT_DATA_DIR; else process.env.MIOBOT_DATA_DIR = oldData;
     if (oldAction === undefined) delete process.env.MIOBOT_MEMORY_ACTION_FILE; else process.env.MIOBOT_MEMORY_ACTION_FILE = oldAction;
+    if (oldEnvFile === undefined) delete process.env.MIOBOT_ENV_FILE; else process.env.MIOBOT_ENV_FILE = oldEnvFile;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -96,15 +96,21 @@ async function main() {
     if (!fs.existsSync(file)) { console.log("skip missing " + file); continue; }
     console.log("namespace " + namespaceKey + " file " + file);
     const db = await restoreFromFile("json", file);
-    const allDocs = Object.values(db.data?.docs?.docs || {});
+    const allDocs = Object.entries(db.data?.docs?.docs || {});
     let offset = 0; let namespaceCount = 0;
     while (offset < allDocs.length) {
       const docs = allDocs.slice(offset, offset + pageSize);
       const points = [];
-      for (const doc of docs) {
+      for (const [internalId, doc] of docs) {
         sourceTotal += 1;
         if (maxDocs > 0 && sourceTotal > maxDocs) break;
-        const vector = Array.isArray(doc.embedding) ? doc.embedding.map(Number) : [];
+        let vector = Array.isArray(doc.embedding) ? doc.embedding.map(Number) : [];
+        if (!vector.length) {
+          const vectorIndex = db.data?.index?.vectorIndexes?.embedding?.node?.vectors;
+          const raw = vectorIndex instanceof Map ? (vectorIndex.get(internalId) || vectorIndex.get(Number(internalId))) : (vectorIndex?.[internalId]);
+          const value = Array.isArray(raw) && raw.length > 1 ? raw[1] : raw;
+          if (value && typeof value.length === "number") vector = Array.from(value).map(Number);
+        }
         if (!doc.id || vector.length !== dimensions) { skipped += 1; continue; }
         const createdAt = String(doc.createdAt || new Date().toISOString());
         points.push({
