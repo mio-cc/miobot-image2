@@ -34,7 +34,8 @@ import { PendingJobStore, type PendingJobRecord } from './pending-job-store.js';
 import { JobRecoveryService } from './job-recovery.js';
 import { FileDeleteCapabilityHandler, ManagedArtifactRegistry, type ArtifactScope } from './managed-artifacts.js';
 import { AuditService } from './audit-service.js';
-import { ChatMemoryService } from './memory-service.js';
+import { ChatMemoryService, type MemoryDocument, type MemoryNamespace } from './memory-service.js';
+import { QdrantMemoryService } from './qdrant-memory-service.js';
 import { MemoryObserver } from './memory-observer.js';
 import { createMemorySearchHandler } from './memory-search-handler.js';
 import { FishAudioVoiceService } from './voice-service.js';
@@ -383,7 +384,29 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
   const sanitizeCall = createSanitizeCall(client, getConfig, modelFallback, logger);
   // 记忆数据目录：service 与观察队列共用一处（pending.jsonl 与索引同目录）。
   const memoryRootDir = (): string => getConfig().orchestration.memory.dataDir || path.join(dataDir, 'memory');
-  const memoryService = new ChatMemoryService({
+  const memoryBackend = String(process.env.MIOBOT_MEMORY_BACKEND || 'orama').toLowerCase();
+const summarizeForQdrant = async ({ namespace, messages }: { namespace: MemoryNamespace; messages: MemoryDocument[] }) => {
+  const cfg = getConfig();
+  const transcript = messages.map((item) => (item.role === 'assistant' ? '助手' : '用户') + '(' + item.userId + '): ' + item.text).join('\n');
+  const prompt = '你是会话记忆摘要器。请把以下聊天记录压缩成不超过 300 字的事实摘要，保留人物、偏好、未完成事项和重要上下文；不同 QQ 号是不同用户，不能合并；只输出摘要文本。\n范围：' + namespace.kind + '\n聊天记录：\n' + transcript.slice(0, 12000);
+  const result = await client.chat(Number(cfg.llm.chatNodeIndex || 0), {
+    model: String(cfg.llm.chatModel || ''),
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.1,
+    maxTokens: 500,
+  });
+  return String(result.text || '').trim();
+};
+const memoryService = memoryBackend === 'qdrant'
+  ? new QdrantMemoryService({
+      rootDir: memoryRootDir,
+      getConfig,
+      fallback: modelFallback,
+      logger,
+      summarize: summarizeForQdrant,
+      isRejectedMessageId: (messageId) => contentRejections.isRejected({ messageId }),
+    })
+  : new ChatMemoryService({
     rootDir: memoryRootDir,
     getConfig,
     // P2(方案 6-P2)：embedding 出口接 purpose = 'memory' 的用途级备用。

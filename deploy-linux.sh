@@ -709,6 +709,7 @@ write_env_file() {
   local env_canvas_state env_canvas_assets env_public_base env_canvas_sync
   local env_sync_gallery env_canvas_sync_timeout env_inline_remote
   local env_inline_max env_inline_timeout env_log_dir env_enable_bot
+  local env_memory_backend env_qdrant_url env_qdrant_key env_qdrant_collection
 
   env_host="$(resolved_env_value MIOBOT_HOST "$HOST" "$HOST_SET")"
   env_port="$(resolved_env_value MIOBOT_PORT "$PORT" "$PORT_SET")"
@@ -725,6 +726,10 @@ write_env_file() {
   env_inline_max="$(resolved_env_value MIOBOT_INLINE_IMAGE_MAX_BYTES "$INLINE_IMAGE_MAX_BYTES" "$INLINE_IMAGE_MAX_BYTES_SET")"
   env_inline_timeout="$(resolved_env_value MIOBOT_INLINE_IMAGE_TIMEOUT_MS "$INLINE_IMAGE_TIMEOUT_MS" "$INLINE_IMAGE_TIMEOUT_SET")"
   env_log_dir="$(resolved_env_value LOG_DIR "$LOG_DIR" "$LOG_DIR_SET")"
+  env_memory_backend="$(env_file_value MIOBOT_MEMORY_BACKEND || true)"; [ -n "$env_memory_backend" ] || env_memory_backend="${MIOBOT_MEMORY_BACKEND:-orama}"
+  env_qdrant_url="$(env_file_value QDRANT_URL || true)"; [ -n "$env_qdrant_url" ] || env_qdrant_url="${QDRANT_URL:-}"
+  env_qdrant_key="$(env_file_value QDRANT_API_KEY || true)"; [ -n "$env_qdrant_key" ] || env_qdrant_key="${QDRANT_API_KEY:-}"
+  env_qdrant_collection="$(env_file_value QDRANT_COLLECTION || true)"; [ -n "$env_qdrant_collection" ] || env_qdrant_collection="${QDRANT_COLLECTION:-miobot_memory}"
 
   if [ -n "${MIOBOT_ENABLE_BOT+x}" ]; then
     env_enable_bot="$MIOBOT_ENABLE_BOT"
@@ -741,6 +746,10 @@ MIOBOT_HOST=${env_host}
 MIOBOT_PORT=${env_port}
 MIOBOT_VERIFY_PORT=${env_port}
 MIOBOT_ENABLE_BOT=${env_enable_bot}
+MIOBOT_MEMORY_BACKEND=${env_memory_backend}
+QDRANT_URL=${env_qdrant_url}
+QDRANT_API_KEY=${env_qdrant_key}
+QDRANT_COLLECTION=${env_qdrant_collection}
 MIOBOT_RUNTIME_DIR=${env_runtime_dir}
 MIOBOT_DATA_DIR=${env_runtime_dir}
 MIOBOT_CONFIG_VERSION_FILE=${env_runtime_dir}/config-versions.json
