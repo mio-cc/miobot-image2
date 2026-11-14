@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import nodePath from 'node:path';
 import {
   builtinComfyUiProfile,
@@ -986,6 +987,75 @@ export class WebApi {
           approvals = Array.isArray(parsed?.approvals) ? parsed.approvals : [];
         } catch { approvals = []; }
         return ok({ success: true, approvals });
+      }
+      if (method === 'GET' && path === '/api/system/backups') {
+        const backupDir = nodePath.join(miobotDataDir(), 'backups');
+        const allowed = /^(config|canvas-state|canvas-assets|orchestration-state)\.\d{8}-\d{6}\.(json|tar\.gz)$/;
+        const entries = await fs.readdir(backupDir, { withFileTypes: true }).catch(() => []);
+        const backups = [];
+        for (const entry of entries) {
+          if (!entry.isFile() || !allowed.test(entry.name)) continue;
+          try {
+            const stat = await fs.stat(nodePath.join(backupDir, entry.name));
+            backups.push({ name: entry.name, size: stat.size, modifiedAt: stat.mtime.toISOString() });
+          } catch {}
+        }
+        backups.sort((a, b) => String(b.modifiedAt).localeCompare(String(a.modifiedAt)));
+        return ok({ success: true, directory: backupDir, backups, totalBytes: backups.reduce((sum, item) => sum + item.size, 0) });
+      }
+      if (method === 'POST' && path === '/api/system/backups') {
+        const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
+        const backupDir = nodePath.join(miobotDataDir(), 'backups');
+        const dataDir = miobotDataDir();
+        const configPath = process.env.MIOBOT_CONFIG_PATH || nodePath.join(dataDir, 'config.json');
+        const canvasStatePath = process.env.MIOBOT_CANVAS_STATE_PATH || nodePath.join(dataDir, 'canvas-state.json');
+        const canvasAssetDir = process.env.MIOBOT_CANVAS_ASSET_DIR || nodePath.join(dataDir, 'canvas-assets');
+        const now = new Date();
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+        const want = {
+          config: body.config !== false,
+          canvasState: body.canvasState !== false,
+          canvasAssets: body.canvasAssets !== false,
+        };
+        await fs.mkdir(backupDir, { recursive: true, mode: 0o700 });
+        const created: Array<Record<string, unknown>> = [];
+        if (want.config && existsSync(configPath)) {
+          const name = `config.${stamp}.json`; const target = nodePath.join(backupDir, name);
+          await fs.copyFile(configPath, target); created.push({ name, size: statSync(target).size });
+        }
+        if (want.canvasState && existsSync(canvasStatePath)) {
+          const name = `canvas-state.${stamp}.json`; const target = nodePath.join(backupDir, name);
+          await fs.copyFile(canvasStatePath, target); created.push({ name, size: statSync(target).size });
+        }
+        if (want.canvasAssets && existsSync(canvasAssetDir)) {
+          const name = `canvas-assets.${stamp}.tar.gz`; const target = nodePath.join(backupDir, name);
+          const result = spawnSync('tar', ['-C', nodePath.dirname(canvasAssetDir), '-czf', target, nodePath.basename(canvasAssetDir)], { encoding: 'utf8' });
+          if (result.status !== 0) return json(500, { success: false, error: 'backup_tar_failed', detail: String(result.stderr || result.error?.message || '').slice(-500) });
+          created.push({ name, size: statSync(target).size });
+        }
+        if (!created.length) return json(400, { success: false, error: 'backup_no_source_files' });
+        return ok({ success: true, directory: backupDir, backups: created });
+      }
+      if (method === 'DELETE' && (path === '/api/system/backups' || path.startsWith('/api/system/backups/'))) {
+        const backupDir = nodePath.join(miobotDataDir(), 'backups');
+        const allowed = /^(config|canvas-state|canvas-assets|orchestration-state)\.\d{8}-\d{6}\.(json|tar\.gz)$/;
+        const backupQuery: Record<string, string> = {};
+        if (request.query && typeof request.query === 'object') Object.assign(backupQuery, request.query);
+        const search = String(request.path || '').split('?')[1] || '';
+        for (const [key, value] of new URLSearchParams(search)) backupQuery[key] = value;
+        const all = (path === '/api/system/backups' || path.startsWith('/api/system/backups?')) && String(backupQuery.all || '') === '1';
+        const rawName = all ? '' : (() => { try { return decodeURIComponent(path.slice('/api/system/backups/'.length)); } catch { return ''; } })();
+        const entries = await fs.readdir(backupDir, { withFileTypes: true }).catch(() => []);
+        const names = entries.filter((entry) => entry.isFile() && allowed.test(entry.name)).map((entry) => entry.name);
+        const targets = all ? names : names.filter((name) => name === rawName);
+        if (!targets.length) return json(404, { success: false, error: 'backup_not_found' });
+        let removed = 0; let bytes = 0;
+        for (const name of targets) {
+          const target = nodePath.join(backupDir, name);
+          try { bytes += statSync(target).size; await fs.rm(target); removed += 1; } catch {}
+        }
+        return ok({ success: true, removed, freedBytes: bytes });
       }
       if (method === 'POST' && path === '/api/orchestration/memory/backend') {
         const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};

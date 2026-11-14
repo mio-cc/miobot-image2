@@ -949,7 +949,8 @@ install_all() {
   ensure_node
   ensure_pnpm
   ensure_dirs
-  backup_runtime_data
+  # Automatic backups are disabled: large canvas-asset copies on every update fill the disk.
+  # Use the panel backup page or: bash deploy-linux.sh backup-data
   sync_source
   install_bundled_capabilities
   migrate_legacy_runtime_config
@@ -971,7 +972,8 @@ rebuild_all() {
   ensure_node
   ensure_pnpm
   ensure_dirs
-  backup_runtime_data
+  # Automatic backups are disabled: large canvas-asset copies on every update fill the disk.
+  # Use the panel backup page or: bash deploy-linux.sh backup-data
   sync_source
   install_bundled_capabilities
   migrate_legacy_runtime_config
