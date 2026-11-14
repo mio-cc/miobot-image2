@@ -49,7 +49,7 @@ NODE_MAJOR="${NODE_MAJOR:-22}"
 INSTALL_NODE="${INSTALL_NODE:-auto}"
 INSTALL_CHROMIUM="${INSTALL_CHROMIUM:-auto}"
 PNPM_VERSION="${PNPM_VERSION:-9.14.2}"
-STRICT_LOCKFILE="${STRICT_LOCKFILE:-0}"
+STRICT_LOCKFILE="${STRICT_LOCKFILE:-1}"
 RUN_TESTS="${RUN_TESTS:-0}"
 DATA_DIR="${DATA_DIR:-/var/lib/${APP_NAME}}"
 RUNTIME_DIR="${MIOBOT_RUNTIME_DIR:-${DATA_DIR}}"
@@ -605,6 +605,23 @@ git_worktree_dirty() {
   [ -n "$(cd -- "$repo_dir" && git status --porcelain)" ]
 }
 
+git_status_excluding_lockfiles() {
+  local repo_dir="$1" line path
+  (cd -- "$repo_dir" && git status --porcelain) | while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    path="${line:3}"
+    case "$path" in
+      package-lock.json|web-panel/package-lock.json) ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done
+}
+
+git_stash_lockfile_drift() {
+  local repo_dir="$1"
+  (cd -- "$repo_dir" && git stash push -m "miobot lockfile drift before update $(date +%Y%m%d-%H%M%S)" -- package-lock.json web-panel/package-lock.json)
+}
+
 git_pull_source() {
   have_cmd git || ensure_os_packages
 
@@ -615,7 +632,10 @@ git_pull_source() {
   (cd -- "$repo_dir" && git rev-parse --is-inside-work-tree >/dev/null) || fail "不是有效 Git 仓库：$repo_dir"
 
   if git_worktree_dirty "$repo_dir"; then
-    if [ "$GIT_ALLOW_DIRTY" = "stash" ] || [ "$GIT_ALLOW_DIRTY" = "1" ] || [ "$GIT_ALLOW_DIRTY" = "true" ]; then
+    if [ -z "$(git_status_excluding_lockfiles "$repo_dir")" ]; then
+      log "检测到仅 package-lock 自动生成改动，自动暂存后继续拉取"
+      git_stash_lockfile_drift "$repo_dir"
+    elif [ "$GIT_ALLOW_DIRTY" = "stash" ] || [ "$GIT_ALLOW_DIRTY" = "1" ] || [ "$GIT_ALLOW_DIRTY" = "true" ]; then
       log "检测到本地未提交修改，自动 stash 后继续拉取"
       (cd -- "$repo_dir" && git stash push -u -m "miobot auto stash before update $(date +%Y%m%d-%H%M%S)")
     else
