@@ -106,6 +106,7 @@ test('回归: formatListGlobal 不标注来源群与生成者，含分支标记�
     assert.ok(!text.includes('2238639363') && !text.includes('userQq'), '不得出现生成者标注');
     assert.ok(/#1 歌A \| .* \| 92s \| 有B版/.test(text), `主版行应带"有B版"标记：${text}`);
     assert.ok(/#2 歌A \| .* \| B版/.test(text), 'B版行应带"B版"标记');
+    assert.match(text, /id=song_/, '历史列表必须带精确 recordId');
   } finally { cleanup(); }
 });
 

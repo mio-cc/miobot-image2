@@ -248,7 +248,7 @@ export class SunoSongHistoryStore {
         const date = item.createdAt.slice(0, 16).replace('T', ' ');
         // B版 标记要求主版仍存活：主版已被裁掉的孤儿分支不再标 B版，避免与相邻无关记录伪造 A/B 配对。
         const variantTag = (Number(item.variantIndex) || 1) === 2 && this.hasLiveMain(item) ? ' | B版' : (this.hasVariant(item) ? ' | 有B版' : '');
-        return `#${item.globalSeq} ${title} | ${date}${item.duration ? ` | ${Math.round(item.duration)}s` : ''}${variantTag}`;
+        return `#${item.globalSeq} ${title} | ${date}${item.duration ? ` | ${Math.round(item.duration)}s` : ''}${variantTag} | id=${item.id}`;
       }),
     ].join('\n');
   }

@@ -344,7 +344,7 @@ export class SunoCapabilityHandler implements CapabilityHandler {
             audioId: first.audioId,
             duration: first.duration,
             historyId: historyRecord?.id,
-            historySeq: historyRecord?.seq,
+            historySeq: historyRecord?.globalSeq ?? historyRecord?.seq,
             provider: "suno-official",
           } }]
         : [];

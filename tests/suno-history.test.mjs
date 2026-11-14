@@ -68,6 +68,18 @@ test('Suno history/replay capabilities: list and resend existing audio', async (
   assert.equal(selected.outputs[0].meta.historySeq, 1);
 });
 
+test('Suno replay reports global historySeq when local sequence differs', async () => {
+  const { store } = tempStore();
+  addSong(store, { chatType: 'private', userQq: '1', taskId: 'task-local-a', title: '第一首', audioUrl: 'https://cdn/one.mp3' });
+  const second = addSong(store, { chatType: 'private', userQq: '2', taskId: 'task-local-b', title: '第二首', audioUrl: 'https://cdn/two.mp3' });
+  assert.equal(second.seq, 1, 'second user has its own local seq 1');
+  assert.equal(second.globalSeq, 2, 'but global seq is 2');
+  const replay = new SunoReplayCapabilityHandler(store);
+  const result = await replay.execute(invocation({ recordId: second.id }));
+  assert.equal(result.status, 'success');
+  assert.equal(result.outputs[0].meta.historySeq, 2, 'historySeq must be the global stable sequence');
+});
+
 test('Suno generation records selected song in history', async () => {
   const { store } = tempStore();
   const cfg = createDefaultConfig();

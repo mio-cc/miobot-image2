@@ -245,19 +245,19 @@ ensure_os_packages() {
     apt)
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
-      apt-get install -y ca-certificates curl git rsync bash tar gzip xz-utils build-essential python3 python3-venv python3-pip make g++
+      apt-get install -y ca-certificates curl git rsync bash tar gzip xz-utils build-essential python3 python3-venv python3-pip make g++ ffmpeg
       ;;
     dnf)
-      dnf install -y ca-certificates curl git rsync bash tar gzip xz gcc gcc-c++ make python3 python3-pip
+      dnf install -y ca-certificates curl git rsync bash tar gzip xz gcc gcc-c++ make python3 python3-pip ffmpeg
       ;;
     yum)
-      yum install -y ca-certificates curl git rsync bash tar gzip xz gcc gcc-c++ make python3 python3-pip
+      yum install -y ca-certificates curl git rsync bash tar gzip xz gcc gcc-c++ make python3 python3-pip ffmpeg
       ;;
     pacman)
-      pacman -Sy --noconfirm --needed ca-certificates curl git rsync bash tar gzip xz base-devel python python-pip
+      pacman -Sy --noconfirm --needed ca-certificates curl git rsync bash tar gzip xz base-devel python python-pip ffmpeg
       ;;
     apk)
-      apk add --no-cache ca-certificates curl git rsync bash tar gzip xz build-base python3 py3-pip py3-virtualenv nodejs npm
+      apk add --no-cache ca-certificates curl git rsync bash tar gzip xz build-base python3 py3-pip py3-virtualenv nodejs npm ffmpeg
       ;;
     *)
       fail "不支持的包管理器，请先安装 curl/git/rsync/bash/nodejs/npm/python3/make/g++。"
