@@ -987,7 +987,27 @@ export class WebApi {
         } catch { approvals = []; }
         return ok({ success: true, approvals });
       }
-      if (method === 'POST' && path === '/api/orchestration/memory/actions') {
+      if (method === 'GET' && path === '/api/orchestration/memory/backend') {
+        const backend = String(process.env.MIOBOT_MEMORY_BACKEND || 'orama').toLowerCase();
+        const qdrantUrl = String(process.env.QDRANT_URL || '').replace(/\/+$/, '');
+        const qdrantKey = String(process.env.QDRANT_API_KEY || '');
+        const collection = String(process.env.QDRANT_COLLECTION || 'miobot_memory');
+        const result: Record<string, unknown> = { backend, configured: Boolean(qdrantUrl && qdrantKey), collection, qdrantUrl, reachable: false };
+        if (qdrantUrl && qdrantKey) {
+          try {
+            const headers = { 'api-key': qdrantKey, 'content-type': 'application/json' };
+            const response = await fetch(qdrantUrl + '/collections/' + encodeURIComponent(collection), { headers, signal: AbortSignal.timeout(5000) });
+            result.reachable = response.ok;
+            if (response.ok) {
+              const info = await response.json() as any;
+              result.vectorSize = info?.result?.config?.params?.vectors?.size;
+              const count = await fetch(qdrantUrl + '/collections/' + encodeURIComponent(collection) + '/points/count', { method: 'POST', headers, body: JSON.stringify({ exact: true }), signal: AbortSignal.timeout(5000) });
+              if (count.ok) result.points = Number((await count.json() as any)?.result?.count || 0);
+            } else result.error = 'qdrant_http_' + response.status;
+          } catch (error) { result.error = String((error as Error)?.message || error); }
+        }
+        return ok({ success: true, ...result });
+      }      if (method === 'POST' && path === '/api/orchestration/memory/actions') {
         const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
         const requestedType = String(body.type || '').trim();
         const type = requestedType === 'prune' ? 'retention_now' : requestedType;

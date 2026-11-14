@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import client from '../api/client';
 import { useConfigStore } from '../stores/config';
 import SectionCard from '../components/SectionCard.vue';
@@ -26,7 +26,20 @@ const memoryGroupId = ref('');
 const memoryUserId = ref('');
 const memoryQuery = ref('');
 const memoryDryRun = ref(true);
-const memoryActionResult = ref<any>(null);
+const memoryActionResult = ref<any>(null);const memoryBackendStatus = ref<any>(null);
+const memoryBackendLoading = ref(false);
+async function loadMemoryBackendStatus() {
+    memoryBackendLoading.value = true;
+    try {
+        const res = await client.get('/orchestration/memory/backend');
+        memoryBackendStatus.value = res.data;
+    } catch (error: any) {
+        memoryBackendStatus.value = { success: false, error: error?.response?.data?.error || String(error?.message || error) };
+    } finally {
+        memoryBackendLoading.value = false;
+    }
+}
+onMounted(loadMemoryBackendStatus);
 
 /* P1 最后一批·下拉收尾：AppSelect 选项（memoryActionType/memoryChatType 均为本地 UI 状态，
    非配置字段；memoryActionType 驱动下方表单条件渲染，v-model 绑定 ref 原样保留）。 */
@@ -80,6 +93,20 @@ async function runMemoryAction() {
       </p>
     </header>
 
+    <SectionCard title="外部记忆后端" hint="Qdrant 配置来自服务器环境变量；API key 不会回传前端" class="mb-4">
+      <div class="flex flex-wrap items-center gap-3 mb-3">
+        <button class="btn-secondary" type="button" :disabled="memoryBackendLoading" @click="loadMemoryBackendStatus">
+          {{ memoryBackendLoading ? '检查中…' : '刷新状态' }}
+        </button>
+        <span v-if="memoryBackendStatus" class="text-xs text-[color:var(--ink-3)]">
+          backend={{ memoryBackendStatus.backend || 'orama' }}
+          · configured={{ memoryBackendStatus.configured ? 'yes' : 'no' }}
+          · reachable={{ memoryBackendStatus.reachable ? 'yes' : 'no' }}
+        </span>
+      </div>
+      <pre v-if="memoryBackendStatus" class="text-xs bg-black/20 p-3 rounded max-h-[220px] overflow-auto">{{ JSON.stringify(memoryBackendStatus, null, 2) }}</pre>
+      <p class="text-[color:var(--ink-3)] text-xs mt-2">切换到 Qdrant 前先运行 scripts/migrate-memory-to-qdrant.mjs；确认迁移成功后再设置 MIOBOT_MEMORY_BACKEND=qdrant。</p>
+    </SectionCard>
     <SectionCard title="存储与索引" hint="Orama 本地索引；群聊、私聊、群内用户按物理 namespace 隔离" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.memory.enabled" label="启用长期记忆" /></div>

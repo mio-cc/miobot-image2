@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,6 +26,9 @@ test('memory actions API: retention_now/observer_stats queue correctly and prune
     const legacy = await api.handle({ method: 'POST', path: '/api/orchestration/memory/actions', headers, body: { type: 'prune' } });
     assert.equal(legacy.status, 200, JSON.stringify(legacy.body));
 
+    const backend = await api.handle({ method: 'GET', path: '/api/orchestration/memory/backend', headers });
+    assert.equal(backend.status, 200, JSON.stringify(backend.body));
+    assert.equal(backend.body.success, true);
     const actions = fs.readFileSync(actionFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     assert.equal(actions[0].type, 'retention_now');
     assert.equal(actions[0].dryRun, true);
