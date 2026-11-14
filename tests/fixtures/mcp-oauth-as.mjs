@@ -17,6 +17,9 @@ export async function startMockAuthorizationServer(options = {}) {
   const scopesSupported = Array.isArray(options.scopesSupported) && options.scopesSupported.length
     ? options.scopesSupported.map(String)
     : ['api:v0', 'offline_access'];
+  const authorizationScopesSupported = Array.isArray(options.authorizationScopesSupported) && options.authorizationScopesSupported.length
+    ? options.authorizationScopesSupported.map(String)
+    : scopesSupported;
   const challengeScope = typeof options.challengeScope === 'string' ? options.challengeScope : undefined;
   const expectedScope = typeof options.expectedScope === 'string' ? options.expectedScope : undefined;
   const requests = [];
@@ -70,7 +73,7 @@ export async function startMockAuthorizationServer(options = {}) {
         grant_types_supported: ['authorization_code', 'refresh_token'],
         code_challenge_methods_supported: ['S256'],
         token_endpoint_auth_methods_supported: ['none'],
-        scopes_supported: scopesSupported,
+        scopes_supported: authorizationScopesSupported,
       }));
       return;
     }

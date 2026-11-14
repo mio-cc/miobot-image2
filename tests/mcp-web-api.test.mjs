@@ -80,6 +80,24 @@ test('mcp web-api: connect→callback 全链——授权 URL、code 交换、凭
   }
 });
 
+test('mcp web-api: OAuth requests AS-only write scopes as a union', async () => {
+  const server = await startMockAuthorizationServer({
+    scopesSupported: ['api:v0', 'library:read'],
+    authorizationScopesSupported: ['api:v0', 'library:read', 'library:write', 'profile:write', 'studio:write'],
+    expectedScope: 'api:v0 library:read library:write profile:write studio:write',
+  });
+  try {
+    const api = await createConfiguredApi(server.mcpUrl);
+    const connect = await api.handle({ method: 'POST', path: '/api/mcp/connect', headers: authHeaders, body: { serverId: 'suno' } });
+    assert.equal(connect.status, 200, JSON.stringify(connect.body));
+    assert.equal(new URL(connect.body.authorizationUrl).searchParams.get('scope'), 'api:v0 library:read library:write profile:write studio:write');
+    const registerRequest = server.requests.find((request) => request.path.endsWith('/register/'));
+    assert.equal(registerRequest.body.scope, 'api:v0 library:read library:write profile:write studio:write');
+  } finally {
+    await server.close();
+  }
+});
+
 test('mcp web-api: Box OAuth uses boxes connect from resource metadata', async () => {
   const server = await startMockAuthorizationServer({
     scopesSupported: ['boxes', 'connect'],

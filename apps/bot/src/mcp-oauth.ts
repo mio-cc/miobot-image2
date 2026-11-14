@@ -77,6 +77,22 @@ export function parseScopeFromWwwAuthenticate(wwwAuthenticate: string | null | u
   return unquoted ? unquoted[1].trim() || undefined : undefined;
 }
 
+/** Merge OAuth scope sources without cross-service hardcoding.
+ *  Resource metadata is authoritative for this resource, but some servers
+ *  advertise additional write scopes only in AS metadata or the WWW-Authenticate
+ *  challenge. Requesting only the first source produces read-only tokens. */
+export function mergeOAuthScopes(...sources: Array<string | string[] | null | undefined>): string {
+  const seen = new Set<string>();
+  for (const source of sources) {
+    const values = Array.isArray(source) ? source : String(source || '').split(/\s+/);
+    for (const raw of values) {
+      const scope = String(raw || '').trim();
+      if (scope && !seen.has(scope)) seen.add(scope);
+    }
+  }
+  return [...seen].join(' ');
+}
+
 /** Fetch protected resource metadata (RFC 9728): authorization servers and declared scopes. */
 export async function discoverProtectedResourceMetadata(resourceMetadataUrl: string, options: McpOAuthFetchOptions = {}): Promise<McpProtectedResourceMetadata> {
   const response = await resolveFetch(options)(resourceMetadataUrl, { signal: AbortSignal.timeout(timeoutMs(options)) });

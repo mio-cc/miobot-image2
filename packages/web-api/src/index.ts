@@ -31,6 +31,7 @@ import {
   generatePkce,
   parseResourceMetadataUrl,
   parseScopeFromWwwAuthenticate,
+  mergeOAuthScopes,
   registerClient,
 } from '../../../apps/bot/src/mcp-oauth.js';
 import { McpCredentialStore } from '../../../apps/bot/src/mcp-credential-store.js';
@@ -681,13 +682,14 @@ export class WebApi {
         if (!metadata.registrationEndpoint) {
           return json(400, { success: false, error: 'mcp_dcr_unsupported（授权服务器不支持动态注册，需人工预注册 client_id）' });
         }
-        // scope 必须按每个资源服务器自己的 RFC 9728 元数据选择；不同 MCP 的 scope 名完全不同
-        // （Suno: api:v0/...，Box: boxes/connect），不能硬编码成某一个服务的清单。
-        const requestedScope = (
-          resourceMetadata.scopesSupported.join(' ')
-          || challengeScope
-          || (metadata.scopesSupported || []).join(' ')
-        ).trim();
+        // scope 不能只取 RFC 9728 资源元数据：Suno 只在 AS metadata 中声明部分
+        // write scope，单取资源元数据会得到只读/不完整授权。取并集，但仍以当前
+        // 资源的 metadata/challenge 为主，不跨服务器硬编码 scope 名。
+        const requestedScope = mergeOAuthScopes(
+          resourceMetadata.scopesSupported,
+          challengeScope,
+          metadata.scopesSupported,
+        );
         const redirectUri = `${panelOrigin(request)}/api/mcp/callback`;
         const store = mcpCredentialStore();
         const cachedClient = store.getClient(serverId);

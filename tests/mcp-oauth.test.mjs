@@ -13,6 +13,7 @@ import {
   discoverAuthorizationServers,
   discoverProtectedResourceMetadata,
   fetchAuthorizationServerMetadata,
+  mergeOAuthScopes,
   registerClient,
   generatePkce,
   buildAuthorizationUrl,
@@ -65,6 +66,14 @@ test('mcp oauth: scope comes from challenge/resource metadata', async () => {
   } finally {
     await server.close();
   }
+});
+
+test('mcp oauth: scope union includes AS-only write scopes without duplicates', () => {
+  assert.equal(
+    mergeOAuthScopes(['api:v0', 'library:read'], 'api:v0 profile:read', ['library:read', 'library:write', 'profile:write', 'studio:write']),
+    'api:v0 library:read profile:read library:write profile:write studio:write',
+  );
+  assert.equal(mergeOAuthScopes(undefined, null, ''), '');
 });
 
 test('mcp oauth: DCR 注册——公共客户端无 secret（RFC 7591）', async () => {
