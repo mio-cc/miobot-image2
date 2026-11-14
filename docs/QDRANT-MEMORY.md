@@ -1,4 +1,4 @@
-﻿# Qdrant 外部记忆后端
+# Qdrant 外部记忆后端
 
 ## 目标
 
@@ -126,3 +126,36 @@ free -h
 - 临时增加 swap
 - 或在另一台内存更大的机器上迁移，再把数据写入同一个 Qdrant collection
 - 不要在 bot 运行中直接迁移
+
+## 一键 cutover 脚本
+
+先检查（不修改数据、不切 backend）：
+
+```bash
+cd /opt/1panel/docker/compose/root/miobot-image2
+sudo bash scripts/qdrant-memory-cutover.sh --source /var/lib/miobot-v2/memory
+```
+
+确认后用一条命令执行完整流程：
+
+```bash
+sudo bash scripts/qdrant-memory-cutover.sh \
+  --source /var/lib/miobot-v2/memory \
+  --collection miobot_memory \
+  --apply \
+  --enable-bot
+```
+
+脚本会依次：
+
+1. 检查 Qdrant collection 和向量维度
+2. 停止 miobot
+3. 备份 Orama 到 `memory.orama-backup-时间戳`
+4. 备份 `/etc/miobot-v2.env`
+5. 运行迁移 dry-run
+6. 执行 Orama -> Qdrant 迁移
+7. 写入 `MIOBOT_MEMORY_BACKEND=qdrant` 和 Qdrant 配置
+8. 启动服务并检查后台健康
+9. 失败时恢复原环境变量
+
+API key 从 `QDRANT_API_KEY` 环境变量、`/etc/miobot-v2.env`，或脚本交互输入读取；不会作为命令行参数传给迁移进程。
