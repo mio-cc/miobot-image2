@@ -909,7 +909,10 @@ export class AgentRuntime implements AgentLoop {
     const builtins: ToolSpec[] = [ASK_USER_TOOL_SPEC, REPLY_PRESENTATION_TOOL_SPEC];
     if (this.deps.enablePlanTool) builtins.push(UPDATE_PLAN_TOOL_SPEC);
     for (const spec of builtins) {
-      if (requested && !requested.has(spec.name)) continue;
+      // Core control-plane builtins (ask_user / reply.presentation / update_plan)
+      // are not capability loadout entries. availableToolNames filters capability
+      // tools only; filtering these here makes presentation preferences disappear
+      // on resumed/restricted turns.
       if (!byName.has(spec.name)) byName.set(spec.name, spec);
     }
     return [...byName.values()];

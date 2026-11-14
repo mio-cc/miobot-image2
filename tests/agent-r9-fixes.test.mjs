@@ -103,6 +103,35 @@ test('P0-2: reply.presentation tool spec is a builtin low-risk core tool', async
   assert.equal(parseReplyPresentationArguments({ mode: 'nonsense' }), undefined);
 });
 
+test('P0-2: reply.presentation survives restricted capability tool loadout', async () => {
+  const cfg = createDefaultConfig();
+  cfg.agent.enabled = true;
+  cfg.agent.mode = 'enforce';
+  cfg.toolRegistry.enabled = true;
+  const requests = [];
+  const client = {
+    async chat(_node, request) {
+      requests.push(request);
+      return { text: 'ok', raw: {}, finishReason: 'stop' };
+    },
+    can: () => true,
+  };
+  const host = createAgentHost({
+    getConfig: () => cfg,
+    client,
+    sessions: new InMemoryAgentSessionManager({}),
+    idempotencyStore: new InMemoryToolIdempotencyStore(),
+    toolBindings: () => [],
+    preflightToolCall: () => ({ allowed: true }),
+    isReadOnlyTool: () => false,
+    isMigratedTool: () => true,
+  });
+  const outcome = await host({ text: '继续', chatType: 'private', userId: '7', sessionId: 'private:7', userRole: 'user', availableToolNames: ['audio.music.replay'] });
+  assert.equal(outcome.status, 'completed');
+  const names = (requests[0]?.toolSpecs || []).map((tool) => String(tool?.function?.name || tool?.name || ''));
+  assert.ok(names.includes('reply.presentation'), JSON.stringify(names));
+});
+
 test('P0-2: agent host persists session/user scope presentation and applies it to reply plan', async () => {
   const cfg = createDefaultConfig();
   cfg.bot.botQqId = '10000';
@@ -277,8 +306,8 @@ test('Suno: reply plan audio downloads to mp3 file and falls back to share link'
     sendPrivateRecord: async (userId, file) => { sent.push(['record', file]); return { success: true }; },
   };
   const strategies = { text: 'plain', image: 'plain', multiImage: 'plain', video: 'plain', file: 'plain', multiFile: 'plain', mixed: 'plain' };
-  const plan = () => ({
-    policy: { enabled: true, maxMessages: 12, maxChars: 20000, mode: 'auto', voice: 'off', reference: 'auto', forcedForward: false },
+  const plan = (voice = 'off') => ({
+    policy: { enabled: true, maxMessages: 12, maxChars: 20000, mode: 'auto', voice, reference: 'auto', forcedForward: false },
     groups: [{
       kind: 'audio',
       outputs: [{
@@ -298,6 +327,12 @@ test('Suno: reply plan audio downloads to mp3 file and falls back to share link'
   });
   assert.ok(ok?.success);
   assert.deepEqual(sent[0], ['file', `file:///share/雨音-${clipId}.mp3`, `雨音-${clipId}.mp3`], '下载成功必须走文件发送');
+  sent.length = 0;
+  const voice = await sendResult(engine, ctx, { kind: 'chat', handled: true, replyPlan: plan('on') }, undefined, undefined, client, async () => {}, 12, undefined, {
+    downloadSunoAudio: async ({ title }) => ({ fileRef: `file:///share/${title}-${clipId}.mp3`, name: `${title}-${clipId}.mp3` }),
+  });
+  assert.ok(voice?.success);
+  assert.deepEqual(sent[0], ['record', `file:///share/雨音-${clipId}.mp3`], 'voice=on 必须走语音 record 发送');
 
   sent.length = 0;
   const failed = await sendResult(engine, ctx, { kind: 'chat', handled: true, replyPlan: plan() }, undefined, undefined, client, async () => {}, 12, undefined, {

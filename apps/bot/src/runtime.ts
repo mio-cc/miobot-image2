@@ -2837,7 +2837,10 @@ async function postProcessReplyPlanOutputs(plan: any, options: {
         downloaded = await options.downloadSunoAudio({ clipId, title });
       } catch { /* 下载失败不阻断回复，按分享链接降级 */ }
       if (downloaded?.fileRef) {
-        output.kind = 'file';
+        // Delivery is a presentation concern, not a Suno concern. Keep the
+        // capability contract as audio unless the resolved reply policy explicitly
+        // asks for non-audio delivery (voice=off); then it can be a file.
+        output.kind = plan?.policy?.voice === 'off' ? 'file' : 'audio';
         output.url = downloaded.fileRef;
         output.meta = { ...meta, name: downloaded.name, sunoFile: true, shareUrl: sunoShareUrl(clipId) };
         continue;
