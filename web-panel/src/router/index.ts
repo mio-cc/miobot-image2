@@ -102,6 +102,7 @@ const routes: RouteRecordRaw[] = [
         path: '/cap-memory',
         name: 'cap-memory',
         component: () => import('../pages/CapMemoryPage.vue'),
+        meta: { title: '记忆与 Qdrant', group: '运行', icon: 'grid' },
 
     },
 

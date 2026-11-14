@@ -275,6 +275,23 @@ watch(() => route.query.cat, (value) => {
 
     <!-- 能力卡片：原型小卡片高密度网格（6 列 / 每页 18；1240→4 列，680→2 列） -->
     <div v-else class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-2.5">
+      <!-- 固定入口：记忆与 Qdrant 不属于模型能力注册表，但必须能从能力中心配置。 -->
+      <router-link v-if="view === 'registry' && !keyword.trim() && (category === '全部' || category === '解析')" to="/cap-memory" class="block group" aria-label="Qdrant 记忆后端配置">
+        <div class="relative h-full rounded-[10px] px-3 py-2.5 border border-[color:var(--accent-line)] bg-[color:var(--surface)] shadow-[var(--sh-1)] transition-all duration-200 group-hover:-translate-y-[2px] group-hover:shadow-[var(--sh-2)] cursor-pointer">
+          <span class="absolute top-2.5 right-2.5 dot dot-good" title="记忆后端配置入口" />
+          <div class="w-[22px] h-[22px] rounded-md grid place-items-center mb-1.5 bg-[color:var(--c-info-soft)] text-[color:var(--c-info)] transition-transform duration-200 group-hover:scale-[1.08]">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <ellipse cx="12" cy="5" rx="7" ry="3" /><path d="M5 5v7c0 1.7 3.1 3 7 3s7-1.3 7-3V5M5 12v7c0 1.7 3.1 3 7 3s7-1.3 7-3v-7" />
+            </svg>
+          </div>
+          <div class="text-[12.5px] font-semibold tracking-[-0.01em] truncate">Qdrant 记忆后端</div>
+          <div class="text-[10px] text-[color:var(--ink-3)] mt-0.5 mb-1.5 font-mono truncate">memory.backend</div>
+          <div class="flex items-center gap-1.5 text-[color:var(--ink-2)] min-w-0">
+            <span class="text-[9.5px] font-semibold rounded-[4px] px-1.5 py-px flex-none tag-parse">存储</span>
+            <span class="truncate text-[10.5px]" title="Qdrant 连接、Collection 与迁移配置">连接 / Collection / 迁移</span>
+          </div>
+        </div>
+      </router-link>
       <router-link v-for="card in pagedCards" :key="view + ':' + card.id" :to="card.href" class="block group">
         <div class="mb-cap relative bg-[color:var(--surface)] border border-[color:var(--hairline-2)] rounded-[10px] px-3 py-2.5 shadow-[var(--sh-1)] transition-all duration-200 group-hover:-translate-y-[2px] group-hover:shadow-[var(--sh-2)] group-hover:border-[color:var(--accent-line)] cursor-pointer h-full">
           <!-- 健康状态点（token 语义色，暗色自动适配） -->
