@@ -16,6 +16,7 @@ import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import FlowEditor from '../components/FlowEditor.vue';
 import ParamDefaultsEditor from '../components/ParamDefaultsEditor.vue';
+import AppSelect from '../components/AppSelect.vue';
 
 const route = useRoute();
 const configStore = useConfigStore();
@@ -120,6 +121,28 @@ const rootRiskLevel = computed({
     get: (): string => overrideValue(`mcp.${serverId.value}`, 'riskLevel') ?? '',
     set: (value: string) => { ensureOverride(`mcp.${serverId.value}`).riskLevel = value || undefined; },
 });
+
+/* 下拉选项：改用 AppSelect 自绘面板（原生 select 的箭头/滚动条在各平台不可控）。 */
+const RISK_LEVEL_OPTIONS = [
+    { value: '', label: '（默认：中风险）' },
+    { value: 'low', label: '低风险' },
+    { value: 'medium', label: '中风险' },
+    { value: 'high', label: '高风险' },
+    { value: 'critical', label: '极高风险' },
+];
+
+const EXPOSURE_OPTIONS = [
+    { value: '', label: '（默认：按需检索）' },
+    { value: 'core', label: '核心常驻（每次对话都带上）' },
+    { value: 'domain', label: '领域常驻（相关话题时带上）' },
+    { value: 'searchable', label: '按需检索（模型搜索后使用）' },
+    { value: 'hidden', label: '完全隐藏（模型不可见）' },
+];
+
+/** 模型可见方式：保持原有「写 exposure[id] 或 undefined」语义。 */
+function setExposure(value: string | number) {
+    configStore.config.toolRegistry.exposure[`mcp.${serverId.value}`] = String(value ?? '') || undefined;
+}
 const childModels = computed(() => serverChildren.value.map((child: any) => ({
     ...child,
     enabledModel: computed({
@@ -590,24 +613,17 @@ onUnmounted(() => {
           <input v-model="rootName" class="input-field" :placeholder="`${serverId} MCP`" />
         </FormField>
         <FormField label="风险等级" hint="留空 = 按中风险（medium）处理">
-          <select v-model="rootRiskLevel" class="input-field">
-            <option value="">（默认：中风险）</option>
-            <option value="low">低风险</option>
-            <option value="medium">中风险</option>
-            <option value="high">高风险</option>
-            <option value="critical">极高风险</option>
-          </select>
+          <AppSelect v-model="rootRiskLevel" :options="RISK_LEVEL_OPTIONS" placeholder="（默认：中风险）" />
         </FormField>
         <ToggleField v-model="rootEnabled" label="入口工具启用（开放给模型调用）" />
         <ToggleField v-model="rootApproval" label="每次调用都需要审批" />
         <FormField label="模型可见方式" :hint="exposure ? `当前显式设置为「${exposure === 'searchable' ? '按需检索' : exposure === 'core' ? '核心常驻' : exposure === 'domain' ? '领域常驻' : '完全隐藏'}」` : '未配置 → 默认「按需检索」，需要开启工具检索才可见'">
-          <select :value="exposure ?? ''" class="input-field" @change="configStore.config.toolRegistry.exposure[`mcp.${serverId}`] = ($event.target as HTMLSelectElement).value || undefined">
-            <option value="">（默认：按需检索）</option>
-            <option value="core">核心常驻（每次对话都带上）</option>
-            <option value="domain">领域常驻（相关话题时带上）</option>
-            <option value="searchable">按需检索（模型搜索后使用）</option>
-            <option value="hidden">完全隐藏（模型不可见）</option>
-          </select>
+          <AppSelect
+            :model-value="exposure ?? ''"
+            :options="EXPOSURE_OPTIONS"
+            placeholder="（默认：按需检索）"
+            @change="setExposure"
+          />
         </FormField>
         <FormField v-if="server.transport === 'stdio'" label="启动命令" hint="本地 MCP 进程的启动命令；改动后需要点「重连」才生效">
           <input v-model="server.command" class="input-field font-mono" placeholder="node" />

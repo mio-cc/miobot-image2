@@ -5,6 +5,7 @@ import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import AppSelect from '../components/AppSelect.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
 
 /**
  * 回复与发送页（输出层）。
@@ -121,10 +122,10 @@ const groupVoiceOptions = [
           <span class="text-xs text-[color:var(--ink-3)]">本地排版后发图，不启动 Chromium；渲染失败自动回退文本。</span>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <FormField label="默认宽度"><input v-model.number="config.bot.textImage.width" type="number" min="320" max="4096" class="input-field" /></FormField>
-          <FormField label="字号"><input v-model.number="config.bot.textImage.fontSize" type="number" min="12" max="96" class="input-field" /></FormField>
-          <FormField label="行距"><input v-model.number="config.bot.textImage.lineHeight" type="number" min="1.1" max="3" step="0.1" class="input-field" /></FormField>
-          <FormField label="JPEG 质量"><input v-model.number="config.bot.textImage.quality" type="number" min="1" max="100" class="input-field" /></FormField>
+          <FormField label="默认宽度"><UiNumberField v-model="config.bot.textImage.width" :min="320" :max="4096" /></FormField>
+          <FormField label="字号"><UiNumberField v-model="config.bot.textImage.fontSize" :min="12" :max="96" /></FormField>
+          <FormField label="行距"><UiNumberField v-model="config.bot.textImage.lineHeight" :min="1.1" :max="3" :step="0.1" /></FormField>
+          <FormField label="JPEG 质量"><UiNumberField v-model="config.bot.textImage.quality" :min="1" :max="100" /></FormField>
           <FormField label="字体"><input v-model="config.bot.textImage.fontFamily" class="input-field font-mono" /></FormField>
           <FormField label="背景色"><input v-model="config.bot.textImage.background" class="input-field font-mono" /></FormField>
           <FormField label="文字色"><input v-model="config.bot.textImage.foreground" class="input-field font-mono" /></FormField>
@@ -135,10 +136,10 @@ const groupVoiceOptions = [
 
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
         <FormField label="每段最多字数" hint="0 表示不拆分；建议 1200-2500">
-          <input type="number" min="0" max="20000" step="100" v-model.number="config.bot.textReply.maxChars" class="input-field" />
+          <UiNumberField v-model="config.bot.textReply.maxChars" :min="0" :max="20000" :step="100" />
         </FormField>
         <FormField label="分段间隔 (ms)" hint="发太快会被 QQ 判定刷屏">
-          <input type="number" min="0" max="10000" step="100" v-model.number="config.bot.textReply.splitDelayMs" class="input-field" />
+          <UiNumberField v-model="config.bot.textReply.splitDelayMs" :min="0" :max="10000" :step="100" />
         </FormField>
         <div class="self-end">
           <ToggleField v-model="config.bot.textReply.showPartPrefix" label="显示分段序号 (1/3)" />
@@ -148,10 +149,10 @@ const groupVoiceOptions = [
 
     <SectionCard v-if="orch" title="编排消息预算（orch.reply）" hint="智能编排 enforce 链路的结果预算；优先嵌套合并转发，文件和语音按不可合并处理" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        <FormField label="最大结果数"><input v-model.number="orch.reply.maxResultItems" type="number" min="1" class="input-field" /></FormField>
-        <FormField label="最大消息数"><input v-model.number="orch.reply.maxMessages" type="number" min="1" max="20" class="input-field" /></FormField>
-        <FormField label="嵌套最大节点数"><input v-model.number="orch.reply.nestedMaxNodes" type="number" min="1" class="input-field" /></FormField>
-        <FormField label="嵌套最大深度"><input v-model.number="orch.reply.nestedMaxDepth" type="number" min="1" max="5" class="input-field" /></FormField>
+        <FormField label="最大结果数"><UiNumberField v-model="orch.reply.maxResultItems" :min="1" /></FormField>
+        <FormField label="最大消息数"><UiNumberField v-model="orch.reply.maxMessages" :min="1" :max="20" /></FormField>
+        <FormField label="嵌套最大节点数"><UiNumberField v-model="orch.reply.nestedMaxNodes" :min="1" /></FormField>
+        <FormField label="嵌套最大深度"><UiNumberField v-model="orch.reply.nestedMaxDepth" :min="1" :max="5" /></FormField>
         <FormField label="超出预算">
           <AppSelect v-model="orch.reply.overflowPolicy" :options="overflowPolicyOptions" />
         </FormField>
@@ -176,19 +177,19 @@ const groupVoiceOptions = [
           <AppSelect v-model="replyPolicy.defaultVoice" :options="voiceStrategyOptions" />
         </FormField>
         <FormField label="强制转发阈值" hint="文本达到该字符数即强制合并转发（auto/direct/plain/forward 全部模式生效，模型请求 direct 也不可绕过）">
-          <input v-model.number="replyPolicy.forcedForwardThreshold" type="number" min="1" max="100000" class="input-field" />
+          <UiNumberField v-model="replyPolicy.forcedForwardThreshold" :min="1" :max="100000" />
         </FormField>
         <FormField label="硬最大字符数" hint="单条消息不可超过的硬上限">
-          <input v-model.number="replyPolicy.hardMaxChars" type="number" min="1" max="100000" class="input-field" />
+          <UiNumberField v-model="replyPolicy.hardMaxChars" :min="1" :max="100000" />
         </FormField>
         <FormField label="硬最大消息数" hint="最终发送预算，优先生效">
-          <input v-model.number="replyPolicy.hardMaxMessages" type="number" min="1" max="100" class="input-field" />
+          <UiNumberField v-model="replyPolicy.hardMaxMessages" :min="1" :max="100" />
         </FormField>
         <FormField label="会话偏好 TTL (ms)" hint="0 表示不过期">
-          <input v-model.number="replyPolicy.sessionPreferenceTtlMs" type="number" min="0" class="input-field" />
+          <UiNumberField v-model="replyPolicy.sessionPreferenceTtlMs" :min="0" />
         </FormField>
         <FormField label="用户偏好 TTL (ms)" hint="0 表示不过期">
-          <input v-model.number="replyPolicy.userPreferenceTtlMs" type="number" min="0" class="input-field" />
+          <UiNumberField v-model="replyPolicy.userPreferenceTtlMs" :min="0" />
         </FormField>
         <FormField label="音频发送约束"><div class="tag">强制直发，不可转发</div></FormField>
         <FormField label="文件发送约束"><div class="tag">强制直发，不可转发</div></FormField>
@@ -229,12 +230,10 @@ const groupVoiceOptions = [
         <ToggleField v-model="config.bot.imageCompression.enabled" label="默认发送压缩图"
           hint="保留原图，可引用后发「原图」取回" />
         <FormField label="压缩倍率" hint="0.65 表示宽高压到 65%">
-          <input type="number" min="0.1" max="1" step="0.05" v-model.number="config.bot.imageCompression.scale"
-            :disabled="!config.bot.imageCompression.enabled" class="input-field" />
+          <UiNumberField v-model="config.bot.imageCompression.scale" :min="0.1" :max="1" :step="0.05" :disabled="!config.bot.imageCompression.enabled" />
         </FormField>
         <FormField label="JPEG 质量" hint="透明图仍会保留 PNG">
-          <input type="number" min="1" max="100" step="1" v-model.number="config.bot.imageCompression.quality"
-            :disabled="!config.bot.imageCompression.enabled" class="input-field" />
+          <UiNumberField v-model="config.bot.imageCompression.quality" :min="1" :max="100" :step="1" :disabled="!config.bot.imageCompression.enabled" />
         </FormField>
       </div>
 
@@ -242,8 +241,7 @@ const groupVoiceOptions = [
         <ToggleField v-model="config.bot.autoRecallImages" label="发图后自动撤回"
           hint="只撤回群里由机器人发出的图片" />
         <FormField label="撤回延迟（秒）">
-          <input type="number" min="1" step="1" v-model.number="config.bot.autoRecallDelaySeconds"
-            :disabled="!config.bot.autoRecallImages" class="input-field" placeholder="60" />
+          <UiNumberField v-model="config.bot.autoRecallDelaySeconds" :min="1" :step="1" :disabled="!config.bot.autoRecallImages" placeholder="60" />
         </FormField>
       </div>
     </SectionCard>

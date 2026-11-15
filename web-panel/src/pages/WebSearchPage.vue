@@ -6,6 +6,7 @@ import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import AppSelect from '../components/AppSelect.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
 
 const configStore = useConfigStore();
 const config = computed(() => configStore.config);
@@ -110,7 +111,7 @@ function formatDate(value?: string) {
           <input v-model="config.search.googleCx" class="input-field font-mono" placeholder="xxxxxxxxxxxx:yyyyyyyy" />
         </FormField>
         <FormField label="结果数量" hint="1-50；最终注入模型的内容还会受总字符限制">
-          <input v-model.number="config.search.maxResults" type="number" min="1" max="50" class="input-field" />
+          <UiNumberField v-model="config.search.maxResults" :min="1" :max="50" />
         </FormField>
         <FormField label="搜索语言">
           <input v-model="config.search.language" class="input-field" placeholder="zh-CN" />
@@ -138,10 +139,10 @@ function formatDate(value?: string) {
           <input v-model="config.search.jinaApiKey" type="password" class="input-field font-mono" placeholder="可选" />
         </FormField>
         <FormField label="单条正文上限">
-          <input v-model.number="config.search.maxContentChars" type="number" min="500" max="20000" step="500" class="input-field" />
+          <UiNumberField v-model="config.search.maxContentChars" :min="500" :max="20000" :step="500" />
         </FormField>
         <FormField label="注入总字符上限">
-          <input v-model.number="config.search.maxTotalChars" type="number" min="2000" max="100000" step="1000" class="input-field" />
+          <UiNumberField v-model="config.search.maxTotalChars" :min="2000" :max="100000" :step="1000" />
         </FormField>
       </div>
     </SectionCard>
@@ -149,16 +150,16 @@ function formatDate(value?: string) {
     <SectionCard title="性能与重试" hint="DeepSeek Search/Fetch 官方限制为每账号 5 QPS" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
         <FormField label="超时（毫秒）">
-          <input v-model.number="config.search.timeoutMs" type="number" min="3000" max="120000" step="1000" class="input-field" />
+          <UiNumberField v-model="config.search.timeoutMs" :min="3000" :max="120000" :step="1000" />
         </FormField>
         <FormField label="重试次数">
-          <input v-model.number="config.search.retryCount" type="number" min="0" max="5" class="input-field" />
+          <UiNumberField v-model="config.search.retryCount" :min="0" :max="5" />
         </FormField>
         <FormField label="缓存 TTL（秒）" hint="0 = 不缓存">
-          <input v-model.number="config.search.cacheTtlSeconds" type="number" min="0" max="86400" class="input-field" />
+          <UiNumberField v-model="config.search.cacheTtlSeconds" :min="0" :max="86400" />
         </FormField>
         <FormField label="QPS 上限">
-          <input v-model.number="config.search.qps" type="number" min="1" max="20" class="input-field" />
+          <UiNumberField v-model="config.search.qps" :min="1" :max="20" />
         </FormField>
       </div>
     </SectionCard>

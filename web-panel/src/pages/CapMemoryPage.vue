@@ -7,6 +7,7 @@ import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import ModelPicker from '../components/ModelPicker.vue';
 import AppSelect from '../components/AppSelect.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
 
 /**
  * 记忆与上下文中心（Harness Memory Layer）。
@@ -182,8 +183,8 @@ async function runMemoryAction() {
             @update:node-index="orch.memory.embeddingNodeIndex = $event"
             @update:model="orch.memory.embeddingModel = $event" />
         </FormField>
-        <FormField label="向量维度"><input v-model.number="orch.memory.embeddingDimensions" type="number" min="1" class="input-field" /></FormField>
-        <FormField label="摘要间隔" hint="滚动摘要阈值（每 N 条生成一次）"><input v-model.number="orch.memory.summarizeEvery" type="number" min="2" class="input-field" /></FormField>
+        <FormField label="向量维度"><UiNumberField v-model="orch.memory.embeddingDimensions" :min="1" /></FormField>
+        <FormField label="摘要间隔" hint="滚动摘要阈值（每 N 条生成一次）"><UiNumberField v-model="orch.memory.summarizeEvery" :min="2" /></FormField>
       </div>
       <p class="text-[color:var(--ink-3)] text-xs mt-3">
         每次回复自动注入的记忆预算（TopK / 最低分 / 字符上限 / 群上下文）唯一在「Agent」页配置（contextPolicy）；模型可在预算之上经内部技能 memory.search 自主检索更多。
@@ -197,19 +198,19 @@ async function runMemoryAction() {
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.memory.observation.includePrivateMessages" label="观察私聊消息" /></div>
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.memory.observation.includeAssistantReplies" label="观察 Bot 回复" /></div>
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.memory.observation.includeAttachments" label="记录附件元数据" hint="只存 URL/文件名引用，不存内容" /></div>
-        <FormField label="单条正文上限" hint="超长消息截断后再入库"><input v-model.number="orch.memory.observation.maxTextCharsPerMessage" type="number" min="200" class="input-field" /></FormField>
-        <FormField label="连发合并窗口 (ms)" hint="触发后等待并收集同会话相邻消息（卡头/中间/结尾带触发的连发场景）；0 = 关闭"><input v-model.number="orch.memory.observation.coalesceWindowMs" type="number" min="0" max="2000" step="50" class="input-field" /></FormField>
+        <FormField label="单条正文上限" hint="超长消息截断后再入库"><UiNumberField v-model="orch.memory.observation.maxTextCharsPerMessage" :min="200" /></FormField>
+        <FormField label="连发合并窗口 (ms)" hint="触发后等待并收集同会话相邻消息（卡头/中间/结尾带触发的连发场景）；0 = 关闭"><UiNumberField v-model="orch.memory.observation.coalesceWindowMs" :min="0" :max="2000" :step="50" /></FormField>
       </div>
     </SectionCard>
 
     <SectionCard title="保留与清理" hint="每 cleanupIntervalDays 天执行一次，滚动保留 retentionDays 个自然日桶（默认 3 天/3 天）；删除前自动备份，重启不重复执行" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        <FormField label="保留天数" hint="滚动窗口大小；设 1 = 只保留最近一天"><input v-model.number="orch.memory.retentionDays" type="number" min="1" class="input-field" /></FormField>
-        <FormField label="清理间隔（天）"><input v-model.number="orch.memory.retention.cleanupIntervalDays" type="number" min="1" class="input-field" /></FormField>
+        <FormField label="保留天数" hint="滚动窗口大小；设 1 = 只保留最近一天"><UiNumberField v-model="orch.memory.retentionDays" :min="1" /></FormField>
+        <FormField label="清理间隔（天）"><UiNumberField v-model="orch.memory.retention.cleanupIntervalDays" :min="1" /></FormField>
         <FormField label="清理时刻" hint="每天该时刻检查一次是否到期">
           <div class="flex gap-2">
-            <input v-model.number="orch.memory.retention.cleanupHour" type="number" min="0" max="23" class="input-field" />
-            <input v-model.number="orch.memory.retention.cleanupMinute" type="number" min="0" max="59" class="input-field" />
+            <UiNumberField v-model="orch.memory.retention.cleanupHour" :min="0" :max="23" />
+            <UiNumberField v-model="orch.memory.retention.cleanupMinute" :min="0" :max="59" />
           </div>
         </FormField>
       </div>

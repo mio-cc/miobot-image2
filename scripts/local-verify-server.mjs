@@ -2068,7 +2068,16 @@ async function handleCompatApi(req, res, url) {
     const result = await api.handle(forwarded);
     return sendJson(res, result.status, result.body);
   }
-  if (req.method === 'GET' && p === '/api/config') return sendJson(res, 200, currentConfig());
+  // ?meta=1：额外带上服务端当前 revision。
+  // 面板靠它做乐观锁；裸 config 里没有 revision，客户端只能一直用 0，
+  // 一旦服务端被别的入口保存过（revision 变了），面板下一次保存就必然 409。
+  if (req.method === 'GET' && p === '/api/config') {
+    const cfg = currentConfig();
+    if (url.searchParams.get('meta') === '1') {
+      return sendJson(res, 200, { config: cfg, revision: api.repository.revision });
+    }
+    return sendJson(res, 200, cfg);
+  }
   if (req.method === 'POST' && p === '/api/config') {
     // 与 WebApi 同款 revision 乐观锁：面板新客户端提交 {revision, config} 包装体，
     // 陈旧快照必须被 409 拒绝（防注册表等旁路改动被旧快照 merge 回滚）；裸配置体保持旧行为。

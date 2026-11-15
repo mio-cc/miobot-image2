@@ -5,6 +5,7 @@ import FormField from './FormField.vue';
 import ToggleField from './ToggleField.vue';
 import ModelPicker from './ModelPicker.vue';
 import AppSelect from './AppSelect.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
 
 /**
  * 编排面板（编排执行限制 / 编排模式与规划器 / planner 角色卡）。
@@ -37,12 +38,12 @@ const roleKeys = ['planner'] as const;
   <!-- ═══ R21 审计补缺 + P1 技术债收敛（「执行预算」四项）═══ -->
   <SectionCard v-if="orchestration?.execution" title="编排执行限制" hint="orchestration.execution · 防止多步骤、多模型和外部能力失控" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4">
-        <FormField label="最大步数"><input v-model.number="orchestration.execution.maxSteps" type="number" min="1" class="input-field" /></FormField>
-        <FormField label="最大并行步"><input v-model.number="orchestration.execution.maxParallelSteps" type="number" min="1" class="input-field" /></FormField>
-        <FormField label="最大深度"><input v-model.number="orchestration.execution.maxDepth" type="number" min="1" max="100" class="input-field" /></FormField>
-        <FormField label="最大时长 (ms)"><input v-model.number="orchestration.execution.maxDurationMs" type="number" min="1000" class="input-field" /></FormField>
-        <FormField label="最大开销"><input v-model.number="orchestration.execution.maxCost" type="number" min="0" step="0.1" class="input-field" /></FormField>
-        <FormField label="最大模型轮次"><input v-model.number="orchestration.execution.maxModelRounds" type="number" min="1" class="input-field" /></FormField>
+        <FormField label="最大步数"><UiNumberField v-model="orchestration.execution.maxSteps" :min="1" /></FormField>
+        <FormField label="最大并行步"><UiNumberField v-model="orchestration.execution.maxParallelSteps" :min="1" /></FormField>
+        <FormField label="最大深度"><UiNumberField v-model="orchestration.execution.maxDepth" :min="1" :max="100" /></FormField>
+        <FormField label="最大时长 (ms)"><UiNumberField v-model="orchestration.execution.maxDurationMs" :min="1000" /></FormField>
+        <FormField label="最大开销"><UiNumberField v-model="orchestration.execution.maxCost" :min="0" :step="0.1" /></FormField>
+        <FormField label="最大模型轮次"><UiNumberField v-model="orchestration.execution.maxModelRounds" :min="1" /></FormField>
         <FormField label="失败策略">
           <AppSelect v-model="orchestration.execution.failurePolicy" :options="failurePolicyOptions" />
         </FormField>
@@ -63,14 +64,14 @@ const roleKeys = ['planner'] as const;
             @update:node-index="orchestration.planner.nodeIndex = $event"
             @update:model="orchestration.planner.model = $event" />
         </FormField>
-        <FormField label="推理 maxTokens 兜底" hint="suno 局部编辑推理等模型调用的 maxTokens 兜底"><input v-model.number="orchestration.planner.alignmentReviewMaxTokens" type="number" min="1" max="200000" step="100" class="input-field" /></FormField>
+        <FormField label="推理 maxTokens 兜底" hint="suno 局部编辑推理等模型调用的 maxTokens 兜底"><UiNumberField v-model="orchestration.planner.alignmentReviewMaxTokens" :min="1" :max="200000" :step="100" /></FormField>
         <FormField label="Help 追加说明" hint="追加到完整帮助文本末尾，可写本实例专属能力">
           <textarea v-model="orchestration.help.extraText" rows="4" class="input-field"></textarea>
         </FormField>
       </div>
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 border-t border-[color:var(--hairline-2)] pt-4">
-        <FormField label="执行期追问次数上限" hint="执行中缺信息时向用户追问的次数预算（0=不追问）"><input v-model.number="orchestration.planner.maxClarifications" type="number" min="0" max="5" class="input-field" /></FormField>
-        <FormField label="追问等待超时 (ms)" hint="超时未回复按放弃处理"><input v-model.number="orchestration.planner.clarificationTimeoutMs" type="number" min="1000" step="1000" class="input-field" /></FormField>
+        <FormField label="执行期追问次数上限" hint="执行中缺信息时向用户追问的次数预算（0=不追问）"><UiNumberField v-model="orchestration.planner.maxClarifications" :min="0" :max="5" /></FormField>
+        <FormField label="追问等待超时 (ms)" hint="超时未回复按放弃处理"><UiNumberField v-model="orchestration.planner.clarificationTimeoutMs" :min="1000" :step="1000" /></FormField>
       </div>
     </SectionCard>
 
@@ -87,9 +88,11 @@ const roleKeys = ['planner'] as const;
               @update:node-index="orchestration.roles[role].nodeIndex = $event"
               @update:model="orchestration.roles[role].model = $event" />
           </FormField>
-          <FormField label="超时 (ms)" hint="留空使用模型默认"><input v-model.number="orchestration.roles[role].timeoutMs" type="number" min="1000" step="1000" class="input-field" /></FormField>
-          <FormField label="温度" hint="留空使用模型默认；建议 0 到 1"><input v-model.number="orchestration.roles[role].temperature" type="number" min="0" max="2" step="0.05" class="input-field" /></FormField>
-          <FormField label="maxTokens" hint="留空使用模型默认"><input v-model.number="orchestration.roles[role].maxTokens" type="number" min="1" max="200000" step="100" class="input-field" /></FormField>
+          <FormField label="超时 (ms)" hint="留空使用模型默认"><UiNumberField v-model="orchestration.roles[role].timeoutMs" :min="1000" :step="1000" /></FormField>
+          <FormField label="温度" hint="留空使用模型默认；建议 0 到 1">
+            <UiNumberField v-model="orchestration.roles[role].temperature" :min="0" :max="2" :step="0.05" meter width="md" />
+          </FormField>
+          <FormField label="maxTokens" hint="留空使用模型默认"><UiNumberField v-model="orchestration.roles[role].maxTokens" :min="1" :max="200000" :step="100" /></FormField>
           <FormField label="Fallback 节点与模型" hint="主模型失败时切换；留空模型用同角色模型">
             <ModelPicker capability="chat"
               :node-index="Number(orchestration.roles[role].fallbackNodeIndex) || 0" :model="orchestration.roles[role].fallbackModel || ''"

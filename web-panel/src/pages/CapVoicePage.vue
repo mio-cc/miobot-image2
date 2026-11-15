@@ -8,6 +8,7 @@ import ToggleField from '../components/ToggleField.vue';
 import ModelBindingMirror from '../components/ModelBindingMirror.vue';
 import PromptRegistryLink from '../components/PromptRegistryLink.vue';
 import AppSelect from '../components/AppSelect.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
 
 /**
  * 语音能力页（tts.speak + voice.*）。
@@ -131,16 +132,13 @@ const voiceScopeOptions = [
         </p>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
           <FormField label="超时 (ms)">
-            <input v-model.number="tts.preprocess.timeoutMs" type="number" min="5000" step="5000"
-              :disabled="!tts.preprocess.enabled" class="input-field" />
+            <UiNumberField v-model="tts.preprocess.timeoutMs" :min="5000" :step="5000" :disabled="!tts.preprocess.enabled" />
           </FormField>
           <FormField label="发送前延迟 (ms)" hint="给 QQ 留出处理间隔">
-            <input v-model.number="tts.preprocess.delayMs" type="number" min="0" step="100"
-              :disabled="!tts.preprocess.enabled" class="input-field" />
+            <UiNumberField v-model="tts.preprocess.delayMs" :min="0" :step="100" :disabled="!tts.preprocess.enabled" />
           </FormField>
           <FormField label="输出上限（字）">
-            <input v-model.number="tts.preprocess.maxOutputChars" type="number" min="50" step="50"
-              :disabled="!tts.preprocess.enabled" class="input-field" />
+            <UiNumberField v-model="tts.preprocess.maxOutputChars" :min="50" :step="50" :disabled="!tts.preprocess.enabled" />
           </FormField>
         </div>
         <div class="mt-4">
@@ -156,16 +154,16 @@ const voiceScopeOptions = [
     <template #advanced>
       <div v-if="tts" class="grid grid-cols-1 md:grid-cols-5 gap-4">
         <FormField label="自动朗读上限（字）" hint="超过这个长度就只发文字，不合成语音">
-          <input v-model.number="tts.autoTextMaxChars" type="number" min="0" max="4000" step="10" class="input-field" />
+          <UiNumberField v-model="tts.autoTextMaxChars" :min="0" :max="4000" :step="10" />
         </FormField>
         <FormField label="超时 (ms)" hint="长文本会按字数自动延长，最高 300000ms">
-          <input v-model.number="tts.timeoutMs" type="number" min="5000" step="5000" class="input-field" />
+          <UiNumberField v-model="tts.timeoutMs" :min="5000" :step="5000" />
         </FormField>
         <FormField label="语速" hint="1 为正常">
-          <input v-model.number="tts.speed" type="number" min="0.5" max="2" step="0.05" class="input-field" />
+          <UiNumberField v-model="tts.speed" :min="0.5" :max="2" :step="0.05" />
         </FormField>
         <FormField label="音量增益" hint="0 为不调整">
-          <input v-model.number="tts.volume" type="number" min="-20" max="20" step="1" class="input-field" />
+          <UiNumberField v-model="tts.volume" :min="-20" :max="20" :step="1" />
         </FormField>
         <FormField label="延迟模式" hint="low 更快但音质略降">
           <AppSelect v-model="tts.latency" :options="ttsLatencyOptions" />
@@ -182,11 +180,11 @@ const voiceScopeOptions = [
           <FormField label="允许场景">
             <AppSelect v-model="orch.voice.allowedScopes" :options="voiceScopeOptions" />
           </FormField>
-          <FormField label="最大候选数"><input v-model.number="orch.voice.maxCandidates" type="number" min="1" max="10" class="input-field" /></FormField>
-          <FormField label="候选有效期 (ms)"><input v-model.number="orch.voice.candidateTtlMs" type="number" min="60000" class="input-field" /></FormField>
-          <FormField label="试听冷却 (ms)"><input v-model.number="orch.voice.previewCooldownMs" type="number" min="0" class="input-field" /></FormField>
-          <FormField label="每日试听上限"><input v-model.number="orch.voice.previewDailyLimit" type="number" min="0" class="input-field" /></FormField>
-          <FormField label="试听文本上限"><input v-model.number="orch.voice.previewMaxChars" type="number" min="1" max="200" class="input-field" /></FormField>
+          <FormField label="最大候选数"><UiNumberField v-model="orch.voice.maxCandidates" :min="1" :max="10" /></FormField>
+          <FormField label="候选有效期 (ms)"><UiNumberField v-model="orch.voice.candidateTtlMs" :min="60000" /></FormField>
+          <FormField label="试听冷却 (ms)"><UiNumberField v-model="orch.voice.previewCooldownMs" :min="0" /></FormField>
+          <FormField label="每日试听上限"><UiNumberField v-model="orch.voice.previewDailyLimit" :min="0" /></FormField>
+          <FormField label="试听文本上限"><UiNumberField v-model="orch.voice.previewMaxChars" :min="1" :max="200" /></FormField>
           <FormField label="FishAudio 音色 API"><input v-model="orch.voice.voicesApiUrl" class="input-field font-mono" placeholder="https://api.fish.audio/model" /></FormField>
         </div>
       </SectionCard>

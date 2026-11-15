@@ -6,6 +6,8 @@ import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import AppSelect from '../components/AppSelect.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
+import UiSwitch from '../components/ui/UiSwitch.vue';
 
 /* P1 最后一批·下拉收尾：画布日志级别选项（与原 <option> 一一对应）。 */
 const canvasLogLevelOptions = [
@@ -265,12 +267,13 @@ onBeforeUnmount(stopTimer);
 
         <label class="flex items-center gap-1.5 text-xs text-[color:var(--ink-3)]">
           显示
-          <input v-model.number="limit" @change="applyLogLimit" @keyup.enter="applyLogLimit" type="number" min="1" max="10000" step="100" class="input-field !w-[110px]" />
+          <UiNumberField v-model="limit" @change="applyLogLimit" :min="1" :max="10000" :step="100" class="!w-[110px]" />
           条
         </label>
 
         <label class="flex items-center gap-1.5 text-xs text-[color:var(--ink-3)]">
-          <input type="checkbox" v-model="autoRefresh" />自动刷新
+          <UiSwitch v-model="autoRefresh" size="sm" label="自动刷新" />
+          <span>自动刷新</span>
         </label>
         <span class="text-xs text-[color:var(--ink-3)] ml-auto whitespace-nowrap" title="命中 = 当前筛选条件的总命中数（服务端口径，不受显示条数截断）；显示 = 屏幕上实际展示的条数；共 = 该日志源的全量条数">命中 {{ filteredTotal }} · 显示 {{ entries.length }} / 共 {{ grandTotal }} 条</span>
         <button class="btn-outline text-xs" :disabled="loading" @click="fetchLogs()">{{ loading ? '刷新中...' : '刷新' }}</button>
@@ -337,7 +340,7 @@ onBeforeUnmount(stopTimer);
             <AppSelect v-model="config.canvas.logs.level" :options="canvasLogLevelOptions" />
           </FormField>
           <FormField label="内存上限">
-            <input v-model.number="config.canvas.logs.maxMemoryEntries" type="number" min="100" max="5000" step="100" class="input-field" />
+            <UiNumberField v-model="config.canvas.logs.maxMemoryEntries" :min="100" :max="5000" :step="100" />
           </FormField>
         </div>
       </SectionCard>
@@ -346,10 +349,10 @@ onBeforeUnmount(stopTimer);
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
           <ToggleField v-model="config.bot.dailyReport.enabled" label="启用日报" />
           <FormField label="发送时刻（时）" hint="0-23">
-            <input v-model.number="config.bot.dailyReport.hour" type="number" min="0" max="23" class="input-field" :disabled="!config.bot.dailyReport.enabled" />
+            <UiNumberField v-model="config.bot.dailyReport.hour" :min="0" :max="23" :disabled="!config.bot.dailyReport.enabled" />
           </FormField>
           <FormField label="发送时刻（分）" hint="0-59">
-            <input v-model.number="config.bot.dailyReport.minute" type="number" min="0" max="59" class="input-field" :disabled="!config.bot.dailyReport.enabled" />
+            <UiNumberField v-model="config.bot.dailyReport.minute" :min="0" :max="59" :disabled="!config.bot.dailyReport.enabled" />
           </FormField>
         </div>
       </SectionCard>

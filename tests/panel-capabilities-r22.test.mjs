@@ -27,8 +27,8 @@ test('R22 trigger/continue role binds editable model fields', () => {
 
 test('R23 tools page exposes the model tool loadout budget', () => {
   assert.match(tools, /title="工具加载预算"/);
-  assert.match(tools, /v-model\.number="tools\.maxToolsPerTurn"/);
-  assert.match(tools, /max="128"/);
+  assert.match(tools, /<UiNumberField v-model="tools\.maxToolsPerTurn"/);
+  assert.match(tools, /:max="128"/);
   assert.match(tools, /useConfigStore/);
   assert.match(router, /title: 'Agent 与工具'/);
 });

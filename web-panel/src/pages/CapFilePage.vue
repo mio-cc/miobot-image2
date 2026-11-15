@@ -4,6 +4,7 @@ import { useConfigStore } from '../stores/config';
 import CapabilityPageLayout from '../components/CapabilityPageLayout.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
 
 /**
  * 文件能力页（file.read / file.generate / file.list）。
@@ -22,31 +23,31 @@ const config = computed(() => configStore.config);
       <div v-if="config" class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4">
         <div class="flex items-end"><ToggleField v-model="config.bot.files.enabled" label="启用文件读取" /></div>
         <FormField label="索引保留（分钟）" hint="默认 1440 = 24 小时">
-          <input type="number" min="1" max="10080" v-model.number="config.bot.files.indexTtlMinutes" class="input-field" />
+          <UiNumberField v-model="config.bot.files.indexTtlMinutes" :min="1" :max="10080" />
         </FormField>
         <FormField label="每个会话文件数" hint="超出后淘汰最旧记录">
-          <input type="number" min="10" max="1000" v-model.number="config.bot.files.maxIndexPerChat" class="input-field" />
+          <UiNumberField v-model="config.bot.files.maxIndexPerChat" :min="10" :max="1000" />
         </FormField>
         <FormField label="单文件上限（MB）" hint="下载和解析的硬上限">
-          <input type="number" min="1" max="50" v-model.number="config.bot.files.maxFileSizeMB" class="input-field" />
+          <UiNumberField v-model="config.bot.files.maxFileSizeMB" :min="1" :max="50" />
         </FormField>
         <FormField label="最大提取字符数">
-          <input type="number" min="1000" max="200000" step="1000" v-model.number="config.bot.files.maxTextChars" class="input-field" />
+          <UiNumberField v-model="config.bot.files.maxTextChars" :min="1000" :max="200000" :step="1000" />
         </FormField>
         <FormField label="PDF 最大页数">
-          <input type="number" min="1" max="200" v-model.number="config.bot.files.maxPdfPages" class="input-field" />
+          <UiNumberField v-model="config.bot.files.maxPdfPages" :min="1" :max="200" />
         </FormField>
         <FormField label="表格最大行数">
-          <input type="number" min="10" max="2000" v-model.number="config.bot.files.maxSpreadsheetRows" class="input-field" />
+          <UiNumberField v-model="config.bot.files.maxSpreadsheetRows" :min="10" :max="2000" />
         </FormField>
         <FormField label="PPT 最大页数">
-          <input type="number" min="1" max="200" v-model.number="config.bot.files.maxSlideCount" class="input-field" />
+          <UiNumberField v-model="config.bot.files.maxSlideCount" :min="1" :max="200" />
         </FormField>
         <FormField label="压缩包最大条目数">
-          <input type="number" min="10" max="2000" v-model.number="config.bot.files.maxArchiveEntries" class="input-field" />
+          <UiNumberField v-model="config.bot.files.maxArchiveEntries" :min="10" :max="2000" />
         </FormField>
         <FormField label="压缩包解压上限（MB）">
-          <input type="number" min="1" max="200" v-model.number="config.bot.files.maxArchiveUncompressedMB" class="input-field" />
+          <UiNumberField v-model="config.bot.files.maxArchiveUncompressedMB" :min="1" :max="200" />
         </FormField>
       </div>
       <p class="text-[color:var(--ink-3)] text-xs mt-3">

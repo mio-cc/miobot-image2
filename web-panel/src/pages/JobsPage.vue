@@ -2,6 +2,9 @@
 import { computed, onMounted, ref } from 'vue';
 import client, { errorMessage } from '../api/client';
 import SectionCard from '../components/SectionCard.vue';
+import UiSegmented from '../components/ui/UiSegmented.vue';
+import UiEmptyState from '../components/ui/UiEmptyState.vue';
+import UiSkeleton from '../components/ui/UiSkeleton.vue';
 
 interface JobRecord {
     jobId?: string;
@@ -79,10 +82,16 @@ onMounted(() => { void refresh(); });
     <!-- 状态筛选 -->
     <div class="flex flex-wrap items-center gap-2 mb-4">
       <div class="flex flex-wrap gap-2">
-        <button type="button" class="chip" :class="statusFilter === 'all' ? 'on' : ''" @click="statusFilter = 'all'">全部 <span class="n">{{ jobs.length }}</span></button>
-        <button type="button" class="chip" :class="statusFilter === 'run' ? 'on' : ''" @click="statusFilter = 'run'">运行中 <span class="n">{{ jobsOfGroup('run').length }}</span></button>
-        <button type="button" class="chip" :class="statusFilter === 'done' ? 'on' : ''" @click="statusFilter = 'done'">已完成 <span class="n">{{ jobsOfGroup('done').length }}</span></button>
-        <button type="button" class="chip" :class="statusFilter === 'fail' ? 'on' : ''" @click="statusFilter = 'fail'">失败 <span class="n">{{ jobsOfGroup('fail').length }}</span></button>
+        <UiSegmented
+          v-model="statusFilter"
+          :options="[
+            { value: 'all', label: `全部 ${jobs.length}` },
+            { value: 'run', label: `运行中 ${jobsOfGroup('run').length}` },
+            { value: 'done', label: `已完成 ${jobsOfGroup('done').length}` },
+            { value: 'fail', label: `失败 ${jobsOfGroup('fail').length}` },
+          ]"
+          label="按状态筛选异步任务"
+        />
       </div>
     </div>
 
@@ -92,20 +101,24 @@ onMounted(() => { void refresh(); });
       </template>
       <p v-if="error" class="text-xs status-crit mb-2">{{ error }}</p>
 
-      <!-- 骨架 -->
+      <!-- 骨架：加载中用自研 UiSkeleton（微光扫过），不用裸 div -->
       <div v-if="loading && !jobs.length" class="space-y-2">
-        <div v-for="i in 4" :key="`sk-${i}`" class="skeleton h-10 w-full"></div>
+        <UiSkeleton v-for="i in 4" :key="`sk-${i}`" :height="40" :radius="8" />
       </div>
 
       <!-- 空态 -->
-      <div v-else-if="!jobs.length" class="empty-state">
-        <div class="empty-title">暂无任务记录</div>
-        <div class="empty-sub">Suno / 视频 / 文件等异步交付任务会出现在这里</div>
-      </div>
-      <div v-else-if="!filteredJobs.length" class="empty-state">
-        <div class="empty-title">该状态下没有任务</div>
-        <div class="empty-sub">切换上方筛选查看其他状态</div>
-      </div>
+      <UiEmptyState
+        v-else-if="!jobs.length"
+        icon="inbox"
+        title="暂无任务记录"
+        description="Suno / 视频 / 文件等异步交付任务会出现在这里"
+      />
+      <UiEmptyState
+        v-else-if="!filteredJobs.length"
+        icon="search"
+        title="该状态下没有任务"
+        description="切换上方筛选查看其他状态"
+      />
 
       <!-- 任务表格 -->
       <div v-else class="overflow-x-auto">

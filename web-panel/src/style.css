@@ -69,6 +69,31 @@
   /* 外壳纸页投影（原型 .win） */
   --shell-shadow: 0 1px 2px rgba(30,28,20,.05), 0 24px 60px -30px rgba(30,28,20,.25);
 
+  /* ── Phase-UI：动效与控件令牌（Lead 独占维护，页面只读引用） ── */
+  --dur-1: 120ms;   /* 微反馈：hover / focus */
+  --dur-2: 180ms;   /* 常规：按钮、输入框状态 */
+  --dur-3: 260ms;   /* 结构：侧栏宽度、面板开合 */
+  --dur-4: 420ms;   /* 入场：页面切换、模态 */
+  --ease-out-expo: cubic-bezier(.16, 1, .3, 1);
+  --ease-swift:    cubic-bezier(.4, 0, .2, 1);
+  --ease-struct:   cubic-bezier(.4, 0, .1, 1);   /* 侧栏宽度（对齐 SnowLuma） */
+
+  --focus-ring:      0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  --focus-ring-crit: 0 0 0 3px color-mix(in srgb, var(--critical) 18%, transparent);
+
+  --sh-pop: 0 2px 6px rgba(30,28,20,.05), 0 12px 32px rgba(30,28,20,.10), 0 32px 64px rgba(30,28,20,.06);
+
+  --ctl-h-sm: 28px;
+  --ctl-h-md: 36px;
+  --ctl-h-lg: 44px;
+
+  --sidebar-w-rail: 64px;   /* 收起：图标栏 */
+  --sidebar-w-open: 248px;  /* 展开：含文字（对齐 SnowLuma） */
+
+  /* 外壳顶栏高度：侧栏品牌区与右侧顶栏必须共用同一个值，
+     否则两条 border-bottom 会错开几个像素，整条横线断开（很难看）。 */
+  --shell-topbar-h: 56px;
+
   /* ── 字体 ── */
   --serif: "Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif SC", "SimSun", serif;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", "Sarasa Mono SC", Consolas, monospace;
@@ -179,7 +204,15 @@ body {
 ::selection { background: var(--accent-soft); }
 /* 滚动条：细窄低对比，悬停/拖动才提亮（Firefox 走 scrollbar-*，WebKit 走伪元素；
    token 化后暗色自动跟随。Canvas 画布前台与虚拟滚动不受影响——仅改外观不改滚动行为。） */
-* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ink-3) 42%, transparent) transparent; }
+/* 滚动条外观（Firefox 分支）。
+   重要：Chrome 121+ 只要设置了 scrollbar-color / scrollbar-width，就会**忽略**
+   ::-webkit-scrollbar-* 伪元素。所以这条全局规则必须只对「不支持 webkit 伪元素」
+   的浏览器生效，否则控制台里靠 .is-scrolling 切换 ::-webkit-scrollbar-thumb 的
+   「滚动时出现、静止后消失」会完全失效（滚动条会一直挂在右边）。
+   见 style.css 末尾的 @supports 分流。 */
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ink-3) 42%, transparent) transparent; }
+}
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
@@ -268,7 +301,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   font-weight: 600; padding: 7px 14px;
   border-radius: 8px; border: 1px solid var(--accent);
   cursor: pointer; font-size: 12.5px;
-  transition: all 0.16s var(--ease);
+  transition: background var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease),
+              border-color var(--dur-2) var(--ease), color var(--dur-2) var(--ease),
+              transform var(--dur-1) var(--ease);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--accent) 30%, transparent), inset 0 1px 0 rgba(255,255,255,.08);
 }
 .btn-primary:hover { box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 30%, transparent); }
@@ -317,7 +352,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   display: flex; flex-direction: column; align-items: center;
   padding: 13px 12px; border-radius: 10px;
   border: 1px solid var(--hairline-2); background: var(--surface);
-  cursor: pointer; transition: all 0.15s var(--ease); text-align: center;
+  cursor: pointer; text-align: center;
+  transition: border-color var(--dur-2) var(--ease), background var(--dur-2) var(--ease),
+              box-shadow var(--dur-2) var(--ease);
 }
 .reply-card:hover { border-color: var(--hairline-2); background: var(--page); }
 .reply-card-active {
@@ -328,7 +365,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 /* ─── 节点卡 ─── */
 .node-card {
   border: 1px solid var(--hairline-2); border-radius: 10px; padding: 12px;
-  background: var(--surface); transition: all 0.18s var(--ease);
+  background: var(--surface);
+  transition: border-color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease),
+              transform var(--dur-2) var(--ease-out-expo);
   box-shadow: var(--sh-1);
 }
 .node-card:hover { transform: translateY(-2px); box-shadow: var(--sh-2); }
@@ -344,7 +383,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   padding: 4px 12px; font-size: 12px; cursor: pointer;
   border: none; border-radius: 6px;
   background: transparent; color: var(--ink-2);
-  transition: all 0.15s var(--ease);
+  transition: color var(--dur-2) var(--ease), background var(--dur-2) var(--ease),
+              box-shadow var(--dur-2) var(--ease);
 }
 .segmented > button:hover { color: var(--ink); }
 .segmented > button.on { background: var(--surface); color: var(--ink); font-weight: 500; box-shadow: 0 1px 3px rgba(30,28,20,.1); }
@@ -353,7 +393,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .chip {
   display: inline-flex; align-items: center; gap: 3px;
   border-radius: 999px; font-size: 12px; padding: 5px 12px;
-  cursor: pointer; transition: all 0.18s var(--ease); user-select: none;
+  cursor: pointer; user-select: none;
+  transition: background var(--dur-2) var(--ease), color var(--dur-2) var(--ease),
+              border-color var(--dur-2) var(--ease);
   background: transparent; border: 1px solid var(--hairline-2); color: var(--ink-2);
   white-space: nowrap; font: inherit; font-size: 12px;
 }
@@ -492,7 +534,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   border: 1px solid transparent; background: transparent;
   font: inherit; font-size: 12px; color: var(--ink-2);
   cursor: pointer; padding: 0 6px;
-  transition: all 0.15s var(--ease);
+  transition: background var(--dur-2) var(--ease), color var(--dur-2) var(--ease),
+              border-color var(--dur-2) var(--ease);
   font-variant-numeric: tabular-nums;
 }
 .pg-btn:hover:not(:disabled):not(.on) { background: var(--surface-2); color: var(--ink); }
@@ -531,6 +574,29 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .log-row:hover .row-copy, .row-copy:focus-visible { opacity: 1; }
 .row-copy:hover { background: var(--surface-2); color: var(--ink); }
 .row-copy svg { width: 12px; height: 12px; }
+
+/* ── 控件宽度档位（Phase-UI 2）──
+   表单控件不该一律 width:100%：端口/次数/毫秒/温度的信息量差别很大，
+   撑满整行只会让版面显得空洞、层级发虚。这里给出统一档位，
+   页面用 class="w-sm"，或 <AppSelect trigger-class="w-md"> 显式声明。 */
+.w-xs   { width: 72px  !important; max-width: 100%; }
+.w-sm   { width: 96px  !important; max-width: 100%; }
+.w-md   { width: 140px !important; max-width: 100%; }
+.w-lg   { width: 220px !important; max-width: 100%; }
+.w-xl   { width: 320px !important; max-width: 100%; }
+.w-fill { width: 100% !important; max-width: none !important; }
+
+/* 默认封顶：单行输入 / 下拉不该占满整行。
+   实测审计里最夸张的是一个只显示 "high" 的下拉占了 1200px。
+   320/300 是「能装下常见路径、昵称、模型名，又不会空出半行」的折中；
+   真正需要整行的（长提示词、JSON）用 .w-fill 或 textarea。 */
+input.input-field { max-width: 320px; }
+.app-select-trigger { max-width: 300px; }
+input.input-field.w-fill,
+.app-select-trigger.w-fill { max-width: none !important; }
+
+/* 数值类输入用等宽数字，纵向对齐更整齐 */
+.input-field.font-mono { font-variant-numeric: tabular-nums; }
 
 /* ─── 阶段 3：表单组件形态补齐 ─── */
 
@@ -586,6 +652,82 @@ details.fold-group > .fold-body { padding: 12px 14px; }
 .data-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .data-tbl td { padding: 8px 14px; border-bottom: 1px solid var(--hairline-2); }
 .data-tbl tr:last-child td { border-bottom: 0; }
+
+/* ═══════════════════════════════════════════════════════════════
+   Phase-UI：控件库共享层（Lead 独占维护）
+   控件自身样式写在各自 .vue 的 <style scoped>；这里只放跨控件复用的
+   原子（控件外框、焦点环、抖动、微光、页面切换）与全局动效约定。
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── 控件外框：所有自研控件共用同一套「纸面控件」外观 ── */
+.ui-ctl {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: var(--ctl-h-md);
+  background: var(--surface);
+  border: 1px solid var(--hairline-3);
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 12.5px; color: var(--ink);
+  transition: border-color var(--dur-2) var(--ease),
+              background var(--dur-2) var(--ease),
+              box-shadow var(--dur-2) var(--ease);
+}
+.ui-ctl:hover:not(.is-disabled):not(.is-focus) { border-color: var(--hairline-2); }
+.ui-ctl.is-focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
+.ui-ctl.is-invalid { border-color: var(--critical); }
+.ui-ctl.is-invalid.is-focus { box-shadow: var(--focus-ring-crit); }
+.ui-ctl.is-disabled { background: var(--surface-2); color: var(--ink-3); cursor: not-allowed; opacity: .7; }
+.ui-ctl--sm { height: var(--ctl-h-sm); font-size: 11.5px; padding: 0 8px; }
+.ui-ctl--lg { height: var(--ctl-h-lg); font-size: 13px; padding: 0 12px; }
+.ui-ctl--mono { font-family: var(--mono); }
+
+/* ── 焦点环：键盘可达性的统一出口（鼠标点击不显示） ── */
+.ui-focusable:focus-visible,
+.ui-ctl:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-color: var(--accent);
+}
+
+/* ── 越界抖动 ── */
+@keyframes ui-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-3px); }
+  40% { transform: translateX(3px); }
+  60% { transform: translateX(-2px); }
+  80% { transform: translateX(2px); }
+}
+.ui-shake { animation: ui-shake var(--dur-4) var(--ease-swift); }
+
+/* ── 统一入场（控件面板/浮层） ── */
+@keyframes ui-pop-in {
+  from { opacity: 0; transform: translateY(4px) scale(.98); }
+  to   { opacity: 1; transform: none; }
+}
+.ui-pop-in { animation: ui-pop-in var(--dur-1) var(--ease-out-expo) both; }
+
+/* ── 侧栏收起时隐藏文字（保留占位，避免布局跳动） ── */
+.ui-rail-hide {
+  opacity: 1;
+  transition: opacity var(--dur-2) var(--ease) 40ms;
+}
+[data-rail="collapsed"] .ui-rail-hide { opacity: 0; pointer-events: none; }
+
+/* ── 路由切换过渡（AppShell 的 RouterView 使用） ── */
+.route-enter-active { transition: opacity var(--dur-3) var(--ease-out-expo), transform var(--dur-3) var(--ease-out-expo); }
+.route-leave-active { transition: opacity var(--dur-1) var(--ease-swift), transform var(--dur-1) var(--ease-swift); position: absolute; inset: 0; }
+.route-enter-from { opacity: 0; transform: translateY(8px); }
+.route-leave-to   { opacity: 0; transform: translateY(-4px); }
+
+/* ── 顶部路由进度条 ── */
+@keyframes ui-progress-grow { from { transform: scaleX(0); } to { transform: scaleX(.85); } }
+
+/* ── 全局动效降级 ── */
+@media (prefers-reduced-motion: reduce) {
+  .ui-ctl, .ui-rail-hide, .route-enter-active, .route-leave-active,
+  .ui-pop-in { transition: none; animation: none; }
+  .ui-shake { animation: none; }
+}
 .data-tbl tbody tr { transition: background 0.15s var(--ease); }
 .data-tbl tbody tr:hover td { background: var(--surface-2); }
 

@@ -39,14 +39,20 @@
   color: var(--ink);
 }
 
-/* 内容抬到装饰之上：只加 z-index，不动 position 之外的东西 */
+/* 内容抬到装饰之上：只加 z-index，不动 position 之外的东西。
+   Phase-UI：外壳结构重构后，侧栏是 .rail、主列是 .canvas-col
+   （原来是 .sidebar / .mb-content）。这里两个都保留 + 补新类名，
+   否则 .mb-yard(z-index:1) 会盖在内容区上面，糊成一片脏污。 */
 .mb-mist .sidebar,
-.mb-mist .mb-content {
+.mb-mist .mb-content,
+.mb-mist .rail,
+.mb-mist .canvas-col {
   position: relative;
   z-index: 2;
 }
 /* 侧栏内部元素压在轮廓之上（轮廓是 z:0；同样只改层级，不改布局） */
-.mb-mist .sidebar > *:not(.mb-side) {
+.mb-mist .sidebar > *:not(.mb-side),
+.mb-mist .rail > *:not(.mb-side) {
   position: relative;
   z-index: 1;
 }

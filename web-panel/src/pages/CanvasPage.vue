@@ -6,6 +6,7 @@ import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import AppSelect from '../components/AppSelect.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
 
 /* P1 最后一批·下拉收尾：画布访问模式选项（与原 <option> 一一对应）。 */
 const canvasAccessOptions = [
@@ -72,7 +73,7 @@ onMounted(loadCards);
           <AppSelect v-model="config.canvas.access" :options="canvasAccessOptions" />
         </FormField>
         <FormField label="每来源每分钟上限" hint="0 表示不限制；管理员不受限流约束">
-          <input v-model.number="config.canvas.rateLimitPerMinute" type="number" min="0" step="5" class="input-field" />
+          <UiNumberField v-model="config.canvas.rateLimitPerMinute" :min="0" :step="5" />
         </FormField>
         <div class="self-end">
           <ToggleField v-model="config.canvas.enabled" label="启用画布前台" />

@@ -6,6 +6,8 @@ import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import { useConfigStore } from '../stores/config';
 import { useCapabilityStore } from '../stores/capabilities';
+import UiNumberField from '../components/ui/UiNumberField.vue';
+import UiSwitch from '../components/ui/UiSwitch.vue';
 
 interface CapabilityItem {
     id: string;
@@ -68,13 +70,13 @@ onMounted(() => { void Promise.all([refresh(), loadExposure()]); });
 
     <SectionCard v-if="tools" title="工具加载预算" hint="toolRegistry · 修改后请点右上角「保存并热重载」；HTTP/插件/MCP 动态工具已默认 core，不会被 24 上限裁掉" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-4">
-        <FormField label="每轮最多工具" hint="模型每轮最多看到的 schema 数量；范围 1-128。"><input v-model.number="tools.maxToolsPerTurn" type="number" min="1" max="128" class="input-field" /></FormField>
-        <FormField label="Schema 字节上限"><input v-model.number="tools.maxToolSchemaBytes" type="number" min="1024" max="1000000" class="input-field" /></FormField>
-        <FormField label="默认并发"><input v-model.number="tools.defaultMaxConcurrency" type="number" min="1" max="64" class="input-field" /></FormField>
-        <FormField label="默认超时 (ms)"><input v-model.number="tools.defaultTimeoutMs" type="number" min="1000" class="input-field" /></FormField>
+        <FormField label="每轮最多工具" hint="模型每轮最多看到的 schema 数量；范围 1-128。"><UiNumberField v-model="tools.maxToolsPerTurn" :min="1" :max="128" /></FormField>
+        <FormField label="Schema 字节上限"><UiNumberField v-model="tools.maxToolSchemaBytes" :min="1024" :max="1000000" /></FormField>
+        <FormField label="默认并发"><UiNumberField v-model="tools.defaultMaxConcurrency" :min="1" :max="64" /></FormField>
+        <FormField label="默认超时 (ms)"><UiNumberField v-model="tools.defaultTimeoutMs" :min="1000" /></FormField>
         <div class="self-end flex items-center gap-2 text-xs text-[color:var(--ink-3)]">
-          <input id="tool-search-enabled" v-model="tools.toolSearchEnabled" type="checkbox" />
-          <label for="tool-search-enabled">启用 searchable 工具</label>
+          <UiSwitch v-model="tools.toolSearchEnabled" label="启用 searchable 工具" />
+          <span>启用 searchable 工具</span>
         </div>
       </div>
     </SectionCard>

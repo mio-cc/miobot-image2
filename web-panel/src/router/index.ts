@@ -64,7 +64,8 @@ const routes: RouteRecordRaw[] = [
         path: '/mcp',
         name: 'mcp-servers',
         component: () => import('../pages/McpServersPage.vue'),
-        meta: { title: 'MCP 服务器', group: '配置', icon: 'route' },
+        // Phase-UI 2（信息架构）：MCP 属于「能力」而不是一级模块，不再占侧栏；
+        // 入口在 /capabilities 的常驻「MCP 服务器」管理卡片（与 Qdrant 记忆后端同构）。
     },
     {
         // P3-MCP（D27）：单个 MCP 服务器专属配置页——详情页，不入侧栏。
@@ -102,8 +103,8 @@ const routes: RouteRecordRaw[] = [
         path: '/cap-memory',
         name: 'cap-memory',
         component: () => import('../pages/CapMemoryPage.vue'),
-        meta: { title: '记忆与 Qdrant', group: '运行', icon: 'grid' },
-
+        // Phase-UI 2（信息架构）：记忆/Qdrant 同属能力域，不占侧栏；
+        // 入口是 /capabilities 的常驻「Qdrant 记忆后端」卡片。
     },
 
 

@@ -8,6 +8,7 @@ import ToggleField from '../components/ToggleField.vue';
 import AppSelect from '../components/AppSelect.vue';
 import OrchestrationPanel from '../components/OrchestrationPanel.vue';
 import LegacyEnginePanel from '../components/LegacyEnginePanel.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
 
 const configStore = useConfigStore();
 const config = computed(() => configStore.config);
@@ -150,32 +151,34 @@ function removeExposure(id: string) {
           <AppSelect v-model="agent.toolChoice" :options="toolChoiceOptions" />
         </FormField>
         <FormField label="Reasoning Effort">
-          <input v-model="agent.reasoningEffort" class="input-field" placeholder="high" />
+          <input v-model="agent.reasoningEffort" class="input-field w-md" placeholder="high" />
         </FormField>
         <FormField label="Temperature">
-          <input v-model.number="agent.temperature" type="number" min="0" max="2" step="0.1" class="input-field" />
+          <UiNumberField v-model="agent.temperature" :min="0" :max="2" :step="0.1" meter width="md" />
         </FormField>
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
-        <FormField label="最大模型轮次"><input v-model.number="agent.maxModelRounds" type="number" min="1" max="100" class="input-field" /></FormField>
-        <FormField label="最大工具轮次"><input v-model.number="agent.maxToolRounds" type="number" min="0" max="200" class="input-field" /></FormField>
-        <FormField label="并行工具数"><input v-model.number="agent.maxParallelTools" type="number" min="1" max="32" class="input-field" /></FormField>
-        <FormField label="全局并发 Turn 上限" hint="跨群共享的同时执行 Agent turn 上限（0=不限）；1c2g 建议 4"><input v-model.number="agent.maxConcurrentTurns" type="number" min="0" max="256" class="input-field" /></FormField>
-        <FormField label="Max Tokens"><input v-model.number="agent.maxTokens" type="number" min="1" max="200000" class="input-field" /></FormField>
-        <FormField label="调用超时 (ms)"><input v-model.number="agent.timeoutMs" type="number" min="1000" class="input-field" /></FormField>
-        <FormField label="整轮超时 (ms)"><input v-model.number="agent.turnTimeoutMs" type="number" min="1000" class="input-field" /></FormField>
-          <FormField label="超时后收口预算 (ms)"><input v-model.number="agent.finalizeTimeoutMs" type="number" min="500" class="input-field" /></FormField>
+        <FormField label="最大模型轮次"><UiNumberField v-model="agent.maxModelRounds" :min="1" :max="100" /></FormField>
+        <FormField label="最大工具轮次"><UiNumberField v-model="agent.maxToolRounds" :min="0" :max="200" /></FormField>
+        <FormField label="并行工具数"><UiNumberField v-model="agent.maxParallelTools" :min="1" :max="32" /></FormField>
+        <FormField label="全局并发 Turn 上限" hint="跨群共享的同时执行 Agent turn 上限（0=不限）；1c2g 建议 4"><UiNumberField v-model="agent.maxConcurrentTurns" :min="0" :max="256" /></FormField>
+        <FormField label="Max Tokens"><UiNumberField v-model="agent.maxTokens" :min="1" :max="200000" /></FormField>
+        <FormField label="调用超时 (ms)"><UiNumberField v-model="agent.timeoutMs" :min="1000" /></FormField>
+        <FormField label="整轮超时 (ms)"><UiNumberField v-model="agent.turnTimeoutMs" :min="1000" /></FormField>
+          <FormField label="超时后收口预算 (ms)"><UiNumberField v-model="agent.finalizeTimeoutMs" :min="500" /></FormField>
       </div>
 
       <div class="mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
         <h3 class="text-xs font-semibold text-[color:var(--ink)] mb-3">输出修复预算</h3>
         <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4">
-          <FormField label="协议修复次数"><input v-model.number="agent.repair.maxProtocolRepairs" type="number" min="0" max="20" class="input-field" /></FormField>
-          <FormField label="单调用 schema 修复"><input v-model.number="agent.repair.maxSchemaRepairsPerCall" type="number" min="0" max="20" class="input-field" /></FormField>
-          <FormField label="总输出修复次数"><input v-model.number="agent.repair.maxTotalOutputRepairs" type="number" min="0" max="40" class="input-field" /></FormField>
-          <FormField label="重复错误上限"><input v-model.number="agent.repair.maxRepeatedErrorCount" type="number" min="1" max="20" class="input-field" /></FormField>
-          <FormField label="修复温度"><input v-model.number="agent.repair.repairTemperature" type="number" min="0" max="1" step="0.05" class="input-field" /></FormField>
+          <FormField label="协议修复次数"><UiNumberField v-model="agent.repair.maxProtocolRepairs" :min="0" :max="20" /></FormField>
+          <FormField label="单调用 schema 修复"><UiNumberField v-model="agent.repair.maxSchemaRepairsPerCall" :min="0" :max="20" /></FormField>
+          <FormField label="总输出修复次数"><UiNumberField v-model="agent.repair.maxTotalOutputRepairs" :min="0" :max="40" /></FormField>
+          <FormField label="重复错误上限"><UiNumberField v-model="agent.repair.maxRepeatedErrorCount" :min="1" :max="20" /></FormField>
+          <FormField label="修复温度">
+            <UiNumberField v-model="agent.repair.repairTemperature" :min="0" :max="1" :step="0.05" meter width="md" />
+          </FormField>
           <div class="self-end"><ToggleField v-model="agent.repair.allowTextFallback" label="允许安全纯文本兜底" /></div>
         </div>
       </div>
@@ -184,11 +187,11 @@ function removeExposure(id: string) {
     <SectionCard title="工具注册表" hint="工具 schema 预算、并行与默认重试；exposure 可按工具 ID 覆盖" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4">
         <ToggleField v-model="tools.enabled" label="启用新工具注册表" />
-        <FormField label="每轮最多工具" hint="模型每轮最多看到的 schema 数量，范围 1-128；HTTP/插件/MCP 动态工具已默认 core，不会被误裁。"><input v-model.number="tools.maxToolsPerTurn" type="number" min="1" max="128" class="input-field" /></FormField>
-        <FormField label="Schema 字节上限"><input v-model.number="tools.maxToolSchemaBytes" type="number" min="1000" class="input-field" /></FormField>
-        <FormField label="默认超时 (ms)"><input v-model.number="tools.defaultTimeoutMs" type="number" min="1000" class="input-field" /></FormField>
-        <FormField label="默认重试"><input v-model.number="tools.defaultMaxRetries" type="number" min="0" max="10" class="input-field" /></FormField>
-        <FormField label="默认并发"><input v-model.number="tools.defaultMaxConcurrency" type="number" min="1" max="64" class="input-field" /></FormField>
+        <FormField label="每轮最多工具" hint="模型每轮最多看到的 schema 数量，范围 1-128；HTTP/插件/MCP 动态工具已默认 core，不会被误裁。"><UiNumberField v-model="tools.maxToolsPerTurn" :min="1" :max="128" /></FormField>
+        <FormField label="Schema 字节上限"><UiNumberField v-model="tools.maxToolSchemaBytes" :min="1000" /></FormField>
+        <FormField label="默认超时 (ms)"><UiNumberField v-model="tools.defaultTimeoutMs" :min="1000" /></FormField>
+        <FormField label="默认重试"><UiNumberField v-model="tools.defaultMaxRetries" :min="0" :max="10" /></FormField>
+        <FormField label="默认并发"><UiNumberField v-model="tools.defaultMaxConcurrency" :min="1" :max="64" /></FormField>
       </div>
       <div class="mt-3"><ToggleField v-model="tools.toolSearchEnabled" label="启用 searchable 工具（检索式加载待扩展）" hint="当前启用后把 searchable 工具并入 loadout；独立 tool_search 检索器暂未实现" /></div>
 
@@ -218,16 +221,18 @@ function removeExposure(id: string) {
 
     <SectionCard title="上下文策略" hint="注入预算与裁剪：分块上限各自独立，总预算管整个模型请求；spillEnabled 大结果落盘、compactionEnabled 摘要裁剪已接线" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4">
-        <FormField label="历史上限轮数"><input v-model.number="context.historyMaxRounds" type="number" min="1" max="200" class="input-field" /></FormField>
-        <FormField label="模型请求总字符预算" hint="整个消息列表的 JSON 序列化长度上限（system 注入块 + 会话历史 + 本轮输入，含结构开销）；接近时从最旧历史开始丢弃"><input v-model.number="context.historyMaxChars" type="number" min="500" class="input-field" /></FormField>
-        <FormField label="群上下文消息数"><input v-model.number="context.groupContextMessages" type="number" min="1" max="500" class="input-field" /></FormField>
-        <FormField label="群上下文字符上限"><input v-model.number="context.groupContextMaxChars" type="number" min="200" class="input-field" /></FormField>
-        <FormField label="记忆 Top-K"><input v-model.number="context.memoryTopK" type="number" min="1" max="100" class="input-field" /></FormField>
-        <FormField label="记忆最低分"><input v-model.number="context.memoryMinScore" type="number" min="0" max="1" step="0.05" class="input-field" /></FormField>
-        <FormField label="记忆字符上限"><input v-model.number="context.memoryMaxChars" type="number" min="200" class="input-field" /></FormField>
-        <FormField label="工具结果字符上限"><input v-model.number="context.toolResultMaxChars" type="number" min="500" class="input-field" /></FormField>
-        <FormField label="压缩阈值 Tokens"><input v-model.number="context.compactionThresholdTokens" type="number" min="1000" class="input-field" /></FormField>
-        <FormField label="Pinned Facts 上限"><input v-model.number="context.pinnedFactsMaxItems" type="number" min="1" max="500" class="input-field" /></FormField>
+        <FormField label="历史上限轮数"><UiNumberField v-model="context.historyMaxRounds" :min="1" :max="200" /></FormField>
+        <FormField label="模型请求总字符预算" hint="整个消息列表的 JSON 序列化长度上限（system 注入块 + 会话历史 + 本轮输入，含结构开销）；接近时从最旧历史开始丢弃"><UiNumberField v-model="context.historyMaxChars" :min="500" /></FormField>
+        <FormField label="群上下文消息数"><UiNumberField v-model="context.groupContextMessages" :min="1" :max="500" /></FormField>
+        <FormField label="群上下文字符上限"><UiNumberField v-model="context.groupContextMaxChars" :min="200" /></FormField>
+        <FormField label="记忆 Top-K"><UiNumberField v-model="context.memoryTopK" :min="1" :max="100" /></FormField>
+        <FormField label="记忆最低分">
+          <UiNumberField v-model="context.memoryMinScore" :min="0" :max="1" :step="0.05" meter width="md" />
+        </FormField>
+        <FormField label="记忆字符上限"><UiNumberField v-model="context.memoryMaxChars" :min="200" /></FormField>
+        <FormField label="工具结果字符上限"><UiNumberField v-model="context.toolResultMaxChars" :min="500" /></FormField>
+        <FormField label="压缩阈值 Tokens"><UiNumberField v-model="context.compactionThresholdTokens" :min="1000" /></FormField>
+        <FormField label="Pinned Facts 上限"><UiNumberField v-model="context.pinnedFactsMaxItems" :min="1" :max="500" /></FormField>
         <ToggleField v-model="context.groupContextEnabled" label="启用群上下文" />
         <ToggleField v-model="context.groupContextSkipForward" label="群上下文跳过合并转发" hint="原 bot.groupContext.skipForward 迁入（唯一真源）" />
         <ToggleField v-model="context.groupContextIncludeImages" label="群上下文带上图片" hint="对话模型不支持视觉时会自动忽略" />
@@ -275,13 +280,13 @@ function removeExposure(id: string) {
       <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4">
         <ToggleField v-model="orchestration.approval.enabled" label="启用审批" />
         <FormField label="审批人 QQ" hint="多个用逗号分隔；失焦写回"><input v-model="adminQqIdsText" @blur="commitAdminQqIds" class="input-field font-mono" placeholder="123456, 654321" /></FormField>
-        <FormField label="法定人数"><input v-model.number="orchestration.approval.quorum" type="number" min="1" class="input-field" /></FormField>
-        <FormField label="审批超时 (ms)"><input v-model.number="orchestration.approval.timeoutMs" type="number" min="5000" class="input-field" /></FormField>
+        <FormField label="法定人数"><UiNumberField v-model="orchestration.approval.quorum" :min="1" /></FormField>
+        <FormField label="审批超时 (ms)"><UiNumberField v-model="orchestration.approval.timeoutMs" :min="5000" /></FormField>
         <FormField label="超时策略">
           <AppSelect v-model="orchestration.approval.fallback" :options="approvalFallbackOptions" />
         </FormField>
         <ToggleField v-model="orchestration.approval.allowGroupReply" label="允许群内审批" />
-        <FormField label="每用户待审上限"><input v-model.number="orchestration.approval.maxPendingPerUser" type="number" min="1" class="input-field" /></FormField>
+        <FormField label="每用户待审上限"><UiNumberField v-model="orchestration.approval.maxPendingPerUser" :min="1" /></FormField>
         <ToggleField v-model="orchestration.approval.maskArgs" label="审批时参数打码" />
       </div>
     </SectionCard>
@@ -304,7 +309,7 @@ function removeExposure(id: string) {
         <FormField label="请求模式">
           <AppSelect v-model="huggingFace.requestMode" :options="hfRequestModeOptions" />
         </FormField>
-        <FormField label="超时 (ms)"><input v-model.number="huggingFace.timeoutMs" type="number" min="5000" class="input-field" /></FormField>
+        <FormField label="超时 (ms)"><UiNumberField v-model="huggingFace.timeoutMs" :min="5000" /></FormField>
       </div>
     </SectionCard>
 

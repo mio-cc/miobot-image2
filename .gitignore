@@ -47,3 +47,8 @@ web-canvas/apps/web/public/*.jpeg
 web-canvas/apps/web/public/*.png
 web-canvas/apps/web/public/*.webp
 web-canvas/apps/web/public/thumbs/
+
+# Local UI verification/runtime artifacts
+_tmp/
+_ui-shots/
+web-panel/.verify/

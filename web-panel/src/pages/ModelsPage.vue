@@ -8,6 +8,7 @@ import FormField from '../components/FormField.vue';
 import { type AppSelectOption } from '../components/AppSelect.vue';
 import NodeCard from '../components/NodeCard.vue';
 import NodeEditDrawer from '../components/NodeEditDrawer.vue';
+import UiCheckbox from '../components/ui/UiCheckbox.vue';
 import { ROLES, isRoleInherit, getRoleNode as getRoleNodeOf, getRoleModel as getRoleModelOf, setRoleValue as setRoleValueOf, getRoleFallback as getRoleFallbackOf, setRoleFallbackValue as setRoleFallbackValueOf, clearRoleFallbackValue as clearRoleFallbackValueOf, setMainBinding, roleUsageHint, type RoleDef } from '../shared/roles';
 
 /**
@@ -178,6 +179,16 @@ async function fetchAllModels() {
 const OVERRIDABLE = ['chat', 'vision', 'interrogate', 'image.generate', 'image.edit', 'video.generate'];
 const overrideModel = ref('');
 const overrideOps = ref<string[]>([]);
+
+/**
+ * 能力多选：UiCheckbox 是布尔 v-model，这里把数组绑定适配成「按项勾选」。
+ * 语义与原 `v-model="overrideOps"` + `:value="cap"` 完全一致（顺序按勾选先后追加）。
+ */
+function toggleOverride(cap: string, next: boolean) {
+    const at = overrideOps.value.indexOf(cap);
+    if (next && at < 0) overrideOps.value = [...overrideOps.value, cap];
+    else if (!next && at >= 0) overrideOps.value = overrideOps.value.filter(c => c !== cap);
+}
 
 const overrides = computed(() => config.value?.llm?.capabilityOverrides || []);
 
@@ -595,10 +606,14 @@ onMounted(() => { void capabilityStore.refresh(); });
           </FormField>
           <FormField label="具备的能力" hint="指定的结果优先级最高；未勾选任何能力 = 全部禁用">
             <div class="flex flex-wrap gap-3 pt-1">
-              <label v-for="cap in OVERRIDABLE" :key="cap" class="flex items-center gap-1.5 text-xs">
-                <input type="checkbox" :value="cap" v-model="overrideOps" class="h-4 w-4" />
-                {{ capabilityStore.labels[cap] || cap }}
-              </label>
+              <UiCheckbox
+                v-for="cap in OVERRIDABLE"
+                :key="cap"
+                size="sm"
+                :model-value="overrideOps.includes(cap)"
+                :label="capabilityStore.labels[cap] || cap"
+                @update:model-value="(v: boolean) => toggleOverride(cap, v)"
+              >{{ capabilityStore.labels[cap] || cap }}</UiCheckbox>
             </div>
           </FormField>
           <button class="btn-primary" :disabled="!overrideModel.trim()" @click="saveOverride">记录覆盖</button>

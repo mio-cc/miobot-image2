@@ -4,6 +4,7 @@ import { useConfigStore } from '../stores/config';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
 
 const configStore = useConfigStore();
 const config = computed(() => configStore.config);
@@ -31,19 +32,19 @@ const config = computed(() => configStore.config);
           <input v-model="config.browserRender.executablePath" class="input-field font-mono" placeholder="/usr/bin/chromium" />
         </FormField>
         <FormField label="单任务超时 (ms)">
-          <input v-model.number="config.browserRender.timeoutMs" type="number" min="5000" max="120000" step="1000" class="input-field" />
+          <UiNumberField v-model="config.browserRender.timeoutMs" :min="5000" :max="120000" :step="1000" />
         </FormField>
         <FormField label="启动超时 (ms)">
-          <input v-model.number="config.browserRender.launchTimeoutMs" type="number" min="3000" max="60000" step="1000" class="input-field" />
+          <UiNumberField v-model="config.browserRender.launchTimeoutMs" :min="3000" :max="60000" :step="1000" />
         </FormField>
         <FormField label="空闲关闭 (ms)" hint="0 = 不自动关闭">
-          <input v-model.number="config.browserRender.idleCloseMs" type="number" min="0" max="600000" step="10000" class="input-field" />
+          <UiNumberField v-model="config.browserRender.idleCloseMs" :min="0" :max="600000" :step="10000" />
         </FormField>
         <FormField label="最大并发" hint="1C2G 建议 1">
-          <input v-model.number="config.browserRender.maxConcurrency" type="number" min="1" max="4" class="input-field" />
+          <UiNumberField v-model="config.browserRender.maxConcurrency" :min="1" :max="4" />
         </FormField>
         <FormField label="最大排队数" hint="超过后直接拒绝，避免堆积">
-          <input v-model.number="config.browserRender.maxQueue" type="number" min="0" max="20" class="input-field" />
+          <UiNumberField v-model="config.browserRender.maxQueue" :min="0" :max="20" />
         </FormField>
       </div>
     </SectionCard>
@@ -51,22 +52,22 @@ const config = computed(() => configStore.config);
     <SectionCard title="代码与截图限制" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
         <FormField label="最大代码字符数">
-          <input v-model.number="config.browserRender.maxCodeChars" type="number" min="1000" max="1000000" step="1000" class="input-field" />
+          <UiNumberField v-model="config.browserRender.maxCodeChars" :min="1000" :max="1000000" :step="1000" />
         </FormField>
         <FormField label="最大画布宽度">
-          <input v-model.number="config.browserRender.maxWidth" type="number" min="128" max="8192" class="input-field" />
+          <UiNumberField v-model="config.browserRender.maxWidth" :min="128" :max="8192" />
         </FormField>
         <FormField label="最大画布高度">
-          <input v-model.number="config.browserRender.maxHeight" type="number" min="128" max="8192" class="input-field" />
+          <UiNumberField v-model="config.browserRender.maxHeight" :min="128" :max="8192" />
         </FormField>
         <FormField label="默认宽度">
-          <input v-model.number="config.browserRender.defaultWidth" type="number" min="128" max="8192" class="input-field" />
+          <UiNumberField v-model="config.browserRender.defaultWidth" :min="128" :max="8192" />
         </FormField>
         <FormField label="默认高度">
-          <input v-model.number="config.browserRender.defaultHeight" type="number" min="128" max="8192" class="input-field" />
+          <UiNumberField v-model="config.browserRender.defaultHeight" :min="128" :max="8192" />
         </FormField>
         <FormField label="截图大小上限 (bytes)">
-          <input v-model.number="config.browserRender.maxScreenshotBytes" type="number" min="1024" max="104857600" step="1048576" class="input-field" />
+          <UiNumberField v-model="config.browserRender.maxScreenshotBytes" :min="1024" :max="104857600" :step="1048576" />
         </FormField>
       </div>
     </SectionCard>
@@ -76,10 +77,10 @@ const config = computed(() => configStore.config);
         <ToggleField v-model="config.browserRender.allowPrivateHosts" label="允许截图内网/本机地址" hint="默认关闭；开启会带来 SSRF 风险，不建议" />
         <ToggleField v-model="config.codeRender.enabled" label="启用代码画图" hint="模型选择在「模型与节点 → 用途分配」" />
         <FormField label="代码模型输出上限 (tokens)" hint="reasoning 和 SVG 正文共用；运行时强制下限 32768（runtime.ts:567），上限 65536">
-          <input v-model.number="config.codeRender.maxTokens" type="number" min="32768" max="65536" step="1024" class="input-field" />
+          <UiNumberField v-model="config.codeRender.maxTokens" :min="32768" :max="65536" :step="1024" />
         </FormField>
         <FormField label="代码模型超时 (ms)" hint="单次代码模型请求；normalize 钳制区间 5000-300000，默认 180000">
-          <input v-model.number="config.codeRender.timeoutMs" type="number" min="5000" max="300000" step="10000" class="input-field" />
+          <UiNumberField v-model="config.codeRender.timeoutMs" :min="5000" :max="300000" :step="10000" />
         </FormField>
       </div>
       <ul class="text-xs text-[color:var(--ink-3)] space-y-1 list-disc pl-5 mt-3">

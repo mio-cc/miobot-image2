@@ -4,6 +4,7 @@ import { useConfigStore } from '../stores/config';
 import FormField from './FormField.vue';
 import ToggleField from './ToggleField.vue';
 import AppSelect from './AppSelect.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
 
 /**
  * 节点编辑抽屉（节点级字段的唯一编辑入口，替代旧折叠区）。
@@ -162,7 +163,7 @@ onBeforeUnmount(() => {
 
             <div class="grid grid-cols-2 max-[680px]:grid-cols-1 gap-3 items-end">
               <FormField label="并发上限" hint="0 = 不限。上游按 key 发额度，所以限流单位是节点">
-                <input v-model.number="node.concurrency" type="number" min="0" max="256" class="input-field" />
+                <UiNumberField v-model="node.concurrency" :min="0" :max="256" />
               </FormField>
               <ToggleField v-model="enabledModel" label="启用节点" class="w-full" />
             </div>
@@ -197,12 +198,12 @@ onBeforeUnmount(() => {
                 <RouterLink to="/cap-image" class="font-medium text-[color:var(--accent)] hover:underline ml-1">前往图片生成页 →</RouterLink>
               </div>
               <div class="node-drawer-section grid grid-cols-2 max-[680px]:grid-cols-1 gap-3">
-                <FormField label="最大并发" hint="默认 1"><input v-model.number="ensureComfyui().maxConcurrent" type="number" min="1" class="input-field" /></FormField>
-                <FormField label="队列上限" hint="默认 10"><input v-model.number="ensureComfyui().maxQueue" type="number" min="1" class="input-field" /></FormField>
-                <FormField label="排队超时 (ms)" hint="默认 900000"><input v-model.number="ensureComfyui().queueTimeoutMs" type="number" min="1000" step="1000" class="input-field" /></FormField>
-                <FormField label="轮询超时 (ms)" hint="默认 600000"><input v-model.number="ensureComfyui().pollTimeoutMs" type="number" min="1000" step="1000" class="input-field" /></FormField>
-                <FormField label="轮询间隔 (ms)" hint="默认 2000"><input v-model.number="ensureComfyui().pollIntervalMs" type="number" min="500" step="500" class="input-field" /></FormField>
-                <FormField label="最大批量" hint="默认 4"><input v-model.number="ensureComfyui().maxBatchSize" type="number" min="1" class="input-field" /></FormField>
+                <FormField label="最大并发" hint="默认 1"><UiNumberField v-model="ensureComfyui().maxConcurrent" :min="1" /></FormField>
+                <FormField label="队列上限" hint="默认 10"><UiNumberField v-model="ensureComfyui().maxQueue" :min="1" /></FormField>
+                <FormField label="排队超时 (ms)" hint="默认 900000"><UiNumberField v-model="ensureComfyui().queueTimeoutMs" :min="1000" :step="1000" /></FormField>
+                <FormField label="轮询超时 (ms)" hint="默认 600000"><UiNumberField v-model="ensureComfyui().pollTimeoutMs" :min="1000" :step="1000" /></FormField>
+                <FormField label="轮询间隔 (ms)" hint="默认 2000"><UiNumberField v-model="ensureComfyui().pollIntervalMs" :min="500" :step="500" /></FormField>
+                <FormField label="最大批量" hint="默认 4"><UiNumberField v-model="ensureComfyui().maxBatchSize" :min="1" /></FormField>
               </div>
             </template>
           </div>

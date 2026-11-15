@@ -7,6 +7,7 @@ import ToggleField from '../components/ToggleField.vue';
 import ModelBindingMirror from '../components/ModelBindingMirror.vue';
 import PromptRegistryLink from '../components/PromptRegistryLink.vue';
 import AppSelect from '../components/AppSelect.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
 
 /* P1 最后一批·下拉收尾：Suno 参数选项（与原 <option> 一一对应，文案零变更）。 */
 const sunoRequestModeOptions = [
@@ -54,16 +55,18 @@ const sunoKeyVisible = ref(false);
         <FormField label="Composer 节点与模型" hint="绑定在「模型与节点」用途表统一调整；留空跟随主对话">
           <ModelBindingMirror :node-index="Number(orch.suno.composerNodeIndex) || 0" :model="orch.suno.composerModel || ''" purpose="Suno Composer" />
         </FormField>
-        <FormField label="Composer 温度" hint="建议 0.3 到 0.8"><input v-model.number="orch.suno.composerTemperature" type="number" min="0" max="2" step="0.05" class="input-field" /></FormField>
-        <FormField label="Composer maxTokens" hint="生成歌词和 JSON 的上限；复杂完整歌词建议 6000 以上"><input v-model.number="orch.suno.composerMaxTokens" type="number" min="1" max="200000" step="100" class="input-field" /></FormField>
+        <FormField label="Composer 温度" hint="建议 0.3 到 0.8">
+          <UiNumberField v-model="orch.suno.composerTemperature" :min="0" :max="2" :step="0.05" meter width="md" />
+        </FormField>
+        <FormField label="Composer maxTokens" hint="生成歌词和 JSON 的上限；复杂完整歌词建议 6000 以上"><UiNumberField v-model="orch.suno.composerMaxTokens" :min="1" :max="200000" :step="100" /></FormField>
         <div>
           <PromptRegistryLink prompt-id="suno.composer" config-path="orchestration.suno.composerPromptTemplate" label="Composer 覆盖提示词" />
         </div>
         <FormField label="默认人声性别" hint="auto 由模型决定；m/f 仅在 customMode 下传给 Suno，且上游文档说明只是偏好、不保证命中"><AppSelect v-model="orch.suno.defaultVocalGender" :options="sunoVocalGenderOptions" /></FormField>
         <FormField label="默认歌词语言" hint="留空或 auto 跟随用户；例如 中文、日语、English。Suno 没有独立 language 字段，会写入 prompt/style/lyrics"><input v-model="orch.suno.defaultLanguage" class="input-field" placeholder="auto" /></FormField>
         <div class="flex items-end"><ToggleField v-model="orch.suno.sendLyricsWithMusic" label="同步发送歌词" hint="使用 Suno 返回的真实 lyrics，走合并转发；需要 reply.maxMessages ≥ 2" /></div>
-        <FormField label="歌曲历史保留" hint="每个会话/用户最多保留多少首"><input v-model.number="orch.suno.historyMaxRecords" type="number" min="1" max="1000" class="input-field" /></FormField>
-        <FormField label="Planner 注入历史" hint="每次规划注入最近多少首歌曲摘要"><input v-model.number="orch.suno.historyPromptLimit" type="number" min="1" max="50" class="input-field" /></FormField>
+        <FormField label="歌曲历史保留" hint="每个会话/用户最多保留多少首"><UiNumberField v-model="orch.suno.historyMaxRecords" :min="1" :max="1000" /></FormField>
+        <FormField label="Planner 注入历史" hint="每次规划注入最近多少首歌曲摘要"><UiNumberField v-model="orch.suno.historyPromptLimit" :min="1" :max="50" /></FormField>
         <FormField label="Base URL"><input v-model="orch.suno.baseUrl" class="input-field font-mono" placeholder="https://第三方 SunoAPI 地址（如 https://api.sunoapi.org）" /></FormField>
         <FormField label="模型"><input v-model="orch.suno.model" class="input-field font-mono" /></FormField>
         <FormField label="创建路径"><input v-model="orch.suno.createPath" class="input-field font-mono" placeholder="/api/v1/generate" /></FormField>
@@ -76,14 +79,14 @@ const sunoKeyVisible = ref(false);
             <button class="btn-outline !px-2" type="button" @click="sunoKeyVisible = !sunoKeyVisible">{{ sunoKeyVisible ? '隐藏' : '显示' }}</button>
           </div>
         </FormField>
-        <FormField label="任务等待超时 (ms)" hint="Suno 是远程异步生成，通常需要数分钟；最低 10 分钟，不是单次 HTTP 超时"><input v-model.number="orch.suno.timeoutMs" type="number" min="600000" step="30000" class="input-field" /></FormField>
-        <FormField label="轮询间隔 (ms)"><input v-model.number="orch.suno.pollIntervalMs" type="number" min="500" class="input-field" /></FormField>
-        <FormField label="最大时长 (秒)"><input v-model.number="orch.suno.maxDurationSeconds" type="number" min="5" class="input-field" /></FormField>
+        <FormField label="任务等待超时 (ms)" hint="Suno 是远程异步生成，通常需要数分钟；最低 10 分钟，不是单次 HTTP 超时"><UiNumberField v-model="orch.suno.timeoutMs" :min="600000" :step="30000" /></FormField>
+        <FormField label="轮询间隔 (ms)"><UiNumberField v-model="orch.suno.pollIntervalMs" :min="500" /></FormField>
+        <FormField label="最大时长 (秒)"><UiNumberField v-model="orch.suno.maxDurationSeconds" :min="5" /></FormField>
         <FormField label="格式"><AppSelect v-model="orch.suno.format" :options="sunoFormatOptions" /></FormField>
-        <FormField label="最大并发"><input v-model.number="orch.suno.maxConcurrent" type="number" min="1" class="input-field" /></FormField>
-        <FormField label="队列上限"><input v-model.number="orch.suno.maxQueue" type="number" min="1" class="input-field" /></FormField>
-        <FormField label="最大重试"><input v-model.number="orch.suno.maxRetries" type="number" min="0" max="10" class="input-field" /></FormField>
-        <FormField label="每日配额"><input v-model.number="orch.suno.quotaPerUserPerDay" type="number" min="0" class="input-field" /></FormField>
+        <FormField label="最大并发"><UiNumberField v-model="orch.suno.maxConcurrent" :min="1" /></FormField>
+        <FormField label="队列上限"><UiNumberField v-model="orch.suno.maxQueue" :min="1" /></FormField>
+        <FormField label="最大重试"><UiNumberField v-model="orch.suno.maxRetries" :min="0" :max="10" /></FormField>
+        <FormField label="每日配额"><UiNumberField v-model="orch.suno.quotaPerUserPerDay" :min="0" /></FormField>
       </div>
     </template>
   </CapabilityPageLayout>

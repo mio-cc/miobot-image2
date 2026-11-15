@@ -9,6 +9,7 @@ import ModelPicker from '../components/ModelPicker.vue';
 import ModelBindingMirror from '../components/ModelBindingMirror.vue';
 import PromptRegistryLink from '../components/PromptRegistryLink.vue';
 import AppSelect from '../components/AppSelect.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
 
 /* P1 最后一批·下拉收尾：画布默认参数选项（与原 <option> 一一对应，文案零变更）。
    defaultCount 为数值选项——option.value 用 number，AppSelect 选中后原样回传，
@@ -280,14 +281,14 @@ onMounted(loadComfyWorkflows);
         </div>
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
           <FormField label="一次生成张数" hint="大于 1 时会合成编号预览图；生图启停用页顶「启用能力」开关">
-            <input v-model.number="config.llm.imageCount" type="number" min="1" max="4" class="input-field" />
+            <UiNumberField v-model="config.llm.imageCount" :min="1" :max="4" />
           </FormField>
           <FormField label="改图请求格式" hint="auto 会按模型自动排序：官方 gpt-image 只认 multipart，xAI 只认 JSON，多数中转认 json-images">
             <AppSelect v-model="config.llm.imageEditRequestMode" :options="EDIT_REQUEST_MODES" />
           </FormField>
-          <FormField label="超时 (ms)"><input v-model.number="config.llm.imageTimeoutMs" type="number" min="30000" step="30000" class="input-field" /></FormField>
-          <FormField label="失败重试"><input v-model.number="config.llm.imageRetryCount" type="number" min="0" max="10" class="input-field" /></FormField>
-          <FormField label="重试间隔 (ms)"><input v-model.number="config.llm.imageRetryDelayMs" type="number" min="0" step="500" class="input-field" /></FormField>
+          <FormField label="超时 (ms)"><UiNumberField v-model="config.llm.imageTimeoutMs" :min="30000" :step="30000" /></FormField>
+          <FormField label="失败重试"><UiNumberField v-model="config.llm.imageRetryCount" :min="0" :max="10" /></FormField>
+          <FormField label="重试间隔 (ms)"><UiNumberField v-model="config.llm.imageRetryDelayMs" :min="0" :step="500" /></FormField>
           <div class="md:col-span-2 flex items-end"><ToggleField v-model="config.llm.safeRewriteOnFailure" label="失败后合规改写重试" hint="被内容策略拒了就让模型换个说法再试一次" /></div>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
@@ -295,7 +296,7 @@ onMounted(loadComfyWorkflows);
             <ModelBindingMirror :node-index="Number(config.llm.interrogateNodeIndex) || 0" :model="config.llm.interrogateModel || ''" purpose="图片反推" />
           </FormField>
           <FormField label="反推超时 (ms)">
-            <input v-model.number="config.llm.interrogateTimeoutMs" type="number" min="30000" step="30000" class="input-field" />
+            <UiNumberField v-model="config.llm.interrogateTimeoutMs" :min="30000" :step="30000" />
           </FormField>
           <div class="md:col-span-2">
             <PromptRegistryLink prompt-id="image.interrogate" config-path="llm.interrogatePromptTemplate" label="反推提示词" />
@@ -337,13 +338,13 @@ onMounted(loadComfyWorkflows);
             <AppSelect v-model="config.canvas.imageEditRequestMode" :options="CANVAS_EDIT_REQUEST_MODES" />
           </FormField>
           <FormField label="请求超时 (ms)">
-            <input v-model.number="config.canvas.imageTimeoutMs" type="number" min="30000" step="30000" class="input-field" />
+            <UiNumberField v-model="config.canvas.imageTimeoutMs" :min="30000" :step="30000" />
           </FormField>
           <FormField label="重试次数">
-            <input v-model.number="config.canvas.imageRetryCount" type="number" min="0" max="10" class="input-field" />
+            <UiNumberField v-model="config.canvas.imageRetryCount" :min="0" :max="10" />
           </FormField>
           <FormField label="重试间隔 (ms)">
-            <input v-model.number="config.canvas.imageRetryDelayMs" type="number" min="0" step="500" class="input-field" />
+            <UiNumberField v-model="config.canvas.imageRetryDelayMs" :min="0" :step="500" />
           </FormField>
           <FormField label="默认质量">
             <AppSelect v-model="config.canvas.defaultQuality" :options="canvasQualityOptions" />
@@ -356,7 +357,7 @@ onMounted(loadComfyWorkflows);
             <AppSelect v-model="config.canvas.defaultCount" :options="canvasCountOptions" />
           </FormField>
           <FormField label="历史上限">
-            <input v-model.number="config.canvas.maxHistory" type="number" min="1" max="500" class="input-field" />
+            <UiNumberField v-model="config.canvas.maxHistory" :min="1" :max="500" />
           </FormField>
           <FormField label="默认尺寸预设">
             <input v-model="config.canvas.defaultSizePresetId" class="input-field font-mono" placeholder="auto" />
@@ -372,8 +373,7 @@ onMounted(loadComfyWorkflows);
               :node-index="Number(config.canvas.interrogateNodeIndex) || 0" :model="config.canvas.interrogateModel || ''"
               @update:node-index="config.canvas.interrogateNodeIndex = $event"
               @update:model="config.canvas.interrogateModel = $event" />
-            <input v-model.number="config.canvas.interrogateTimeoutMs" type="number" min="30000" step="30000"
-              class="input-field mt-2" placeholder="超时 (ms)" />
+            <UiNumberField v-model="config.canvas.interrogateTimeoutMs" :min="30000" :step="30000" placeholder="超时 (ms)" class="mt-2" />
             <div class="mt-2">
               <PromptRegistryLink prompt-id="interrogate.canvas" config-path="canvas.interrogatePromptTemplate" label="画布原图反推提示词" />
             </div>
@@ -384,8 +384,7 @@ onMounted(loadComfyWorkflows);
               :node-index="Number(config.canvas.interrogateTemplateNodeIndex) || 0" :model="config.canvas.interrogateTemplateModel || ''"
               @update:node-index="config.canvas.interrogateTemplateNodeIndex = $event"
               @update:model="config.canvas.interrogateTemplateModel = $event" />
-            <input v-model.number="config.canvas.interrogateTemplateTimeoutMs" type="number" min="30000" step="30000"
-              class="input-field mt-2" placeholder="超时 (ms)" />
+            <UiNumberField v-model="config.canvas.interrogateTemplateTimeoutMs" :min="30000" :step="30000" placeholder="超时 (ms)" class="mt-2" />
             <div class="mt-2">
               <PromptRegistryLink prompt-id="interrogate.template" config-path="canvas.interrogateTemplatePromptTemplate" label="画布模板化反推提示词" />
             </div>
@@ -411,13 +410,13 @@ onMounted(loadComfyWorkflows);
         <FormField label="输出节点 ID"><input v-model="comfyOutputNodeId" class="input-field font-mono" placeholder="16" /></FormField>
         <template v-if="comfyNodeConfig">
           <FormField label="生成轮询上限 (ms)" hint="0 = 不设本地生成总上限，等 ComfyUI 完成后回调；非 0 是失联 watchdog">
-            <input v-model.number="comfyNodeConfig.pollTimeoutMs" type="number" min="0" step="30000" class="input-field" />
+            <UiNumberField v-model="comfyNodeConfig.pollTimeoutMs" :min="0" :step="30000" />
           </FormField>
           <FormField label="排队上限 (ms)" hint="0 = 不设本队列等待上限">
-            <input v-model.number="comfyNodeConfig.queueTimeoutMs" type="number" min="0" step="30000" class="input-field" />
+            <UiNumberField v-model="comfyNodeConfig.queueTimeoutMs" :min="0" :step="30000" />
           </FormField>
           <FormField label="轮询间隔 (ms)">
-            <input v-model.number="comfyNodeConfig.pollIntervalMs" type="number" min="250" step="250" class="input-field" />
+            <UiNumberField v-model="comfyNodeConfig.pollIntervalMs" :min="250" :step="250" />
           </FormField>
         </template>
         <FormField label="Fallback Profile"><input v-model="comfyFallbackProfileId" class="input-field font-mono" placeholder="同 id 使用内置 baseline" /></FormField>
@@ -487,8 +486,8 @@ onMounted(loadComfyWorkflows);
            提示词编辑统一在「提示词注册表」（comfyui.transform 条目）） -->
       <div class="mt-4 pt-4 border-t border-[color:var(--hairline-2)] grid grid-cols-1 md:grid-cols-3 gap-4">
         <div class="flex items-end"><ToggleField v-model="config.comfyuiTransform.enabled" label="启用参数转化" hint="自然语言 → workflow 参数 JSON；模型绑定在「模型与节点」用途表" /></div>
-        <FormField label="转化超时 (ms)"><input v-model.number="config.comfyuiTransform.timeoutMs" type="number" min="3000" max="120000" step="1000" class="input-field" /></FormField>
-        <FormField label="最大输出 Token"><input v-model.number="config.comfyuiTransform.maxTokens" type="number" min="256" max="8192" step="128" class="input-field" /></FormField>
+        <FormField label="转化超时 (ms)"><UiNumberField v-model="config.comfyuiTransform.timeoutMs" :min="3000" :max="120000" :step="1000" /></FormField>
+        <FormField label="最大输出 Token"><UiNumberField v-model="config.comfyuiTransform.maxTokens" :min="256" :max="8192" :step="128" /></FormField>
       </div>
     </template>
   </CapabilityPageLayout>

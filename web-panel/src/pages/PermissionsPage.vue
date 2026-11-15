@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import client from '../api/client';
 import { useConfigStore } from '../stores/config';
@@ -7,6 +7,8 @@ import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import AppSelect from '../components/AppSelect.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
+import UiSwitch from '../components/ui/UiSwitch.vue';
 
 /**
  * 权限与审批页（治理平面）。
@@ -313,9 +315,9 @@ watch(previewCapability, syncPreviewCapability);
               <td class="py-2 pr-2 min-w-[130px]">
                 <input :value="ruleRiskText(rule)" class="input-field !py-1 font-mono" placeholder="low,high" @blur="onRuleRiskBlur(rule, $event)" />
               </td>
-              <td class="py-2 pr-2 w-[90px]"><input v-model.number="rule.priority" type="number" class="input-field !py-1" /></td>
+              <td class="py-2 pr-2 w-[90px]"><UiNumberField v-model="rule.priority" class="!py-1" /></td>
               <td class="py-2 pr-2">
-                <input v-model="rule.hard" type="checkbox" :disabled="!orch.permissions.hardDenyEnabled" />
+                <UiSwitch v-model="rule.hard" size="sm" label="硬拒绝" :disabled="!orch.permissions.hardDenyEnabled" />
               </td>
               <td class="py-2 pr-2 min-w-[180px]"><input v-model="rule.reason" class="input-field !py-1" placeholder="命中原因" /></td>
               <td class="py-2"><button class="btn-outline !px-2 !py-1" type="button" @click="removePermissionRule(index)">删除</button></td>
@@ -353,14 +355,14 @@ watch(previewCapability, syncPreviewCapability);
         <FormField label="Quorum">
           <AppSelect v-model="orch.approval.quorum" :options="quorumOptions" />
         </FormField>
-        <FormField label="超时 (ms)"><input v-model.number="orch.approval.timeoutMs" type="number" min="1000" class="input-field" /></FormField>
+        <FormField label="超时 (ms)"><UiNumberField v-model="orch.approval.timeoutMs" :min="1000" /></FormField>
         <FormField label="超时处理">
           <AppSelect v-model="orch.approval.fallback" :options="approvalFallbackOptions" />
         </FormField>
-        <FormField label="最大待审批/用户"><input v-model.number="orch.approval.maxPendingPerUser" type="number" min="1" class="input-field" /></FormField>
-        <FormField label="最大待审批/全局"><input v-model.number="orch.approval.maxPendingGlobal" type="number" min="1" class="input-field" /></FormField>
-        <FormField label="审批重发间隔 (ms)"><input v-model.number="orch.approval.resendIntervalMs" type="number" min="1000" class="input-field" /></FormField>
-        <FormField label="最大重发次数"><input v-model.number="orch.approval.maxResend" type="number" min="0" class="input-field" /></FormField>
+        <FormField label="最大待审批/用户"><UiNumberField v-model="orch.approval.maxPendingPerUser" :min="1" /></FormField>
+        <FormField label="最大待审批/全局"><UiNumberField v-model="orch.approval.maxPendingGlobal" :min="1" /></FormField>
+        <FormField label="审批重发间隔 (ms)"><UiNumberField v-model="orch.approval.resendIntervalMs" :min="1000" /></FormField>
+        <FormField label="最大重发次数"><UiNumberField v-model="orch.approval.maxResend" :min="0" /></FormField>
         <div class="md:col-span-2 xl:col-span-1"><ToggleField v-model="orch.approval.allowGroupReply" label="允许群内审批回复" /></div>
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
@@ -432,7 +434,7 @@ watch(previewCapability, syncPreviewCapability);
     <SectionCard title="审计" hint="审批、文件删除、配置和能力测试；密钥已脱敏" class="mb-4">
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-3">
         <div class="flex items-end"><ToggleField v-model="orch.audit.enabled" label="启用审计" /></div>
-        <FormField label="审计保留天数"><input v-model.number="orch.audit.retentionDays" type="number" min="1" class="input-field" /></FormField>
+        <FormField label="审计保留天数"><UiNumberField v-model="orch.audit.retentionDays" :min="1" /></FormField>
       </div>
       <div class="overflow-x-auto max-h-[320px]">
         <table class="w-full text-xs">

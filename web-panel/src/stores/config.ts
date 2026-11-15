@@ -1,5 +1,5 @@
-﻿import { defineStore } from 'pinia';
-import { computed, ref } from 'vue';
+import { defineStore } from 'pinia';
+import { computed, ref, watch } from 'vue';
 import client, { errorMessage } from '../api/client';
 import { useAuthStore } from './auth';
 
@@ -28,6 +28,44 @@ export const useConfigStore = defineStore('config', () => {
     const saveStatus = ref('');
     const saving = ref(false);
     const revision = ref(0);
+
+    /* ── 无感自动保存（参考 SnowLuma 的 debounce auto-save）──
+       改动 → 防抖 650ms → 落盘 + 热重载。顶栏只显示状态，不需要点按钮。
+       正确性靠三件事兜住：串行化、编辑期间不覆盖、冲突即停。 */
+    const AUTOSAVE_DEBOUNCE_MS = 650;
+    /** 自动保存开关（持久化；关掉后回到手动「保存并热重载」） */
+    const autoSave = ref(localStorage.getItem('miobot_autosave') !== '0');
+    /** 语义化状态，供顶栏着色 */
+    const saveTone = ref<'idle' | 'saving' | 'success' | 'warning' | 'error'>('idle');
+    /** 409 版本冲突：停止自动重试，等用户手动处理 */
+    const saveConflict = ref(false);
+
+    let debounceTimer: number | null = null;
+    /** 是否有请求在飞（同一时刻只允许一个） */
+    let inFlight = false;
+    /** 飞行期间又有改动 → 结束后再跑一轮 */
+    let pendingSave = false;
+    let statusTimer: number | null = null;
+
+    function clearDebounce() {
+        if (debounceTimer != null) { window.clearTimeout(debounceTimer); debounceTimer = null; }
+    }
+
+    function clearStatusTimer() {
+        if (statusTimer != null) { window.clearTimeout(statusTimer); statusTimer = null; }
+    }
+
+    /** 成功/警告态 3s 后自动回到 idle（失败与冲突不自动清，必须让用户看见） */
+    function scheduleStatusClear(ms = 3000) {
+        clearStatusTimer();
+        statusTimer = window.setTimeout(() => {
+            statusTimer = null;
+            if (saveTone.value === 'success' || saveTone.value === 'warning') {
+                saveTone.value = 'idle';
+                saveStatus.value = '';
+            }
+        }, ms);
+    }
 
     /** 保存那一刻每个顶层区块的序列化快照。 */
     const savedSections = ref<Record<string, string>>({});
@@ -112,9 +150,31 @@ export const useConfigStore = defineStore('config', () => {
 
     function markSaved() {
         savedSnapshot.value = 'saved';
-        savedSections.value = Object.fromEntries(
+        savedSections.value = sectionSignature();
+    }
+
+    /** 当前每个顶层区块的序列化快照（用于「飞行期间是否又被改过」的比对）。 */
+    function sectionSignature(): Record<string, string> {
+        return Object.fromEntries(
             Object.keys(SECTION_LABELS).map(key => [key, JSON.stringify(config.value?.[key])]),
         );
+    }
+
+    function sameSections(a: Record<string, string>, b: Record<string, string>): boolean {
+        const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+        for (const k of keys) if (a[k] !== b[k]) return false;
+        return true;
+    }
+
+    /** 只吸收响应里的 revision / 鉴权信息，不动本地配置（用户正在编辑时用）。 */
+    function absorbMetaOnly(payload: any) {
+        if (typeof payload?.revision === 'number') revision.value = payload.revision;
+        const auth = useAuthStore();
+        const nextToken = payload?.auth?.token;
+        if (nextToken) auth.setToken(nextToken);
+        if (typeof payload?.auth?.usingDefaultPassword === 'boolean') {
+            auth.usingDefaultPassword = payload.auth.usingDefaultPassword;
+        }
     }
 
     /**
@@ -143,39 +203,164 @@ export const useConfigStore = defineStore('config', () => {
     }
 
     async function fetchConfig() {
-        const res = await client.get('/config');
+        // ?meta=1 让服务端把 revision 一起带回来，乐观锁才有正确的起点。
+        // 服务端若不支持（老版本），返回的是裸 config，这里按裸 config 兼容处理。
+        const res = await client.get('/config?meta=1');
         applyServerConfig(res.data);
         return config.value;
     }
 
-    async function save() {
+    /** 冲突后重新对齐 revision（不改本地配置）。 */
+    async function refreshRevision(): Promise<boolean> {
+        try {
+            const res = await client.get('/config?meta=1');
+            if (typeof res.data?.revision === 'number') {
+                revision.value = res.data.revision;
+                return true;
+            }
+        } catch { /* 拿不到就保持原样 */ }
+        return false;
+    }
+
+    /**
+     * 真正发请求的那一层。调用方负责 inFlight 记账。
+     *
+     * 关键：请求发出前记一份区块快照；响应回来时若本地又被改过，
+     * **绝不能**用服务端返回整体覆盖 config（那会把用户飞行期间的输入吞掉），
+     * 只吸收 revision/鉴权，并置 pendingSave 让下一轮继续落盘。
+     */
+    async function saveInternal() {
         saving.value = true;
-        saveStatus.value = '保存中...';
+        saveTone.value = 'saving';
+        saveStatus.value = '保存中…';
+        const sentSig = sectionSignature();
         try {
             // 带 revision 乐观锁：提示词注册表 / 导入 / 回滚等旁路保存会递增服务端 revision，
             // 陈旧快照提交会被 409 拒绝，防止详细页保存把注册表等旁路改动悄悄覆盖回旧值。
             const res = await client.post('/config', { revision: revision.value, config: config.value });
+
+            const editedDuringFlight = !sameSections(sentSig, sectionSignature());
+            if (editedDuringFlight) {
+                absorbMetaOnly(res.data);
+                // 本地仍是脏的，紧接着再来一轮
+                pendingSave = true;
+                saveTone.value = 'warning';
+                saveStatus.value = '已保存较早的改动，继续提交中…';
+                return { ok: true, hotReload: res.data?.hotReload };
+            }
+
             applyServerConfig(res.data);
             const persisted = res.data?.persisted !== false;
             const message = res.data?.message || '已保存并热重载';
-            saveStatus.value = persisted ? message : `保存失败：${message}`;
-            // 落盘失败的提示不自动消失——用户必须看见它。
             if (persisted) {
-                window.setTimeout(() => { if (saveStatus.value === message) saveStatus.value = ''; }, 4000);
+                saveTone.value = 'success';
+                saveStatus.value = message;
+                scheduleStatusClear();
+            } else {
+                // 落盘失败：保持脏状态 + 明确报错，不能骗用户「已保存」
+                saveTone.value = 'error';
+                saveStatus.value = `保存失败：${message}`;
             }
             return { ok: persisted, hotReload: res.data?.hotReload };
         } catch (error: any) {
-            // 409 冲突不自动消失：提示用户刷新面板，本地改动仍保留在界面上由用户决定。
             if (error?.response?.status === 409) {
-                saveStatus.value = `保存失败：${errorMessage(error)}`;
+                // 版本冲突：停止自动重试，避免死循环刷接口
+                saveConflict.value = true;
+                clearDebounce();
+                saveTone.value = 'error';
+                saveStatus.value = `保存冲突：${errorMessage(error)}`;
                 return { ok: false, hotReload: undefined, conflict: true };
             }
+            saveTone.value = 'error';
             saveStatus.value = `保存失败：${errorMessage(error)}`;
             return { ok: false, hotReload: undefined };
         } finally {
             saving.value = false;
         }
     }
+
+    /** 串行化执行：飞行中再来就排到下一轮。 */
+    async function performSave(): Promise<{ ok: boolean; hotReload?: any; conflict?: boolean }> {
+        if (inFlight) { pendingSave = true; return { ok: true }; }
+        inFlight = true;
+        try {
+            let result = await saveInternal();
+
+            /* 409 多数情况不是「真的被别人改了」，而是本地 revision 起点不对
+               （服务端被别的入口保存过 / 服务重启过）。先对齐 revision 再重试一次，
+               成功就当无事发生；仍失败才真正进入冲突态、停止自动重试。 */
+            if (result.conflict) {
+                const synced = await refreshRevision();
+                if (synced) {
+                    saveConflict.value = false;
+                    result = await saveInternal();
+                }
+            }
+            return result;
+        } finally {
+            inFlight = false;
+            if (pendingSave) {
+                pendingSave = false;
+                if (autoSave.value && !saveConflict.value) {
+                    scheduleAutoSave();
+                }
+            }
+        }
+    }
+
+    /** 立即保存（手动按钮、增删改等需要马上落盘的操作）。 */
+    async function save() {
+        clearDebounce();
+        if (saveConflict.value) saveConflict.value = false;
+        return performSave();
+    }
+
+    /** 排一轮防抖保存。dirty 变化时由 watcher 调用。 */
+    function scheduleAutoSave() {
+        if (!autoSave.value || saveConflict.value) return;
+        if (!loaded.value || !dirty.value) return;
+        clearDebounce();
+        debounceTimer = window.setTimeout(() => {
+            debounceTimer = null;
+            void performSave();
+        }, AUTOSAVE_DEBOUNCE_MS);
+    }
+
+    /** 立刻把待提交的改动落盘（切页 / 关闭前调用）。 */
+    async function flushSave() {
+        clearDebounce();
+        if (!dirty.value) return { ok: true };
+        return performSave();
+    }
+
+    /** 冲突后手动重试：清掉冲突标记再存一次。 */
+    async function retrySave() {
+        saveConflict.value = false;
+        return save();
+    }
+
+    function setAutoSave(next: boolean) {
+        autoSave.value = next;
+        localStorage.setItem('miobot_autosave', next ? '1' : '0');
+        if (next) {
+            /* 重新开启时必须做两件事，否则会出现「关掉再打开就存不上」：
+               1) 清掉历史冲突标记 —— 否则 scheduleAutoSave() 会因 saveConflict 直接 return，
+                  自动保存静默失效，用户以为开了其实没在存。
+               2) 立刻把待提交的改动存掉（而不是只排一个防抖）——
+                  关闭期间积累的改动应该马上落盘，不用再等下一次编辑。 */
+            saveConflict.value = false;
+            void flushSave();
+        } else {
+            clearDebounce();
+        }
+    }
+
+    // dirty 由 false 变 true 时排一轮保存。
+    // 注意：保存成功会把它打回 false；飞行期间继续编辑不会再次触发
+    // （dirty 一直为 true），那条路径由 saveInternal 的 pendingSave 兜住。
+    watch(dirty, (isDirty) => {
+        if (isDirty) scheduleAutoSave();
+    });
 
     async function importConfig(payload: any) {
         const res = await client.post('/config/import', payload);
@@ -189,9 +374,14 @@ export const useConfigStore = defineStore('config', () => {
     }
 
     function reset() {
+        clearDebounce();
+        clearStatusTimer();
         config.value = null;
         savedSnapshot.value = '';
         saveStatus.value = '';
+        saveTone.value = 'idle';
+        saveConflict.value = false;
+        pendingSave = false;
     }
 
     /** 启用中的节点，供所有节点下拉框使用。 */
@@ -275,5 +465,8 @@ export const useConfigStore = defineStore('config', () => {
         config, saveStatus, saving, revision, loaded, dirty, dirtySections,
         nodeOptions, modelsForNode, get, set, capabilityEnabled, setCapabilityEnabled,
         fetchConfig, save, importConfig, exportConfig, reset, applyServerConfig, markSaved,
+        // 无感自动保存
+        autoSave, saveTone, saveConflict,
+        scheduleAutoSave, flushSave, retrySave, setAutoSave,
     };
 });

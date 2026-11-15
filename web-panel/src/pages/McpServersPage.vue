@@ -13,6 +13,8 @@ import client, { errorMessage } from '../api/client';
 import { useConfigStore } from '../stores/config';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
+import AppSelect from '../components/AppSelect.vue';
 
 const router = useRouter();
 const configStore = useConfigStore();
@@ -96,6 +98,17 @@ const form = reactive({
   delayMs: 1000,
 });
 const formError = ref('');
+
+/* 下拉选项：改用 AppSelect 自绘面板，值域与原先 <option> 完全一致。 */
+const TRANSPORT_OPTIONS = [
+  { value: 'http', label: '远程 HTTP 服务（推荐）' },
+  { value: 'stdio', label: '本机子进程（stdio）' },
+];
+const AUTH_OPTIONS = [
+  { value: 'oauth', label: '账号授权（浏览器登录）' },
+  { value: 'static', label: '静态令牌' },
+  { value: 'none', label: '免鉴权' },
+];
 
 async function addServer() {
   formError.value = '';
@@ -264,10 +277,7 @@ onUnmounted(() => {
           <input v-model="form.name" class="input-field" placeholder="我的 MCP 服务" />
         </FormField>
         <FormField label="连接方式">
-          <select v-model="form.transport" class="input-field">
-            <option value="http">远程 HTTP 服务（推荐）</option>
-            <option value="stdio">本机子进程（stdio）</option>
-          </select>
+          <AppSelect v-model="form.transport" :options="TRANSPORT_OPTIONS" placeholder="选择连接方式" />
         </FormField>
         <FormField v-if="form.transport === 'http'" label="服务地址">
           <input v-model="form.url" class="input-field font-mono" placeholder="https://example.com/mcp" />
@@ -279,11 +289,7 @@ onUnmounted(() => {
           <input v-model="form.args" class="input-field font-mono" placeholder="server.mjs" />
         </FormField>
         <FormField label="鉴权方式">
-          <select v-model="form.auth" class="input-field">
-            <option value="oauth">账号授权（浏览器登录）</option>
-            <option value="static">静态令牌</option>
-            <option value="none">免鉴权</option>
-          </select>
+          <AppSelect v-model="form.auth" :options="AUTH_OPTIONS" placeholder="选择鉴权方式" />
         </FormField>
         <FormField v-if="form.auth === 'static'" label="访问令牌">
           <input v-model="form.token" class="input-field font-mono" type="password" placeholder="静态访问令牌" />
@@ -292,10 +298,10 @@ onUnmounted(() => {
           <input v-model="form.proxyUrl" class="input-field font-mono" placeholder="http://127.0.0.1:7890" />
         </FormField>
         <FormField v-if="form.transport === 'stdio'" label="崩溃重启次数上限">
-          <input v-model.number="form.maxAttempts" class="input-field" type="number" min="1" />
+          <UiNumberField v-model="form.maxAttempts" :min="1" />
         </FormField>
         <FormField v-if="form.transport === 'stdio'" label="重启间隔（毫秒）">
-          <input v-model.number="form.delayMs" class="input-field" type="number" min="0" />
+          <UiNumberField v-model="form.delayMs" :min="0" />
         </FormField>
       </div>
       <div v-if="formError" class="mt-3 text-xs text-red-500">{{ formError }}</div>

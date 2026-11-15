@@ -6,6 +6,7 @@ import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import AppSelect from '../components/AppSelect.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
 
 /* P1 最后一批·下拉收尾：好友请求处理模式选项（与原 <option> 一一对应）。 */
 const friendRequestModeOptions = [
@@ -168,18 +169,18 @@ const DEFAULT_POKE_REPLIES = ['戳我干嘛呀', '别戳啦，在的呢', '收�
 
       <div class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
         <FormField label="通用 action" hint="未单独设超时的 action（好友请求、群历史、get_image 等）都用它；范围 3s-30min">
-          <input v-model.number="config.napcat.actionTimeoutMs" type="number" min="3000" max="1800000" step="1000" class="input-field" />
+          <UiNumberField v-model="config.napcat.actionTimeoutMs" :min="3000" :max="1800000" :step="1000" />
         </FormField>
-        <FormField label="文本发送"><input v-model.number="config.napcat.textSendTimeoutMs" type="number" min="3000" step="1000" class="input-field" /></FormField>
-        <FormField label="图片上传"><input v-model.number="config.napcat.imageSendTimeoutMs" type="number" min="10000" step="5000" class="input-field" /></FormField>
-        <FormField label="文件发送"><input v-model.number="config.napcat.fileSendTimeoutMs" type="number" min="10000" step="10000" class="input-field" /></FormField>
-        <FormField label="合并转发"><input v-model.number="config.napcat.forwardSendTimeoutMs" type="number" min="10000" step="5000" class="input-field" /></FormField>
-        <FormField label="引用取消息"><input v-model.number="config.napcat.getMessageTimeoutMs" type="number" min="3000" step="1000" class="input-field" /></FormField>
+        <FormField label="文本发送"><UiNumberField v-model="config.napcat.textSendTimeoutMs" :min="3000" :step="1000" /></FormField>
+        <FormField label="图片上传"><UiNumberField v-model="config.napcat.imageSendTimeoutMs" :min="10000" :step="5000" /></FormField>
+        <FormField label="文件发送"><UiNumberField v-model="config.napcat.fileSendTimeoutMs" :min="10000" :step="10000" /></FormField>
+        <FormField label="合并转发"><UiNumberField v-model="config.napcat.forwardSendTimeoutMs" :min="10000" :step="5000" /></FormField>
+        <FormField label="引用取消息"><UiNumberField v-model="config.napcat.getMessageTimeoutMs" :min="3000" :step="1000" /></FormField>
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
-        <FormField label="文件发送重试次数"><input v-model.number="config.napcat.fileSendRetryCount" type="number" min="0" max="10" class="input-field" /></FormField>
-        <FormField label="文件重试间隔 (ms)"><input v-model.number="config.napcat.fileSendRetryDelayMs" type="number" min="0" step="200" class="input-field" /></FormField>
+        <FormField label="文件发送重试次数"><UiNumberField v-model="config.napcat.fileSendRetryCount" :min="0" :max="10" /></FormField>
+        <FormField label="文件重试间隔 (ms)"><UiNumberField v-model="config.napcat.fileSendRetryDelayMs" :min="0" :step="200" /></FormField>
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
@@ -230,10 +231,10 @@ const DEFAULT_POKE_REPLIES = ['戳我干嘛呀', '别戳啦，在的呢', '收�
             <input v-model="keywordTriggerWordsText" class="input-field" placeholder="miobot, 小mi, bot帮" />
           </FormField>
           <FormField label="上下文条数" hint="命中后拉取前后几条群消息">
-            <input v-model="config.bot.keywordTrigger.contextMessages" type="number" min="3" max="10" class="input-field" />
+            <UiNumberField v-model="config.bot.keywordTrigger.contextMessages" :min="3" :max="10" />
           </FormField>
           <FormField label="判断冷却（毫秒）" hint="同一用户两次判断的最小间隔">
-            <input v-model="config.bot.keywordTrigger.windowMs" type="number" min="3000" max="60000" class="input-field" />
+            <UiNumberField v-model="config.bot.keywordTrigger.windowMs" :min="3000" :max="60000" />
           </FormField>
         </div>
       </div>
@@ -243,13 +244,13 @@ const DEFAULT_POKE_REPLIES = ['戳我干嘛呀', '别戳啦，在的呢', '收�
         <div class="flex items-end"><ToggleField v-model="config.bot.autoContinue.enabled" label="启对话延续" hint="无需再 @bot，模型判断是否在继续聊天" /></div>
         <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
           <FormField label="延续窗口（毫秒）" hint="bot 回复后多少毫秒内有效">
-            <input v-model="config.bot.autoContinue.windowMs" type="number" min="10000" max="300000" class="input-field" />
+            <UiNumberField v-model="config.bot.autoContinue.windowMs" :min="10000" :max="300000" />
           </FormField>
           <FormField label="最大延续轮数" hint="1-10，每轮=用户一条消息+bot一条回复">
-            <input v-model="config.bot.autoContinue.maxRounds" type="number" min="1" max="10" class="input-field" />
+            <UiNumberField v-model="config.bot.autoContinue.maxRounds" :min="1" :max="10" />
           </FormField>
           <FormField label="关注窗口消息数" hint="0=关闭；显式触发后最多观察多少条群消息，只对模型判定为接续当前话题的消息回复">
-            <input v-model="config.bot.autoContinue.focusMaxMessages" type="number" min="0" max="100" class="input-field" />
+            <UiNumberField v-model="config.bot.autoContinue.focusMaxMessages" :min="0" :max="100" />
           </FormField>
           <!-- 原「冷却间隔 cooldownMs」输入框已移除：字段不在 AppConfig 中，
                且运行时注释明示该时间闸门已删除（语义判定是唯一的门），保存即被 normalize 丢弃。 -->
@@ -278,10 +279,10 @@ const DEFAULT_POKE_REPLIES = ['戳我干嘛呀', '别戳啦，在的呢', '收�
         <div class="flex items-end"><ToggleField v-model="config.bot.unifiedContext.enabled" label="启用统一上下文" hint="planner 能看到用户和机器人之前说了什么" /></div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
           <FormField label="Planner 历史轮数" hint="planner 能看到最近几条对话（2-30）">
-            <input v-model.number="config.bot.unifiedContext.plannerHistoryTurns" type="number" min="2" max="30" class="input-field" :disabled="!config.bot.unifiedContext.enabled" />
+            <UiNumberField v-model="config.bot.unifiedContext.plannerHistoryTurns" :min="2" :max="30" :disabled="!config.bot.unifiedContext.enabled" />
           </FormField>
           <FormField label="历史字符上限" hint="对话历史的字符预算（500-20000）">
-            <input v-model.number="config.bot.unifiedContext.plannerHistoryChars" type="number" min="500" max="20000" class="input-field" :disabled="!config.bot.unifiedContext.enabled" />
+            <UiNumberField v-model="config.bot.unifiedContext.plannerHistoryChars" :min="500" :max="20000" :disabled="!config.bot.unifiedContext.enabled" />
           </FormField>
         </div>
       </div>
@@ -290,7 +291,7 @@ const DEFAULT_POKE_REPLIES = ['戳我干嘛呀', '别戳啦，在的呢', '收�
         <div class="md:col-span-3 text-xs font-medium">事件源（notice / request）</div>
         <div class="flex items-end"><ToggleField v-model="config.bot.poke.enabled" label="戳一戳响应" hint="被戳时从回复池随机回一句" /></div>
         <FormField label="戳一戳回复间隔 (秒)" hint="同一群聊共享：窗口内全群只响应一次戳一戳（0=不限）">
-          <input v-model.number="config.bot.poke.windowSec" type="number" min="0" max="3600" class="input-field" :disabled="!config.bot.poke.enabled" />
+          <UiNumberField v-model="config.bot.poke.windowSec" :min="0" :max="3600" :disabled="!config.bot.poke.enabled" />
         </FormField>
         <FormField label="戳一戳回复池" hint="每行一句，被戳时随机挑一条（最多 20 条；清空则回落出厂默认）">
           <textarea v-model="pokeRepliesText" @blur="commitPokeReplies" rows="4" class="input-field resize-y"
@@ -301,7 +302,7 @@ const DEFAULT_POKE_REPLIES = ['戳我干嘛呀', '别戳啦，在的呢', '收�
           <input v-model="config.bot.welcome.text" class="input-field" placeholder="欢迎 {user} 加入～" :disabled="!config.bot.welcome.enabled" />
         </FormField>
         <FormField label="欢迎冷却 (秒)" hint="同群连续入群的间隔抑制">
-          <input v-model.number="config.bot.welcome.cooldownSec" type="number" min="0" max="3600" class="input-field" :disabled="!config.bot.welcome.enabled" />
+          <UiNumberField v-model="config.bot.welcome.cooldownSec" :min="0" :max="3600" :disabled="!config.bot.welcome.enabled" />
         </FormField>
         <FormField label="好友请求处理">
           <AppSelect v-model="config.bot.friendRequest.mode" :options="friendRequestModeOptions" />
@@ -333,10 +334,10 @@ const DEFAULT_POKE_REPLIES = ['戳我干嘛呀', '别戳啦，在的呢', '收�
     <SectionCard title="消息与限流总策略" hint="全局闸门；逐能力配额（冷却/日限/并发）在各能力页「启用与配额」卡配置" class="mb-4 mt-4">
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <FormField label="每用户每分钟消息上限" hint="T2.2 防刷屏闸；0 = 关闭，超出静默丢弃；范围 0-60（超出会被后端钳制）">
-          <input v-model.number="config.bot.messageRateLimitPerMinute" type="number" min="0" max="60" class="input-field" />
+          <UiNumberField v-model="config.bot.messageRateLimitPerMinute" :min="0" :max="60" />
         </FormField>
         <FormField label="消息过期阈值 (秒)" hint="积压/重连后迟到的消息直接丢弃不回复；0 = 不限">
-          <input v-model.number="config.bot.staleMessageMaxAgeSeconds" type="number" min="0" max="3600" class="input-field" />
+          <UiNumberField v-model="config.bot.staleMessageMaxAgeSeconds" :min="0" :max="3600" />
         </FormField>
       </div>
     </SectionCard>

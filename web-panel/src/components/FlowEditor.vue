@@ -10,6 +10,7 @@ import { computed, onMounted } from 'vue';
 import { useConfigStore } from '../stores/config';
 import { useCapabilityStore } from '../stores/capabilities';
 import SectionCard from './SectionCard.vue';
+import AppSelect from './AppSelect.vue';
 
 const props = defineProps<{ capabilityId: string }>();
 const configStore = useConfigStore();
@@ -25,6 +26,21 @@ const capabilityOptions = computed<string[]>(() =>
   ((capabilityStore.registry || []) as Array<{ id?: string }>)
     .map((item) => String(item?.id || ''))
     .filter((id) => id && id !== props.capabilityId));
+
+/** 下拉选项：占位项 + 注册表能力（AppSelect 走自绘面板，替代原生 select）。 */
+const capabilitySelectOptions = computed(() => [
+  { value: '', label: '（选择能力）' },
+  ...capabilityOptions.value.map(id => ({ value: id, label: id })),
+]);
+
+/** 当前值不在注册表时补一条标注项，避免打开下拉看到空值以为配置丢了。 */
+function stepOptions(current: string) {
+  const base = capabilitySelectOptions.value;
+  if (current && !base.some(o => o.value === current)) {
+    return [...base, { value: current, label: current, hint: '不在注册表' }];
+  }
+  return base;
+}
 
 /** 有效链：steps 非空且不是「单步=自己」。 */
 const effectiveSteps = computed(() => {
@@ -77,11 +93,12 @@ onMounted(() => {
         <div class="grid grid-cols-1 md:grid-cols-[minmax(180px,1fr)_minmax(160px,1.4fr)_minmax(140px,1fr)_auto] gap-2 items-center">
           <div class="flex items-center gap-1.5 min-w-0">
             <span class="text-[10.5px] font-semibold text-[color:var(--ink-3)] flex-none">{{ index + 1 }}.</span>
-            <select v-model="step.capability" class="input-field !py-1 text-xs">
-              <option value="">（选择能力）</option>
-              <option v-for="id in capabilityOptions" :key="id" :value="id">{{ id }}</option>
-              <option v-if="step.capability && !capabilityOptions.includes(step.capability)" :value="step.capability">{{ step.capability }}（不在注册表）</option>
-            </select>
+            <AppSelect
+              v-model="step.capability"
+              :options="stepOptions(step.capability)"
+              placeholder="（选择能力）"
+              class="min-w-0 flex-1"
+            />
           </div>
           <input v-model="step.hint" class="input-field !py-1 text-xs" placeholder="该步提示（可选，≤120 字符）" maxlength="120" />
           <input v-model="step.when" class="input-field !py-1 text-xs" placeholder="条件（可选，如：上一步成功）" maxlength="200" />

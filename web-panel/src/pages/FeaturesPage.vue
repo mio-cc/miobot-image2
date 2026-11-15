@@ -6,6 +6,7 @@ import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import ToggleField from '../components/ToggleField.vue';
 import AppSelect from '../components/AppSelect.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
 
 interface FeatureDefinition {
   id: string;
@@ -267,8 +268,7 @@ onMounted(loadFeatures);
             <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
               <label v-for="field in fieldsFor(def)" :key="field.key" class="block">
                 <span class="block text-[11px] text-[color:var(--ink-3)] mb-1">{{ field.label }}<template v-if="field.unit">（{{ field.unit }}）</template></span>
-                <input type="number" v-model.number="setting.limits[field.key]" :min="field.min" :max="field.max"
-                  class="input-field !py-1.5 text-xs" />
+                <UiNumberField v-model="setting.limits[field.key]" :min="field.min" :max="field.max" class="!py-1.5" />
               </label>
             </div>
           </div>

@@ -6,6 +6,7 @@ import SectionCard from './SectionCard.vue';
 import FormField from './FormField.vue';
 import ToggleField from './ToggleField.vue';
 import AppSelect from './AppSelect.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
 
 /**
  * 能力页统一骨架（§2.6.3）：状态头 / 启用与配额 / 模型与节点 / 提示词 /
@@ -274,8 +275,7 @@ onMounted(() => {
         <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
           <label v-for="field in limitFields" :key="field.key" class="block">
             <span class="block text-[11px] text-[color:var(--ink-3)] mb-1">{{ field.label }}<template v-if="field.unit">（{{ field.unit }}）</template></span>
-            <input type="number" v-model.number="featureSetting.limits[field.key]" :min="field.min" :max="field.max"
-              class="input-field !py-1.5 text-xs" />
+            <UiNumberField v-model="featureSetting.limits[field.key]" :min="field.min" :max="field.max" class="!py-1.5" />
           </label>
         </div>
       </div>

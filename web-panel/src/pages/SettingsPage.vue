@@ -6,6 +6,8 @@ import { useAuthStore } from '../stores/auth';
 import SectionCard from '../components/SectionCard.vue';
 import FormField from '../components/FormField.vue';
 import AppIcon from '../components/AppIcon.vue';
+import UiNumberField from '../components/ui/UiNumberField.vue';
+import UiCheckbox from '../components/ui/UiCheckbox.vue';
 
 const configStore = useConfigStore();
 const auth = useAuthStore();
@@ -123,16 +125,16 @@ function applyPassword() {
         </FormField>
         <button class="btn-outline" :disabled="!newPassword.trim()" @click="applyPassword">填入新密码</button>
         <FormField label="监听端口" hint="修改后需要重启进程才生效">
-          <input v-model.number="config.panel.port" type="number" min="1" max="65535" class="input-field" />
+          <UiNumberField v-model="config.panel.port" :min="1" :max="65535" />
         </FormField>
       </div>
     </SectionCard>
 
     <SectionCard title="备份与存储" hint="更新/重建不再自动备份；这里手动备份配置、画布状态和图片资源" class="mb-4">
       <div class="flex flex-wrap items-center gap-4 mb-3 text-xs">
-        <label class="inline-flex items-center gap-2"><input v-model="backupConfig" type="checkbox" class="h-3.5 w-3.5" /> 配置</label>
-        <label class="inline-flex items-center gap-2"><input v-model="backupCanvasState" type="checkbox" class="h-3.5 w-3.5" /> 画布/模板库状态</label>
-        <label class="inline-flex items-center gap-2"><input v-model="backupCanvasAssets" type="checkbox" class="h-3.5 w-3.5" /> 画布/模板库图片资源</label>
+        <UiCheckbox v-model="backupConfig" size="sm" label="备份配置">配置</UiCheckbox>
+        <UiCheckbox v-model="backupCanvasState" size="sm" label="备份画布状态">画布/模板库状态</UiCheckbox>
+        <UiCheckbox v-model="backupCanvasAssets" size="sm" label="备份画布资源">画布/模板库图片资源</UiCheckbox>
         <button class="btn-primary" type="button" :disabled="backupCreating || (!backupConfig && !backupCanvasState && !backupCanvasAssets)" @click="createBackup">
           {{ backupCreating ? '备份中…' : '立即手动备份' }}
         </button>

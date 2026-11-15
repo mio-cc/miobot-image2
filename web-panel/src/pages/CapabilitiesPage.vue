@@ -275,6 +275,26 @@ watch(() => route.query.cat, (value) => {
 
     <!-- 能力卡片：原型小卡片高密度网格（6 列 / 每页 18；1240→4 列，680→2 列） -->
     <div v-else class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-2.5">
+      <!-- 固定入口：MCP 服务器管理（列表/新增/删除）。
+           侧栏不再单开一级，所以这里必须是常驻入口 —— 否则「已配置 MCP 但没有服务器卡片」时
+           用户无处进入管理页，形成死胡同。 -->
+      <router-link v-if="view === 'registry' && !keyword.trim() && (category === '全部' || category === 'MCP')" to="/mcp" class="block group" aria-label="管理 MCP 服务器">
+        <div class="relative h-full rounded-[10px] px-3 py-2.5 border border-[color:var(--accent-line)] bg-[color:var(--surface)] shadow-[var(--sh-1)] transition-all duration-200 group-hover:-translate-y-[2px] group-hover:shadow-[var(--sh-2)] cursor-pointer">
+          <span class="absolute top-2.5 right-2.5 dot dot-good" title="MCP 服务器管理入口" />
+          <div class="w-[22px] h-[22px] rounded-md grid place-items-center mb-1.5 bg-[color:var(--c-gen-soft)] text-[color:var(--c-gen)] transition-transform duration-200 group-hover:scale-[1.08]">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="6" rx="1.5" /><rect x="3" y="14" width="18" height="6" rx="1.5" />
+              <circle cx="6.5" cy="7" r="1" fill="currentColor" stroke="none" /><circle cx="6.5" cy="17" r="1" fill="currentColor" stroke="none" />
+            </svg>
+          </div>
+          <div class="text-[12.5px] font-semibold tracking-[-0.01em] truncate">MCP 服务器</div>
+          <div class="text-[10px] text-[color:var(--ink-3)] mt-0.5 mb-1.5 font-mono truncate">mcp.*</div>
+          <div class="flex items-center gap-1.5 text-[color:var(--ink-2)] min-w-0">
+            <span class="text-[9.5px] font-semibold rounded-[4px] px-1.5 py-px flex-none tag-gen">接入</span>
+            <span class="truncate text-[10.5px]" title="MCP 服务器列表、传输方式与鉴权">列表 / 新增 / 鉴权</span>
+          </div>
+        </div>
+      </router-link>
       <!-- 固定入口：记忆与 Qdrant 不属于模型能力注册表，但必须能从能力中心配置。 -->
       <router-link v-if="view === 'registry' && !keyword.trim() && (category === '全部' || category === '解析')" to="/cap-memory" class="block group" aria-label="Qdrant 记忆后端配置">
         <div class="relative h-full rounded-[10px] px-3 py-2.5 border border-[color:var(--accent-line)] bg-[color:var(--surface)] shadow-[var(--sh-1)] transition-all duration-200 group-hover:-translate-y-[2px] group-hover:shadow-[var(--sh-2)] cursor-pointer">
@@ -323,23 +343,10 @@ watch(() => route.query.cat, (value) => {
         </div>
       </router-link>
 
-      <!-- MCP 空态常驻卡片：生产未配置服务器时，「全部」页也有可见入口，直达 /mcp 新增流程。 -->
-      <router-link v-if="showMcpAddCard" to="/mcp" class="block group" aria-label="添加 MCP 服务器">
-        <div class="relative h-full rounded-[10px] px-3 py-2.5 border border-dashed border-[color:var(--accent-line)] bg-[color:var(--surface)] transition-all duration-200 group-hover:-translate-y-[2px] group-hover:shadow-[var(--sh-2)] cursor-pointer">
-          <span class="absolute top-2.5 right-2.5 dot dot-warn" title="尚未配置 MCP 服务器" />
-          <div class="w-[22px] h-[22px] rounded-md grid place-items-center mb-1.5 bg-[color:var(--accent-soft)] text-[color:var(--accent)] transition-transform duration-200 group-hover:scale-[1.08]">
-            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-          </div>
-          <div class="text-[12.5px] font-semibold tracking-[-0.01em] truncate">添加 MCP 服务器</div>
-          <div class="text-[10px] text-[color:var(--ink-3)] mt-0.5 mb-1.5 font-mono truncate">mcp.add</div>
-          <div class="flex items-center gap-1.5 text-[color:var(--ink-2)] min-w-0">
-            <span class="text-[9.5px] font-semibold rounded-[4px] px-1.5 py-px flex-none tag-info">MCP</span>
-            <span class="truncate text-[10.5px]" title="接入外部工具：HTTP 远程服务或本地进程，选模板即可">接入外部工具 · 选模板即可</span>
-          </div>
-        </div>
-      </router-link>
+      <!-- Phase-UI 2：原来的「添加 MCP 服务器」虚线卡已移除 ——
+           上方常驻的「MCP 服务器」管理卡已经覆盖同一目的地（/mcp），
+           两个卡片指向同一页在空态下会被误读成重复项。首用引导改由
+           空态文案 + 常驻卡的「列表 / 新增 / 鉴权」承担。 -->
     </div>
 
     <!-- 分页（窗口化页码） -->
@@ -355,7 +362,7 @@ watch(() => route.query.cat, (value) => {
 
     <div v-if="!registryLoading && !store.loading && !cards.length" class="empty-state">
       <div class="empty-title">没有匹配的能力</div>
-      <div class="empty-sub">换个关键词或分类试试；新能力注册后会自动出现在这里{{ showMcpAddCard ? '。MCP 服务器尚未配置，可点上方「添加 MCP 服务器」接入' : '' }}</div>
+      <div class="empty-sub">换个关键词或分类试试；新能力注册后会自动出现在这里{{ showMcpAddCard ? '。MCP 服务器尚未配置，可点上方「MCP 服务器」卡片接入' : '' }}</div>
     </div>
   </div>
 </template>
