@@ -196,6 +196,9 @@ interface TurnExecutionState {
   budget: TurnBudget;
   toolResults: AgentToolResult[];
   deadlineAt: number;
+  /** 失败轮次落库用（2026-11-15）：模型/工具异常抛出时必须能写回本轮消息。 */
+  session?: AgentSessionState;
+  persistedMessages?: AgentMessage[];
 }
 
 class AgentAbortError extends Error {
@@ -256,9 +259,11 @@ export class AgentRuntime implements AgentLoop {
     } catch (error) {
       if (timedOut) return await this.finalizeTimedOut(input, executionState, 'turn_timeout');
       if (error instanceof AgentAbortError || controller.signal.aborted || input.signal?.aborted) return this.cancelledResult(input, 'turn_cancelled');
-      return this.failedResult(input, 'agent_runtime_error', error instanceof Error ? error.message : String(error), {
-        usage: this.finalUsage(executionState.budget),
-        toolResults: executionState.toolResults,
+      return this.persistFailedTurn(input, executionState.session, executionState.persistedMessages, {
+        ...this.failedResult(input, 'agent_runtime_error', error instanceof Error ? error.message : String(error), {
+          usage: this.finalUsage(executionState.budget),
+          toolResults: executionState.toolResults,
+        }),
       });
     } finally {
       clearTimeout(timer);
@@ -555,6 +560,8 @@ export class AgentRuntime implements AgentLoop {
           imageRefs: undefined,
         };
       });
+    executionState.session = session;
+    executionState.persistedMessages = persistedMessages;
     const budget: TurnBudget = executionState.budget;
     const repairTracker = new OutputRepairBudgetTracker(this.repairLimits);
     executionState.toolResults = [...resumedToolResults];
@@ -662,7 +669,7 @@ export class AgentRuntime implements AgentLoop {
           });
         }
         if (!this.deps.toolExecutor) {
-          return this.failedResult(input, 'tool_executor_unavailable', 'Tool executor is not configured.');
+          return this.persistFailedTurn(input, session, persistedMessages, this.failedResult(input, 'tool_executor_unavailable', 'Tool executor is not configured.'));
         }
         if (budget.toolRounds + validation.calls.length > this.limits.maxToolRounds) {
           return this.safeTextOrFailure({
@@ -738,7 +745,7 @@ export class AgentRuntime implements AgentLoop {
         for (const call of validation.calls) {
           const spec = tools.find((tool) => tool.name === call.name);
           if (!spec) {
-            return this.failedResult(input, 'unknown_tool', `Tool loadout lost spec for ${call.name}.`);
+            return this.persistFailedTurn(input, session, persistedMessages, this.failedResult(input, 'unknown_tool', `Tool loadout lost spec for ${call.name}.`));
           }
           if (!this.deps.preflightToolCall) continue;
           let decision: AgentToolPreflightDecision;
@@ -755,7 +762,7 @@ export class AgentRuntime implements AgentLoop {
               mode,
             });
           } catch (error) {
-            return this.failedResult(input, 'tool_preflight_failed', error instanceof Error ? error.message : String(error));
+            return this.persistFailedTurn(input, session, persistedMessages, this.failedResult(input, 'tool_preflight_failed', error instanceof Error ? error.message : String(error)));
           }
           if (decision.allowed) continue;
           const pending = Boolean(decision.pendingApproval || decision.pendingJob || decision.error?.code === 'approval_required');
@@ -1132,7 +1139,7 @@ export class AgentRuntime implements AgentLoop {
     const { input, signal, budget, workingMessages, persistedMessages, session, reason } = options;
     if (!options.repairLimits.allowTextFallback || budget.modelRounds >= this.limits.maxModelRounds || budget.remainingTokens <= 0) {
       return {
-        ...this.failedResult(input, reason, 'Tool output repair or loop budget was exhausted.'),
+        ...this.persistFailedTurn(input, session, persistedMessages, this.failedResult(input, reason, 'Tool output repair or loop budget was exhausted.')),
         usage: this.finalUsage(budget),
         ...(options.toolResults?.length ? { toolResults: options.toolResults } : {}),
       };
@@ -1159,7 +1166,7 @@ export class AgentRuntime implements AgentLoop {
       });
     } catch (error) {
       return {
-        ...this.failedResult(input, reason, error instanceof Error ? error.message : String(error)),
+        ...this.persistFailedTurn(input, session, persistedMessages, this.failedResult(input, reason, error instanceof Error ? error.message : String(error))),
         usage: this.finalUsage(budget),
         ...(options.toolResults?.length ? { toolResults: options.toolResults } : {}),
       };
@@ -1168,7 +1175,7 @@ export class AgentRuntime implements AgentLoop {
     const text = String(response.assistant.text || '').trim();
     if (response.truncated || response.toolCallIssues?.length || response.assistant.toolCalls?.length || !text) {
       return {
-        ...this.failedResult(input, reason, 'Safe text fallback did not produce plain text.'),
+        ...this.persistFailedTurn(input, session, persistedMessages, this.failedResult(input, reason, 'Safe text fallback did not produce plain text.')),
         usage: this.finalUsage(budget),
         ...(options.toolResults?.length ? { toolResults: options.toolResults } : {}),
       };
@@ -1320,7 +1327,13 @@ export class AgentRuntime implements AgentLoop {
     const toolResults = state.toolResults || [];
     const context = this.partialToolText(toolResults);
     if (!context) {
-      return this.failedResult(input, reason, 'Agent turn timed out before any usable tool result was produced.', { usage, toolResults });
+      // 超时且无可用工具结果：同样落库本轮 user 消息（否则超时轮次整段从会话消失）。
+      const timedOutSession = this.deps.sessions.load(input.sessionKey) || undefined;
+      return {
+        ...this.persistFailedTurn(input, timedOutSession, undefined, this.failedResult(input, reason, 'Agent turn timed out before any usable tool result was produced.', { usage, toolResults })),
+        usage,
+        toolResults,
+      };
     }
     const finalizeTimeoutMs = Math.max(500, Math.min(this.limits.finalizeTimeoutMs, Math.floor(this.limits.turnTimeoutMs / 4)));
     const controller = new AbortController();
@@ -1389,6 +1402,47 @@ export class AgentRuntime implements AgentLoop {
       error: { code, message, retryable: false },
       ...extra,
     };
+  }
+
+  /**
+   * 失败轮次同样落库（线上时测 2026-11-15）：failedResult 只返回 error、不写 session，
+   * 导致「用户请求 -> 模型试了 N 轮工具 -> 失败」整段从会话历史里消失。下一句
+   * 「转图表发我」于是只能看到更早的无关内容，把上一次的状态报告当成数据源。
+   * 失败是运行状态，不是对话的一部分；用户说过什么、模型试过什么必须留在历史里。
+   */
+  private persistFailedTurn(
+    input: AgentTurnInput,
+    session: AgentSessionState | undefined,
+    messages: AgentMessage[] | undefined,
+    extra: Partial<AgentTurnResult> = {},
+  ): AgentTurnResult {
+    let saved: AgentSessionState | undefined;
+    try {
+      const base = session || this.deps.sessions.load(input.sessionKey) || this.deps.sessions.loadOrCreate?.({
+        sessionKey: input.sessionKey,
+        turnId: input.turnId,
+        configRevision: input.configRevision,
+        runtimeVersion: input.runtimeVersion,
+      });
+      if (base) {
+        // 至少要留下这一轮的 user 消息，否则「引用上文」类操作会断链。
+        // 续跑轮次不补：resumeJob 的 userText 是系统续跑通知，不是用户原话。
+        const userText = input.metadata?.resumeJob === true ? '' : stripAsyncSystemStatus(input.userText);
+        const sanitized = messages?.filter((message) => !isInternalMessage(message));
+        // messages 是「完整会话消息列表」（含历史）。只有拿到完整列表才能整体替换——
+        // 否则 replace 语义会把历史压缩成这一条，比丢失单轮更糟。
+        const persisted = sanitized?.length
+          ? sanitized
+          : [
+            ...(base.messages || []).filter((message) => !isInternalMessage(message)),
+            ...(userText ? [{ role: 'user' as const, content: userText }] : []),
+          ];
+        if (persisted.length) saved = this.saveSession(base, input, persisted, {});
+      }
+    } catch {
+      // 落库失败不能改变失败语义（例如 session 存储不可用）。
+    }
+    return { ...extra, ...(saved ? { messages: saved.messages } : {}) } as AgentTurnResult;
   }
 
   private cancelledResult(input: AgentTurnInput, code: string): AgentTurnResult {

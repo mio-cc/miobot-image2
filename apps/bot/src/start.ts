@@ -15,10 +15,11 @@ import { ReplyPreferenceStore } from './reply-preference-store.js';
 import { hasPendingAgentClarification } from './pending-clarification.js';
 import { InMemoryAgentSessionManager, type AgentJobRecord, type AgentToolPreflightDecision, type AgentToolPreflightInput } from '../../../packages/agent-runtime/src/index.js';
 import { createBotMessageRuntime, handleCodeRenderRequest, handleFileGenerateCommand, handleFileReadCommand, handleWebScreenshotRequest, type BotRuntimeOptions, type FileReference, type NapcatMessageEvent } from './runtime.js';
-import { toModelNodes, toCapabilityOverrides } from './config-bridge.js';
+import { toGroupContextConfig, toModelNodes, toCapabilityOverrides } from './config-bridge.js';
+import { CONTENT_REJECTION_PLACEHOLDER } from './content-rejection.js';
 import { renderTtsPreprocessPrompt, resolveTtsPreprocessTarget, shouldUseTts, synthesizeSpeech } from './tts.js';
 import type { OwnerCommand } from './owner.js';
-import type { NapcatHistoryMessage } from './group-context.js';
+import { fetchGroupContext, formatHistoryMessageText, type GroupContextOptions, type NapcatHistoryMessage } from './group-context.js';
 import { normalizeForwardPayload } from './message-enrichment.js';
 import { FeatureGate } from './feature-gate.js';
 import { createOutboundImageCompressor, materializeImagesForNapcat, materializeAudioForNapcat } from './image-output.js';
@@ -1803,6 +1804,105 @@ const memoryService = memoryBackend === 'qdrant'
     },
   });
 
+  // 记忆命中组装（从 runtime 注入回调里抽出，供正常回合与续跑回合共用）。
+  const buildMemoryContext = async (input: {
+    chatType: 'group' | 'private';
+    groupId?: string | number;
+    userId: string | number;
+    query: string;
+    excludeMessageIds?: Array<string | number>;
+    excludeTexts?: string[];
+  }): Promise<string | undefined> => {
+    const botId = String(getConfig().bot.botQqId || adapter.selfQqId || 'unknown');
+    const result = await memoryService.retrieve({
+      botId,
+      chatType: input.chatType,
+      groupId: input.groupId === undefined ? undefined : String(input.groupId),
+      userId: String(input.userId),
+      query: input.query,
+      topK: getConfig().contextPolicy.memoryTopK,
+      minScore: getConfig().contextPolicy.memoryMinScore,
+      maxContextChars: getConfig().contextPolicy.memoryMaxChars,
+      // 跨通道互斥（P0 注入去重，2026-11-07 拍板）：本轮消息 + 群上下文已含 id / 会话历史已含文本，
+      // 检索输入侧整条排除——同一内容不再以「记忆 + 群历史/会话历史」双份注入。
+      excludeMessageIds: input.excludeMessageIds,
+      excludeTexts: input.excludeTexts,
+    });
+    const voiceScope = {
+      chatType: input.chatType,
+      groupId: input.groupId === undefined ? undefined : String(input.groupId),
+      userId: String(input.userId),
+    };
+    const voiceCandidates = voiceService.listCandidates(voiceScope);
+    const voiceContext = voiceCandidates.length ? voiceService.formatCandidates(voiceCandidates) : '';
+    return [result.context, voiceContext].filter(Boolean).join('\n\n') || undefined;
+  };
+
+  // 续跑上下文组装（线上时测 2026-11-15）：resume 分支此前只把 originalText 当输入，
+  // 群历史与记忆命中整段缺失。用户「引用上一条」时模型只能看到会话历史里更早的无关内容，
+  // 于是把上一轮自身的能力状态报告当成数据源画成图。这里复用与正常回合同一套两段式组装
+  // （记忆 + 群历史），不做第二份逻辑。
+  const buildResumeContext = async (input: {
+    text: string;
+    chatType: 'group' | 'private';
+    groupId?: string | number;
+    userId: string | number;
+    anchorMessageId?: string | number;
+    sessionTexts?: string[];
+  }): Promise<{ groupContext?: string; memoryContext?: string }> => {
+    const cfg = getConfig();
+    const parts: string[] = [];
+    let memoryContext: string | undefined;
+    try {
+      const memory = await buildMemoryContext({
+        chatType: input.chatType,
+        ...(input.groupId !== undefined ? { groupId: input.groupId } : {}),
+        userId: input.userId,
+        query: input.text,
+        ...(input.sessionTexts?.length ? { excludeTexts: input.sessionTexts } : {}),
+      });
+      if (memory) memoryContext = memory;
+    } catch (error) {
+      logger.warn('续跑上下文：记忆命中失败', { error: String((error as Error)?.message || error) });
+    }
+    const gcConfig = toGroupContextConfig(cfg);
+    if (input.chatType === 'group' && gcConfig.enabled && input.groupId !== undefined) {
+      try {
+        const ctxOptions: GroupContextOptions = {
+          messageCount: gcConfig.messageCount,
+          skipForward: gcConfig.skipForward,
+          includeImages: gcConfig.includeImages,
+          maxChars: gcConfig.maxChars,
+        };
+        const rawContext = await fetchGroupContext({
+          fetchHistory: async (groupId, anchorMessageId, count): Promise<NapcatHistoryMessage[]> => {
+            try {
+              const resp = await adapter.callAction('get_group_msg_history', { group_id: groupId, message_id: anchorMessageId, count });
+              const data = (resp?.data ?? {}) as { messages?: NapcatHistoryMessage[] };
+              return Array.isArray(data.messages) ? data.messages : [];
+            } catch (error) {
+              logger.warn('get_group_msg_history failed', { groupId, error: String((error as { message?: string })?.message || error) });
+              return [];
+            }
+          },
+          groupId: input.groupId,
+          anchorMessageId: input.anchorMessageId ?? '',
+          selfId: cfg.bot.botQqId || adapter.selfQqId,
+          options: ctxOptions,
+          isRejected: (msg: NapcatHistoryMessage) => contentRejections.isRejected({ messageId: String(msg.message_id ?? '') })
+            || contentRejections.isRejected({ text: formatHistoryMessageText(msg, ctxOptions) }),
+          placeholder: CONTENT_REJECTION_PLACEHOLDER,
+        });
+        if (rawContext.context) parts.push(rawContext.context);
+      } catch (error) {
+        logger.warn('续跑上下文：群历史拉取失败', { error: String((error as Error)?.message || error) });
+      }
+    }
+    return {
+      ...(parts.length ? { groupContext: parts.join('\n\n') } : {}),
+      ...(memoryContext ? { memoryContext } : {}),
+    };
+  };
   const runtime = createBotMessageRuntime({
     app,
     reply: adapter,
@@ -1839,31 +1939,14 @@ const memoryService = memoryBackend === 'qdrant'
     // 群聊上下文：@bot 时通过 napcat get_group_msg_history 拉取最近群聊记录。
     handleApprovalReply: (input) => approvalRuntime.handleReply(input),
     reportProblem: (input) => problemReporter.report(input),
-    loadMemoryContext: async (input) => {
-      const botId = String(getConfig().bot.botQqId || adapter.selfQqId || 'unknown');
-      const result = await memoryService.retrieve({
-        botId,
-        chatType: input.chatType,
-        groupId: input.groupId === undefined ? undefined : String(input.groupId),
-        userId: String(input.userId),
-        query: input.query,
-        topK: getConfig().contextPolicy.memoryTopK,
-        minScore: getConfig().contextPolicy.memoryMinScore,
-        maxContextChars: getConfig().contextPolicy.memoryMaxChars,
-        // 跨通道互斥（P0 注入去重，2026-11-07 拍板）：本轮消息 + 群上下文已含 id / 会话历史已含文本，
-        // 检索输入侧整条排除——同一内容不再以「记忆 + 群历史/会话历史」双份注入。
-        excludeMessageIds: input.excludeMessageIds,
-        excludeTexts: input.excludeTexts,
-      });
-      const voiceScope = {
-        chatType: input.chatType,
-        groupId: input.groupId === undefined ? undefined : String(input.groupId),
-        userId: String(input.userId),
-      };
-      const voiceCandidates = voiceService.listCandidates(voiceScope);
-      const voiceContext = voiceCandidates.length ? voiceService.formatCandidates(voiceCandidates) : '';
-      return [result.context, voiceContext].filter(Boolean).join('\n\n') || undefined;
-    },
+    loadMemoryContext: (input) => buildMemoryContext({
+      chatType: input.chatType,
+      ...(input.groupId !== undefined ? { groupId: input.groupId } : {}),
+      userId: input.userId,
+      query: input.query,
+      excludeMessageIds: input.excludeMessageIds,
+      excludeTexts: input.excludeTexts,
+    }),
     observeMemory: (input) => {
       const botId = String(getConfig().bot.botQqId || adapter.selfQqId || 'unknown');
       memoryObserver.observe({
@@ -2291,10 +2374,36 @@ const memoryService = memoryBackend === 'qdrant'
       originalTextPreview: originalText.slice(0, 160),
       availableToolNames,
     });
+    // 续跑同样注入群历史 + 记忆命中（2026-11-15）：只给 originalText 时，用户「引用上一条」
+    // 只能命中会话里更早的无关内容，模型会把上一轮自己的状态报告当成数据源。
+    const sessionTexts = (session.messages || [])
+      .filter((message) => message.role === 'user' || message.role === 'assistant')
+      .map((message) => String(message.content || '').trim())
+      .filter(Boolean)
+      .slice(-20);
+    let resumeContext: { groupContext?: string; memoryContext?: string } = {};
+    try {
+      resumeContext = await buildResumeContext({
+        text: originalText || '继续',
+        chatType,
+        ...(groupId !== undefined ? { groupId } : {}),
+        userId,
+        sessionTexts,
+      });
+    } catch (error) {
+      logger.warn('续跑上下文组装失败', { jobId: job.jobId, error: String((error as Error)?.message || error) });
+    }
+    logger.info('续跑上下文组装', {
+      jobId: job.jobId,
+      memoryChars: resumeContext.memoryContext?.length || 0,
+      groupChars: resumeContext.groupContext?.length || 0,
+    });
     const outcome = await agentHost({
       text: (originalText || '请根据已完成工具结果处理原请求。') + (jobFailed
         ? '\n\n【系统状态】上一轮异步任务执行失败。请直接向用户说明本次失败，不要再次调用同类生成工具或自动重试。'
         : ''),
+      ...(resumeContext.groupContext ? { groupContext: resumeContext.groupContext } : {}),
+      ...(resumeContext.memoryContext ? { memoryContext: resumeContext.memoryContext } : {}),
       resumeJob: true,
       resumeJobId: job.jobId,
       ...(pendingRecord?.meta?.originalReplyPreference ? { replyPreference: pendingRecord.meta.originalReplyPreference as any } : {}),
