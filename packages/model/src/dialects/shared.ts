@@ -54,6 +54,81 @@ export function assertNoTopLevelError(data: unknown): void {
     });
   }
 }
+/**
+ * 解析「网关没让请求流式、却硬回 SSE」的响应（2026-11-16 实测 api.howtofix.id：
+ * nemotron-3.5-super-vl-free / beam-free 即使请求里没有 stream，仍返回
+ * "data: {…choice.delta…}" 的 text/event-stream）。
+ *
+ * 这里把 SSE 片段重组成一份普通 chat.completion 对象：content 拼接、tool_calls 按
+ * index 聚合、finish_reason / usage 取最后出现的值。之后走与普通响应完全相同的解析路径，
+ * 不引入第二套语义。
+ */
+export function parseOpenAiSseText(text: string): Record<string, unknown> | undefined {
+  const source = String(text || '');
+  if (!/^data:/m.test(source.trim())) return undefined;
+  const lines = source.split(/\u000d?\u000a/);
+  let content = '';
+  let reasoning = '';
+  let finishReason: string | undefined;
+  let usage: unknown;
+  let model: string | undefined;
+  const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+  let sawPayload = false;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === '[DONE]') continue;
+    sawPayload = true;
+    let chunk: Record<string, any>;
+    try { chunk = JSON.parse(payload); } catch { continue; }
+    if (!chunk || typeof chunk !== 'object' || Array.isArray(chunk)) continue;
+    const choice = (Array.isArray(chunk.choices) ? chunk.choices[0] : chunk.choice) || {};
+    const delta = choice.delta && typeof choice.delta === 'object' ? choice.delta : {};
+    if (Array.isArray(delta.content)) {
+      content += delta.content.map((part: unknown) => flattenTextContent(part)).filter(Boolean).join('');
+    } else if (typeof delta.content === 'string') {
+      content += delta.content;
+    }
+    if (Array.isArray(delta.reasoning_content)) {
+      reasoning += delta.reasoning_content.map((part: unknown) => flattenTextContent(part)).filter(Boolean).join('');
+    } else if (typeof delta.reasoning_content === 'string') {
+      reasoning += delta.reasoning_content;
+    }
+    for (const rawCall of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
+      const call = asRecord(rawCall);
+      const fn = asRecord(call.function);
+      const idx = typeof call.index === 'number' ? call.index : 0;
+      const existing = toolCalls.get(idx) || { id: '', name: '', arguments: '' };
+      if (typeof call.id === 'string' && call.id) existing.id = call.id;
+      if (typeof fn.name === 'string' && fn.name) existing.name = fn.name;
+      if (typeof fn.arguments === 'string') existing.arguments += fn.arguments;
+      toolCalls.set(idx, existing);
+    }
+    if (choice.finish_reason !== undefined) finishReason = String(choice.finish_reason);
+    if (chunk.usage !== undefined) usage = chunk.usage;
+    if (typeof chunk.model === 'string' && chunk.model) model = chunk.model;
+  }
+  if (!sawPayload) return undefined;
+  const effectiveText = content || reasoning;
+  const message: Record<string, unknown> = { role: 'assistant', content: effectiveText };
+  const calls = [...toolCalls.values()]
+    .filter((call) => call.name)
+    .map((call) => ({
+      ...(call.id ? { id: call.id } : {}),
+      function: { name: call.name, arguments: call.arguments },
+    }));
+  if (calls.length) message.tool_calls = calls;
+  const choice: Record<string, unknown> = { index: 0, message };
+  if (finishReason) choice.finish_reason = finishReason;
+  return {
+    object: 'chat.completion',
+    choices: [choice],
+    ...(usage !== undefined ? { usage } : {}),
+    ...(model ? { model } : {}),
+  };
+}
+
 /** 从 OpenAI 风格响应取文本。 */
 export function parseOpenAiText(data: unknown): TextResult {
   assertNoTopLevelError(data);

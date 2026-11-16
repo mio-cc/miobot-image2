@@ -38,6 +38,8 @@ export interface ModelNode {
   requestMode?: HuggingFaceRequestMode; // huggingface
   custom?: CustomDialectSpec;           // custom
   models?: string[];                    // 该节点声明可用的模型（供 failover 选择同名模型）
+  /** 能力记忆按 key 隔离用的指纹（baseUrl+apiKey 摘要，不含密钥原文）；装配层计算。 */
+  credentialFingerprint?: string;
   enabled?: boolean;
   /** 该节点同时在飞的请求上限；0/缺省 = 不限制。 */
   concurrency?: number;

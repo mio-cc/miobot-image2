@@ -154,3 +154,31 @@ test('ModelClient 端到端：未知模型生图成功 → 记住支持；上游
   await assert.rejects(() => client.generateImages(0, { model: other, prompt: 'a dog', count: 1, timeoutMs: 1000 }));
   assert.equal(calls.length, before, '已知不支持后应快速失败，不再打上游');
 });
+
+test('能力记忆按凭据指纹隔离：换 key 不继承旧结论', () => {
+  const memory = createInMemoryCapabilityMemory();
+  const reg = createCapabilityRegistry({ memory });
+  const keyA = { ...NODE, credentialFingerprint: 'fp-key-a' };
+  const keyB = { ...NODE, credentialFingerprint: 'fp-key-b' };
+  reg.learnSupported(keyA, UNKNOWN_MODEL, 'image.generate');
+  assert.equal(reg.can(UNKNOWN_MODEL, 'image.generate', keyA), true, 'keyA 学到的结论 keyA 应可见');
+  assert.equal(reg.can(UNKNOWN_MODEL, 'image.generate', keyB), false, 'keyB 不得继承 keyA 的结论');
+  assert.equal(reg.shouldAttempt(UNKNOWN_MODEL, 'image.generate', keyB), true, 'keyB 应按未知重新验证');
+  assert.equal(reg.resolve(UNKNOWN_MODEL, keyB).source, 'unknown');
+});
+
+test('同一 baseUrl + 同一指纹共享结论', () => {
+  const memory = createInMemoryCapabilityMemory();
+  const reg = createCapabilityRegistry({ memory });
+  const a = { ...NODE, credentialFingerprint: 'fp-same' };
+  const b = { ...NODE, credentialFingerprint: 'fp-same' };
+  reg.learnUnsupported(a, UNKNOWN_MODEL, 'video.generate', 'not supported');
+  assert.equal(reg.shouldAttempt(UNKNOWN_MODEL, 'video.generate', b), false, '同 key 的两个引用共享记忆');
+});
+
+test('无指纹引用不进有指纹桶（升级后旧条目自然失效重学）', () => {
+  const memory = createInMemoryCapabilityMemory();
+  const reg = createCapabilityRegistry({ memory });
+  reg.learnUnsupported(NODE, UNKNOWN_MODEL, 'image.generate', 'legacy evidence');
+  assert.equal(reg.shouldAttempt(UNKNOWN_MODEL, 'image.generate', { ...NODE, credentialFingerprint: 'fp-new' }), true, '旧格式结论不得泄漏到带指纹的新节点');
+});

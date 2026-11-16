@@ -1,17 +1,18 @@
-import type {
-  ChatParseContext,
-  ChatRequest,
-  Dialect,
-  ImageEditRequest,
-  ImageGenerationRequest,
-  ModelNode,
-  ModelOperation,
-  RequestPlan,
-  TextResult,
-  VideoGenerationRequest,
-  VisionRequest,
+import {
+  ModelError,
+  type ChatParseContext,
+  type ChatRequest,
+  type Dialect,
+  type ImageEditRequest,
+  type ImageGenerationRequest,
+  type ModelNode,
+  type ModelOperation,
+  type RequestPlan,
+  type TextResult,
+  type VideoGenerationRequest,
+  type VisionRequest,
 } from '../ports.js';
-import { bearerHeaders, buildOpenAiVideoStatus, joinUrl, parseOpenAiImages, parseOpenAiText, parseOpenAiVideo } from './shared.js';
+import { bearerHeaders, buildOpenAiVideoStatus, joinUrl, parseOpenAiImages, parseOpenAiSseText, parseOpenAiText, parseOpenAiVideo } from './shared.js';
 import { hasToolMessages, openAiToolAdapter, toOpenAiMessages, type ProviderToolMessage } from '../../../provider-tools/src/index.js';
 import { applyJsonFallbackParse, jsonFallbackRequestMessages, nativeResult, normalizeToolChoice, parseContextForRequest, requestToolNames, resolveToolProtocol } from './tool-support.js';
 import {
@@ -136,21 +137,59 @@ function looksLikeAspectRatio(value: string): boolean {
   return /^\d{1,2}:\d{1,2}$/.test(String(value || '').trim());
 }
 
+
+/**
+ * 统一入口前先把响应规整成普通对象（2026-11-16）：
+ * - transport 已按 content-type 区分：application/json → object；
+ * - 部分网关把 JSON 打成 text/plain → string，先尝试 JSON.parse；
+ * - 部分网关不请求流式也硬回 SSE（text/event-stream）→ 重组为 chat.completion 对象。
+ */
+function normalizeOpenAiChatPayload(data: unknown): unknown {
+  if (typeof data !== 'string') return data;
+  const text = data.trim();
+  if (!text) return data;
+  if (text.startsWith('{') || text.startsWith('[')) {
+    try { return JSON.parse(text) as unknown; } catch { /* 继续走 SSE 判断 */ }
+  }
+  const sse = parseOpenAiSseText(text);
+  if (sse) return sse;
+  throw new ModelError(`无法解析上游响应（既不是 JSON 也不是 SSE）：${text.slice(0, 300)}`, {
+    category: 'upstream', retryable: false, code: 'unparseable_response',
+  });
+}
+
+/** SSE 重组对象里的 usage 是标准 openai 形态，直接映射成 TextUsage。 */
+function sseUsageOf(data: unknown): import('../ports.js').TextUsage | undefined {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined;
+  const usage = (data as Record<string, any>).usage;
+  if (!usage || typeof usage !== 'object') return undefined;
+  const toNum = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+  const prompt = toNum(usage.prompt_tokens) ?? toNum(usage.input_tokens);
+  const completion = toNum(usage.completion_tokens) ?? toNum(usage.output_tokens);
+  const total = toNum(usage.total_tokens) ?? toNum(usage.totalTokens);
+  return {
+    ...(prompt !== undefined ? { promptTokens: prompt } : {}),
+    ...(completion !== undefined ? { completionTokens: completion } : {}),
+    ...(total !== undefined ? { totalTokens: total } : {}),
+  };
+}
+
 function parseOpenAiChat(data: unknown, context: ChatParseContext = {}): TextResult {
-  const native = openAiToolAdapter.parseToolResponse(data, {
+  const normalized = normalizeOpenAiChatPayload(data);
+  const native = openAiToolAdapter.parseToolResponse(normalized, {
     ...context,
-    finishReason: openAiFinishReason(data),
+    finishReason: openAiFinishReason(normalized),
   });
   const finishReason = native.finishReason;
   let base: TextResult;
   try {
-    base = parseOpenAiText(data);
+    base = parseOpenAiText(normalized);
   } catch (error) {
     const canRepair = context.toolProtocol === 'json-fallback' || native.toolCalls.length > 0 || native.issues.some((issue) => issue.code === 'truncated_output');
     if (!canRepair) throw error;
     base = {
-      text: native.text || openAiVisibleText(data),
-      raw: data,
+      text: native.text || openAiVisibleText(normalized),
+      raw: normalized,
       ...(finishReason ? { finishReason } : {}),
       ...(native.truncated ? { truncated: true } : {}),
     };
@@ -159,6 +198,7 @@ function parseOpenAiChat(data: unknown, context: ChatParseContext = {}): TextRes
     ...base,
     ...(finishReason ? { finishReason } : {}),
     ...(native.truncated ? { truncated: true } : {}),
+    ...(sseUsageOf(normalized) ? { usage: sseUsageOf(normalized) } : {}),
   };
   if (context.toolProtocol === 'json-fallback') return applyJsonFallbackParse(withMeta, {
     ...context,

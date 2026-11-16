@@ -186,7 +186,7 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     const editNodeIndex = cfg.llm.editNodeIndex;
     const videoNodeIndex = String(cfg.llm.videoModel || '').trim() ? cfg.llm.videoNodeIndex : cfg.llm.chatNodeIndex;
     const resolveCapability = (model: string, op: 'image.generate' | 'image.edit' | 'video.generate', nodeIndex: number) => {
-      const node = cfg.llm.apiKeys?.[nodeIndex];
+      const node = toModelNodes(cfg)[nodeIndex];
       const resolved = registry.resolve(model, node);
       const known = resolved.source !== 'unknown';
       return {
@@ -1321,33 +1321,33 @@ const memoryService = memoryBackend === 'qdrant'
       isOwnerUser: (qq) => isOwner(qq, getConfig().bot.ownerQQs),
       locate: (model, nodeIndex) => {
         const cfg = getConfig();
-        const nodes = cfg.llm.apiKeys || [];
+        const nodes = toModelNodes(cfg);
         const hits: Array<{ nodeIndex: number; model: string; node?: { baseUrl?: string; dialect?: string } }> = [];
         if (nodeIndex !== undefined) {
           const node = nodes[nodeIndex];
           const matched = (node?.models || []).some((m) => String(m || '').trim() === model);
-          if (node) hits.push({ nodeIndex, model, ...(matched ? { node: node as { baseUrl?: string; dialect?: string } } : {}) });
+          if (node) hits.push({ nodeIndex, model, ...(matched ? { node } : {}) });
           return hits;
         }
         for (let i = 0; i < nodes.length; i += 1) {
           const node = nodes[i];
           if (!(node?.models || []).some((m) => String(m || '').trim() === model)) continue;
-          hits.push({ nodeIndex: i, model, node: node as { baseUrl?: string; dialect?: string } });
+          hits.push({ nodeIndex: i, model, node });
         }
         return hits;
       },
       remember: ({ model, nodeIndex, operations, note }) => {
         const cfg = getConfig();
-        const nodes = cfg.llm.apiKeys || [];
+        const nodes = toModelNodes(cfg);
         const targets: Array<{ nodeIndex: number; model: string; node?: { baseUrl?: string; dialect?: string } }> = [];
         if (nodeIndex !== undefined) {
           const node = nodes[nodeIndex];
-          if (node) targets.push({ nodeIndex, model, node: node as { baseUrl?: string; dialect?: string } });
+          if (node) targets.push({ nodeIndex, model, node });
         } else {
           for (let i = 0; i < nodes.length; i += 1) {
             const node = nodes[i];
             if (!(node?.models || []).some((m) => String(m || '').trim() === model)) continue;
-            targets.push({ nodeIndex: i, model, node: node as { baseUrl?: string; dialect?: string } });
+            targets.push({ nodeIndex: i, model, node });
           }
         }
         for (const target of targets) {

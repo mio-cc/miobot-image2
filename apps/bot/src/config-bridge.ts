@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { AppConfig, ConfigCapabilityOverride } from '../../../packages/config/src/index.js';
 import type { CapabilityOverride, ModelNode, ModelOperation, ProviderDialect } from '../../../packages/model/src/index.js';
 
@@ -76,6 +77,14 @@ function inferDialect(node: Record<string, unknown>): ProviderDialect {
 }
 
 /** AppConfig.llm.apiKeys(ApiNode[]) → model 层 ModelNode[]。 */
+
+/** baseUrl+key 的不可逆摘要。能力记忆按它隔离：换 key 自动重新验证，旧结论不继承。 */
+export function modelCredentialFingerprint(baseUrl: string, apiKey: string | undefined): string {
+  const key = String(apiKey || '').trim();
+  if (!key) return '';
+  return createHash('sha256').update(String(baseUrl || '').trim() + '|' + key).digest('hex').slice(0, 16);
+}
+
 export function toModelNodes(cfg: AppConfig): ModelNode[] {
   const nodes = cfg.llm?.apiKeys || [];
   return nodes.map((node) => {
@@ -89,6 +98,7 @@ export function toModelNodes(cfg: AppConfig): ModelNode[] {
       models: node.models,
       enabled: node.enabled,
       concurrency: node.concurrency,
+      credentialFingerprint: modelCredentialFingerprint(node.baseUrl, node.key),
     };
     if (raw.requestMode !== undefined) mapped.requestMode = raw.requestMode as ModelNode['requestMode'];
     if (raw.custom !== undefined) mapped.custom = raw.custom as ModelNode['custom'];

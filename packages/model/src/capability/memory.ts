@@ -53,11 +53,18 @@ export function createInMemoryCapabilityMemory(initial?: Record<string, LearnedC
 export interface CapabilityNodeRef {
   baseUrl?: string;
   dialect?: string;
+  /**
+   * 凭据指纹（2026-11-16）：同一网关、同一模型，不同 key 可能落在不同分组/渠道，
+   * 能力事实必须按 key 隔离——换 key 后旧结论自动失效重新验证，而不是继承。
+   * 由装配层对 baseUrl+apiKey 做不可逆摘要（不含密钥原文）。
+   */
+  credentialFingerprint?: string;
 }
 
 export function capabilityKey(node: CapabilityNodeRef | undefined, model: string): string {
   const base = String(node?.baseUrl || '').trim().replace(/\/+$/, '').toLowerCase();
-  return `${node?.dialect || 'openai'}|${base}::${String(model || '').trim()}`;
+  const scope = String(node?.credentialFingerprint || 'anon').trim();
+  return `${node?.dialect || 'openai'}|${base}::${scope}::${String(model || '').trim()}`;
 }
 
 /** 合并操作集合并去重（成功调用只带来「追加」，不会抹掉已知能力）。 */
