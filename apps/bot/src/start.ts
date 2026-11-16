@@ -1,5 +1,5 @@
 import { NapcatAdapter } from '../../../packages/napcat/src/index.js';
-import { createModelClient, createReloadableRegistry } from '../../../packages/model/src/index.js';
+import { createCapabilityRegistry, createModelClient, createReloadableRegistry } from '../../../packages/model/src/index.js';
 import { ConfigStore } from '../../../packages/storage/src/index.js';
 import { createFileMetricsStore, createMetrics } from '../../../packages/core/src/metrics.js';
 import { createDefaultConfig, normalizeConfig, type AppConfig } from '../../../packages/config/src/index.js';
@@ -166,10 +166,21 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     const imageOverrideDisabled = cfg.orchestration.capabilityOverrides?.['image.generate']?.enabled === false;
     const imageFeatureDisabled = cfg.bot.features?.['image.generate']?.enabled === false;
     const imageMasterDisabled = cfg.llm.imageEnabled !== true;
+    // 能力档案校验（线上时测 2026-11-16）：开关全开、节点有效，但模型名认不出能力档案时
+    // ModelClient 会在本地直接拒掉（capability_unsupported），请求根本不会发出；
+    // 旧快照只看开关，于是「配置看起来全对但生图就是不出图」。把 can() 结果一并打出来。
+    const registry = createCapabilityRegistry({ overrides: toCapabilityOverrides(cfg.llm.capabilityOverrides) });
+    const canGenerate = registry.can(cfg.llm.imageModel, 'image.generate');
+    const canEdit = registry.can(cfg.llm.editModel, 'image.edit');
+    const videoModel = String(cfg.llm.videoModel || '').trim() || cfg.llm.chatModel;
+    const canVideo = registry.can(videoModel, 'video.generate');
     const warnings = [
       ...(imageMasterDisabled ? ['llm.imageEnabled=false'] : []),
       ...(imageFeatureDisabled ? ['bot.features.image.generate.enabled=false'] : []),
       ...(imageOverrideDisabled ? ['orchestration.capabilityOverrides.image.generate.enabled=false'] : []),
+      ...(!canGenerate ? [`imageModel "${cfg.llm.imageModel}" 不具备 image.generate 能力档案：请求会在本地被拒，生图会降级成文字。请在后台「模型能力覆盖」补一条 operations=[image.generate]`] : []),
+      ...(!canEdit ? [`editModel "${cfg.llm.editModel}" 不具备 image.edit 能力档案：改图会在本地被拒`] : []),
+      ...(!canVideo ? [`videoModel "${videoModel}" 不具备 video.generate 能力档案：视频会在本地被拒`] : []),
       ...(cfg.codeRender?.enabled !== false && (imageMasterDisabled || imageFeatureDisabled || imageOverrideDisabled)
         ? ['image.generate 当前不可见/可能回退，普通画图请求可能由 code.render 处理']
         : []),
@@ -185,8 +196,11 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         nodeName: imageNode?.name || '',
         model: cfg.llm.imageModel,
         provider: imageNode?.kind === 'comfyui' || imageNode?.comfyui ? 'comfyui' : 'model',
+        canGenerate,
+        operations: registry.operationsOf(cfg.llm.imageModel),
       },
-      imageEdit: { nodeIndex: cfg.llm.editNodeIndex, model: cfg.llm.editModel },
+      imageEdit: { nodeIndex: cfg.llm.editNodeIndex, model: cfg.llm.editModel, canEdit, operations: registry.operationsOf(cfg.llm.editModel) },
+      video: { nodeIndex: cfg.llm.videoNodeIndex, model: videoModel, canVideo, operations: registry.operationsOf(videoModel) },
       imageInterrogate: { nodeIndex: cfg.llm.interrogateNodeIndex, model: cfg.llm.interrogateModel },
       codeRender: { enabled: cfg.codeRender?.enabled !== false, nodeIndex: cfg.codeRender?.nodeIndex, model: cfg.codeRender?.model },
       canvasImage: { nodeIndex: cfg.canvas.imageNodeIndex, model: cfg.canvas.imageModel },

@@ -69,6 +69,16 @@ export const GEMINI_IMAGE_PROFILE: ModelProfile = {
   sizes: [],
   supportsSize: false, supportsCount: false, supportsQuality: false, supportsMask: false, maxImagesPerRequest: 1,
 };
+/**
+ * 通用视频（LTX-Video / MiniMax H 系 / HunyuanVideo / CogVideo / Wan2 / Mochi / SVD 等自建部署）。
+ * 与 GROK_VIDEO_PROFILE 同能力面，只是命名族不同——不加这条时这些模型会掉进 TEXT_ONLY，
+ * 生视频会被本地能力校验直接拒掉（请求根本没发出去）。
+ */
+export const GENERIC_VIDEO_PROFILE: ModelProfile = {
+  operations: ['video.generate'],
+  sizes: [],
+  supportsSize: false, supportsCount: false, supportsQuality: false, supportsMask: false, maxImagesPerRequest: 1,
+};
 /** 通用图像（flux / sd / 各家中转）。 */
 export const GENERIC_IMAGE_PROFILE: ModelProfile = {
   operations: ['image.generate', 'image.edit'],
@@ -85,12 +95,18 @@ export const BUILTIN_PROFILE_RULES: ProfileRule[] = [
   { test: /dall[-_\s]?e/i, profile: DALLE2_PROFILE },
   // grok 视频优先于生图(名称常含 video)
   { test: /grok[-_\s.\w]*(?:imagine[-_\s.\w]*)?video|grok-imagine-video/i, profile: GROK_VIDEO_PROFILE },
+  // 通用视频族（线上时测 2026-11-16：MiniMaxH3_33B_Turbo_INT8 / Ltx2_5_22B_Dist_INT8 曾因认不出
+  // 而退成 TEXT_ONLY，video.generate 在本地就被 can() 拒掉）。必须排在对话规则之前。
+  { test: /ltx(v|\d|[-_\s])|minimax[-_\s]?h[0-9]|hunyuan[-_\s]?video|cogvideo|wan[-_\s]?2|cogvideox|mochi[-_\s]?\d|stable[-_\s]?video|svd[-_\s]?xt/i, profile: GENERIC_VIDEO_PROFILE },
   // grok-imagine-image* 先于 grok-2-image
   { test: /grok[-_\s.\w]*imagine/i, profile: GROK_IMAGINE_IMAGE_PROFILE },
   // grok-2-image / 其它 *image 名
   { test: /grok[-_\s.\w]*image/i, profile: GROK_IMAGE_PROFILE },
   { test: /gemini[-_\s.\w]*image|imagen|nano[-_\s]?banana/i, profile: GEMINI_IMAGE_PROFILE },
   { test: /qwen[-_\s]?image|wan[-_\s]?x|wanx/i, profile: GENERIC_IMAGE_PROFILE },
+  // Z-Image / Z-Anime 蒸馏小模型（ZImageTurbo_INT8 / ZAnimeDistill_8Step_INT8 等）：
+  // 同属自建生图权重，认不出会退成 TEXT_ONLY 并静默降级成文字回复。
+  { test: /z[-_\s]?image|z[-_\s]?anime|zanime/i, profile: GENERIC_IMAGE_PROFILE },
   { test: /(flux|stable[-_\s]?diffusion|sdxl|sd3|sd-?turbo|midjourney|kolors|seedream|hunyuan-?image|cogview|playground-?v|ideogram|recraft|kontext|luma-?photon)/i, profile: GENERIC_IMAGE_PROFILE },
   // ── 多模态对话（vision）: grok-4 / grok-4.5 / grok-2-vision 等 ──
   { test: /(gpt-4o|gpt-4\.|gpt-4-turbo|gpt-5|chatgpt-4o|o1|o3|o4|claude|gemini|grok[-_\s.\w]*(?!image|imagine|video)|qwen[-_\s]?vl|qwen[\d.]+-?vl|llava|vl-|vision|internvl|glm-4v|glm-[0-9.]*v|glm[-_\s]?[0-9.]+[-_\s]?(?:flash|vision)|yi-vision|step-1v|pixtral|llama-?3\.2|llama-?4|phi-?3\.5-vision|phi-?4|minicpm-?v|molmo|aria|deepseek[-_\s]?vl|deepseek[\d.]*-?vl|deepseek[-_\s]?flash|minimax[-_\s]?vl|sensenova[-_\s]?vl|abab[-_\s]?vision|doubao[-_\s]?vision)/i, profile: CHAT_PROFILE },
