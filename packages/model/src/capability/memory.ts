@@ -84,7 +84,12 @@ export function diagnoseCapabilityRejection(status: number, payload: unknown): {
   const text = extractText(payload);
   if (!text) return undefined;
   // 有明确的能力/端点措辞才算。
-  if (!/(does not support|not support|unsupported|not capable|invalid model|model not found|unknown model|no such model|not available|不支持|不可用|无此模型|模型不存在)/i.test(text)) {
+  // 「Invalid URL」是中转网关对「这条路由不存在」的标准回话（2026-11-16 实测
+  // api.howtofix.id：/videos/generations → 404 Invalid URL (POST /v1/videos/generations)）。
+  // 路由缺失是稳定事实，学下来可以省掉每次重试。
+  // 注意 403 Access denied（permission_error）刻意**不学**：那是套餐/权限问题，
+  // 换 key 或升级后同样请求就能通，把它记成「模型不支持」会长期误伤。
+  if (!/(does not support|not support|unsupported|not capable|invalid model|model not found|unknown model|no such model|not available|invalid url|不支持|不可用|无此模型|模型不存在)/i.test(text)) {
     return undefined;
   }
   return { rejected: true, evidence: text.slice(0, 300) };

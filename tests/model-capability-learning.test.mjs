@@ -89,6 +89,10 @@ test('只有明确的能力类拒绝才算负向证据（不把 429/5xx 当结�
   assert.equal(diagnoseCapabilityRejection(500, { error: 'upstream exploded' }), undefined);
   assert.equal(diagnoseCapabilityRejection(400, { error: { message: 'This model does not support image generation' } })?.rejected, true);
   assert.equal(diagnoseCapabilityRejection(404, { error: 'model not found' })?.rejected, true);
+  // 路由不存在（中转标准回话）算结论：省掉每次重试。
+  assert.equal(diagnoseCapabilityRejection(404, { error: 'Invalid URL (POST /v1/videos/generations)' })?.rejected, true);
+  // 403 权限类绝不能学成「模型不支持」——换套餐就能好。
+  assert.equal(diagnoseCapabilityRejection(403, { error: 'Access denied' }), undefined);
 });
 
 test('能力记忆落盘：新实例读回同一批结论', () => {
