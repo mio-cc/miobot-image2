@@ -121,7 +121,12 @@ export function createModelBackedDeps(options: ModelDepsOptions): RuntimeDeps {
         : '';
       // 带图对话走 vision。会话补写文本部分（图片上下文不便持久化，但对话轮次要留，
       // 否则 unifiedContext/多轮记忆缺失带图那轮，后续提问接不上）。
-      if (images.length > 0 && client.can(req.model, 'vision')) {
+      // shouldAttempt：未知模型的图片也要真的带上（丢掉图片再问等于答非所问）。
+      // 注入的 partial client（测试桩/外部实现）可能只实现 can，退回旧语义即可。
+      const canAttempt = (op: 'vision') => (typeof (client as { shouldAttempt?: unknown }).shouldAttempt === 'function'
+        ? client.shouldAttempt(req.model, op)
+        : client.can(req.model, op));
+      if (images.length > 0 && canAttempt('vision')) {
         const promptBase = [contextSystem?.content, searchSystem?.content, req.text].filter(Boolean).join('\n\n');
         const prompt = `${promptBase}${videoNote}`;
         const visionReq: { model: string; prompt: string; imageUrls: string[]; maxTokens: number; reasoningEffort?: ReasoningEffort } = { model: req.model, prompt, imageUrls: images, maxTokens };

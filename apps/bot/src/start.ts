@@ -1,5 +1,6 @@
 import { NapcatAdapter } from '../../../packages/napcat/src/index.js';
 import { createCapabilityRegistry, createModelClient, createReloadableRegistry } from '../../../packages/model/src/index.js';
+import { FileModelCapabilityStore } from './model-capability-store.js';
 import { ConfigStore } from '../../../packages/storage/src/index.js';
 import { createFileMetricsStore, createMetrics } from '../../../packages/core/src/metrics.js';
 import { createDefaultConfig, normalizeConfig, type AppConfig } from '../../../packages/config/src/index.js';
@@ -161,6 +162,12 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     runtimeStateText: (purpose) => modelFallback.describe(purpose),
   });
 
+  // 能力记忆（2026-11-16）：模型「能干什么」不再只由代码里的名字表决定。上游实测成功/拒绝、
+  // 大脑判定结论都落在这里，跨重启生效；认不出的模型按「未知」乐观放行，不再本地硬拒。
+  const modelCapabilityStore = new FileModelCapabilityStore({
+    filePath: path.join(dataDir, 'model-capabilities.json'),
+    logger,
+  });
   const logImageRoutingSnapshot = (cfg: AppConfig) => {
     const imageNode = cfg.llm.apiKeys?.[cfg.llm.imageNodeIndex];
     const imageOverrideDisabled = cfg.orchestration.capabilityOverrides?.['image.generate']?.enabled === false;
@@ -169,18 +176,41 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     // 能力档案校验（线上时测 2026-11-16）：开关全开、节点有效，但模型名认不出能力档案时
     // ModelClient 会在本地直接拒掉（capability_unsupported），请求根本不会发出；
     // 旧快照只看开关，于是「配置看起来全对但生图就是不出图」。把 can() 结果一并打出来。
-    const registry = createCapabilityRegistry({ overrides: toCapabilityOverrides(cfg.llm.capabilityOverrides) });
-    const canGenerate = registry.can(cfg.llm.imageModel, 'image.generate');
-    const canEdit = registry.can(cfg.llm.editModel, 'image.edit');
+    // 能力判定来自 registry（用户覆盖 > 运行时学习 > 名字启发 > 未知）。
+    // 「未知」不再算故障：会真的把请求发出去，由上游回答，结论记入能力记忆。
+    const registry = createCapabilityRegistry({
+      overrides: toCapabilityOverrides(cfg.llm.capabilityOverrides),
+      memory: modelCapabilityStore,
+    });
+    const imageNodeIndex = cfg.llm.imageNodeIndex;
+    const editNodeIndex = cfg.llm.editNodeIndex;
+    const videoNodeIndex = String(cfg.llm.videoModel || '').trim() ? cfg.llm.videoNodeIndex : cfg.llm.chatNodeIndex;
+    const resolveCapability = (model: string, op: 'image.generate' | 'image.edit' | 'video.generate', nodeIndex: number) => {
+      const node = cfg.llm.apiKeys?.[nodeIndex];
+      const resolved = registry.resolve(model, node);
+      const known = resolved.source !== 'unknown';
+      return {
+        source: resolved.source,
+        can: known ? resolved.operations.includes(op) : undefined,
+        willAttempt: known ? resolved.operations.includes(op) : true,
+        operations: known ? resolved.operations : [],
+        ...(resolved.evidence ? { evidence: resolved.evidence } : {}),
+      };
+    };
+    const imageCapability = resolveCapability(cfg.llm.imageModel, 'image.generate', imageNodeIndex);
+    const editCapability = resolveCapability(cfg.llm.editModel, 'image.edit', editNodeIndex);
     const videoModel = String(cfg.llm.videoModel || '').trim() || cfg.llm.chatModel;
-    const canVideo = registry.can(videoModel, 'video.generate');
+    const videoCapability = resolveCapability(videoModel, 'video.generate', videoNodeIndex);
     const warnings = [
       ...(imageMasterDisabled ? ['llm.imageEnabled=false'] : []),
       ...(imageFeatureDisabled ? ['bot.features.image.generate.enabled=false'] : []),
       ...(imageOverrideDisabled ? ['orchestration.capabilityOverrides.image.generate.enabled=false'] : []),
-      ...(!canGenerate ? [`imageModel "${cfg.llm.imageModel}" 不具备 image.generate 能力档案：请求会在本地被拒，生图会降级成文字。请在后台「模型能力覆盖」补一条 operations=[image.generate]`] : []),
-      ...(!canEdit ? [`editModel "${cfg.llm.editModel}" 不具备 image.edit 能力档案：改图会在本地被拒`] : []),
-      ...(!canVideo ? [`videoModel "${videoModel}" 不具备 video.generate 能力档案：视频会在本地被拒`] : []),
+      // 只有「我们确实知道不支持」才是问题；未知只是待验证。
+      ...(!imageCapability.willAttempt ? [`imageModel "${cfg.llm.imageModel}" 已知不支持 image.generate（source=${imageCapability.source}）：会快速失败而不发请求`] : []),
+      ...(!editCapability.willAttempt ? [`editModel "${cfg.llm.editModel}" 已知不支持 image.edit（source=${editCapability.source}）`] : []),
+      ...(!videoCapability.willAttempt ? [`videoModel "${videoModel}" 已知不支持 video.generate（source=${videoCapability.source}）`] : []),
+      ...(imageCapability.source === 'unknown' ? [`imageModel "${cfg.llm.imageModel}" 能力未知：将按生图位意图直接尝试，结论自动记入 model-capabilities.json`] : []),
+      ...(videoCapability.source === 'unknown' ? [`videoModel "${videoModel}" 能力未知：将直接尝试并记录结论`] : []),
       ...(cfg.codeRender?.enabled !== false && (imageMasterDisabled || imageFeatureDisabled || imageOverrideDisabled)
         ? ['image.generate 当前不可见/可能回退，普通画图请求可能由 code.render 处理']
         : []),
@@ -196,11 +226,10 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
         nodeName: imageNode?.name || '',
         model: cfg.llm.imageModel,
         provider: imageNode?.kind === 'comfyui' || imageNode?.comfyui ? 'comfyui' : 'model',
-        canGenerate,
-        operations: registry.operationsOf(cfg.llm.imageModel),
+        ...imageCapability,
       },
-      imageEdit: { nodeIndex: cfg.llm.editNodeIndex, model: cfg.llm.editModel, canEdit, operations: registry.operationsOf(cfg.llm.editModel) },
-      video: { nodeIndex: cfg.llm.videoNodeIndex, model: videoModel, canVideo, operations: registry.operationsOf(videoModel) },
+      imageEdit: { nodeIndex: cfg.llm.editNodeIndex, model: cfg.llm.editModel, ...editCapability },
+      video: { nodeIndex: videoNodeIndex, model: videoModel, ...videoCapability },
       imageInterrogate: { nodeIndex: cfg.llm.interrogateNodeIndex, model: cfg.llm.interrogateModel },
       codeRender: { enabled: cfg.codeRender?.enabled !== false, nodeIndex: cfg.codeRender?.nodeIndex, model: cfg.codeRender?.model },
       canvasImage: { nodeIndex: cfg.canvas.imageNodeIndex, model: cfg.canvas.imageModel },
@@ -388,7 +417,10 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     ? createMetrics({ store: createFileMetricsStore(options.metricsFilePath) })
     : undefined;
 
-  const getRegistry = createReloadableRegistry(() => toCapabilityOverrides(getConfig().llm.capabilityOverrides));
+  const getRegistry = createReloadableRegistry(
+    () => toCapabilityOverrides(getConfig().llm.capabilityOverrides),
+    { memory: modelCapabilityStore },
+  );
   const client = createModelClient({ nodes: () => toModelNodes(getConfig()), registry: getRegistry, getNodeConcurrency: (i) => getConfig().llm.apiKeys?.[i]?.concurrency });
   // 节点延迟被动采集：包装 chat/vision，每次真实调用按节点记录耗时/成败 → node-latency.json（面板可读）。
   const nodeLatencyRecorder = new NodeLatencyRecorder({ filePath: path.join(dataDir, 'node-latency.json'), logger });
@@ -1277,6 +1309,55 @@ const memoryService = memoryBackend === 'qdrant'
 
   const orchestrationEnforcer = new OrchestrationEnforcer({
     onSessionClear: (input) => consolidateSessionMemory(input),
+    // 目录能力标注：主脑看目录就知道每个模型「能干什么、结论从哪来」，不用靠猜名字。
+    describeModelCapability: (model, nodeIndex) => {
+      const node = getConfig().llm.apiKeys?.[nodeIndex];
+      const resolved = getRegistry().resolve(model, node);
+      return { operations: resolved.operations, source: resolved.source };
+    },
+    // 能力记忆写入口（2026-11-16）：主脑判定「这个模型能干什么」后落库，
+    // 加新模型不再需要改 profiles.ts。
+    registerModelCapability: {
+      isOwnerUser: (qq) => isOwner(qq, getConfig().bot.ownerQQs),
+      locate: (model, nodeIndex) => {
+        const cfg = getConfig();
+        const nodes = cfg.llm.apiKeys || [];
+        const hits: Array<{ nodeIndex: number; model: string; node?: { baseUrl?: string; dialect?: string } }> = [];
+        if (nodeIndex !== undefined) {
+          const node = nodes[nodeIndex];
+          const matched = (node?.models || []).some((m) => String(m || '').trim() === model);
+          if (node) hits.push({ nodeIndex, model, ...(matched ? { node: node as { baseUrl?: string; dialect?: string } } : {}) });
+          return hits;
+        }
+        for (let i = 0; i < nodes.length; i += 1) {
+          const node = nodes[i];
+          if (!(node?.models || []).some((m) => String(m || '').trim() === model)) continue;
+          hits.push({ nodeIndex: i, model, node: node as { baseUrl?: string; dialect?: string } });
+        }
+        return hits;
+      },
+      remember: ({ model, nodeIndex, operations, note }) => {
+        const cfg = getConfig();
+        const nodes = cfg.llm.apiKeys || [];
+        const targets: Array<{ nodeIndex: number; model: string; node?: { baseUrl?: string; dialect?: string } }> = [];
+        if (nodeIndex !== undefined) {
+          const node = nodes[nodeIndex];
+          if (node) targets.push({ nodeIndex, model, node: node as { baseUrl?: string; dialect?: string } });
+        } else {
+          for (let i = 0; i < nodes.length; i += 1) {
+            const node = nodes[i];
+            if (!(node?.models || []).some((m) => String(m || '').trim() === model)) continue;
+            targets.push({ nodeIndex: i, model, node: node as { baseUrl?: string; dialect?: string } });
+          }
+        }
+        for (const target of targets) {
+          getRegistry().rememberJudgement(target.node, model, operations as any[], note || 'model.capability.set');
+        }
+        modelCapabilityStore.flush();
+        if (targets.length) logger.info('模型能力已登记', { model, operations, nodeIndexes: targets.map((t) => t.nodeIndex) });
+        return { updated: targets.map((t) => ({ nodeIndex: t.nodeIndex, model: t.model })) };
+      },
+    },
     registerSunoLateDelivery,
     onExternalDeliver: async (invocation, result) => {
       // R13：迟到投递的发送——复用 sendAgentOutcome 的发送队列与 ReplyPlan 处理。

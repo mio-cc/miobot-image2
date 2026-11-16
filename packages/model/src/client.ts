@@ -1,5 +1,6 @@
 ﻿import { extractTextUsage } from './usage.js';
 import { CapabilityRegistry, createCapabilityRegistry } from './capability/registry.js';
+import { diagnoseCapabilityRejection } from './capability/memory.js';
 import { applyFix, applyLearned, diagnose, healingKey, rememberFix } from './capability/healing.js';
 import { imageEditTransportsFor } from './capability/params.js';
 import { NodeConcurrencyGate } from './gate.js';
@@ -134,8 +135,14 @@ export class ModelClient {
   capabilitiesOf(model: string): ModelOperation[] {
     return this.registry.operationsOf(model);
   }
-  can(model: string, op: ModelOperation): boolean {
-    return this.registry.can(model, op);
+  /** 已知支持某操作（严格语义，给 UI / 主脑看事实）。 */
+  can(model: string, op: ModelOperation, node?: { baseUrl?: string; dialect?: string }): boolean {
+    return this.registry.can(model, op, node);
+  }
+
+  /** 是否允许发出该请求：未知模型放行，已知不支持才拒。执行层一律用这个。 */
+  shouldAttempt(model: string, op: ModelOperation, node?: { baseUrl?: string; dialect?: string }): boolean {
+    return this.registry.shouldAttempt(model, op, node);
   }
 
   async chat(nodeIndex: number, req: ChatRequest): Promise<TextResult> {
@@ -210,7 +217,7 @@ export class ModelClient {
 
   /** multipart 改图：先把图片解析成字节（异步），再交给纯函数拼装请求。 */
   private async editImageMultipart(nodeIndex: number, req: ImageEditRequest, node: ModelNode): Promise<ImageResult> {
-    if (!this.registry.can(req.model, 'image.edit')) {
+    if (!this.registry.shouldAttempt(req.model, 'image.edit', node)) {
       throw new ModelError(`模型 "${req.model}" 不具备能力 image.edit`, { category: 'validation', retryable: false, code: 'capability_unsupported' });
     }
     const images = await Promise.all(req.images.map((ref) => resolveImageBytes(ref)));
@@ -384,14 +391,25 @@ export class ModelClient {
     parse: (dialect: Dialect, data: unknown) => T,
     signal?: AbortSignal,
   ): Promise<T> {
-    // 能力校验：模型档案不支持该操作直接报错（不盲发）。
-    if (!this.registry.can(model, op)) {
+    // 能力校验：只在「我们确实知道这个模型不支持该操作」时本地拦下（快速失败，省一次上游往返）。
+    // 不认识的名字不再拦——未知不等于不能。发出去让上游说话，结论由下方 learn 记入能力记忆，
+    // 下次才有依据。旧实现把未知当 TEXT_ONLY 直接拒，导致填了新模型却连请求都发不出去。
+    const primary = this.resolveIndex(nodeIndex);
+    const primaryNode = this.nodes[primary];
+    if (!this.registry.shouldAttempt(model, op, primaryNode)) {
       throw new ModelError(`模型 "${model}" 不具备能力 ${op}`, { category: 'validation', retryable: false, code: 'capability_unsupported' });
     }
-    const primary = this.resolveIndex(nodeIndex);
     try {
-      return await this.execute(op, primary, model, timeoutMs, build, parse, signal);
+      const result = await this.execute(op, primary, model, timeoutMs, build, parse, signal);
+      // 正向证据：真跑通了，记下来（未知模型因此变成「已知支持」）。
+      this.registry.learnSupported(primaryNode, model, op);
+      return result;
     } catch (error) {
+      // 负向证据：上游明确说这个模型/端点是错的 → 记住，别对着它反复重试。
+      const status = Number((error as { status?: number })?.status || 0);
+      const payload = (error as { payload?: unknown })?.payload ?? (error as Error)?.message;
+      const rejection = status ? diagnoseCapabilityRejection(status, payload) : undefined;
+      if (rejection) this.registry.learnUnsupported(primaryNode, model, op, rejection.evidence);
       if (!this.failover || !shouldFailover(error)) throw error;
       if (isGenerationTimeout(op, error)) throw error;
       const candidates = this.failoverCandidates(primary, model);

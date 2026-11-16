@@ -159,8 +159,17 @@ export class TtsCapabilityHandler implements CapabilityHandler {
   }
 }
 
+/** 能力来源在目录里的短标记——让主脑一眼看出「这是配置声明的/实测的/猜的/还没验证的」。 */
+export interface ModelCapabilityQuery {
+  /** 返回某模型的 { operations, source }；未注入时目录只列名字（与旧行为一致）。 */
+  describe?: (model: string, nodeIndex: number) => { operations: string[]; source: string } | undefined;
+}
+
 export class ModelCatalogCapabilityHandler implements CapabilityHandler {
-  constructor(private readonly getConfig: () => AppConfig) {}
+  constructor(
+    private readonly getConfig: () => AppConfig,
+    private readonly capabilityQuery?: ModelCapabilityQuery,
+  ) {}
   async execute(invocation: CapabilityInvocation): Promise<ExecutionResult> {
     const cfg = this.getConfig();
     const llm = cfg.llm;
@@ -169,7 +178,20 @@ export class ModelCatalogCapabilityHandler implements CapabilityHandler {
       const node = llm.apiKeys[index];
       if (!node?.enabled || node.kind === 'comfyui') continue;
       const models = Array.from(new Set((node.models || []).map((item) => String(item || '').trim()).filter(Boolean))).slice(0, 80);
-      lines.push(`- 节点 ${index} ${node.name || '未命名'}: ${models.length ? models.join(', ') : '未列出模型'}`);
+      if (!models.length) {
+        lines.push(`- 节点 ${index} ${node.name || '未命名'}: 未列出模型`);
+        continue;
+      }
+      // 能力标注（2026-11-16）：只列名字时主脑无从判断哪个能生图/视频，只能猜。
+      // source 语义：override=后台声明，learned-*=实测/判定，builtin-hint=按名字推断，unknown=未验证。
+      const described = models.map((model) => {
+        const info = this.capabilityQuery?.describe?.(model, index);
+        if (!info) return model;
+        const ops = info.operations.filter((op) => op !== 'chat');
+        const tag = ops.length ? ops.join('/') : '仅对话';
+        return `${model} [${tag}; ${info.source}]`;
+      });
+      lines.push(`- 节点 ${index} ${node.name || '未命名'}: ${described.join(', ')}`);
     }
     // P0 装配修复：主对话真源是 agent.mainModel（bridge：agent.mainModel || llm.chatModel）——
     // 只列 llm.chatModel 会与 agent enforce 实际用的模型不一致，误导切换判断。
@@ -372,5 +394,72 @@ export class HelpCapabilityHandler implements CapabilityHandler {
   constructor(private readonly getConfig: () => AppConfig) {}
   async execute(invocation: CapabilityInvocation): Promise<ExecutionResult> {
     return baseResult(invocation, [{ kind: 'text', text: buildHelpText(this.getConfig()), priority: 10, mergeable: true, meta: { skipTts: true, disableVoice: true, help: true } }]);
+  }
+}
+
+/**
+ * model.capability.set 执行体（2026-11-16）：
+ * 把「这个模型能干什么」的判定写进能力记忆，彻底替掉「加一个模型就改一次 profiles.ts」。
+ *
+ * 为什么需要它：未知模型现在会被真实尝试并自动学习调用结果，但那要求先发起一次可能
+ * 昂贵/失败的请求。主脑从模型名、厂商文档或用户说明里直接知道答案时，登记比试探更省。
+ *
+ * 权限：owner（持久改写运行期事实，不能让普通会话里的模型自己改）。
+ */
+export class ModelCapabilitySetCapabilityHandler implements CapabilityHandler {
+  constructor(
+    private readonly options: {
+      isOwnerUser: (userId: string | number | undefined) => boolean;
+      /** 按名字或节点下标定位模型；返回命中项（可能多个节点同名）。 */
+      locate: (model: string, nodeIndex?: number) => Array<{ nodeIndex: number; model: string; node?: { baseUrl?: string; dialect?: string } }>;
+      remember: (input: { model: string; nodeIndex?: number; operations: string[]; note?: string }) => { updated: Array<{ nodeIndex: number; model: string }> };
+      logger?: StructuredLogger;
+    },
+  ) {}
+
+  async execute(invocation: CapabilityInvocation): Promise<ExecutionResult> {
+    const userId = invocation.request.user.qq;
+    if (!this.options.isOwnerUser(userId)) {
+      this.options.logger?.warn('model.capability.set 被非 owner 调用，已拒绝', { userId: String(userId ?? '') });
+      return baseResult(invocation, [{
+        kind: 'text',
+        text: '只有主人可以登记模型能力。如果你不确定某个模型支持什么，直接用它试一次就行——结果会被自动记录。',
+        priority: 10,
+        mergeable: true,
+      }]);
+    }
+    const args = (invocation.step?.args || {}) as { model?: unknown; nodeIndex?: unknown; operations?: unknown; note?: unknown };
+    const model = String(args.model || '').trim();
+    const operations = (Array.isArray(args.operations) ? args.operations : [])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean);
+    const nodeIndexRaw = args.nodeIndex;
+    const nodeIndex = nodeIndexRaw === undefined || nodeIndexRaw === null || nodeIndexRaw === '' ? undefined : Number(nodeIndexRaw);
+    if (!model) {
+      return baseResult(invocation, [{ kind: 'text', text: '缺少 model：请填要登记的模型名（与目录里显示的完全一致）。', priority: 10, mergeable: true }]);
+    }
+    if (!operations.length) {
+      return baseResult(invocation, [{ kind: 'text', text: '缺少 operations：请给出该模型支持的操作，例如 ["image.generate"]。', priority: 10, mergeable: true }]);
+    }
+    if (nodeIndex !== undefined && !Number.isFinite(nodeIndex)) {
+      return baseResult(invocation, [{ kind: 'text', text: 'nodeIndex 必须是数字（目录里「节点 N」的 N）。', priority: 10, mergeable: true }]);
+    }
+    const note = String(args.note || '').trim();
+    const result = this.options.remember({ model, ...(nodeIndex !== undefined ? { nodeIndex } : {}), operations, ...(note ? { note } : {}) });
+    if (!result.updated.length) {
+      return baseResult(invocation, [{
+        kind: 'text',
+        text: `没有找到模型「${model}」${nodeIndex !== undefined ? `（节点 ${nodeIndex}）` : ''}。先用模型目录确认节点与模型名，或直接用一次让它自动学习。`,
+        priority: 10,
+        mergeable: true,
+      }]);
+    }
+    const where = result.updated.map((item) => `节点 ${item.nodeIndex} / ${item.model}`).join('、');
+    return baseResult(invocation, [{
+      kind: 'text',
+      text: `已登记：${where} → [${operations.join(', ')}]。后续按该能力直接调用，不再需要改代码；若上游实测结果不同，会自动以实测为准。`,
+      priority: 10,
+      mergeable: true,
+    }]);
   }
 }

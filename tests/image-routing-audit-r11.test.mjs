@@ -30,7 +30,7 @@ test('image routing: llm.imageEnabled=false falls back to chat and logs the reas
   const executor = new ExplicitExecutor({
     deps,
     getConfig: () => cfg,
-    registry: () => ({ can: () => true }),
+    registry: () => ({ can: () => true, shouldAttempt: () => true }),
     log: { info() {}, warn(message, data) { warnings.push({ message, data }); }, error() {} },
   });
   const result = await executor.handleExplicit('image.generate', { text: '画一只猫' }, { prompt: '画一只猫' });
@@ -51,7 +51,7 @@ test('image routing: enabled image.generate reaches the image deps provider boun
   const executor = new ExplicitExecutor({
     deps,
     getConfig: () => cfg,
-    registry: () => ({ can: () => true }),
+    registry: () => ({ can: () => true, shouldAttempt: () => true }),
   });
   const result = await executor.handleExplicit('image.generate', { text: '画一只猫' }, { prompt: '画一只猫' });
   assert.equal(generated, true);

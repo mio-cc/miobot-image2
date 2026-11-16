@@ -1,6 +1,7 @@
 export * from './ports.js';
 export * from './capability/profiles.js';
 export * from './capability/registry.js';
+export * from './capability/memory.js';
 export * from './capability/params.js';
 export { describeLearned, healingKey, resetLearned } from './capability/healing.js';
 export * from './dialects/shared.js';

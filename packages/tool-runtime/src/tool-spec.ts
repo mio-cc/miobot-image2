@@ -182,6 +182,9 @@ export const DOMAIN_TOOL_NAMES = [
   // 在 toolSearchEnabled=false（默认）时永远进不了 agent loadout——
   // "目录可见（capability.catalog 列出）、工具不可调"的直接成因之一。
   'model.catalog.list',
+  // 能力记忆写入口（2026-11-16）：不登记会退化成 searchable，toolSearchEnabled=false
+  // 时就是「目录可见、工具调不动」；执行层仍有 owner 校验。
+  'model.capability.set',
   // P1 7b：模型切换工具——对所有人可见（模型可发现），执行层 isOwner 校验非 owner 结构化拒绝。
   'model.binding.switch',
   'web.fetch',

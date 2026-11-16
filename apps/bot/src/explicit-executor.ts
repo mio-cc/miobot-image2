@@ -45,13 +45,14 @@ export class ExplicitExecutor implements RuntimeExplicitEngine {
       }
 
       if (kind === 'image.generate') {
-        if (!cfg.llm.imageEnabled || !this.options.registry().can(cfg.llm.imageModel, 'image.generate')) {
+        // shouldAttempt：未知模型也走真实请求（拿上游的真实错误），已知不支持才降级。
+        if (!cfg.llm.imageEnabled || !this.options.registry().shouldAttempt(cfg.llm.imageModel, 'image.generate')) {
           this.options.log?.warn('image.generate 未执行，回退到 chat', {
             reason: !cfg.llm.imageEnabled ? 'llm.imageEnabled=false' : 'model_capability_unsupported',
             imageEnabled: cfg.llm.imageEnabled === true,
             imageNodeIndex: cfg.llm.imageNodeIndex,
             imageModel: cfg.llm.imageModel,
-            canGenerate: this.options.registry().can(cfg.llm.imageModel, 'image.generate'),
+            canGenerate: this.options.registry().shouldAttempt(cfg.llm.imageModel, 'image.generate'),
           });
           const fallback = await this.options.deps.chat({
             model: cfg.llm.chatModel,
@@ -105,7 +106,7 @@ export class ExplicitExecutor implements RuntimeExplicitEngine {
         // 与其他模型位"空=跟随"语义一致，消费时解析而非 normalize 物化。
         const videoModel = String(cfg.llm.videoModel || '').trim() || cfg.llm.chatModel;
         const videoNodeIndex = String(cfg.llm.videoModel || '').trim() ? cfg.llm.videoNodeIndex : cfg.llm.chatNodeIndex;
-        if (!cfg.llm.videoEnabled || !this.options.registry().can(videoModel, 'video.generate')) {
+        if (!cfg.llm.videoEnabled || !this.options.registry().shouldAttempt(videoModel, 'video.generate')) {
           const fallback = await this.options.deps.chat({
             model: cfg.llm.chatModel,
             text: prompt,

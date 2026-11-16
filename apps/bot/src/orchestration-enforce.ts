@@ -40,7 +40,7 @@ import type { ModelFallbackController } from './model-fallback.js';
 import { SunoCapabilityHandler, type SunoCapabilityOptions } from './capability-suno.js';
 import type { SunoSongHistoryStore } from './suno-song-history.js';
 import { SunoHistoryCapabilityHandler, SunoReplayCapabilityHandler, SunoReplaceSectionCapabilityHandler, SunoVariantCapabilityHandler } from './capability-suno-library.js';
-import { HelpCapabilityHandler, ModelCatalogCapabilityHandler, PromptCapabilityHandler, SearchCapabilityHandler, TemplateListCapabilityHandler, TtsCapabilityHandler } from './capability-basic.js';
+import { HelpCapabilityHandler, ModelCapabilitySetCapabilityHandler, ModelCatalogCapabilityHandler, PromptCapabilityHandler, SearchCapabilityHandler, TemplateListCapabilityHandler, TtsCapabilityHandler } from './capability-basic.js';
 import type { ApprovalRuntime } from './approval-runtime.js';
 import { pendingSessionKey, type PendingJobRecord, type PendingJobStore } from './pending-job-store.js';
 
@@ -155,6 +155,17 @@ export class OrchestrationEnforcer {
      * 尽力而为：抛错由调用方吞掉，不影响清屏。
      */
     onSessionClear?: (input: { sessionId: string; chatType: 'group' | 'private'; groupId?: string; userId: string }) => void | Promise<void>;
+    /**
+     * 模型能力描述（2026-11-16）：model.catalog.list 输出带能力标注，主脑据此决定用哪个模型，
+     * 而不是靠猜。由 start.ts 注入 registry.resolve 结果（含来源：override/learned/builtin/unknown）。
+     */
+    describeModelCapability?: (model: string, nodeIndex: number) => { operations: string[]; source: string } | undefined;
+    /** 能力记忆写入口（model.capability.set）：把主脑的判定落库，替掉「加模型就改代码」。 */
+    registerModelCapability?: {
+      isOwnerUser: (userId: string | number | undefined) => boolean;
+      locate: (model: string, nodeIndex?: number) => Array<{ nodeIndex: number; model: string; node?: { baseUrl?: string; dialect?: string } }>;
+      remember: (input: { model: string; nodeIndex?: number; operations: string[]; note?: string }) => { updated: Array<{ nodeIndex: number; model: string }> };
+    };
   }) {
     this.dispatcher = new CapabilityDispatcher(this.registry, createPermissionPolicyFromDefaults({
       low: 'allow', medium: 'allow', high: 'ask_admin', critical: 'ask_admin',
@@ -190,7 +201,19 @@ export class OrchestrationEnforcer {
     this.dispatcher.registerHandler('template.use', new ModelCapabilityHandler(this.options.app, 'image.generate'));
     this.dispatcher.registerHandler('tts.speak', new TtsCapabilityHandler(this.options.getConfig, this.options.logger));
     this.dispatcher.registerHandler('help', new HelpCapabilityHandler(this.options.getConfig));
-    this.dispatcher.registerHandler('model.catalog.list', new ModelCatalogCapabilityHandler(this.options.getConfig));
+    this.dispatcher.registerHandler('model.catalog.list', new ModelCatalogCapabilityHandler(
+      this.options.getConfig,
+      this.options.describeModelCapability ? { describe: this.options.describeModelCapability } : undefined,
+    ));
+    if (this.options.registerModelCapability) {
+      const registration = this.options.registerModelCapability;
+      this.dispatcher.registerHandler('model.capability.set', new ModelCapabilitySetCapabilityHandler({
+        isOwnerUser: registration.isOwnerUser,
+        locate: registration.locate,
+        remember: registration.remember,
+        ...(this.options.logger ? { logger: this.options.logger } : {}),
+      }));
+    }
     if (this.options.voiceService) {
       this.dispatcher.registerHandler('voice.search', new VoiceSearchCapabilityHandler(this.options.voiceService));
       this.dispatcher.registerHandler('voice.preview', new VoicePreviewCapabilityHandler(this.options.voiceService));

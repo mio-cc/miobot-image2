@@ -69,12 +69,17 @@ test('profiles: grok-2-vision 命中 vision', () => {
 
 // ── registry: 兜底为 TEXT_ONLY + overrides 生效 ──
 
-test('registry: 未识别模型兜底为 TEXT_ONLY(不含 vision)', () => {
+test('registry: 未识别模型「已知能力为空」但允许尝试（2026-11-16 语义）', () => {
   const reg = createCapabilityRegistry();
-  // TEXT_ONLY_PROFILE = { operations: ['chat'] }: 能 chat 但不能 vision
+  // can() 是「已知能力」：未知就是不知道，不能把不知道说成能。
+  assert.equal(reg.resolve('some-unknown-model-xyz').source, 'unknown');
   assert.ok(!reg.can('some-unknown-model-xyz', 'vision'));
-  assert.ok(reg.can('some-unknown-model-xyz', 'chat'));
-  assert.ok(!reg.can('some-unknown-model-xyz', 'interrogate'));
+  assert.ok(!reg.can('some-unknown-model-xyz', 'chat'));
+  assert.deepEqual(reg.operationsOf('some-unknown-model-xyz'), []);
+  // shouldAttempt() 是「允不允许发」：未知放行，由上游给出真实结论。
+  assert.ok(reg.shouldAttempt('some-unknown-model-xyz', 'vision'));
+  assert.ok(reg.shouldAttempt('some-unknown-model-xyz', 'chat'));
+  assert.ok(reg.shouldAttempt('some-unknown-model-xyz', 'image.generate'));
 });
 
 test('registry: overrides 可给模型补 vision 能力', () => {
