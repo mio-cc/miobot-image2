@@ -572,11 +572,42 @@ export class AgentRuntime implements AgentLoop {
     let turnReplyPreference: AgentReplyPreference | undefined;
     // 图片降级重试标记：provider 对图片报错时剥图重试一次，随 meta 交回 host 供日志观测。
     let imageDegraded = false;
+    // 预算提醒只发一次：接近上限时告诉模型还剩多少步，让它自己收敛成「已有结果作答」，
+    // 而不是等被硬切断后再走兜底（线上时测 2026-11-18：16 轮工具全用在同一个能力上）。
+    let budgetNoticeSent = false;
+    // 同一轮内「同工具 + 同参数」的重复调用：只执行第一次，后续复用结果并明确告知模型。
+    // 线上时测 2026-11-18：模型把 16 个工具轮几乎全用在同一个查询族上，把预算烧光后被硬切断。
+    // 这里不替模型做决定，只是把「你已经问过这个问题」这个事实告诉它。
+    const executedCallSignatures = new Map<string, AgentToolResult>();
 
     for (let round = 0; round < this.limits.maxModelRounds; round += 1) {
       this.throwIfStopped(input, signal);
       await this.appendSteeringMessages(input, workingMessages, persistedMessages);
       this.throwIfStopped(input, signal);
+      if (!budgetNoticeSent) {
+        const toolRatio = this.limits.maxToolRounds > 0 ? budget.toolRounds / this.limits.maxToolRounds : 0;
+        const roundRatio = this.limits.maxModelRounds > 0 ? (round + 1) / this.limits.maxModelRounds : 0;
+        if (toolRatio >= 0.7 || roundRatio >= 0.7) {
+          budgetNoticeSent = true;
+          workingMessages.push({
+            role: 'user',
+            content: [
+              '[INTERNAL BUDGET NOTICE]',
+              `Tool rounds used: ${budget.toolRounds}/${this.limits.maxToolRounds}; model rounds: ${round + 1}/${this.limits.maxModelRounds}.`,
+              'Budget is nearly exhausted. Stop exploring. Do not repeat a query you have already run.',
+              'Answer now using the tool results you already have. If part of the request cannot be covered, deliver what you have and state briefly what is missing.',
+            ].join('\n'),
+            meta: { internal: true, budgetNotice: true },
+          });
+          this.deps.logger?.warn?.('agent budget notice injected', {
+            sessionKey: input.sessionKey,
+            toolRounds: budget.toolRounds,
+            maxToolRounds: this.limits.maxToolRounds,
+            modelRound: round + 1,
+            maxModelRounds: this.limits.maxModelRounds,
+          });
+        }
+      }
       if (budget.remainingTokens <= 0) {
         return this.safeTextOrFailure({
           input, mode, signal, budget, workingMessages, persistedMessages, session, availableToolNames, toolResults: executedResults,
@@ -824,9 +855,22 @@ export class AgentRuntime implements AgentLoop {
           const spec = specByName.get(call.name);
           return Boolean(spec?.sideEffects?.length);
         };
-        const readOnlyCalls = validation.calls.filter((call) => !hasSideEffects(call));
-        const sideEffectCalls = validation.calls.filter((call) => hasSideEffects(call));
-        const results: ToolResult[] = [];
+        // 只对无副作用工具做去重：有副作用的调用（写/删/发）即使参数相同也可能是有意的
+        // 多步操作，重复执行由工具自身的幂等键负责，不能在这一层替它省掉。
+        const dedupedResults: ToolResult[] = [];
+        const pendingCalls: ToolCall[] = [];
+        for (const call of validation.calls) {
+          const signature = hasSideEffects(call) ? '' : toolCallSignature(call);
+          const previous = signature ? executedCallSignatures.get(signature) : undefined;
+          if (previous) {
+            dedupedResults.push(duplicateCallResult(call, previous));
+            continue;
+          }
+          pendingCalls.push(call);
+        }
+        const readOnlyCalls = pendingCalls.filter((call) => !hasSideEffects(call));
+        const sideEffectCalls = pendingCalls.filter((call) => hasSideEffects(call));
+        const results: ToolResult[] = [...dedupedResults];
         if (readOnlyCalls.length) {
           results.push(...await this.deps.toolExecutor.executeBatch(
             readOnlyCalls,
@@ -840,6 +884,12 @@ export class AgentRuntime implements AgentLoop {
         }
         budget.toolRounds += validation.calls.length;
         const normalizedResults = ensureBatchResults(validation.calls, results);
+        for (const result of normalizedResults) {
+          if (result.ok === false) continue;
+          const call = validation.calls.find((item) => item.id === result.callId);
+          if (!call || hasSideEffects(call)) continue;
+          executedCallSignatures.set(toolCallSignature(call), result);
+        }
         executedResults.push(...normalizedResults);
         this.appendToolRound(workingMessages, persistedMessages, response, validation.calls, normalizedResults);
         const pendingJobs = this.pendingJobsFromResults(normalizedResults, input);
@@ -1583,6 +1633,38 @@ function upsertToolMessage(messages: AgentMessage[], toolMessage: AgentToolMessa
 
 function stripAsyncSystemStatus(text: string): string {
   return String(text || '').replace(/\n\n【系统状态】[\s\S]*$/g, '').trim();
+}
+
+/** 工具调用签名：同工具 + 同参数（键序无关）视为同一查询。 */
+function toolCallSignature(call: ToolCall): string {
+  try {
+    return call.name + ':' + stableStringify(call.arguments);
+  } catch {
+    return call.name + ':' + String(call.id || '');
+  }
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? String(value);
+  if (Array.isArray(value)) return '[' + value.map((item) => stableStringify(item)).join(',') + ']';
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return '{' + keys.map((key) => JSON.stringify(key) + ':' + stableStringify(record[key])).join(',') + '}';
+}
+
+/**
+ * 重复调用的回填结果：把上一次的真实结果带回去，并明确告诉模型「这条你没换参数」。
+ * 用 ok=false + 可读原因，避免模型把复用的旧数据当成新一轮的新鲜结果。
+ */
+function duplicateCallResult(call: ToolCall, previous: AgentToolResult): ToolResult {
+  const preview = String(previous.content || '').slice(0, 2000);
+  return toolSuccess(call.id, call.name, {
+    content: '[DUPLICATE CALL — NOT RE-EXECUTED]\n'
+      + 'You already called ' + call.name + ' with these exact arguments in this turn. '
+      + 'Do not repeat it: use the result below, ask a different query, or answer with what you already have.\n\n'
+      + 'Earlier result:\n' + preview,
+    meta: { duplicateCall: true, replayed: true },
+  });
 }
 
 function isInternalMessage(message: AgentMessage): boolean {

@@ -411,11 +411,14 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
       && onlyMigratedTools
       && turn.meta?.safeTextFallback !== true
       && turn.meta?.shadow !== true;
+    // 线上时测 2026-11-18：工具轮预算耗尽时 agent-loop 会走 safe-text 兜底，用已有工具结果
+    // 产出真实回答（status=completed + meta.safeTextFallback）。旧实现把它判成「接管失败」
+    // 直接丢弃，用户收到的是一句内容审核类的错误提示——工具明明已经拉到了数据。
+    // 兜底文本本身是「只依据已有事实作答」，比任何错误文案都更接近用户想要的答案，必须交付。
     const normalHandoff = mode === 'enforce'
       && (turn.status === 'completed' || Boolean(partialFromTools))
       && (Boolean(finalText) || artifactOnlyHandoff)
       && onlyMigratedTools
-      && turn.meta?.safeTextFallback !== true
       && turn.meta?.shadow !== true;
     const askUserHandoff = mode === 'enforce' && turn.status === 'suspended' && Boolean(turn.pendingQuestion) && Boolean(finalText);
     const sideEffectTerminal = mode === 'enforce' && sideEffectToolExecuted;

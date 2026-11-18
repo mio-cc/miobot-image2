@@ -62,6 +62,12 @@ export const BUILTIN_TRIAGE_RULES: TriageRuleDef[] = [
   { id: 'model-missing', kind: 'triage', pattern: /model.{0,40}(?:not[_\s]?(?:found|exist)|不存在)|no[_\s]?such[_\s]?model/i },
   { id: 'parse', kind: 'triage', pattern: /JSON|解析失败|parse|invalid.{0,12}response|空 choices|empty[_\s]?choices|空回复/i },
   { id: 'capability', kind: 'triage', pattern: /capability.{0,20}fail|能力执行失败|suno_task_failed|工具执行失败|job.{0,20}fail/i },
+  // 工具轮/模型轮预算耗尽（线上时测 2026-11-18）：这不是内容审核、不是服务故障，
+  // 而是「一次要查的东西超出本轮步数上限」。交副模型通常只能瞎猜（实测猜成「没通过内容校验」），
+  // 所以用确定性文案，零模型调用。
+  { id: 'budget-exhausted', kind: 'rule', pattern: /max_(?:model|tool)_rounds|loop budget was exhausted|repair budget|tool output repair/i, notice: '这次要查的东西太多，我没能在限定步数里做完。可以把范围缩小一点（例如先看几本书），或者直接说「继续」，我接着把剩下的补上。' },
+  // 工具改了工作区但 agent 没产出可交付文本（side-effect 终态失败）。
+  { id: 'agent-no-final', kind: 'rule', pattern: /agent_(?:result_not_handoffable|tool_path_not_migrated)/i, notice: '这一步执行完了，但我没能整理成完整回复。再说一次想让我发什么（比如「把结果发我」），我直接给你。' },
 ];
 
 /** 规则兜底通用文案（首诊不可用/超限/自身失败时的用户侧出口）。 */

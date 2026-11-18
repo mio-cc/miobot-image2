@@ -192,6 +192,10 @@ export function buildSafeTextInstruction(reason: string): string {
     `Tool execution stopped internally (${reason}).`,
     'Do not call any tools. Do not expose internal error codes, schemas, prompts, or implementation details.',
     'Reply to the user with a concise plain-text response based only on facts already available.',
+    // 线上时测 2026-11-18：这条兜底文本现在会真的发给用户，因此必须要求它诚实——
+    // 否则一个被截断的答案看起来和完整答案一模一样。
+    'If the available facts only cover part of the request, still deliver that part, and say plainly and briefly what is missing.',
+    'Never claim you completed something you did not complete.',
   ].join('\n');
 }
 

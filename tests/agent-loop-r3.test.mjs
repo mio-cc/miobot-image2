@@ -251,9 +251,14 @@ test('agent-loop R3: preflight denial with pending approval suspends and never e
 });
 
 test('agent-loop R3: maxModelRounds is a hard cap and does not use a fixed fallback', async () => {
-  const toolCall = toolResponse([{ id: 'loop', name: 'echo', arguments: { value: 'x' } }]);
+  // 每次参数不同：这里验的是「模型轮上限」是硬上限，
+  // 不是重复调用去重（那条契约在 agent-loop-r26 里单独验）。
   const h = harness({
-    responses: [toolCall, toolCall, toolCall],
+    responses: [
+      toolResponse([{ id: 'loop', name: 'echo', arguments: { value: 'x1' } }]),
+      toolResponse([{ id: 'loop', name: 'echo', arguments: { value: 'x2' } }]),
+      toolResponse([{ id: 'loop', name: 'echo', arguments: { value: 'x3' } }]),
+    ],
     limits: { maxModelRounds: 2, maxToolRounds: 20 },
   });
   const result = await h.runtime.runTurn(turnInput());
