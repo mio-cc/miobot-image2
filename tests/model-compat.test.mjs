@@ -168,13 +168,18 @@ test('video poll: status=failed 抛 video_failed', async () => {
   );
 });
 
-test('shaping: gpt-image 合法 size 透传、非法 size 被剔除', async () => {
+test('shaping: gpt-image 合法 size 透传、非法 size snap 到最近合法档', async () => {
   const transport = fakeTransport(() => ({ status: 200, data: { data: [{ b64_json: 'AAAA' }] } }));
   const client = createModelClient({ nodes: [{ baseUrl: 'https://a/v1', apiKey: 'k' }], transport });
   await client.generateImages(0, { model: 'gpt-image-2', prompt: 'cat', size: '1024x1024' });
   assert.equal(transport.calls[0].body.size, '1024x1024');
+  // 2026-11-19 行为变更（有意）：非法 size 不再「静默丢弃」，而是 snap 到最近的合法档。
+  // 丢弃会让用户选了画幅却得到上游默认（正方），snap 至少给了最接近的意图。
   await client.generateImages(0, { model: 'gpt-image-2', prompt: 'cat', size: '999x999' });
-  assert.equal('size' in transport.calls[1].body, false);
+  assert.equal(transport.calls[1].body.size, '1024x1024', '999x999(1:1) 应 snap 到 1024x1024');
+  // 竖图不能被 snap 成横图（方向必须保持）
+  await client.generateImages(0, { model: 'gpt-image-2', prompt: 'cat', size: '1152x1536' });
+  assert.equal(transport.calls[2].body.size, '1024x1536', '竖图必须 snap 到竖版');
 });
 
 test('shaping: dall-e-3 强制 n=1（不支持多图）', async () => {

@@ -113,6 +113,12 @@ export interface ImageGenerationRequest {
   aspectRatio?: string;
   /** xAI Grok Imagine 分辨率:1k / 2k。 */
   resolution?: string;
+  /** 以下格式参数只有在参数契约声明支持时才会下发（2026-11-19）。 */
+  background?: string;
+  outputFormat?: string;
+  outputCompression?: number;
+  moderation?: string;
+  reasoningEffort?: string;
   timeoutMs?: number;
 }
 
@@ -125,6 +131,12 @@ export interface ImageEditRequest {
   quality?: string;
   aspectRatio?: string;
   resolution?: string;
+  /** 以下格式参数只有在参数契约声明支持时才会下发（2026-11-19）。 */
+  background?: string;
+  outputFormat?: string;
+  outputCompression?: number;
+  moderation?: string;
+  reasoningEffort?: string;
   timeoutMs?: number;
   /**
    * 用户在后台强制指定的请求形态。auto = 按模型自动排序（默认）。

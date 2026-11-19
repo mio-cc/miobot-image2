@@ -1,6 +1,8 @@
 import { NapcatAdapter } from '../../../packages/napcat/src/index.js';
 import { createCapabilityRegistry, createModelClient, createReloadableRegistry } from '../../../packages/model/src/index.js';
 import { FileModelCapabilityStore } from './model-capability-store.js';
+import { FileModelContractStore } from './model-contract-store.js';
+import { capabilityKey } from '../../../packages/model/src/capability/memory.js';
 import { runtimeQueues } from './queue-gate.js';
 import { comfyUiQueueSnapshot } from './comfyui-queue.js';
 import { sampleRuntimeQueues, writeRuntimeQueuesSnapshot } from './runtime-queues-snapshot.js';
@@ -420,11 +422,23 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     ? createMetrics({ store: createFileMetricsStore(options.metricsFilePath) })
     : undefined;
 
+  // 参数契约存储（2026-11-19）：抓到的文档参数面落在这里，
+  // 供 ModelClient 整形（snap 尺寸 / 只发契约允许的参数）与面板读取。
+  const modelContractStore = new FileModelContractStore({
+    filePath: path.join(dataDir, 'model-contracts.json'),
+    logger,
+  });
   const getRegistry = createReloadableRegistry(
     () => toCapabilityOverrides(getConfig().llm.capabilityOverrides),
     { memory: modelCapabilityStore },
   );
-  const client = createModelClient({ nodes: () => toModelNodes(getConfig()), registry: getRegistry, getNodeConcurrency: (i) => getConfig().llm.apiKeys?.[i]?.concurrency });
+  const client = createModelClient({
+    nodes: () => toModelNodes(getConfig()),
+    registry: getRegistry,
+    getNodeConcurrency: (i) => getConfig().llm.apiKeys?.[i]?.concurrency,
+    // 参数契约按「网关+凭据+模型」隔离：换 key / 换网关自然失效，不会串味。
+    contracts: (model, node) => modelContractStore.get(capabilityKey(node, model)),
+  });
   // 节点延迟被动采集：包装 chat/vision，每次真实调用按节点记录耗时/成败 → node-latency.json（面板可读）。
   const nodeLatencyRecorder = new NodeLatencyRecorder({ filePath: path.join(dataDir, 'node-latency.json'), logger });
   wrapClientWithLatency(client, nodeLatencyRecorder, (nodeIndex) => getConfig().llm.apiKeys?.[nodeIndex]?.name);

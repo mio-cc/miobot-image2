@@ -1,6 +1,10 @@
 ﻿import { extractTextUsage } from './usage.js';
 import { CapabilityRegistry, createCapabilityRegistry } from './capability/registry.js';
 import { diagnoseCapabilityRejection } from './capability/memory.js';
+import type { ModelParamContract } from './capability/contract.js';
+import { contractFromProfile, describeShapedParams } from './capability/shape-request.js';
+import { inferProfileByName } from './capability/profiles.js';
+import { shapeEditRequest, shapeGenerationRequest, type ShapeProfileHints } from './capability/shape-request-apply.js';
 import { applyFix, applyLearned, diagnose, healingKey, rememberFix } from './capability/healing.js';
 import { imageEditTransportsFor } from './capability/params.js';
 import { NodeConcurrencyGate } from './gate.js';
@@ -71,6 +75,12 @@ export interface ModelClientOptions {
   nodes: ModelNode[] | (() => ModelNode[]);
   /** 同理：传函数可让 capabilityOverrides 的改动即时生效。 */
   registry?: CapabilityRegistry | (() => CapabilityRegistry);
+  /**
+   * 参数契约解析器（2026-11-19）。
+   * 传了：按契约 snap 尺寸 / 只发契约允许的参数，并在 snap 时打日志。
+   * 不传或返回 undefined：保守模式——只发 prompt（+ n），不再裸发 size/quality。
+   */
+  contracts?: (model: string, node: ModelNode) => ModelParamContract | undefined;
   transport?: Transport;
   timeoutMs?: number;
   retries?: number;
@@ -112,6 +122,7 @@ export class ModelClient {
   private readonly onFailover?: ModelClientOptions['onFailover'];
   private readonly logger?: ModelClientLogger;
   private readonly getNodeConcurrency?: ModelClientOptions['getNodeConcurrency'];
+  private readonly contractsSource?: (model: string, node: ModelNode) => ModelParamContract | undefined;
   private readonly gate = new NodeConcurrencyGate();
 
   constructor(options: ModelClientOptions) {
@@ -132,6 +143,7 @@ export class ModelClient {
     this.onFailover = options.onFailover;
     this.logger = options.logger;
     this.getNodeConcurrency = options.getNodeConcurrency;
+    this.contractsSource = options.contracts;
   }
 
   capabilitiesOf(model: string): ModelOperation[] {
@@ -172,7 +184,7 @@ export class ModelClient {
       ModelClient.withUsage((d, data) => d.parseChat(data)));
   }
   async generateImages(nodeIndex: number, req: ImageGenerationRequest): Promise<ImageResult> {
-    const shaped = this.shapeImageGeneration(req);
+    const shaped = this.shapeImageGeneration(req, this.nodes[this.resolveIndex(nodeIndex)]);
     return this.run('image.generate', nodeIndex, shaped.model, shaped.timeoutMs,
       (d, n) => requireBuilder(d, 'buildImageGeneration', n, shaped), (d, data) => requireImageParser(d, data));
   }
@@ -182,7 +194,7 @@ export class ModelClient {
    * 而 xAI 官方文档明确说不支持 multipart。顺序排错会让每次改图都先白白失败一轮。
    */
   async editImage(nodeIndex: number, req: ImageEditRequest): Promise<ImageResult> {
-    const shaped = this.shapeImageEdit(req);
+    const shaped = this.shapeImageEdit(req, this.nodes[this.resolveIndex(nodeIndex)]);
     // 解析一次并一路用下去：闸门必须记在**真正会发请求的那个节点**上，
     // 否则传进来的下标指向停用节点时，闸门记到了一个根本不发请求的槽上，
     // 目标节点的并发上限被完全绕过。
@@ -364,25 +376,70 @@ export class ModelClient {
     });
   }
 
-  /** 按模型能力档案规整生图参数：不支持的 size/quality 剔除、count 钳到上限，避免对上游盲发导致 4xx。 */
-  private shapeImageGeneration(req: ImageGenerationRequest): ImageGenerationRequest {
+  /**
+   * 按参数契约规整生图参数（2026-11-19 重写）。
+   *
+   * 旧实现只看能力档案的 size 白名单：不在白名单就 delete（静默丢画幅），
+   * 白名单为空就原样下发（新网关必 400）。现在改成「有契约就 snap、没契约就保守」。
+   */
+  private shapeImageGeneration(req: ImageGenerationRequest, node?: ModelNode): ImageGenerationRequest {
+    const contract = this.resolveContract(req.model, node);
     const profile = this.registry.profileOf(req.model);
-    const out: ImageGenerationRequest = { ...req };
-    out.count = profile.supportsCount === false ? 1 : clampImageCount(req.count, profile.maxImagesPerRequest);
-    if (profile.supportsQuality === false) delete out.quality;
-    applySizeProfile(out, profile);
-    return out;
+    const { request, shaped } = shapeGenerationRequest(req, contract, {
+      ...(profile.supportsCount !== undefined ? { supportsCount: profile.supportsCount } : {}),
+      ...(profile.maxImagesPerRequest !== undefined ? { maxImagesPerRequest: profile.maxImagesPerRequest } : {}),
+    });
+    if (shaped.snapped) {
+      this.logger?.info?.('image size snapped', {
+        op: 'image.generate', model: req.model,
+        requested: shaped.requestedSize, sent: shaped.size, reason: shaped.snapReason,
+      });
+    }
+    if (shaped.conservative) {
+      this.logger?.warn?.('image request in conservative mode (no param contract)', {
+        op: 'image.generate', model: req.model, summary: describeShapedParams(shaped),
+      });
+    }
+    return request;
   }
 
-  /** 按模型能力档案规整改图参数：不支持的 size/quality/mask 剔除。 */
-  private shapeImageEdit(req: ImageEditRequest): ImageEditRequest {
+  /** 改图同理：契约优先，无契约保守（只发 prompt + images）。 */
+  private shapeImageEdit(req: ImageEditRequest, node?: ModelNode): ImageEditRequest {
+    const contract = this.resolveContract(req.model, node);
     const profile = this.registry.profileOf(req.model);
-    const out: ImageEditRequest = { ...req };
-    if (profile.supportsQuality === false) delete out.quality;
-    if (profile.supportsMask === false) delete out.mask;
-    applySizeProfile(out, profile);
-    return out;
+    const { request, shaped } = shapeEditRequest(req, contract, {
+      ...(profile.supportsMask !== undefined ? { supportsMask: profile.supportsMask } : {}),
+    });
+    if (shaped.snapped) {
+      this.logger?.info?.('image size snapped', {
+        op: 'image.edit', model: req.model,
+        requested: shaped.requestedSize, sent: shaped.size, reason: shaped.snapReason,
+      });
+    }
+    return request;
   }
+
+  /** 取契约；没注入或取不到返回 undefined（调用方走保守模式）。 */
+  /**
+   * 取参数契约。三级：
+   *   1. 真实契约（抓过文档/学过修正）
+   *   2. 内置档案合成的弱契约（保住存量行为，例如 gpt-image 的 4 档尺寸）
+   *   3. undefined → 调用方走保守模式（只有完全陌生的模型才走到这里）
+   */
+  private resolveContract(model: string, node: ModelNode | undefined): ModelParamContract | undefined {
+    if (this.contractsSource) {
+      try {
+        const found = this.contractsSource(model, node || ({} as ModelNode));
+        if (found) return found;
+      } catch { /* 取契约失败按无契约处理 */ }
+    }
+    try {
+      return contractFromProfile(model, this.registry.profileOf(model));
+    } catch {
+      return undefined;
+    }
+  }
+
 
   private async run<T>(
     op: ModelOperation,
@@ -648,4 +705,53 @@ function errorFromResponse(response: HttpResponse): ModelError {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+
+/**
+ * 生图请求 dry-run（2026-11-19）。
+ *
+ * 与真实调用**共用** shapeGenerationRequest + 方言 builder，只差最后一步不发网络。
+ * 因此面板显示的「将发送」与实际发出的请求必然一致（有测试断言 deepEqual）。
+ */
+export function explainImageRequest(input: {
+  node: ModelNode;
+  op: 'image.generate' | 'image.edit';
+  request: ImageGenerationRequest | ImageEditRequest;
+  contract?: ModelParamContract;
+  hints?: ShapeProfileHints;
+}): { body: unknown; url: string; summary: string; snapped: boolean; conservative: boolean; dropped: string[] } {
+  const dialect = dialectFor(input.node);
+  // 与真实调用同一套回退：没给契约时用内置档案合成弱契约，完全陌生才保守。
+  const contract = input.contract ?? (() => {
+    try {
+      const modelName = String((input.request as { model?: string }).model || '');
+      const profile = inferProfileByName(modelName);
+      return profile ? contractFromProfile(modelName, profile) : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  if (input.op === 'image.generate') {
+    const { request, shaped } = shapeGenerationRequest(input.request as ImageGenerationRequest, contract, input.hints || {});
+    const plan = requireBuilder(dialect, 'buildImageGeneration', input.node, request);
+    return {
+      body: plan.body,
+      url: plan.url,
+      summary: describeShapedParams(shaped),
+      snapped: shaped.snapped,
+      conservative: shaped.conservative,
+      dropped: shaped.dropped,
+    };
+  }
+  const { request, shaped } = shapeEditRequest(input.request as ImageEditRequest, contract, input.hints || {});
+  const plan = requireBuilder(dialect, 'buildImageEdit', input.node, request);
+  return {
+    body: plan.body,
+    url: plan.url,
+    summary: describeShapedParams(shaped),
+    snapped: shaped.snapped,
+    conservative: shaped.conservative,
+    dropped: shaped.dropped,
+  };
 }
