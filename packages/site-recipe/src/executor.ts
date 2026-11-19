@@ -163,10 +163,11 @@ export async function executeRecipe(recipe: SiteRecipe, options: ExecuteRecipeOp
     const body = await response.text();
     for (const extract of extractSteps) {
       const values = extractValues(body, extract);
-      for (const item of values) {
+      for (let itemIndex = 0; itemIndex < values.length; itemIndex += 1) {
+        const item = values[itemIndex];
         const row: Record<string, unknown> = {};
         for (const [column, selector] of Object.entries(extract.map)) {
-          row[column] = pickValue(item, selector);
+          row[column] = pickValue(item, selector, itemIndex + 1);
         }
         rows.push(row);
       }
@@ -189,6 +190,44 @@ export async function executeRecipe(recipe: SiteRecipe, options: ExecuteRecipeOp
   return { ok: verify.ok, dataset, verify, requested };
 }
 
+/**
+ * 从 HTML 里挖出嵌入式 JSON（2026-11-19）。
+ *
+ * 现代 SSR 站点（起点 m 站、Next.js、Nuxt）把首屏数据塞在页面里，
+ * 不挖出来就只能上浏览器，成本高一个数量级。
+ * 支持三种形态，按顺序尝试：
+ *   1. <script type="application/json">…</script>   （起点 m 站 / vite-plugin-ssr）
+ *   2. <script id="__NEXT_DATA__" type="application/json">…</script>
+ *   3. window.__INITIAL_STATE__ = {…} / window.__NUXT__ = {…}（用括号配平截取，不 eval）
+ */
+export function extractEmbeddedJson(html: string): unknown {
+  const text = String(html || '');
+  const scriptJson = /<script[^>]*type="application\/json"[^>]*>([\s\S]*?)<\/script>/i.exec(text);
+  if (scriptJson) {
+    try { return JSON.parse(scriptJson[1]); } catch { /* 继续尝试其它形态 */ }
+  }
+  for (const marker of ['window.__INITIAL_STATE__', 'window.__NUXT__']) {
+    const at = text.indexOf(marker);
+    if (at < 0) continue;
+    const eq = text.indexOf('=', at);
+    if (eq < 0) continue;
+    const start = text.indexOf('{', eq);
+    if (start < 0) continue;
+    let depth = 0;
+    let end = -1;
+    for (let i = start; i < text.length; i += 1) {
+      const ch = text[i];
+      if (ch === '"') { i += 1; while (i < text.length && text[i] !== '"') { if (text[i] === '\\') i += 1; i += 1; } continue; }
+      if (ch === '{') depth += 1;
+      else if (ch === '}') { depth -= 1; if (depth === 0) { end = i + 1; break; } }
+    }
+    if (end > start) {
+      try { return JSON.parse(text.slice(start, end)); } catch { /* 下一个 marker */ }
+    }
+  }
+  return undefined;
+}
+
 /** 从响应体里按 extract 步骤取记录数组。 */
 export function extractValues(body: string, step: { engine: string; path: string; from: string }): unknown[] {
   if (step.engine === 'css') {
@@ -197,17 +236,28 @@ export function extractValues(body: string, step: { engine: string; path: string
     return [];
   }
   let json: unknown;
-  try { json = JSON.parse(body); } catch { return []; }
+  if (step.engine === 'embedded-json') {
+    json = extractEmbeddedJson(body);
+    if (json === undefined) return [];
+  } else {
+    try { json = JSON.parse(body); } catch { return []; }
+  }
   const values = queryJsonPath(json, step.path);
   // $.a.records[*] 已经展开；$.a.records 这种没写 [*] 的，如果拿到的是数组就展开
   if (values.length === 1 && Array.isArray(values[0])) return values[0];
   return values;
 }
 
-/** 元素内取字段：支持 $.x.y 与裸字段名。 */
-export function pickValue(item: unknown, selector: string): unknown {
+/**
+ * 元素内取字段：支持 $.x.y / 裸字段名 / $index（1 基序号）。
+ *
+ * 为什么要 $index：榜单类数据几乎都要序号，而序号通常不在原始数据里
+ * （或者来自分页计算）。没有它就只能把序号列删掉，输出就没法读。
+ */
+export function pickValue(item: unknown, selector: string, index?: number): unknown {
   const expr = String(selector || '').trim();
   if (!expr) return undefined;
+  if (expr === '$index') return index;
   if (expr.startsWith('$')) {
     const one = queryJsonPathOne(item, expr);
     return one === undefined && expr.startsWith('$.') ? (item as Record<string, unknown>)?.[expr.slice(2)] : one;

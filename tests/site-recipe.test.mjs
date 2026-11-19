@@ -1,8 +1,11 @@
 ﻿// 站点配方（2026-11-19）：格式校验 / JSONPath 子集 / 结构校验 / 执行器安全边界
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {
   executeRecipe,
+  extractEmbeddedJson,
+  isPrivateHost as _isPrivateHost,
   extractValues,
   isPrivateHost,
   normalizeRecords,
@@ -231,4 +234,78 @@ test('executor：校验不通过时 ok=false 但仍返回 dataset（便于排查
   assert.equal(result.ok, false);
   assert.ok(result.dataset, '仍应返回 dataset 供排障');
   assert.match(result.verify.failures.join(), /记录数不足/);
+});
+
+test('embedded-json：从 <script type="application/json"> 挖出数据（起点 m 站形态）', () => {
+  const payload = { pageContext: { pageProps: { pageData: { list: [{ bName: '书名A', bAuth: '作者A', bid: '101', cat: '玄幻', cnt: '120万', rec: '编辑推荐' }] } } } };
+  const html = '<html><body><script type="application/json">' + JSON.stringify(payload) + '</script></body></html>';
+  const values = extractValues(html, { engine: 'embedded-json', path: '$.pageContext.pageProps.pageData.list[*]', from: 'html' });
+  assert.equal(values.length, 1);
+  assert.equal(pickValue(values[0], '$.bName'), '书名A');
+});
+
+test('embedded-json：也支持 window.__INITIAL_STATE__（括号配平截取，不 eval）', () => {
+  const html = '<script>window.__INITIAL_STATE__ = {"records":[{"bName":"X"}]};</script>';
+  assert.deepEqual(extractEmbeddedJson(html), { records: [{ bName: 'X' }] });
+});
+
+test('embedded-json：挖不到时返回空数组（让 verify 判失败，不返回半成品）', () => {
+  assert.deepEqual(extractValues('<html>no data</html>', { engine: 'embedded-json', path: '$.a[*]', from: 'html' }), []);
+});
+
+test('种子配方 qidian-sanjiang：validateRecipe 通过', () => {
+  const raw = fs.readFileSync('plugins/site-recipes/qidian-sanjiang.json', 'utf8');
+  const recipe = JSON.parse(raw.replace(/^\uFEFF/, ''));
+  assert.deepEqual(validateRecipe(recipe), []);
+  assert.equal(recipe.match.host[0], 'm.qidian.com');
+  // 必须写明「为什么 list 接口榜单不做」——否则下一个人会以为漏了
+  assert.ok((recipe._notes || []).some((note) => /csrfToken/.test(note)));
+});
+
+test('种子配方：用真实结构的夹具跑通执行器', async () => {
+  const recipe = JSON.parse(fs.readFileSync('plugins/site-recipes/qidian-sanjiang.json', 'utf8').replace(/^\uFEFF/, ''));
+  const payload = {
+    pageContext: {
+      pageProps: {
+        pageData: {
+          records: [
+            { bName: '甲', bAuth: 'A', bid: '1', cat: '玄幻', cnt: '100万', rec: 'r1' },
+            { bName: '乙', bAuth: 'B', bid: '2', cat: '都市', cnt: '90万', rec: 'r2' },
+            { bName: '丙', bAuth: 'C', bid: '3', cat: '科幻', cnt: '80万', rec: 'r3' },
+          ],
+        },
+      },
+    },
+  };
+  const html = '<script type="application/json">' + JSON.stringify(payload) + '</script>';
+  const fetchImpl = async () => ({ ok: true, status: 200, headers: { get: () => 'text/html' }, text: async () => html });
+  const result = await executeRecipe(recipe, { fetchImpl, minIntervalMs: 0 });
+  assert.equal(result.ok, true, JSON.stringify(result.verify));
+  assert.equal(result.dataset.records.length, 3);
+  assert.equal(result.dataset.records[0].name, '甲');
+  assert.equal(result.dataset.records[0].bookId, '1');
+  assert.equal(result.dataset.meta.source, 'qidian.com');
+});
+
+
+test('pickValue：$index 生成 1 基序号（榜单类必备）', () => {
+  assert.equal(pickValue({ bName: 'A' }, '$index', 1), 1);
+  assert.equal(pickValue({ bName: 'A' }, '$index', 7), 7);
+  assert.equal(pickValue({ bName: 'A' }, '$index'), undefined, '没给序号时不该编一个');
+});
+
+test('种子配方：真实站点抓取结果包含 pos 序号且递增', async () => {
+  // 用真实结构夹具（不是真网络，保证测试可离线跑）
+  const recipe = JSON.parse(fs.readFileSync('plugins/site-recipes/qidian-sanjiang.json', 'utf8'));
+  const payload = { pageContext: { pageProps: { pageData: { records: [
+    { bName: '甲', bAuth: 'A', bid: '1', cat: '玄幻', cnt: '100万', rec: 'r1' },
+    { bName: '乙', bAuth: 'B', bid: '2', cat: '都市', cnt: '90万', rec: 'r2' },
+    { bName: '丙', bAuth: 'C', bid: '3', cat: '科幻', cnt: '80万', rec: 'r3' },
+  ] } } } };
+  const html = '<script type="application/json">' + JSON.stringify(payload) + '</script>';
+  const fetchImpl = async () => ({ ok: true, status: 200, headers: { get: () => 'text/html' }, text: async () => html });
+  const result = await executeRecipe(recipe, { fetchImpl, minIntervalMs: 0 });
+  assert.equal(result.ok, true, JSON.stringify(result.verify));
+  assert.deepEqual(result.dataset.records.map((row) => row.pos), [1, 2, 3]);
+  assert.equal(result.dataset.records[0].name, '甲');
 });

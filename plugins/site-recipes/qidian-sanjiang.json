@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "id": "qidian-sanjiang",
+  "site": "qidian.com",
+  "revision": 1,
+  "match": {
+    "host": [
+      "m.qidian.com"
+    ],
+    "pathPrefix": [
+      "/sanjiang/"
+    ]
+  },
+  "dataset": {
+    "columns": [
+      {
+        "name": "pos",
+        "type": "number",
+        "label": "序号"
+      },
+      {
+        "name": "name",
+        "type": "string",
+        "label": "书名",
+        "required": true
+      },
+      {
+        "name": "author",
+        "type": "string",
+        "label": "作者"
+      },
+      {
+        "name": "category",
+        "type": "string",
+        "label": "分类"
+      },
+      {
+        "name": "metric",
+        "type": "string",
+        "label": "字数"
+      },
+      {
+        "name": "desc",
+        "type": "string",
+        "label": "推荐语"
+      },
+      {
+        "name": "bookId",
+        "type": "string",
+        "label": "书籍ID"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "type": "http",
+      "method": "GET",
+      "url": "https://m.qidian.com/sanjiang/",
+      "headers": {
+        "accept": "text/html,application/xhtml+xml"
+      }
+    },
+    {
+      "type": "extract",
+      "from": "html",
+      "engine": "embedded-json",
+      "path": "$.pageContext.pageProps.pageData.records[*]",
+      "map": {
+        "pos": "$index",
+        "name": "$.bName",
+        "author": "$.bAuth",
+        "category": "$.cat",
+        "metric": "$.cnt",
+        "desc": "$.rec",
+        "bookId": "$.bid"
+      }
+    }
+  ],
+  "verify": {
+    "minRecords": 3,
+    "requiredFieldsNonEmpty": [
+      "name"
+    ],
+    "uniqueBy": [
+      "bookId"
+    ]
+  },
+  "provenance": {
+    "createdBy": "human",
+    "createdAt": "2026-11-19T00:00:00.000Z",
+    "sampleHash": "real-fetch-2026-11-19",
+    "successRate": 1
+  },
+  "_notes": [
+    "起点 SSR 榜单（本周强推 /strongrec/、三江网文新风 /sanjiang/）：数据内嵌在页面 <script type=\"application/json\">，纯 HTTP 可抓。",
+    "起点 list 接口榜单（月票/畅销/阅读指数…）走 https://m.qidian.com/webcommon/rank/{api}list，需要 _csrfToken + cookie + referer 三件套，属于会话握手，配方引擎不支持（也不该支持：那等于内置登录态）。这类榜单继续走旧插件。",
+    "path 里的 $.pageContext.pageProps.pageData.records[*] 是 2026-11-19 用真实站点核对过的（旧实现里同名数据在 findKeyDeep(st, \"records\")，没写死路径）。若站点改版导致路径失效，verify 会因记录数不足而失败，不会静默产出空数据。",
+    "本配方默认不启用（feature flag 关闭），生产仍走 plugins/novel-platform.mjs。"
+  ]
+}
