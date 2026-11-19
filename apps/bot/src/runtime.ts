@@ -13,6 +13,7 @@ import type { BotApp } from './app.js';
 import { isOwner, parseOwnerCommand, type OwnerCommand } from './owner.js';
 import type { StructuredLogger } from '../../../packages/logger/src/index.js';
 import { fetchGroupContext, formatHistoryMessageText, senderIdentity, type GroupContextOptions, type NapcatHistoryMessage } from './group-context.js';
+import { runtimeQueues, QueueGateTimeoutError } from './queue-gate.js';
 // P0-1 方式二：off 模式保留旧自然语言意图链（R9 误删，恢复以保回滚能力）。
 import { classifyNaturalLanguageIntent, type IntentCatalogItem, type IntentFallback } from './intent-recognition.js';
 import { extractForwardIds, extractReferenceText, formatForwardMessages, isReferencedFromBot } from './message-enrichment.js';
@@ -193,7 +194,8 @@ export interface BotRuntimeOptions {
    * 不注入时所有埋点都是空操作。
    */
   metrics?: {
-    record(event: 'message' | 'command' | 'chat' | 'image' | 'video' | 'audio' | 'voice' | 'error' | 'agent_failure' | 'agent_unavailable', count?: number, dims?: { session?: string; model?: string }): void;
+    /** 事件名以 packages/core 的 MetricEvent 为准（此处用宽签名避免两处联合类型漂移）。 */
+    record(event: string, count?: number, dims?: { session?: string; model?: string }): void;
     recordDuration(key: string, ms: number): void;
     durationAverage?(key: string): number | undefined;
   };
@@ -1668,7 +1670,12 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       stageBegin('agent');
       // R15/C-2：全局 turn 并发上限（跨群共享，超出排队先来先得；0=不限制）。
       // 信号量在 buildChatContext 之前获取——上下文构造也在占用模型预算的窗口内。
-      const releaseTurnSlot = await acquireAgentTurnSlot(() => Math.trunc(Number((cfg.agent as any)?.maxConcurrentTurns ?? 4)) || 4);
+      const releaseTurnSlot = await acquireAgentTurnSlot(
+        () => Math.trunc(Number((cfg.agent as any)?.maxConcurrentTurns ?? 4)) || 4,
+        () => Math.trunc(Number((cfg.agent as any)?.turnQueueTimeoutMs ?? 0)) || 0,
+      );
+      // 注意：名额已到手，从这里到下面 try 之间只有同步赋值 + 一个不可能 reject 的
+      // `await sessionChainPrev.catch(() => {})`，所以不存在「占了名额却没进 finally」的泄漏窗口。
       // R15/C-1：会话串行链——同一 session 的 turn 串行执行，防止并发读写同一
       // AgentSessionState（历史/pendingJobs/偏好）。与出站队列 R11 同构。
       const sessionChainPrev = agentTurnQueues.get(sessionId) || Promise.resolve();
@@ -2101,6 +2108,16 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
       }
     } catch (error) {
       const errMsg = String((error as Error)?.message || error);
+      // 2026-11-19：全局 turn 名额排队超时（agent.turnQueueTimeoutMs）。
+      // 必须给用户一句可读说明——静默返回 handled:false 等于这条消息被吞了。
+      if (error instanceof QueueGateTimeoutError) {
+        log?.warn('Agent turn 排队超时', { reason: errMsg, key: error.key, timeoutMs: error.timeoutMs, sessionId, chatType, groupId: event.group_id, userId });
+        metrics?.record('agent_queue_timeout', 1, metricsDims());
+        try {
+          await engine.replyText(replyCtx, '当前同时在处理的请求太多了，这条排队超时没能开始。稍等一会儿再发一次就行。', 'quote');
+        } catch { /* 发送失败不影响返回语义 */ }
+        return { handled: true, kind: 'agent-queue-timeout' };
+      }
       if (error instanceof FeatureLimitError) {
         await reportProblem('feature-limit', error, { intent: decision.kind });
         return { handled: true, kind: 'feature-limit' };
@@ -2972,17 +2989,18 @@ const outboundSendQueues = new Map<string, Promise<void>>();
 // C-1 会话串行链：同 sessionId 的 turn 串行（Map<sessionId, Promise> 链，与出站队列同构）。
 // C-2 全局信号量：跨群共享的同时执行 turn 上限，cfg.agent.maxConcurrentTurns（0=不限）。
 const agentTurnQueues = new Map<string, Promise<void>>();
-let agentActiveTurns = 0;
-const agentTurnWaiters: Array<() => void> = [];
-async function acquireAgentTurnSlot(getMaxConcurrent: () => number): Promise<() => void> {
-  const max = Math.max(0, Math.trunc(Number(getMaxConcurrent()) || 0));
-  if (max <= 0 || agentActiveTurns < max) {
-    agentActiveTurns += 1;
-    return () => { agentActiveTurns = Math.max(0, agentActiveTurns - 1); const next = agentTurnWaiters.shift(); if (next) next(); };
-  }
-  await new Promise<void>((resolve) => { agentTurnWaiters.push(resolve); });
-  agentActiveTurns += 1;
-  return () => { agentActiveTurns = Math.max(0, agentActiveTurns - 1); const next = agentTurnWaiters.shift(); if (next) next(); };
+
+/**
+ * 全局 turn 名额（跨群共享）。
+ *
+ * 2026-11-19 换成 KeyedConcurrencyGate：原实现是手搓数组唤醒，
+ * 既没有排队超时（一个 turn 卡住，后面无限等），也没有可观测的队列长度。
+ * 现在超时由 agent.turnQueueTimeoutMs 控制（0=无限等），快照进 runtime-queues.json。
+ */
+async function acquireAgentTurnSlot(getMaxConcurrent: () => number, getQueueTimeoutMs: () => number): Promise<() => void> {
+  return await runtimeQueues.turns.acquire('agent.turn', Number(getMaxConcurrent()) || 0, {
+    timeoutMs: Math.max(0, Math.trunc(Number(getQueueTimeoutMs()) || 0)),
+  });
 }
 
 export async function sendResult(

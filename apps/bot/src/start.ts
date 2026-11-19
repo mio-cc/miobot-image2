@@ -18,7 +18,7 @@ import { InMemoryAgentSessionManager, type AgentJobRecord, type AgentToolPreflig
 import { createBotMessageRuntime, handleCodeRenderRequest, handleFileGenerateCommand, handleFileReadCommand, handleWebScreenshotRequest, type BotRuntimeOptions, type FileReference, type NapcatMessageEvent } from './runtime.js';
 import { toGroupContextConfig, toModelNodes, toCapabilityOverrides } from './config-bridge.js';
 import { CONTENT_REJECTION_PLACEHOLDER } from './content-rejection.js';
-import { renderTtsPreprocessPrompt, resolveTtsPreprocessTarget, shouldUseTts, synthesizeSpeech } from './tts.js';
+import { renderTtsPreprocessPrompt, resolveTtsPreprocessTarget, shouldUseTts, synthesizeSpeech, toSpeechText } from './tts.js';
 import type { OwnerCommand } from './owner.js';
 import { fetchGroupContext, formatHistoryMessageText, type GroupContextOptions, type NapcatHistoryMessage } from './group-context.js';
 import { normalizeForwardPayload } from './message-enrichment.js';
@@ -2277,8 +2277,17 @@ const memoryService = memoryBackend === 'qdrant'
         groupId: voiceCtx.groupId === undefined ? undefined : String(voiceCtx.groupId),
         userId: String(voiceCtx.userId || ''),
       });
-      if (!shouldUseTts(tts, text)) return null;
-      let speakText = text;
+      // TTS 前的文本闸（2026-11-19）：文字回复里的链接/表格/代码/占位符照常显示，
+      // 但朗读只念净化后的内容。此前 speakText = text，原文直送合成，于是会念出
+      // 「https 冒号 斜杠 斜杠…」。净化后没剩内容就不发语音（别合成一段纯符号）。
+      const speechSource = toSpeechText(text);
+      if (!speechSource) {
+        logger?.info('tts 跳过：净化后无可用语音文本', { originalChars: text.length });
+        return null;
+      }
+      // 长度门控按「要念的字数」判断，而不是按原始 markdown 长度。
+      if (!shouldUseTts(tts, speechSource)) return null;
+      let speakText = speechSource;
       const pre = tts.preprocess;
       // 「跟随」语义：pre.model 为空 = 用户在用途表点了「恢复跟随」，节点与模型都跟主对话走
       // （resolveTtsPreprocessTarget，与 trigger-intent.ts chatNode() 同款）；此前空模型直接跳过
@@ -2286,7 +2295,7 @@ const memoryService = memoryBackend === 'qdrant'
       const preTarget = resolveTtsPreprocessTarget(pre, getConfig());
       if (pre?.enabled && preTarget.model) {
         try {
-          const rendered = renderTtsPreprocessPrompt(String(pre.promptTemplate || ''), text);
+          const rendered = renderTtsPreprocessPrompt(String(pre.promptTemplate || ''), speechSource);
           // P2 接入点：purpose = 'tts'（常量显式）。备用取 bot.tts.preprocess.fallback*；
           // 主/备都失败仍按原语义处理（fallbackToOriginal ? 用原文合成 : 放弃语音）。
           const preprocessCall = (target: { nodeIndex: number; model: string }) => client.chat(target.nodeIndex, { model: target.model, messages: [{ role: 'user', content: rendered }] });
@@ -2295,9 +2304,9 @@ const memoryService = memoryBackend === 'qdrant'
           if (out) {
             speakText = out.slice(0, Math.max(1, Number(pre.maxOutputChars || 1000)));
             // Harness 观测：把前置转化（fish-audio 标签）的输入输出落日志，供面板/排查查看打了什么标签。
-            logger?.info('tts 前置转化输出', { originalChars: text.length, taggedChars: speakText.length, original: text.slice(0, 300), tagged: speakText.slice(0, 600) });
+            logger?.info('tts 前置转化输出', { originalChars: text.length, speechChars: speechSource.length, taggedChars: speakText.length, original: text.slice(0, 300), speech: speechSource.slice(0, 300), tagged: speakText.slice(0, 600) });
           } else if (!pre.fallbackToOriginal) return null;
-          else logger?.warn('tts 前置转化输出为空，已回退原文合成', { originalChars: text.length });
+          else logger?.warn('tts 前置转化输出为空，已回退净化文本合成', { originalChars: text.length, speechChars: speechSource.length });
         } catch (error) {
           // 此前静默回退原文，用户只听到「提示词改了没效果」，无从区分没启用/失败/输出空——补观测不改行为。
           logger?.warn('tts 前置转化失败' + (pre.fallbackToOriginal ? '，已回退原文合成' : '，放弃语音'), { error: String((error as { message?: string })?.message || error) });

@@ -21,9 +21,10 @@ export type MetricEvent =
   | 'voice'     // 语音发送成功
   | 'agent_failure'
   | 'agent_unavailable'  // P0-1：Agent off/shadow 下自然语言未处理（管理员通知计数） // Agent enforce 未产出可交付结果
+  | 'agent_queue_timeout' // 2026-11-19：全局 turn 名额排队超时（并发上限/队列积压的直接观测）
   | 'error';    // 处理失败
 
-export const METRIC_EVENTS: MetricEvent[] = ['message', 'command', 'chat', 'image', 'video', 'audio', 'voice', 'agent_failure', 'agent_unavailable', 'error'];
+export const METRIC_EVENTS: MetricEvent[] = ['message', 'command', 'chat', 'image', 'video', 'audio', 'voice', 'agent_failure', 'agent_unavailable', 'agent_queue_timeout', 'error'];
 
 const BUCKET_COUNT = 24;
 const HOUR_MS = 60 * 60 * 1000;
