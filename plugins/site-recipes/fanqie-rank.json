@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "id": "fanqie-rank-male",
+  "site": "fanqienovel.com",
+  "revision": 1,
+  "match": {
+    "host": [
+      "fanqienovel.com"
+    ],
+    "pathPrefix": [
+      "/rank/"
+    ]
+  },
+  "dataset": {
+    "columns": [
+      {
+        "name": "pos",
+        "type": "number",
+        "label": "序号"
+      },
+      {
+        "name": "name",
+        "type": "string",
+        "label": "书名",
+        "required": true
+      },
+      {
+        "name": "author",
+        "type": "string",
+        "label": "作者"
+      },
+      {
+        "name": "category",
+        "type": "string",
+        "label": "分类"
+      },
+      {
+        "name": "metric",
+        "type": "string",
+        "label": "指标"
+      },
+      {
+        "name": "bookId",
+        "type": "string",
+        "label": "书籍ID"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "type": "http",
+      "method": "GET",
+      "url": "https://fanqienovel.com/rank/{seg1}_{seg2}",
+      "headers": {
+        "accept": "text/html,application/xhtml+xml"
+      }
+    },
+    {
+      "type": "extract",
+      "from": "html",
+      "engine": "embedded-json",
+      "path": "$.rank.book_list[*]",
+      "map": {
+        "pos": "$index",
+        "name": "$.bookName",
+        "author": "$.author",
+        "category": "$.category",
+        "metric": "$.readCount",
+        "bookId": "$.bookId"
+      }
+    }
+  ],
+  "verify": {
+    "minRecords": 3,
+    "requiredFieldsNonEmpty": [
+      "name"
+    ],
+    "uniqueBy": [
+      "bookId"
+    ]
+  },
+  "provenance": {
+    "createdBy": "human",
+    "createdAt": "2026-11-19T00:00:00.000Z",
+    "sampleHash": "real-fetch-2026-11-19",
+    "successRate": 1
+  },
+  "_notes": [
+    "番茄榜单：https://fanqienovel.com/rank/{seg1}_{seg2}，seg1=1 男频 / 0 女频，seg2 是榜单编号（旧插件 FANQIE_RANKS 里定义）。",
+    "数据在 window.__INITIAL_STATE__ 的 rank.book_list（2026-11-19 实抓核对，10 条）。",
+    "旧插件额外对每本书请求 fanqieBookMeta 拿干净书名/作者；配方只做一次请求，书名字段可能带私用区字符（PUA）。",
+    "category 在实测数据里为空字符串——番茄把分类放在 categoryV2 数组里，是否要取需要人工确认，暂不猜。",
+    "metric 用 readCount（在读人数原始值）；旧插件会格式化成「在读X万」，配方保留原始值，格式化交给下游。",
+    "本配方默认不启用（feature flag 关闭），生产仍走 plugins/novel-platform.mjs。"
+  ]
+}

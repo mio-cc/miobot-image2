@@ -70,7 +70,9 @@ export function coerceValue(value: unknown, type: ColumnType): unknown {
     const time = Date.parse(String(value));
     return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
   }
-  return String(value);
+  // 私用区字符（U+E000–U+F8FF）在显示上一定是乱码方块，统一替换成 □。
+  // 番茄的书名/作者实测带这类字符（旧插件的 cleanPua 也是这个处理）。
+  return String(value).replace(/[\uE000-\uF8FF]/g, '□');
 }
 
 /** 按列定义把原始行规范化。 */

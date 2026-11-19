@@ -309,3 +309,28 @@ test('种子配方：真实站点抓取结果包含 pos 序号且递增', async 
   assert.deepEqual(result.dataset.records.map((row) => row.pos), [1, 2, 3]);
   assert.equal(result.dataset.records[0].name, '甲');
 });
+
+
+test('PUA 清洗：私用区字符替换成 □（番茄书名必需）', () => {
+  const rows = [{ name: '\uE4C2怪\uE4C3异' }];
+  const out = normalizeRecords(rows, [{ name: 'name', type: 'string' }]);
+  assert.equal(out[0].name, '□怪□异');
+});
+
+test('种子配方 fanqie-rank：validateRecipe 通过，且注明 PUA 与 qimao 限制', () => {
+  const recipe = JSON.parse(fs.readFileSync('plugins/site-recipes/fanqie-rank.json', 'utf8'));
+  assert.deepEqual(validateRecipe(recipe), []);
+  assert.equal(recipe.match.host[0], 'fanqienovel.com');
+  assert.equal(recipe.steps[0].url, 'https://fanqienovel.com/rank/{seg1}_{seg2}');
+  assert.equal(recipe.steps[1].path, '$.rank.book_list[*]');
+  assert.ok(recipe._notes.some((note) => /__INITIAL_STATE__/.test(note)));
+});
+
+test('配方 README 必须写明 qimao 为什么阻塞（避免被当成遗漏）', () => {
+  const readme = fs.readFileSync('plugins/site-recipes/README.md', 'utf8');
+  assert.match(readme, /qimao/);
+  assert.match(readme, /frame-ancestors/, '要写出真实的响应头问题');
+  assert.match(readme, /HTTPParserError/);
+  assert.match(readme, /_csrfToken/, '起点 list 接口的限制也要写');
+  assert.match(readme, /默认全部不启用/);
+});
