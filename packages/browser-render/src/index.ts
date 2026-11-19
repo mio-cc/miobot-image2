@@ -6,6 +6,9 @@ import sharp from 'sharp';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
 import type { AppConfig, BrowserRenderConfig, CodeRenderConfig } from '../../config/src/index.js';
 
+export * from './network.js';
+import { normalizeNetworkEvents, type NetworkEvent, type NetworkEventInput, type RecordNetworkOptions } from './network.js';
+
 export type CodeRenderFormat = 'html' | 'svg' | 'canvas' | 'three';
 
 export interface CodeArtifact {
@@ -24,6 +27,8 @@ export interface CodeArtifact {
 }
 
 export interface RenderedImage {
+  /** recordNetwork=true 时的网络证据（默认不返回该字段）。 */
+  network?: NetworkEvent[];
   path: string;
   name: string;
   mime: string;
@@ -42,6 +47,13 @@ export interface UrlScreenshotOptions {
   height?: number;
   fullPage?: boolean;
   waitMs?: number;
+  /**
+   * 记录这次渲染期间的 XHR/fetch（2026-11-19，默认关闭）。
+   * 用于给主脑生成"站点配方"提供证据：真实接口 + URL 模板 + 结构骨架。
+   * 安全边界见 network.ts 顶部注释（不记 header、默认同源、默认不记响应体）。
+   */
+  recordNetwork?: boolean;
+  recordNetworkOptions?: RecordNetworkOptions;
 }
 
 export interface BrowserRenderService {
@@ -381,6 +393,43 @@ export function createBrowserRenderer(options: BrowserRendererOptions): BrowserR
     const width = clampInt(input.width, cfg.defaultWidth, 128, cfg.maxWidth);
     const height = clampInt(input.height, cfg.defaultHeight, 128, cfg.maxHeight);
     const { context, page } = await newPage(width, height);
+    // 2026-11-19：XHR 记录。挂在路由之前，避免被路由中断影响统计。
+    // 只收 xhr/fetch；header 一律不读（防 Authorization / Cookie 泄漏）。
+    const networkEvents: NetworkEventInput[] = [];
+    const recordNetwork = input.recordNetwork === true;
+    if (recordNetwork) {
+      const startedAt = new Map<string, number>();
+      page.on('request', (request) => { startedAt.set(request.url(), Date.now()); });
+      page.on('response', async (response) => {
+        try {
+          const request = response.request();
+          const resourceType = request.resourceType();
+          if (!/^(xhr|fetch)$/i.test(resourceType)) return;
+          const contentType = String(response.headers()['content-type'] || '');
+          let bodyText: string | undefined;
+          if (input.recordNetworkOptions?.includeResponseBody) {
+            try { bodyText = await response.text(); } catch { bodyText = undefined; }
+          }
+          const begin = startedAt.get(request.url());
+          networkEvents.push({
+            url: request.url(),
+            method: request.method(),
+            resourceType,
+            status: response.status(),
+            contentType,
+            ...(begin ? { timingMs: Date.now() - begin } : {}),
+            ...(bodyText !== undefined ? { bodyText } : {}),
+          });
+        } catch { /* 单条失败不影响渲染 */ }
+      });
+      page.on('requestfailed', (request) => {
+        try {
+          const resourceType = request.resourceType();
+          if (!/^(xhr|fetch)$/i.test(resourceType)) return;
+          networkEvents.push({ url: request.url(), method: request.method(), resourceType });
+        } catch { /* ignore */ }
+      });
+    }
     let gotoDegraded = false;
     try {
       await page.route('**/*', (route) => {
@@ -430,10 +479,21 @@ export function createBrowserRenderer(options: BrowserRendererOptions): BrowserR
       const bodyText = await page.evaluate(() => String((document.body?.innerText || '')).length).catch(() => '0');
       const shot = await saveScreenshot(page, outputDir, width, height, input.fullPage === true);
       const bodyTextLength = Number(bodyText) || 0;
+      // 2026-11-19：把网络证据挂到结果上（只在 recordNetwork=true 时存在）。
+      // 放在 return 之前统一附加，degraded 分支也带上——抓不到内容时更需要看接口。
+      const network = recordNetwork
+        ? normalizeNetworkEvents({
+            events: networkEvents,
+            pageUrl: String(url),
+            ...(input.recordNetworkOptions ? { options: input.recordNetworkOptions } : {}),
+            parseBody: (text, contentType) => (/json/i.test(contentType) ? JSON.parse(text) : undefined),
+          })
+        : undefined;
+      const networkPart = network && network.length ? { network } : {};
       if (gotoDegraded || bodyTextLength < 20) {
-        return { ...shot, degraded: true, note: gotoDegraded ? 'page_load_timeout_partial_capture' : 'near_blank_page' };
+        return { ...shot, ...networkPart, degraded: true, note: gotoDegraded ? 'page_load_timeout_partial_capture' : 'near_blank_page' };
       }
-      return shot;
+      return { ...shot, ...networkPart };
     } finally {
       await page.close().catch(() => undefined);
       await context.close().catch(() => undefined);
