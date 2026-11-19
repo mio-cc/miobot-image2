@@ -3,6 +3,13 @@ import { createCapabilityRegistry, createModelClient, createReloadableRegistry }
 import { FileModelCapabilityStore } from './model-capability-store.js';
 import { FileModelContractStore } from './model-contract-store.js';
 import { capabilityKey } from '../../../packages/model/src/capability/memory.js';
+import { contractFromOpenApi, extractFalSpecFromHtml } from '../../../packages/model/src/capability/contract-extract.js';
+import {
+  loadJsonlActionCursor,
+  readJsonlActionBatch,
+  reconcileJsonlActionOffset,
+  saveJsonlActionCursor,
+} from './jsonl-action-cursor.js';
 import { runtimeQueues } from './queue-gate.js';
 import { comfyUiQueueSnapshot } from './comfyui-queue.js';
 import { sampleRuntimeQueues, writeRuntimeQueuesSnapshot } from './runtime-queues-snapshot.js';
@@ -428,6 +435,62 @@ export function startBot(options: StartBotOptions = {}): RunningBot {
     filePath: path.join(dataDir, 'model-contracts.json'),
     logger,
   });
+  // 契约动作轮询（2026-11-19）：面板不直接抓取、也不直接改 bot 的状态文件，
+  // 只往 model-contract-actions.jsonl 追加一行，这里消费。
+  // 与节点延迟采集同构：动作文件 + 游标，重启后不会重放已完成的行。
+  const contractActionCursorPath = path.join(dataDir, 'model-contract-actions.cursor.json');
+  let contractActionTimer: NodeJS.Timeout | undefined;
+  const startContractActionPoller = (): void => {
+    const actionFile = process.env.MIOBOT_MODEL_CONTRACT_ACTIONS || path.join(dataDir, 'model-contract-actions.jsonl');
+    let offset = 0;
+    let running = false;
+    void (async () => {
+      const saved = await loadJsonlActionCursor(contractActionCursorPath).catch(() => ({ ids: [], offset: 0 }));
+      offset = Number(saved?.offset) || 0;
+      const reconciled = await reconcileJsonlActionOffset(actionFile, { ids: [], offset }).catch(() => ({ ids: [], offset }));
+      offset = Number(reconciled?.offset) || offset;
+    })();
+    const tick = async (): Promise<void> => {
+      if (running) return;
+      running = true;
+      try {
+        const batch = await readJsonlActionBatch<{ action?: string; key?: string; model?: string; nodeIndex?: number }>(actionFile, offset);
+        if (batch.actions.length) {
+          offset = batch.nextOffset;
+          for (const action of batch.actions) {
+            const key = String(action?.key || '').trim();
+            if (!key) continue;
+            if (action.action === 'delete') {
+              const removed = modelContractStore.delete(key);
+              modelContractStore.flush();
+              logger.info('模型参数契约已按面板请求删除', { key, removed });
+              continue;
+            }
+            if (action.action === 'refresh') {
+              // 只支持 fal 文档页（当前唯一提供内嵌 OpenAPI 的渠道）；其余来源需要主脑读文档生成。
+              const contract = await fetchFalContract(key, String(action.model || ''));
+              if (!contract) {
+                logger.warn('模型参数契约刷新失败（未取到 schema）', { key, model: action.model });
+                continue;
+              }
+              modelContractStore.set(contract);
+              modelContractStore.flush();
+              logger.info('模型参数契约已刷新', { key, model: contract.model, params: Object.keys(contract.params).length });
+            }
+          }
+          await saveJsonlActionCursor(contractActionCursorPath, { ids: [], offset });
+        }
+      } catch (error) {
+        logger.warn('契约动作轮询失败', { error: String((error as Error)?.message || error) });
+      } finally {
+        running = false;
+      }
+    };
+    contractActionTimer = setInterval(() => { void tick(); }, 5000);
+    contractActionTimer.unref?.();
+  };
+  startContractActionPoller();
+
   const getRegistry = createReloadableRegistry(
     () => toCapabilityOverrides(getConfig().llm.capabilityOverrides),
     { memory: modelCapabilityStore },
@@ -3050,4 +3113,33 @@ function findModel(config: AppConfig, code: string): string | undefined {
     }
   }
   return undefined;
+}
+
+
+/**
+ * 抓一个 fal 模型的参数契约（2026-11-19）。
+ *
+ * 为什么只支持 fal：目前只有它的模型文档页把完整 OpenAPI 内嵌在 RSC 流里，
+ * 能纯靠解析拿到 enum/required/约束，不需要模型参与。
+ * 其它网关（OpenAI 官方除外）没有稳定可解析的 schema，只能靠 422 探测或主脑读文档。
+ */
+async function fetchFalContract(key: string, model: string): Promise<import('../../../packages/model/src/capability/contract.js').ModelParamContract | undefined> {
+  const id = String(model || '').trim();
+  if (!id) return undefined;
+  const docUrl = 'https://fal.ai/models/' + id.split('/').map(encodeURIComponent).join('/') + '/api';
+  try {
+    const response = await fetch(docUrl, {
+      headers: { 'user-agent': 'miobot-contract-refresh/1.0' },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!response.ok) return undefined;
+    const html = await response.text();
+    const spec = extractFalSpecFromHtml(html);
+    if (!spec) return undefined;
+    // op 先按 image.generate 记：同一次抓取拿到的参数面与 op 无关，
+    // 真正区分 op 的是 dialect 在发请求时用哪些字段。
+    return contractFromOpenApi(spec, { key, model: id, op: 'image.generate' });
+  } catch {
+    return undefined;
+  }
 }

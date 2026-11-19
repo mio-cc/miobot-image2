@@ -18,6 +18,7 @@ import {
 } from '../../config/src/index.js';
 import type { PackageDescriptor } from '@miobot-v2/shared';
 import { findUnresolvedSecrets, maskConfigSecrets, unmaskConfigSecrets } from './secrets.js';
+import { describeShapedParams, shapeImageParams } from '../../model/src/capability/shape-request.js';
 import { PROMPT_REGISTRY, getPromptValue, setPromptValue } from './prompt-registry.js';
 import { applyCapabilityOverrides, applyRuntimeCapabilityGates, builtinCapabilityDescriptors, buildCapabilityManifest, createPermissionPolicyFromDefaults, resolvePermission, type CapabilityDescriptor } from '../../orchestration/src/index.js';
 import { detectComfyUiPromptNodeIds, inspectComfyUiWorkflow, validateComfyUiProfile } from '../../comfyui/src/index.js';
@@ -961,6 +962,69 @@ export class WebApi {
       // 模型参数契约（2026-11-19）：bot 进程写 data/model-contracts.json，
       // 面板只读展示「这个模型支持什么参数、来源是什么、学过哪些修正」。
       // 读不到 → 空列表 + 200（不是 500），面板照常渲染并提示"还没抓过"。
+      // 契约动作（2026-11-19）：面板不直接抓取、也不直接改 bot 的状态文件。
+      // 与节点延迟采集同构——面板只往动作文件追加一行，bot 轮询消费。
+      if (method === 'POST' && path === '/api/models/contracts/refresh') {
+        const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
+        const key = String(body.key || '').trim();
+        if (!key) return json(400, { success: false, error: 'missing_key' });
+        const actionFile = process.env.MIOBOT_MODEL_CONTRACT_ACTIONS || nodePath.join(miobotDataDir(), 'model-contract-actions.jsonl');
+        await fs.mkdir(nodePath.dirname(actionFile), { recursive: true });
+        await fs.appendFile(actionFile, JSON.stringify({
+          action: 'refresh',
+          key,
+          model: String(body.model || ''),
+          ...(Number.isFinite(Number(body.nodeIndex)) ? { nodeIndex: Number(body.nodeIndex) } : {}),
+          requestedAt: new Date().toISOString(),
+        }) + '\n', 'utf8');
+        return ok({ success: true, queued: true, note: '已排队；bot 下一轮轮询会抓取并更新契约' });
+      }
+      if (method === 'DELETE' && path === '/api/models/contracts') {
+        const key = String(new URLSearchParams(path.split('?')[1] || '').get('key') || '').trim();
+        if (!key) return json(400, { success: false, error: 'missing_key' });
+        const actionFile = process.env.MIOBOT_MODEL_CONTRACT_ACTIONS || nodePath.join(miobotDataDir(), 'model-contract-actions.jsonl');
+        await fs.mkdir(nodePath.dirname(actionFile), { recursive: true });
+        await fs.appendFile(actionFile, JSON.stringify({ action: 'delete', key, requestedAt: new Date().toISOString() }) + '\n', 'utf8');
+        return ok({ success: true, queued: true, note: '已排队；删除后该模型会退回保守模式（只发 prompt）' });
+      }
+      // 试算：给定模型+参数，返回「最终会发什么」。纯函数，不联网、不读 bot 内存。
+      if (method === 'POST' && path === '/api/models/contracts/explain') {
+        const body = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
+        const model = String(body.model || '').trim();
+        const contractFile = process.env.MIOBOT_MODEL_CONTRACTS_FILE || nodePath.join(miobotDataDir(), 'model-contracts.json');
+        const content = await fs.readFile(contractFile, 'utf8').catch(() => '');
+        let contract: unknown;
+        if (content) {
+          try {
+            const parsed = JSON.parse(content) as { entries?: Record<string, unknown> };
+            const entries = parsed?.entries || {};
+            const wantedKey = String(body.key || '').trim();
+            contract = wantedKey
+              ? entries[wantedKey]
+              : Object.values(entries).find((entry) => String((entry as { model?: string })?.model || '') === model);
+          } catch { contract = undefined; }
+        }
+        const shaped = shapeImageParams({
+          model,
+          prompt: String(body.prompt || 'x'),
+          ...(body.size !== undefined ? { size: String(body.size) } : {}),
+          ...(body.count !== undefined ? { count: Number(body.count) } : {}),
+          ...(body.quality !== undefined ? { quality: String(body.quality) } : {}),
+          ...(body.background !== undefined ? { background: String(body.background) } : {}),
+          ...(body.outputFormat !== undefined ? { outputFormat: String(body.outputFormat) } : {}),
+        }, contract as never);
+        return ok({
+          success: true,
+          hasContract: Boolean(contract),
+          conservative: shaped.conservative,
+          requestedSize: shaped.requestedSize || '',
+          sentSize: shaped.size || '',
+          snapped: shaped.snapped,
+          snapReason: shaped.snapReason || '',
+          dropped: shaped.dropped,
+          summary: describeShapedParams(shaped),
+        });
+      }
       if (method === 'GET' && path === '/api/models/contracts') {
         const contractFile = process.env.MIOBOT_MODEL_CONTRACTS_FILE || nodePath.join(miobotDataDir(), 'model-contracts.json');
         const content = await fs.readFile(contractFile, 'utf8').catch(() => '');
