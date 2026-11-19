@@ -24,3 +24,22 @@ export function resolveAsyncJobTimeoutMs(cfg: AppConfig, toolName: string, reque
   if (toolName === 'browser.render') values.push(Math.max(0, Number(cfg.browserRender?.timeoutMs) || 0) + 60_000);
   return Math.max(...values.filter((value) => Number.isFinite(value) && value > 0));
 }
+
+/**
+ * 高分辨率视频更慢，给异步任务超时加档（2026-11-19）。
+ *
+ * 依据：fal 的 minimax h3-max 文档把 1080P 描述为「native generation resolution,
+ * or 1080P latent refinement from a native 768P source」——即 1080P 是在 768P 基础上
+ * 再做一次 refinement，单次生成耗时明显更长。原来的超时只按 videoTimeoutMs + pollTimeoutMs
+ * 计算，1080P 容易在 refinement 阶段被判超时。
+ *
+ * 返回 0 表示不加档；调用方对「本身是无超时（0）」的任务不应该动手。
+ */
+export function resolutionTimeoutBonusMs(toolName: string, args: unknown): number {
+  if (toolName !== 'video.generate') return 0;
+  const raw = args && typeof args === 'object' ? (args as Record<string, unknown>).resolution : undefined;
+  const res = String(raw || '').toLowerCase();
+  if (res === '1080p') return 10 * 60_000;
+  if (res === '768p') return 5 * 60_000;
+  return 0;
+}

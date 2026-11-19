@@ -14,7 +14,7 @@ import { createCapabilityToolBinding, inferCapabilityToolExposure, STATEFUL_CAPA
 import { createAgentToolPreflight } from './agent-tool-policy.js';
 import { FileToolIdempotencyStore, inferExposure, makeToolError, toolFailure, toolPending, toolSuccess, type ToolResult } from '../../../packages/tool-runtime/src/index.js';
 import { ToolJobRuntime, type ToolJobRecord } from './tool-job-runtime.js';
-import { resolveAsyncJobTimeoutMs } from './async-job-timeout.js';
+import { resolutionTimeoutBonusMs, resolveAsyncJobTimeoutMs } from './async-job-timeout.js';
 import { ReplyPreferenceStore } from './reply-preference-store.js';
 import { hasPendingAgentClarification } from './pending-clarification.js';
 import { InMemoryAgentSessionManager, type AgentJobRecord, type AgentToolPreflightDecision, type AgentToolPreflightInput } from '../../../packages/agent-runtime/src/index.js';
@@ -1756,7 +1756,10 @@ const memoryService = memoryBackend === 'qdrant'
           sessionKey: context.sessionKey,
           status: shouldQueue ? 'queued' : 'running',
         });
-        const jobTimeoutMs = resolveAsyncJobTimeoutMs(getConfig(), call.name, spec.timeoutMs);
+        const baseJobTimeoutMs = resolveAsyncJobTimeoutMs(getConfig(), call.name, spec.timeoutMs);
+        // 1080P/768P 视频更慢：按 resolution 加档；base 为 0（无超时）时不干预。
+        const bonus = resolutionTimeoutBonusMs(call.name, call.arguments);
+        const jobTimeoutMs = baseJobTimeoutMs > 0 && bonus > 0 ? baseJobTimeoutMs + bonus : baseJobTimeoutMs;
         // 队列类别（spec.queue：image/video/audio/search/file/default）。
         // 之前这个字段被映射进 ToolSpec 却没人消费，是死字段；现在它是真正的类级别并发闸。
         // 默认上限 0 = 不限制，行为与旧版一致；toolRegistry.queueConcurrency.image=2 才会生效。

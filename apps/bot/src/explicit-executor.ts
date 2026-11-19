@@ -119,13 +119,20 @@ export class ExplicitExecutor implements RuntimeExplicitEngine {
           });
           return { kind: 'chat', decision, text: fallback.text, handled: true };
         }
+        const rawParams = params as Record<string, unknown>;
+        // aspectRatio 优先取显式参数；兼容旧调用把 '9:16' 塞在 size 里的写法。
+        const explicitAspect = typeof rawParams.aspectRatio === 'string' ? rawParams.aspectRatio : undefined;
+        const legacyAspect = params.size && /^\d{1,2}:\d{1,2}$/.test(params.size) ? params.size : undefined;
+        const imageRole = typeof rawParams.imageRole === 'string' ? rawParams.imageRole : undefined;
         const result = await this.options.deps.generateVideo({
           model: videoModel,
           prompt,
           imageUrl: input.images?.[0],
-          duration: Number((params as Record<string, unknown>).duration) || undefined,
-          aspectRatio: params.size && /^\d{1,2}:\d{1,2}$/.test(params.size) ? params.size : undefined,
-          resolution: typeof (params as Record<string, unknown>).resolution === 'string' ? String((params as Record<string, unknown>).resolution) : undefined,
+          duration: Number(rawParams.duration) || undefined,
+          aspectRatio: explicitAspect || legacyAspect,
+          resolution: typeof rawParams.resolution === 'string' ? String(rawParams.resolution) : undefined,
+          ...(imageRole === 'first-frame' || imageRole === 'last-frame' || imageRole === 'reference' ? { imageRole } : {}),
+          ...(typeof rawParams.promptExpansionMode === 'string' ? { promptExpansionMode: rawParams.promptExpansionMode as 'disabled' | 'balanced' | 'quality' } : {}),
         });
         return { kind: 'video.generate', decision, videos: result.videos, handled: true };
       }

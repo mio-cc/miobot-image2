@@ -212,7 +212,19 @@ export const falDialect: Dialect = {
   buildVideoGeneration(node: ModelNode, req: VideoGenerationRequest): RequestPlan {
     const body: Record<string, unknown> = { prompt: req.prompt };
     if (req.duration !== undefined) body.duration = req.duration;
-    if (req.imageUrl) body[imageUrlsField(req.model)] = [req.imageUrl];
+    if (req.resolution) body.resolution = String(req.resolution).toUpperCase();
+    if (req.aspectRatio) body.aspect_ratio = req.aspectRatio;
+    if (req.imageUrl) {
+      // 首帧 / 尾帧 / 参考素材是上游三个不同字段（2026-11-19 从 minimax h3-max 的
+      // OpenAPI 核实）。未显式指定 imageRole 时保持旧行为：reference-to-* 族仍按参考素材发，
+      // 其余按首帧（「把这张图做成视频」的默认语义）。
+      const role = req.imageRole
+        || (/reference[-_]to[-_](?:video|image)/i.test(String(req.model || '')) ? 'reference' : 'first-frame');
+      if (role === 'first-frame') body.image_url = req.imageUrl;
+      else if (role === 'last-frame') body.end_image_url = req.imageUrl;
+      else body.reference_image_urls = [req.imageUrl];
+    }
+    if (req.promptExpansionMode) body.prompt_expansion_mode = req.promptExpansionMode;
     return { method: 'POST', url: modelUrl(node, req.model), headers: falHeaders(node), body };
   },
   parseVideo(data: unknown): VideoResult {

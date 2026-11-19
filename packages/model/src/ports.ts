@@ -144,8 +144,18 @@ export interface ImageEditRequest {
 export interface VideoGenerationRequest {
   model: string;
   prompt: string;
-  /** 参考图 URL / data URL(image-to-video)。 */
+  /** 参考图 URL / data URL。落到上游哪个字段由 imageRole 决定。 */
   imageUrl?: string;
+  /**
+   * 附带图片的角色（2026-11-19）。上游把「首帧」和「参考素材」分成不同字段：
+   *   first-frame → image_url        （视频从这张图开始）
+   *   last-frame  → end_image_url
+   *   reference   → reference_image_urls（只作主体/风格参考）
+   * 混用会导致「把这张图做成视频」出来的视频不以该图开头。
+   */
+  imageRole?: 'first-frame' | 'last-frame' | 'reference';
+  /** 生成前对提示词的扩写力度（fal: prompt_expansion_mode）。 */
+  promptExpansionMode?: 'disabled' | 'balanced' | 'quality';
   /** 秒数；xAI 允许 1–15。 */
   duration?: number;
   aspectRatio?: string;

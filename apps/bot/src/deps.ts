@@ -35,7 +35,7 @@ export interface RuntimeDeps {
   generateImages(req: { model: string; prompt: string; size?: string; width?: number; height?: number; count?: number; quality?: string; templateId?: string }): Promise<{ images: string[] }>;
   editImage(req: { model: string; prompt: string; images: string[]; size?: string; width?: number; height?: number; quality?: string }): Promise<{ images: string[] }>;
   interrogate(req: { model: string; images: string[]; prompt?: string }): Promise<{ text: string }>;
-  generateVideo(req: { model: string; prompt: string; imageUrl?: string; duration?: number; aspectRatio?: string; resolution?: string }): Promise<{ videos: string[] }>;
+  generateVideo(req: { model: string; prompt: string; imageUrl?: string; imageRole?: 'first-frame' | 'last-frame' | 'reference'; duration?: number; aspectRatio?: string; resolution?: string; promptExpansionMode?: 'disabled' | 'balanced' | 'quality' }): Promise<{ videos: string[] }>;
 }
 
 export interface ModelDepsOptions {
@@ -271,6 +271,8 @@ export function createModelBackedDeps(options: ModelDepsOptions): RuntimeDeps {
         model: target.model,
         prompt: req.prompt,
         imageUrl: req.imageUrl,
+        imageRole: req.imageRole,
+        promptExpansionMode: req.promptExpansionMode,
         duration: req.duration,
         aspectRatio: req.aspectRatio,
         resolution: req.resolution,

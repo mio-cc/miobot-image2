@@ -87,6 +87,13 @@ export class ModelCapabilityHandler implements CapabilityHandler {
         ...(typeof args.quality === 'string' ? { quality: args.quality } : {}),
         ...(typeof args.templateId === 'string' ? { templateId: args.templateId } : {}),
         tokens: Array.isArray(args.tokens) ? args.tokens.map(String) : [],
+        // 视频专属参数（2026-11-19）：不过滤的话模型给了也到不了执行层。
+        ...(this.kind === 'video.generate' ? {
+          ...(typeof args.resolution === 'string' ? { resolution: args.resolution } : {}),
+          ...(typeof args.aspectRatio === 'string' ? { aspectRatio: args.aspectRatio } : {}),
+          ...(typeof args.imageRole === 'string' ? { imageRole: args.imageRole } : {}),
+          ...(typeof args.promptExpansionMode === 'string' ? { promptExpansionMode: args.promptExpansionMode } : {}),
+        } : {}),
       });
     }
     const outputs: ExecutionOutput[] = [];
