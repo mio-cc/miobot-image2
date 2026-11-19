@@ -3,6 +3,7 @@ export * from './capability/profiles.js';
 export * from './capability/registry.js';
 export * from './capability/memory.js';
 export * from './capability/params.js';
+export * from './capability/size.js';
 export { describeLearned, healingKey, resetLearned } from './capability/healing.js';
 export * from './dialects/shared.js';
 export { openAiDialect } from './dialects/openai.js';

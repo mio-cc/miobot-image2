@@ -1,3 +1,4 @@
+import { IMAGE_SIZE_PRESETS as IMAGE_SIZE_PRESETS_SRC } from '../../../packages/model/src/index.js';
 import type { BotApp } from './app.js';
 import type { RuntimeInput as BotEngineInput, RuntimeResult as BotEngineResult } from './runtime-types.js';
 import type { CapabilityHandler, CapabilityInvocation, ExecutionOutput, ExecutionResult } from '../../../packages/orchestration/src/index.js';
@@ -5,15 +6,9 @@ import type { CapabilityHandler, CapabilityInvocation, ExecutionOutput, Executio
 export type ModelCapabilityKind = 'image.generate' | 'image.edit' | 'image.interrogate' | 'video.generate' | 'chat.reply';
 
 /** 图片 size 预设 -> 真实宽高；执行层统一收口。 */
-const IMAGE_SIZE_PRESETS: Record<string, { width: number; height: number }> = {
-  square: { width: 1024, height: 1024 },
-  portrait: { width: 1024, height: 1536 },
-  'portrait-3-4': { width: 1152, height: 1536 },
-  portrait34: { width: 1152, height: 1536 },
-  landscape: { width: 1536, height: 1024 },
-  'landscape-4-5': { width: 1280, height: 1024 },
-  landscape45: { width: 1280, height: 1024 },
-};
+// 预设表收口到 packages/model（单一真源）：client 整形与 capability 解析共用一份，
+// 避免「这里加了 4K、那里没加」的两份表漂移。新增 2K/4K 档见该文件的注释。
+const IMAGE_SIZE_PRESETS: Record<string, { width: number; height: number }> = IMAGE_SIZE_PRESETS_SRC;
 
 export function resolveImageSize(value: unknown): { size?: string; width?: number; height?: number } {
   const raw = String(value || '').trim().toLowerCase();

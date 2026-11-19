@@ -23,13 +23,18 @@ export const GPT_IMAGE_PROFILE: ModelProfile = {
   sizes: ['auto', '1024x1024', '1024x1536', '1536x1024'],
   supportsSize: true, supportsCount: true, supportsQuality: true, supportsMask: true, maxImagesPerRequest: 16,
 };
-/** DALL·E 3：不支持 n>1、不支持改图。 */
+/**
+ * DALL·E 3（**已于 2026-05-12 被 OpenAI 退役**；DALL·E 2 同日退役，gpt-image-1 于 2026-10-23 关停）。
+ * 保留档案而不是删掉：不少中转仍在代理这些模型名，参数形态（n=1、quality=standard/hd）
+ * 一旦丢掉反而会发错。isRetiredImageModel() 供面板/诊断提示「该模型已退役」。
+ */
 export const DALLE3_PROFILE: ModelProfile = {
   operations: ['image.generate'],
   sizes: ['1024x1024', '1024x1792', '1792x1024'],
   supportsSize: true, supportsCount: false, supportsQuality: true, supportsMask: false, maxImagesPerRequest: 1,
 };
 /** DALL·E 2：支持改图 + mask + n，尺寸只有三档正方形。 */
+/** DALL·E 2（同日退役）。保留原因同上。 */
 export const DALLE2_PROFILE: ModelProfile = {
   operations: ['image.generate', 'image.edit'],
   sizes: ['256x256', '512x512', '1024x1024'],
