@@ -88,7 +88,7 @@ export interface ComfyUiProfile {
 export interface ComfyUiNodeConfig { profiles: ComfyUiProfile[]; pollTimeoutMs: number; pollIntervalMs: number; maxBatchSize: number; maxConcurrent: number; maxQueue: number; queueTimeoutMs: number }
 export interface ComfyUiTransformConfig { enabled: boolean; nodeIndex: number; model: string; timeoutMs: number; maxTokens: number; promptTemplate: string; /** 用途级备用绑定（方案 6-P2）：model 空串/缺键 = 无备用。 */ fallbackNodeIndex?: number; fallbackModel?: string }
 
-export interface ApiNode { name: string; baseUrl: string; key: string; enabled: boolean; models: string[]; modelsFetchedAt: string; provider?: string; kind?: 'llm' | 'comfyui'; comfyui?: ComfyUiNodeConfig; headers?: Record<string, string>; concurrency: number }
+export interface ApiNode { name: string; baseUrl: string; /** 推理基址（可选）：目录与推理分离的网关用，例如 fal 目录 https://fal.ai/api、推理 https://fal.run。空 = 与 baseUrl 相同。 */ inferenceBaseUrl?: string; key: string; enabled: boolean; models: string[]; modelsFetchedAt: string; provider?: string; kind?: 'llm' | 'comfyui'; comfyui?: ComfyUiNodeConfig; headers?: Record<string, string>; concurrency: number }
 /** 用户覆盖模型能力(配置层):把模型名/正则映射到自定义 operations,用于补 vision 等能力。 */
 export interface ConfigCapabilityOverride { model: string; operations?: string[] }
 export interface PromptTemplate { id: string; title: string; prompt: string }
@@ -1108,7 +1108,7 @@ function normComfyui(v: unknown, warnings: string[]): ComfyUiNodeConfig | undefi
   };
 }
 
-function normNodes(v: unknown, warnings: string[]): ApiNode[] { const src = Array.isArray(v) ? v : DEFAULT_CONFIG.llm.apiKeys; const out = src.filter(isObj).map((n, i) => { const credentials = normalizeApiNodeCredentials(str(n.baseUrl, ''), str(n.key, '')); const kind: 'llm' | 'comfyui' = n.kind === 'comfyui' ? 'comfyui' : 'llm'; return { name: str(n.name, `节点 ${i + 1}`, false), provider: str(n.provider, '', false).trim(), kind, comfyui: kind === 'comfyui' ? normComfyui(n.comfyui, warnings) : undefined, baseUrl: credentials.baseUrl, key: credentials.key, enabled: bool(n.enabled, true), models: list(n.models), modelsFetchedAt: str(n.modelsFetchedAt, ''), headers: normHeaders(n.headers), concurrency: clamp(n.concurrency, 0, 0, 256, true) }; }); if (!out.length) { warnings.push('llm.apiKeys 为空或格式错误，已补入默认节点。'); return clone(DEFAULT_CONFIG.llm.apiKeys); } return out; }
+function normNodes(v: unknown, warnings: string[]): ApiNode[] { const src = Array.isArray(v) ? v : DEFAULT_CONFIG.llm.apiKeys; const out = src.filter(isObj).map((n, i) => { const credentials = normalizeApiNodeCredentials(str(n.baseUrl, ''), str(n.key, '')); const kind: 'llm' | 'comfyui' = n.kind === 'comfyui' ? 'comfyui' : 'llm'; return { name: str(n.name, `节点 ${i + 1}`, false), provider: str(n.provider, '', false).trim(), kind, comfyui: kind === 'comfyui' ? normComfyui(n.comfyui, warnings) : undefined, baseUrl: credentials.baseUrl, key: credentials.key, enabled: bool(n.enabled, true), models: list(n.models), modelsFetchedAt: str(n.modelsFetchedAt, ''), inferenceBaseUrl: str(n.inferenceBaseUrl, '', false).trim(), headers: normHeaders(n.headers), concurrency: clamp(n.concurrency, 0, 0, 256, true) }; }); if (!out.length) { warnings.push('llm.apiKeys 为空或格式错误，已补入默认节点。'); return clone(DEFAULT_CONFIG.llm.apiKeys); } return out; }
 /**
  * 旧配置把并发限制按「节点 + 模型」逐条存。实际运维里没人真按模型限流——
  * 上游的并发额度是按 key（也就是节点）发的，按模型拆只会让一张表摊出几十行还谁都不敢填。

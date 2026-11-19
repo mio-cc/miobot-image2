@@ -68,6 +68,9 @@ export class ModelCapabilityHandler implements CapabilityHandler {
     } else {
       const args = invocation.step.args || {};
       if (this.kind === 'image.edit') input.images = mergeImageUrls(input.images || [], args.imageUrl);
+      // 视频同样要接受显式参考图（2026-11-19 实测 fal 的 *reference-to-video 必须有参考图，
+      // 只给 prompt 会 422「At least one reference image...」）。历史图片 URL 也走这条。
+      if (this.kind === 'video.generate') input.images = mergeImageUrls(input.images || [], args.imageUrl);
       if (this.kind === 'image.edit' && !(input.images?.length)) {
         return {
           jobId: invocation.plan.planId,

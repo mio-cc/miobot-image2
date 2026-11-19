@@ -28,13 +28,50 @@ function falHeaders(node: ModelNode): Record<string, string> {
 }
 
 /**
- * fal 的模型 id 就是路径。baseUrl 既可以是 https://fal.run，也可以是代理前缀
- * （例如 https://fal.ai/api）——两种情况都只是把 id 拼在后面。
+ * 推理基址。
+ *
+ * 实测 2026-11-19：
+ *   - 目录：GET https://fal.ai/api/models  → 200，返回 { items:[{ id, modelUrl, ... }] }
+ *   - 推理：POST https://fal.run/{model_id} → 200，Authorization: Key <key>
+ * 两者是**不同主机**。把推理请求发到目录主机只会拿到 Next.js 的 404 HTML——
+ * 这正是「生图 1.5 秒失败、看起来像超时」的原因。
+ *
+ * 解析优先级：
+ *   1. node.inferenceBaseUrl（显式配置，任何代理都适用）
+ *   2. 目录主机 fal.ai → 换成 fal.run（fal 官方架构就是这样）
+ *   3. node.baseUrl 原样（已经是 fal.run 或自建代理）
  */
+function inferenceBase(node: ModelNode): string {
+  const explicit = String((node as { inferenceBaseUrl?: string }).inferenceBaseUrl || '').trim();
+  if (explicit) return explicit;
+  const base = String(node.baseUrl || '').trim();
+  try {
+    const url = new URL(base);
+    if (/(^|\.)fal\.ai$/i.test(url.hostname)) {
+      // 目录的 /api 前缀不带进推理路径。
+      return url.protocol + '//fal.run';
+    }
+  } catch {
+    // baseUrl 不是合法 URL → 交给下面原样使用，由上游报错。
+  }
+  return base;
+}
+
+/** fal 的模型 id 就是路径。 */
 function modelUrl(node: ModelNode, model: string): string {
   const id = String(model || '').trim().replace(/^\/+/, '');
   if (!id) throw new ModelError('fal: 模型 id 为空', { category: 'validation', retryable: false, code: 'missing_model' });
-  return joinUrl(node.baseUrl, '/' + id.split('/').map(encodeURIComponent).join('/'));
+  return joinUrl(inferenceBase(node), '/' + id.split('/').map(encodeURIComponent).join('/'));
+}
+
+/**
+ * 参考图字段名。fal 的不同模型族用的键不一样（实测）：
+ *   - 改图 / 多数图生图：image_urls（数组）
+ *   - *reference-to-video / *reference-to-image：reference_image_urls（数组）
+ * 发错键会得到「At least one reference image ... must be provided」的 422。
+ */
+function imageUrlsField(model: string): string {
+  return /reference[-_]to[-_](?:video|image)/i.test(String(model || '')) ? 'reference_image_urls' : 'image_urls';
 }
 
 function pickImages(data: unknown): ImageArtifact[] {
@@ -150,8 +187,8 @@ export const falDialect: Dialect = {
     const images = req.images.map((item) => String(item || '').trim()).filter(Boolean);
     const body: Record<string, unknown> = {
       prompt: req.prompt,
-      ...(images.length ? { image_url: images[0] } : {}),
-      ...(images.length > 1 ? { image_urls: images } : {}),
+      // 实测 openai/gpt-image-2/edit：必须 image_urls（数组），单发 image_url 会 422。
+      ...(images.length ? { [imageUrlsField(req.model)]: images } : {}),
       num_images: 1,
     };
     if (req.size && /^\d{2,4}x\d{2,4}$/.test(req.size)) {
@@ -166,7 +203,7 @@ export const falDialect: Dialect = {
   buildVideoGeneration(node: ModelNode, req: VideoGenerationRequest): RequestPlan {
     const body: Record<string, unknown> = { prompt: req.prompt };
     if (req.duration !== undefined) body.duration = req.duration;
-    if (req.imageUrl) body.image_url = req.imageUrl;
+    if (req.imageUrl) body[imageUrlsField(req.model)] = [req.imageUrl];
     return { method: 'POST', url: modelUrl(node, req.model), headers: falHeaders(node), body };
   },
   parseVideo(data: unknown): VideoResult {

@@ -160,6 +160,12 @@ onBeforeUnmount(() => {
               <input v-model="node.baseUrl" class="input-field font-mono text-xs" placeholder="https://api.example.com/v1" />
             </FormField>
 
+              <FormField
+                label="推理 Base URL（可选）"
+                hint="目录与推理分离的网关才需要填：例如 fal 目录是 https://fal.ai/api、推理是 https://fal.run。留空 = 与上面的 Base URL 相同"
+              >
+                <input v-model="node.inferenceBaseUrl" class="input-field font-mono text-xs" placeholder="https://fal.run" />
+              </FormField>
             <FormField label="API Key" :hint="node.hasKey ? '已保存密钥；要更换请直接输入新值（面板上的打码值不会被保存覆盖）' : '尚未设置密钥'">
               <input v-model="node.key" type="password" class="input-field font-mono text-xs" placeholder="sk-…" />
             </FormField>
