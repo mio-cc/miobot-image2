@@ -5,7 +5,7 @@ import type { ModelParamContract } from './capability/contract.js';
 import { contractFromProfile, describeShapedParams } from './capability/shape-request.js';
 import { inferProfileByName } from './capability/profiles.js';
 import { shapeEditRequest, shapeGenerationRequest, type ShapeProfileHints } from './capability/shape-request-apply.js';
-import { applyFix, applyLearned, diagnose, healingKey, rememberFix } from './capability/healing.js';
+import { applyFix, applyLearned, diagnose, healingKey, rememberFix, type HealingFix } from './capability/healing.js';
 import { imageEditTransportsFor } from './capability/params.js';
 import { NodeConcurrencyGate } from './gate.js';
 import { buildMultipartImageEdit, resolveImageBytes } from './dialects/multipart.js';
@@ -419,6 +419,18 @@ export class ModelClient {
     return request;
   }
 
+  /**
+   * 契约里某参数的合法取值（自愈 snap 用）。
+   * 返回 undefined 表示契约没这个参数 → 自愈退回 drop。
+   */
+  private contractCandidates(model: string, node: ModelNode | undefined, param: string): string[] | undefined {
+    const contract = this.resolveContract(model, node);
+    if (!contract) return undefined;
+    const spec = contract.params[param] || contract.params[param.toLowerCase()];
+    const values = spec?.enum?.filter((value) => value !== 'auto');
+    return values && values.length ? values : undefined;
+  }
+
   /** 取契约；没注入或取不到返回 undefined（调用方走保守模式）。 */
   /**
    * 取参数契约。三级：
@@ -517,11 +529,22 @@ export class ModelClient {
         const response = await this.gated(nodeIndex, () => this.transport({ ...plan, body, timeoutMs: resolvedTimeout, ...(signal ? { signal } : {}) }));
         if (response.status >= 400) {
           // 参数问题：剔除或按上游提示改名后重试，并记住结论，之后不再犯同样的错。
-          const fix = plan.multipart ? undefined : diagnose(response.status, response.data, body);
+          // 2026-11-19：multipart 也参与自愈了。以前 FormData 一律跳过，
+          // gpt-image 的 multipart 端点拒 quality/size 时只能失败。
+          // 做法：把 FormData 里的字符串字段拍平成对象交给 diagnose，再按 fix 重建 FormData。
+          const flattened = plan.multipart ? formDataToRecord(body) : undefined;
+          const fixBody = plan.multipart ? flattened : body;
+          const fix = fixBody && typeof fixBody === 'object'
+            ? diagnose(response.status, response.data, fixBody, {
+                candidatesFor: (param) => this.contractCandidates(model, node, param),
+              })
+            : undefined;
           if (fix && healed < MAX_PARAM_HEALING_ATTEMPTS) {
             healed += 1;
             rememberFix(healKey, fix);
-            body = applyFix(body, fix);
+            body = plan.multipart
+              ? applyFixToFormData(body, fix)
+              : applyFix(body, fix);
             this.logger?.warn?.('model param healing', {
               op, model, nodeIndex,
               action: fix.action,
@@ -754,4 +777,37 @@ export function explainImageRequest(input: {
     conservative: shaped.conservative,
     dropped: shaped.dropped,
   };
+}
+
+
+/**
+ * FormData → 普通对象，只保留字符串字段（文件字段不参与参数自愈）。
+ * 用途：让 multipart 请求也能走 diagnose()，而不是整条路被跳过。
+ */
+export function formDataToRecord(body: unknown): Record<string, unknown> | undefined {
+  if (typeof FormData === 'undefined' || !(body instanceof FormData)) return undefined;
+  const record: Record<string, unknown> = {};
+  for (const [key, value] of body.entries()) {
+    if (typeof value === 'string') record[key] = value;
+  }
+  return record;
+}
+
+/**
+ * 按 fix 重建 FormData：drop/rename/snap 都只作用于字符串字段，文件字段原样保留。
+ * 顺序也保留（multipart 的字段顺序对部分上游有意义）。
+ */
+export function applyFixToFormData(body: unknown, fix: HealingFix): unknown {
+  if (typeof FormData === 'undefined' || !(body instanceof FormData)) return body;
+  const next = new FormData();
+  for (const [key, value] of body.entries()) {
+    if (typeof value === 'string' && key === fix.param) {
+      if (fix.action === 'rename') next.append(fix.to, value);
+      else if (fix.action === 'snap') next.append(key, fix.to);
+      // drop：不追加
+      continue;
+    }
+    next.append(key, value as string | Blob);
+  }
+  return next;
 }

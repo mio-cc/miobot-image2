@@ -81,13 +81,13 @@ function aspectOfSizeString(value: string): number | undefined {
  * 用无方向比例会打平，然后按数组顺序选中横版——用户要竖图却给了横图（实测踩到）。
  * 这里用 w/h 的带符号比例：竖图 0.75、横图 1.5，方向不同自然区分开。
  */
-function signedAspect(width: number, height: number): number | undefined {
+export function signedAspect(width: number, height: number): number | undefined {
   if (!width || !height) return undefined;
   return width / height;
 }
 
 /** 枚举名 → 带方向比例（portrait_4_3 → 4/3 取倒数 = 0.75；landscape_16_9 → 1.78；square → 1）。 */
-function aspectOfSizeName(name: string): number | undefined {
+export function aspectOfSizeName(name: string): number | undefined {
   const lowered = String(name || '').toLowerCase();
   if (/square/.test(lowered)) return 1;
   const ratio = lowered.match(/(\d+)[_x](\d+)/);

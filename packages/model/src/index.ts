@@ -6,9 +6,21 @@ export * from './capability/params.js';
 export * from './capability/size.js';
 export * from './capability/contract.js';
 export * from './capability/contract-extract.js';
+export * from './capability/contract-extract-error.js';
 export * from './capability/shape-request.js';
 export * from './capability/shape-request-apply.js';
-export { describeLearned, healingKey, resetLearned } from './capability/healing.js';
+export {
+  applyFix,
+  applyLearned,
+  describeLearned,
+  diagnose,
+  healingKey,
+  pickCandidate,
+  rememberFix,
+  resetLearned,
+  type DiagnoseOptions,
+  type HealingFix,
+} from './capability/healing.js';
 export * from './dialects/shared.js';
 export { openAiDialect } from './dialects/openai.js';
 export { anthropicDialect } from './dialects/anthropic.js';
