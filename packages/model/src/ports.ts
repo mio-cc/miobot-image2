@@ -46,6 +46,11 @@ export interface ModelNode {
    * 缺省时各方言回退到 baseUrl。
    */
   inferenceBaseUrl?: string;
+  /**
+   * 每个模型的推理 URL（由模型目录返回，例如 fal 的 modelUrl）。
+   * 有值时优先于「baseUrl + 模型 id」的拼接——网关自己说往哪发，就不需要维护主机映射。
+   */
+  modelInvocationUrls?: Record<string, string>;
   enabled?: boolean;
   /** 该节点同时在飞的请求上限；0/缺省 = 不限制。 */
   concurrency?: number;

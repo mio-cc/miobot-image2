@@ -25,10 +25,14 @@ function joinUrl(base: string, path: string): string {
 }
 
 /** 从 /models 响应里抽取模型 id(兼容 {data:[{id}]} / {models:[...]} / 字符串数组)。 */
-export function extractModelIds(data: unknown): string[] {
-  // new-api / one-api 一类网关会在外面再包一层业务信封：
-  //   { code: 0, msg: 'ok', data: { object: 'list', data: [...] } }
-  // 只认最外层的话会静默拿到 0 个模型，界面还显示成功。
+/**
+ * 从模型列表响应里取出原始条目数组。
+ *
+ * new-api / one-api 一类网关会在外面再包一层业务信封：
+ *   { code: 0, msg: 'ok', data: { object: 'list', data: [...] } }
+ * 只认最外层的话会静默拿到 0 个模型，界面还显示成功。
+ */
+export function extractModelItems(data: unknown): any[] {
   const unwrap = (value: unknown, depth = 0): any[] => {
     if (Array.isArray(value)) return value;
     if (!value || typeof value !== 'object' || depth > 2) return [];
@@ -39,11 +43,40 @@ export function extractModelIds(data: unknown): string[] {
     }
     return [];
   };
-  const ids = unwrap(data)
+  return unwrap(data);
+}
+
+export function extractModelIds(data: unknown): string[] {
+  const ids = extractModelItems(data)
     .map((item) => typeof item === 'string' ? item : String(item?.id || item?.model || item?.name || ''))
     .map((s) => s.trim())
     .filter(Boolean);
   return Array.from(new Set(ids)).sort();
+}
+
+/**
+ * 从模型列表里取出「每个模型该往哪发」——目录自己给出的推理 URL。
+ *
+ * 为什么需要它（实测 2026-11-19）：fal 的目录在 https://fal.ai/api，推理在 https://fal.run，
+ * 两台主机。而目录响应里本来就写了答案：
+ *   { "id": "openai/gpt-image-2.6/sunburst/text-to-image",
+ *     "modelUrl": "https://fal.run/openai/gpt-image-2.6/sunburst/text-to-image" }
+ * 读它就不用维护任何主机映射规则：网关说往哪发就往哪发，换网关/换域名都不用改代码。
+ *
+ * 只收绝对 http(s) 地址；相对路径/模板串一律忽略，交给方言自己拼。
+ */
+export function extractModelInvocationUrls(data: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const item of extractModelItems(data)) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, any>;
+    const id = String(record.id || record.model || record.name || '').trim();
+    if (!id) continue;
+    const candidate = String(record.modelUrl || record.invocationUrl || record.invokeUrl || record.endpoint || '').trim();
+    if (!/^https?:\/\//i.test(candidate)) continue;
+    out[id] = candidate;
+  }
+  return out;
 }
 
 function inferDialect(node: Record<string, unknown>): ProviderDialect {
@@ -182,7 +215,12 @@ export function createAdminDeps(getConfig: () => AppConfig, saveConfig: SaveConf
           normalized: { baseUrl, keyDetected: Boolean(key) },
         });
       }
-      return ok({ success: true, models, normalized: { baseUrl, keyDetected: Boolean(key) } });
+      return ok({
+        success: true,
+        models,
+        invocationUrls: extractModelInvocationUrls(data),
+        normalized: { baseUrl, keyDetected: Boolean(key) },
+      });
     } catch (e) {
       return fail(502, errMsg(e));
     }

@@ -246,7 +246,16 @@ async function fetchModels(idx: number) {
         const removed = previous.filter((m: string) => !fetched.includes(m));
         node.models = fetched;
         node.modelsFetchedAt = new Date().toISOString();
+        // 目录返回的「每个模型该往哪发」（如 fal 的 modelUrl）一并存进节点：
+        // 兜底 URL 拼接在这些网关上是错的，实测 2026-11-19 fal 目录与推理是两台主机。
+        // 只保留仍在列表里的条目，避免历史残留把推理打到已下架的地址。
+        const invocationUrls = (res.data?.invocationUrls || {}) as Record<string, string>;
+        const known = Object.fromEntries(Object.entries(invocationUrls).filter(([model]) => fetched.includes(model)));
+        if (Object.keys(known).length) node.modelsInvocationUrls = known;
+        else delete node.modelsInvocationUrls;
+        const knownCount = Object.keys(known).length;
         const parts = [`新增 ${added.length}`, `消失 ${removed.length}`, `未变 ${fetched.length - added.length}`];
+        if (knownCount) parts.push(`目录推理 URL ${knownCount}`);
         fetchSummaries.value = { ...fetchSummaries.value, [idx]: `拉取成功 · ${parts.join(' · ')} · 耗时 ${((Date.now() - startedAt) / 1000).toFixed(1)}s` };
         fetchErrors.value = { ...fetchErrors.value, [idx]: '' };
         capabilityStore.refresh();

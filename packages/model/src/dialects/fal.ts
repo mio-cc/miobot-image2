@@ -57,10 +57,19 @@ function inferenceBase(node: ModelNode): string {
   return base;
 }
 
-/** fal 的模型 id 就是路径。 */
+/**
+ * 推理 URL 解析。
+ *
+ * 优先级：
+ *   1. 模型目录返回的 modelUrl（node.modelInvocationUrls）——网关自己说往哪发，
+ *      换网关/换域名/目录与推理再分家都不需要改代码，也不必维护主机映射规则；
+ *   2. baseUrl/inferenceBaseUrl + 模型 id（自建代理、目录不提供 URL 时）。
+ */
 function modelUrl(node: ModelNode, model: string): string {
   const id = String(model || '').trim().replace(/^\/+/, '');
   if (!id) throw new ModelError('fal: 模型 id 为空', { category: 'validation', retryable: false, code: 'missing_model' });
+  const fromCatalog = String(node.modelInvocationUrls?.[model] || node.modelInvocationUrls?.[id] || '').trim();
+  if (/^https?:\/\//i.test(fromCatalog)) return fromCatalog;
   return joinUrl(inferenceBase(node), '/' + id.split('/').map(encodeURIComponent).join('/'));
 }
 
