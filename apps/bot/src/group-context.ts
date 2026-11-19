@@ -200,9 +200,14 @@ export function buildGroupContext(params: BuildGroupContextParams): GroupContext
  * 失败/超时返回空 context，不抛错。messageIds 随行返回，供 runtime 做跨通道互斥。
  */
 export async function fetchGroupContext(params: {
-  fetchHistory: (groupId: number | string, anchorMessageId: number | string, count: number) => Promise<NapcatHistoryMessage[]>;
+  fetchHistory: (groupId: number | string, anchorMessageId: number | string | undefined, count: number) => Promise<NapcatHistoryMessage[]>;
   groupId: number | string;
-  anchorMessageId: number | string;
+  /**
+   * 锚点消息 id。可省略：续跑轮次没有「当前触发消息」，此时按群最近历史取即可。
+   * 早期实现用空串占位，napcat 会直接回 retcode=1400「message_id: expected an integer」，
+   * 整段群上下文静默丢失（线上时测 2026-11-19）。
+   */
+  anchorMessageId?: number | string;
   selfId?: number | string;
   options: GroupContextOptions;
   /** 审核被拒剥离（方案 1）：见 buildGroupContext。 */
@@ -215,7 +220,7 @@ export async function fetchGroupContext(params: {
     const fetchCount = options.messageCount + 8;
     const messages = await fetchHistory(groupId, anchorMessageId, fetchCount);
     if (!Array.isArray(messages) || !messages.length) return { context: '', messageIds: [] };
-    return buildGroupContext({ messages, anchorMessageId, selfId, options, ...(params.isRejected ? { isRejected: params.isRejected } : {}), ...(params.placeholder ? { placeholder: params.placeholder } : {}) });
+    return buildGroupContext({ messages, ...(anchorMessageId !== undefined ? { anchorMessageId } : {}), selfId, options, ...(params.isRejected ? { isRejected: params.isRejected } : {}), ...(params.placeholder ? { placeholder: params.placeholder } : {}) });
   } catch {
     // 拉取失败不阻塞回复
     return { context: '', messageIds: [] };

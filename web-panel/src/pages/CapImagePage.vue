@@ -291,6 +291,9 @@ onMounted(loadComfyWorkflows);
           <FormField label="重试间隔 (ms)"><UiNumberField v-model="config.llm.imageRetryDelayMs" :min="0" :step="500" /></FormField>
           <div class="md:col-span-2 flex items-end"><ToggleField v-model="config.llm.safeRewriteOnFailure" label="失败后合规改写重试" hint="被内容策略拒了就让模型换个说法再试一次" /></div>
         </div>
+        <div class="mt-4">
+          <PromptRegistryLink prompt-id="image.prompt" config-path="llm.imagePromptTemplate" label="LLM 生图提示词（与 ComfyUI 分开）" />
+        </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 pt-4 border-t border-[color:var(--hairline-2)]">
           <FormField label="图片反推模型" hint="只影响 Bot 的反推命令；画布反推库在下方画布分区">
             <ModelBindingMirror :node-index="Number(config.llm.interrogateNodeIndex) || 0" :model="config.llm.interrogateModel || ''" purpose="图片反推" />

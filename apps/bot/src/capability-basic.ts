@@ -134,14 +134,89 @@ export class PromptCapabilityHandler implements CapabilityHandler {
   }
 }
 
+/**
+ * 提示词注册表：把「生图链路上真正生效的每一段提示词」摊开给主脑看。
+ *
+ * 线上时测 2026-11-19：用户问「LLM 生图的提示词是什么」，而 template.list 只列了
+ * bot.promptTemplates（用户本地模板库），完全看不出 LLM 生图与 ComfyUI 各自用哪段模板、
+ * 当前开没开。于是只能靠猜。这里补全成分阶段清单，并显式标注适用管线。
+ */
+export interface PromptStageEntry {
+  stage: string;
+  scope: string;
+  configPath: string;
+  template: string;
+  enabled: boolean;
+}
+
+export function collectPromptStages(cfg: AppConfig): PromptStageEntry[] {
+  const llm = cfg.llm as AppConfig['llm'] & { imagePromptTemplate?: string };
+  const pick = (value: unknown) => String(value || '').trim();
+  return [
+    {
+      stage: 'LLM 生图提示词',
+      scope: '仅 LLM 生图（kind=llm 节点，走 OpenAI 兼容图片接口）',
+      configPath: 'llm.imagePromptTemplate',
+      template: pick(llm.imagePromptTemplate),
+      enabled: Boolean(pick(llm.imagePromptTemplate)),
+    },
+    {
+      stage: 'ComfyUI 提示词增强',
+      scope: '仅 ComfyUI 节点（kind=comfyui，走工作流 profiles）',
+      configPath: 'comfyuiTransform.promptTemplate',
+      template: pick(cfg.comfyuiTransform?.promptTemplate),
+      enabled: cfg.comfyuiTransform?.enabled !== false && Boolean(pick(cfg.comfyuiTransform?.promptTemplate)),
+    },
+    {
+      stage: '提示词润色',
+      scope: '两种生图共用（生图前的模型改写）',
+      configPath: 'llm.enhancePromptTemplate',
+      template: pick(llm.enhancePromptTemplate),
+      enabled: llm.enhanceEnabled === true && Boolean(pick(llm.enhanceModel)),
+    },
+    {
+      stage: '安全改写',
+      scope: '生图失败后的合规重试',
+      configPath: 'llm.safeRewritePromptTemplate',
+      template: pick(llm.safeRewritePromptTemplate),
+      enabled: llm.safeRewriteOnFailure === true && Boolean(pick(llm.enhanceModel)),
+    },
+    {
+      stage: '图片反推',
+      scope: '图片 → 提示词',
+      configPath: 'llm.interrogatePromptTemplate',
+      template: pick(llm.interrogatePromptTemplate),
+      enabled: Boolean(pick(llm.interrogatePromptTemplate)),
+    },
+    {
+      stage: 'TTS 前置处理',
+      scope: '回复转语音前的文本改写',
+      configPath: 'bot.tts.preprocess.promptTemplate',
+      template: pick(cfg.bot.tts?.preprocess?.promptTemplate),
+      enabled: cfg.bot.tts?.preprocess?.enabled === true,
+    },
+  ];
+}
+
 export class TemplateListCapabilityHandler implements CapabilityHandler {
   constructor(private readonly getConfig: () => AppConfig) {}
   async execute(invocation: CapabilityInvocation): Promise<ExecutionResult> {
-    const templates = this.getConfig().bot.promptTemplates || [];
-    const text = templates.length
-      ? ['本地提示词模板：', ...templates.map((item) => `- ${item.id}: ${item.title}`)].join('\n')
-      : '本地模板库为空。';
-    return baseResult(invocation, [{ kind: 'text', text, priority: 10, mergeable: true }]);
+    const cfg = this.getConfig();
+    const templates = cfg.bot.promptTemplates || [];
+    const lines: string[] = [];
+    lines.push('提示词阶段（生图相关）：');
+    for (const entry of collectPromptStages(cfg)) {
+      const state = entry.enabled ? '生效' : '未启用';
+      const body = entry.template
+        ? entry.template.replace(/\s+/g, ' ').slice(0, 120) + (entry.template.length > 120 ? '…' : '')
+        : '（未配置：直传用户原文）';
+      lines.push('- ' + entry.stage + ' [' + state + '] ' + entry.scope);
+      lines.push('  配置项 ' + entry.configPath + ' → ' + body);
+    }
+    lines.push('');
+    lines.push(templates.length ? '本地提示词模板库（按 id 套用，可选）：' : '本地提示词模板库：空。');
+    for (const item of templates) lines.push('- ' + item.id + ': ' + item.title);
+    return baseResult(invocation, [{ kind: 'text', text: lines.join('\n'), priority: 10, mergeable: true }]);
   }
 }
 

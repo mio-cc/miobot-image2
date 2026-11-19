@@ -23,6 +23,10 @@ export const PROMPT_REGISTRY: readonly PromptEntry[] = [
   { id: 'trigger.continue', title: '续话判定', description: 'autoContinue 窗口内判断是否延续对话（addressee 判定：用户可能在与群里其他人交流）', configPath: 'bot.autoContinue.continueIntentPromptTemplate', category: 'input', hotReload: 'next_turn', variables: '{{focusNote}} {{groupContext}} {{botLastReply}} {{userText}} {{userName}}' },
   // ── 生成侧 ──
   { id: 'suno.composer', title: 'Suno 作曲', description: '歌词与参数规划（含歌名原创最高优先级 override）', configPath: 'orchestration.suno.composerPromptTemplate', category: 'generation', hotReload: 'next_turn', variables: '{{userText}} {{supplied}} {{schema}} {{model}} {{defaultVocalGender}} {{defaultLanguage}}' },
+  // LLM 生图专用模板（2026-11-19 补）：与 ComfyUI 的 comfyui.transform 是两条独立管线——
+  // LLM 节点走 OpenAI 兼容图片接口，局部渲染本模板；ComfyUI 节点走 workflow 参数转化。
+  // 之前注册表里只有「润色」，用户无法知道/编辑 LLM 生图实际用的提示词。
+  { id: 'image.prompt', title: 'LLM 生图提示词', description: 'LLM 生图（kind=llm 节点）专用的局部提示词模板；留空 = 直传用户原文。与 ComfyUI 参数转化互不影响', configPath: 'llm.imagePromptTemplate', category: 'generation', hotReload: 'next_turn', variables: '{{prompt}} {{rawPrompt}}' },
   { id: 'image.enhance', title: '提示词润色', description: '用户原始提示词 → 图像生成结构化提示词', configPath: 'llm.enhancePromptTemplate', category: 'generation', hotReload: 'next_turn', variables: '{{rawPrompt}}' },
   { id: 'image.safeRewrite', title: '合规改写', description: '提示词合规改写（保留原始语言）', configPath: 'llm.safeRewritePromptTemplate', category: 'generation', hotReload: 'next_turn', variables: '{{rawPrompt}}' },
   { id: 'image.interrogate', title: '图片反推', description: '图片 → 生成提示词描述', configPath: 'llm.interrogatePromptTemplate', category: 'generation', hotReload: 'next_turn', variables: '(图片输入)' },

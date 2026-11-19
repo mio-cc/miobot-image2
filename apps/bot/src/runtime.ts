@@ -91,7 +91,7 @@ export interface BotRuntimeOptions {
   /** 可选:转发内容入记忆的展开超时上限(毫秒);默认 15s,测试注入用,生产不必配置。 */
   forwardMemoryExpandTimeoutMs?: number;
   /** 可选:拉取群历史消息(@bot 时取最近群聊上下文)。由 start.ts 注入 napcat callAction。 */
-  fetchGroupHistory?: (groupId: number | string, anchorMessageId: number | string, count: number) => Promise<NapcatHistoryMessage[]>;  /** 向量记忆检索；命中时优先于固定条数群历史。 */
+  fetchGroupHistory?: (groupId: number | string, anchorMessageId: number | string | undefined, count: number) => Promise<NapcatHistoryMessage[]>;  /** 向量记忆检索；命中时优先于固定条数群历史。 */
   /** 可选:通用 NapCat action 调用（好友请求处理 set_friend_add_request 等）。由 start.ts 注入。 */
   callNapcatAction?: (action: string, params: Record<string, unknown>) => Promise<unknown>;
   loadMemoryContext?: (input: {

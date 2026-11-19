@@ -1972,7 +1972,11 @@ const memoryService = memoryBackend === 'qdrant'
         const rawContext = await fetchGroupContext({
           fetchHistory: async (groupId, anchorMessageId, count): Promise<NapcatHistoryMessage[]> => {
             try {
-              const resp = await adapter.callAction('get_group_msg_history', { group_id: groupId, message_id: anchorMessageId, count });
+              const params: Record<string, unknown> = { group_id: groupId, count };
+              if (anchorMessageId !== undefined && anchorMessageId !== null && String(anchorMessageId).trim() !== '') {
+                params.message_id = anchorMessageId;
+              }
+              const resp = await adapter.callAction('get_group_msg_history', params);
               const data = (resp?.data ?? {}) as { messages?: NapcatHistoryMessage[] };
               return Array.isArray(data.messages) ? data.messages : [];
             } catch (error) {
@@ -1981,7 +1985,10 @@ const memoryService = memoryBackend === 'qdrant'
             }
           },
           groupId: input.groupId,
-          anchorMessageId: input.anchorMessageId ?? '',
+          // 续跑轮次没有触发消息 → 不传锚点，按群最近历史取（不能拿空串占位）。
+          ...(input.anchorMessageId !== undefined && String(input.anchorMessageId).trim() !== ''
+            ? { anchorMessageId: input.anchorMessageId }
+            : {}),
           selfId: cfg.bot.botQqId || adapter.selfQqId,
           options: ctxOptions,
           isRejected: (msg: NapcatHistoryMessage) => contentRejections.isRejected({ messageId: String(msg.message_id ?? '') })
@@ -2164,7 +2171,13 @@ const memoryService = memoryBackend === 'qdrant'
     },
     fetchGroupHistory: async (groupId, anchorMessageId, count): Promise<NapcatHistoryMessage[]> => {
       try {
-        const resp = await adapter.callAction('get_group_msg_history', { group_id: groupId, message_id: anchorMessageId, count });
+        // 锚点为空时必须整条参数省略：napcat 对 message_id:"" 回 retcode=1400
+        // 「message_id: expected an integer」，群上下文会静默变成空。
+        const params: Record<string, unknown> = { group_id: groupId, count };
+        if (anchorMessageId !== undefined && anchorMessageId !== null && String(anchorMessageId).trim() !== '') {
+          params.message_id = anchorMessageId;
+        }
+        const resp = await adapter.callAction('get_group_msg_history', params);
         const data = (resp?.data ?? {}) as { messages?: NapcatHistoryMessage[] };
         return Array.isArray(data.messages) ? data.messages : [];
       } catch (error) {
@@ -2465,6 +2478,15 @@ const memoryService = memoryBackend === 'qdrant'
     logger.info('agent tool job resume', {
       jobId: job.jobId,
       toolName: job.toolName,
+      // 任务结局必须记下来（线上时测 2026-11-19）：image.generate 在 1.5 秒内失败，
+      // 但日志里只有 jobId 和原始文本，没有任何失败原因，只能靠猜。
+      status: job.status,
+      ...(job.error ? { errorCode: job.error.code } : {}),
+      ...(job.error?.message ? { errorMessage: String(job.error.message).slice(0, 500) } : {}),
+      ...(job.error ? { errorRaw: JSON.stringify(job.error).slice(0, 800) } : {}),
+      ...(job.externalTaskIds?.length ? { externalTaskIds: job.externalTaskIds } : {}),
+      ...(job.probeAttempts ? { probeAttempts: job.probeAttempts } : {}),
+      latencyMs: job.updatedAt && job.createdAt ? Date.parse(job.updatedAt) - Date.parse(job.createdAt) : undefined,
       originalTextLength: originalText.length,
       originalTextPreview: originalText.slice(0, 160),
       availableToolNames,

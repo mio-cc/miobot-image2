@@ -37,8 +37,15 @@ export function createImagePromptPipeline(client: ModelClient, getConfig: () => 
   return {
     async prepare({ prompt, templateId }) {
       const cfg = getConfig();
+      // 阶段 1：本地模板库（用户按 id 指定的，可选）。
       let out = applyTemplateById(prompt, templateId, cfg.bot.promptTemplates) || prompt;
       const llm = cfg.llm;
+      // 阶段 2：LLM 生图专用模板（局部渲染，无模型调用）。
+      // 这条只在「LLM 生图」路径生效——ComfyUI 分支在 deps.generateImages 里提前 return，
+      // 走的是 comfyuiTransform.promptTemplate，两者互不影响（线上时测 2026-11-19 澄清）。
+      const imageStage = String((llm as { imagePromptTemplate?: string }).imagePromptTemplate || '').trim();
+      if (imageStage) out = renderPromptTemplate(imageStage, { prompt: out, rawPrompt: out }) || out;
+      // 阶段 3：可选的模型润色。
       if (llm.enhanceEnabled && String(llm.enhanceModel || '').trim()) {
         try {
           out = await enhanceCall(out, llm.enhancePromptTemplate);
@@ -61,6 +68,29 @@ export function createImagePromptPipeline(client: ModelClient, getConfig: () => 
   };
 }
 
+/**
+ * 把润色/改写模型的输出规整成「可以直接送进生图接口的提示词」。
+ *
+ * 线上时测 2026-11-19：润色模板要求模型「只输出 JSON {prompt, negative_prompt, summary}」，
+ * 而这里原来只去掉代码围栏——整段 JSON 被当成 prompt 发给上游。现在优先取 JSON 的
+ * prompt 字段；不是 JSON（老模板要求纯文本）就原样用。
+ */
 function cleanupModelText(value: string): string {
-  return String(value || '').trim().replace(/^```(?:json|text)?/i, '').replace(/```$/i, '').trim();
+  const text = String(value || '').trim().replace(/^```(?:json|text)?/i, '').replace(/```$/i, '').trim();
+  if (!text) return '';
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try {
+      const parsed = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>;
+      const prompt = typeof parsed.prompt === 'string' ? parsed.prompt.trim() : '';
+      if (prompt) {
+        const negative = typeof parsed.negative_prompt === 'string' ? parsed.negative_prompt.trim() : '';
+        return negative ? prompt + '\n\n(negative: ' + negative + ')' : prompt;
+      }
+    } catch {
+      // 不是合法 JSON → 按纯文本处理（老模板的正常输出）。
+    }
+  }
+  return text;
 }

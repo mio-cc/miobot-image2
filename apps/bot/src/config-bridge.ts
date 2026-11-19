@@ -28,7 +28,7 @@ export interface BotRouting {
   imageEditRequestMode?: 'auto' | 'json-images' | 'json-image' | 'multipart';
 }
 
-const KNOWN_DIALECTS: ProviderDialect[] = ['openai', 'anthropic', 'gemini', 'huggingface', 'custom'];
+const KNOWN_DIALECTS: ProviderDialect[] = ['openai', 'anthropic', 'gemini', 'huggingface', 'custom', 'fal'];
 
 // ── R15/M-1+M-4：多源配置收口（bridge 是唯一读取点）────────────────────────
 // 业务层禁止再写 `a ?? b ?? c` 多源链；凡是有历史双源/多源的字段，统一在

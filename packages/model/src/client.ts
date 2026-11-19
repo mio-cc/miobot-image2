@@ -7,6 +7,7 @@ import { NodeConcurrencyGate } from './gate.js';
 import { buildMultipartImageEdit, resolveImageBytes } from './dialects/multipart.js';
 import { anthropicDialect } from './dialects/anthropic.js';
 import { customDialect } from './dialects/custom.js';
+import { falDialect } from './dialects/fal.js';
 import { geminiDialect } from './dialects/gemini.js';
 import { huggingFaceDialect } from './dialects/huggingface.js';
 import { openAiDialect } from './dialects/openai.js';
@@ -46,6 +47,7 @@ const DIALECTS: Record<ProviderDialect, Dialect> = {
   gemini: geminiDialect,
   huggingface: huggingFaceDialect,
   custom: customDialect,
+  fal: falDialect,
 };
 
 export function dialectFor(node: ModelNode): Dialect {

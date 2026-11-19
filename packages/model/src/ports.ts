@@ -11,7 +11,7 @@ export const MODEL_PACKAGE: PackageDescriptor = { name: '@miobot-v2/model', phas
 export type ModelOperation = 'chat' | 'vision' | 'image.generate' | 'image.edit' | 'interrogate' | 'video.generate';
 
 /** 节点说话用的协议方言。 */
-export type ProviderDialect = 'openai' | 'anthropic' | 'gemini' | 'huggingface' | 'custom';
+export type ProviderDialect = 'openai' | 'anthropic' | 'gemini' | 'huggingface' | 'custom' | 'fal';
 
 export type HuggingFaceRequestMode = 'openai-chat' | 'router-chat' | 'legacy-inference' | 'provider-task';
 

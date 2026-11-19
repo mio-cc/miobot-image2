@@ -41,6 +41,9 @@ const PROVIDERS = [
     { value: 'gemini', label: 'gemini' },
     { value: 'huggingface', label: 'huggingface' },
     { value: 'custom', label: 'custom' },
+    // fal.ai：URL 是「模型 id 即路径」、鉴权是 Key 前缀、出参是 images[]-
+    // 换成 openai 会把请求打到 /images/generations 并被打回（线上时测 2026-11-19）。
+    { value: 'fal', label: 'fal' },
 ];
 
 const isComfyui = computed(() => props.node?.kind === 'comfyui');
