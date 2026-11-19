@@ -18,7 +18,10 @@ export const COMMON_FEATURE_LIMIT_FIELDS: FeatureLimitField[] = [
   { key: 'groupDailyLimit', label: '群每日上限', min: 0, max: 10000, default: 0, unit: '次（0=不限）' },
   { key: 'maxPromptChars', label: '最大输入字符', min: 0, max: 50000, default: 0, unit: '字符（0=不限）' },
   { key: 'sendDelayMs', label: '发送延迟', min: 0, max: 30000, default: 0, unit: '毫秒' },
-  { key: 'concurrency', label: '并发上限', min: 0, max: 16, default: 0, unit: '0=不限' },
+  { key: 'concurrency', label: '并发上限（全局）', min: 0, max: 16, default: 0, unit: '0=不限' },
+  // 2026-11-19：原来只有全局 featureId 粒度，「每群同时最多 1 个生图」表达不出来。
+  { key: 'concurrencyPerGroup', label: '并发上限（每群）', min: 0, max: 16, default: 0, unit: '0=不限' },
+  { key: 'concurrencyPerUser', label: '并发上限（每用户）', min: 0, max: 16, default: 0, unit: '0=不限' },
 ];
 
 export type FeatureLegacyCommand =

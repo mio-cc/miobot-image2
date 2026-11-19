@@ -25,6 +25,8 @@ export interface AgentConfigV3 {
   maxParallelTools: number;
   /** R15/C-2：全局同时执行的 Agent turn 上限（跨群共享，超出排队；0=不限制）。 */
   maxConcurrentTurns: number;
+  /** 全局 turn 名额排队超时（毫秒，0=无限等）。超时给用户一句可读说明而不是静默丢弃。 */
+  turnQueueTimeoutMs?: number;
   maxTokens: number;
   temperature: number;
   reasoningEffort: string;
@@ -46,6 +48,12 @@ export interface ToolRegistryConfigV3 {
   defaultMaxRetries: number;
   defaultMaxConcurrency: number;
   exposure: Record<string, ToolExposureMode>;
+  /**
+   * 异步工具按「队列类别」限并发（2026-11-19）：image / video / audio / search / file / default。
+   * capability descriptor 里的 queue 字段此前是死字段——声明了却没人消费。
+   * 0/缺省 = 不限制（保持原行为）；想「同时最多跑 2 个生图」就写 { "image": 2 }。
+   */
+  queueConcurrency?: Record<string, number>;
 }
 
 export interface ReplyPolicyConfigV3 {

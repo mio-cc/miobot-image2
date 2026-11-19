@@ -1,5 +1,6 @@
 ﻿import type { AppConfig } from '../../../packages/config/src/index.js';
 import type { FeatureSetting } from '../../../packages/shared/src/features.js';
+import { KeyedConcurrencyGate, QueueGateTimeoutError } from './queue-gate.js';
 
 export interface FeatureGateContext {
   featureId: string;
@@ -25,6 +26,9 @@ function dateKey(now = Date.now()): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/** 并发名额最长等待：超时给用户「当前请求过多」，而不是无限挂住。 */
+const CONCURRENCY_WAIT_MS = 30_000;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -39,7 +43,7 @@ export class FeatureGate {
   private readonly resolveDefaultSetting?: (featureId: string) => FeatureSetting | undefined;
   private readonly cooldowns = new Map<string, number>();
   private readonly daily = new Map<string, number>();
-  private readonly active = new Map<string, number>();
+  private readonly concurrencyGate = new KeyedConcurrencyGate('feature-gate');
 
   constructor(options: { getConfig: () => AppConfig; now?: () => number; resolveDefaultSetting?: (featureId: string) => FeatureSetting | undefined }) {
     this.getConfig = options.getConfig;
@@ -90,14 +94,30 @@ export class FeatureGate {
       if ((this.daily.get(groupKey) || 0) >= groupDaily) throw new FeatureLimitError(featureId, `今天这个功能的使用次数已达本群上限（${groupDaily} 次）。`);
     }
 
-    const maxActive = Math.max(0, Number(limits.concurrency || 0));
-    if (maxActive > 0) {
-      const deadline = now + 30_000;
-      while ((this.active.get(featureId) || 0) >= maxActive) {
-        if (this.now() > deadline) throw new FeatureLimitError(featureId, '当前请求过多，请稍后再试。');
-        await sleep(50);
+    // 三级并发（2026-11-19）：原来只有全局 featureId 一级，
+    // 「每群同时最多 1 个生图」表达不出来。层级从粗到细依次占用，失败按相反顺序回滚。
+    const releases: Release[] = [];
+    const acquireLevel = async (gateKey: string, limit: number) => {
+      const cap = Math.max(0, Number(limit || 0));
+      if (cap <= 0) return;
+      try {
+        releases.push(await this.concurrencyGate.acquire(gateKey, cap, { timeoutMs: CONCURRENCY_WAIT_MS }));
+      } catch (error) {
+        if (error instanceof QueueGateTimeoutError) {
+          throw new FeatureLimitError(featureId, '当前请求过多，请稍后再试。');
+        }
+        throw error;
       }
-      this.active.set(featureId, (this.active.get(featureId) || 0) + 1);
+    };
+    try {
+      await acquireLevel(`feature:${featureId}`, Number(limits.concurrency || 0));
+      if (context.chatType === 'group') {
+        await acquireLevel(`feature:${featureId}:g:${String(context.groupId ?? '')}`, Number(limits.concurrencyPerGroup || 0));
+      }
+      await acquireLevel(`feature:${featureId}:u:${String(context.userId ?? '')}`, Number(limits.concurrencyPerUser || 0));
+    } catch (error) {
+      for (const release of releases.reverse()) release();
+      throw error;
     }
 
     this.cooldowns.set(key, now + cooldownMs);
@@ -110,7 +130,8 @@ export class FeatureGate {
       this.daily.set(groupKey, (this.daily.get(groupKey) || 0) + 1);
     }
     return () => {
-      if (maxActive > 0) this.active.set(featureId, Math.max(0, (this.active.get(featureId) || 0) - 1));
+      // 释放顺序与占用相反；release 本身幂等，重复调用安全。
+      for (const release of releases.reverse()) release();
     };
   }
 

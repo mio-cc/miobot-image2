@@ -2984,6 +2984,19 @@ export function removePrimaryText(plan: any, target: PrimaryTextTarget): any {
 }
 
 const outboundSendQueues = new Map<string, Promise<void>>();
+/** 每个会话正在排队/发送中的回复条数（只用于观测与告警，不参与调度）。 */
+const outboundBacklog = new Map<string, number>();
+
+/** 出站发送积压快照（start.ts 写运行期队列文件时调用）。 */
+export function outboundSendBacklogSnapshot(): Array<{ key: string; running: number; queued: number; limit: number }> {
+  return [...outboundBacklog.entries()].map(([key, count]) => ({
+    key,
+    // 会话内是严格串行：1 条在发，其余在等。
+    running: Math.min(1, count),
+    queued: Math.max(0, count - 1),
+    limit: 1,
+  }));
+}
 
 // ── R15/C-1 + C-2：Agent turn 并发控制（会话串行链 + 全局并发上限）──────────
 // C-1 会话串行链：同 sessionId 的 turn 串行（Map<sessionId, Promise> 链，与出站队列同构）。
@@ -3015,6 +3028,9 @@ export async function sendResult(
   const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
   const tail = previous.catch(() => {}).then(() => gate);
   outboundSendQueues.set(chatKey, tail);
+  // 积压观测（2026-11-19）：每个会话串行发送，但排队长度原来完全不可见。
+  // 只计数 + 超阈值告警，不丢消息——聊天回复丢一条比慢一点糟得多。
+  outboundBacklog.set(chatKey, (outboundBacklog.get(chatKey) || 0) + 1);
   await previous.catch(() => {});
   try {
     // R15/P-1 fix：TTS 预合成必须在同群 ticket 内执行。之前放在入队前会让
@@ -3024,6 +3040,8 @@ export async function sendResult(
     return await sendResultUnlocked(...args);
   } finally {
     releaseGate();
+    const remain = Math.max(0, (outboundBacklog.get(chatKey) || 1) - 1);
+    if (remain === 0) outboundBacklog.delete(chatKey); else outboundBacklog.set(chatKey, remain);
     if (outboundSendQueues.get(chatKey) === tail) outboundSendQueues.delete(chatKey);
   }
 }

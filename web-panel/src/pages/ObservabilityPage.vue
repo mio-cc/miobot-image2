@@ -25,6 +25,47 @@ const canvasLogLevelOptions = [
 const configStore = useConfigStore();
 const config = computed(() => configStore.config);
 
+/* ── 队列与并发（2026-11-19）：bot 每 5s 写 runtime-queues.json，这里只读 ── */
+interface QueueRow { key: string; running: number; queued: number; limit: number }
+interface QueuesSnapshot {
+    updatedAt: string;
+    agentTurns: QueueRow[];
+    toolQueues: QueueRow[];
+    outbound: QueueRow[];
+    agentSessions: { inFlight: number };
+    toolJobs: { queued: number; running: number; total: number };
+    comfyui: QueueRow[];
+    warnings?: string[];
+}
+const queues = ref<QueuesSnapshot | null>(null);
+const queuesStale = ref(true);
+const queuesAgeMs = ref<number | undefined>(undefined);
+const queuesError = ref('');
+async function refreshQueues() {
+    try {
+        const res = await client.get('/system/queues');
+        queues.value = res.data?.snapshot || null;
+        queuesStale.value = Boolean(res.data?.stale);
+        queuesAgeMs.value = typeof res.data?.ageMs === 'number' ? res.data.ageMs : undefined;
+        queuesError.value = '';
+    } catch (e: any) {
+        queuesError.value = errorMessage(e);
+    }
+}
+/** 把闸快照压成一行人类可读的数字。 */
+function queueSummary(rows: QueueRow[] | undefined): string {
+    if (!rows?.length) return '空闲';
+    const running = rows.reduce((sum, row) => sum + row.running, 0);
+    const queued = rows.reduce((sum, row) => sum + row.queued, 0);
+    const limits = rows.map((row) => (row.limit > 0 ? row.limit : '∞')).join('/');
+    return `运行 ${running} · 排队 ${queued} · 上限 ${limits}`;
+}
+const queueAgeLabel = computed(() => {
+    if (queuesAgeMs.value === undefined) return '';
+    const sec = Math.round(queuesAgeMs.value / 1000);
+    return sec < 60 ? `${sec}s 前更新` : `${Math.round(sec / 60)} 分钟前更新`;
+});
+
 /* ── 日志（主进程 / 画布双源） ─────────────────────────────── */
 
 interface LogEntry {
@@ -237,7 +278,10 @@ async function loadObservability() {
 watch([source, level], () => fetchLogs());
 watch(autoRefresh, startTimer);
 
-onMounted(() => { fetchLogs(); startTimer(); loadObservability(); });
+onMounted(() => {
+    void refreshQueues();
+    const queuesTimer = window.setInterval(() => { void refreshQueues(); }, 5000);
+    onBeforeUnmount(() => window.clearInterval(queuesTimer)); fetchLogs(); startTimer(); loadObservability(); });
 onBeforeUnmount(stopTimer);
 </script>
 
@@ -249,6 +293,23 @@ onBeforeUnmount(stopTimer);
         日志（主进程与画布双源）、编排 trace 回放、配置版本回滚、待补全任务与每日日报。
       </p>
     </header>
+
+    <SectionCard title="队列与并发" hint="bot 每 5s 写一次快照；这里只看不调度" class="mb-4">
+      <div class="text-xs mb-2" :class="queuesStale ? 'text-[color:var(--warn)]' : 'text-[color:var(--ink-3)]'">
+        <template v-if="queuesError">读取失败：{{ queuesError }}</template>
+        <template v-else-if="!queues">暂无快照（bot 尚未写入，或刚重启）</template>
+        <template v-else>{{ queuesStale ? '⚠ 快照已过期（bot 可能没在跑）' : '实时' }} · {{ queueAgeLabel }}</template>
+      </div>
+      <div v-if="queues" class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+        <div><span class="text-[color:var(--ink-3)]">Agent turn（跨群共享）</span><br />{{ queueSummary(queues.agentTurns) }}</div>
+        <div><span class="text-[color:var(--ink-3)]">会话链（同会话串行）</span><br />有会话在进行：{{ queues.agentSessions.inFlight }}</div>
+        <div><span class="text-[color:var(--ink-3)]">异步工具队列（按类别）</span><br />{{ queueSummary(queues.toolQueues) }}</div>
+        <div><span class="text-[color:var(--ink-3)]">异步任务</span><br />排队 {{ queues.toolJobs.queued }} · 运行 {{ queues.toolJobs.running }} · 记录 {{ queues.toolJobs.total }}</div>
+        <div><span class="text-[color:var(--ink-3)]">出站发送（每会话串行）</span><br />{{ queueSummary(queues.outbound) }}</div>
+        <div><span class="text-[color:var(--ink-3)]">ComfyUI（按主机）</span><br />{{ queueSummary(queues.comfyui) }}</div>
+      </div>
+      <div v-if="queues?.warnings?.length" class="text-xs mt-2 text-[color:var(--warn)]">快照采集告警：{{ queues.warnings.join('；') }}</div>
+    </SectionCard>
 
     <SectionCard title="运行日志" hint="主进程与画布双日志源，同一次排障不用来回切" class="mb-4">
       <div class="flex flex-wrap items-center gap-2 mb-3">

@@ -939,6 +939,25 @@ export class WebApi {
         if (!result) return json(404, { success: false, error: 'latency_test_pending_or_not_found', testId });
         return ok({ success: true, testId, result });
       }
+      if (method === 'GET' && path === '/api/system/queues') {
+        // 运行期队列快照：bot 进程每 5s 写 data/runtime-queues.json，这里只读文件。
+        // 读不到（bot 还没写过 / 刚重启）返回空快照而不是 500——面板照常渲染。
+        const queueFile = process.env.MIOBOT_RUNTIME_QUEUES_FILE || nodePath.join(miobotDataDir(), 'runtime-queues.json');
+        const content = await fs.readFile(queueFile, 'utf8').catch(() => '');
+        if (!content) {
+          return ok({ success: true, stale: true, snapshot: null });
+        }
+        try {
+          const snapshot = JSON.parse(content);
+          const updatedAt = String(snapshot?.updatedAt || '');
+          const ageMs = updatedAt ? Date.now() - Date.parse(updatedAt) : undefined;
+          // 超过 60s 没更新说明 bot 没在跑（或快照坏了），面板要能显示出来而不是假装实时。
+          const stale = typeof ageMs === 'number' && Number.isFinite(ageMs) ? ageMs > 60_000 : true;
+          return ok({ success: true, stale, ...(typeof ageMs === 'number' ? { ageMs } : {}), snapshot });
+        } catch {
+          return ok({ success: true, stale: true, snapshot: null });
+        }
+      }
       if (method === 'GET' && path === '/api/nodes/latency') {
         // 被动采集快照：bot 进程每次真实模型调用记录的按节点延迟/成败。
         const snapshotFile = nodePath.join(miobotDataDir(), 'node-latency.json');

@@ -160,6 +160,31 @@ export class ToolJobRuntime {
     return structuredClone(record);
   }
 
+  /**
+   * 把已进入 running 的 job 重新标成 queued（2026-11-19）。
+   *
+   * 场景：run() 被调用时 ToolJobRuntime 会先把状态置 running，但真正的执行还要先过
+   * 「队列类别并发闸」。等闸期间它其实在排队，日志/面板显示 running 会误导。
+   */
+  markQueued(jobId: string, message = '排队等待队列类别名额中'): ToolJobRecord | undefined {
+    const record = this.records.get(String(jobId));
+    if (!record || record.status !== 'running') return record ? structuredClone(record) : undefined;
+    record.status = 'queued';
+    record.updatedAt = this.now();
+    this.flush();
+    return structuredClone(record);
+  }
+
+  /** 排队结束、真正开始执行：queued → running。 */
+  markRunning(jobId: string): ToolJobRecord | undefined {
+    const record = this.records.get(String(jobId));
+    if (!record || record.status !== 'queued') return record ? structuredClone(record) : undefined;
+    record.status = 'running';
+    record.updatedAt = this.now();
+    this.flush();
+    return structuredClone(record);
+  }
+
   cancel(jobId: string, message = 'cancelled'): ToolJobRecord | undefined {
     const record = this.records.get(String(jobId));
     this.controllers.get(String(jobId))?.abort();

@@ -1,6 +1,9 @@
 import { NapcatAdapter } from '../../../packages/napcat/src/index.js';
 import { createCapabilityRegistry, createModelClient, createReloadableRegistry } from '../../../packages/model/src/index.js';
 import { FileModelCapabilityStore } from './model-capability-store.js';
+import { runtimeQueues } from './queue-gate.js';
+import { comfyUiQueueSnapshot } from './comfyui-queue.js';
+import { sampleRuntimeQueues, writeRuntimeQueuesSnapshot } from './runtime-queues-snapshot.js';
 import { ConfigStore } from '../../../packages/storage/src/index.js';
 import { createFileMetricsStore, createMetrics } from '../../../packages/core/src/metrics.js';
 import { createDefaultConfig, normalizeConfig, type AppConfig } from '../../../packages/config/src/index.js';
@@ -15,7 +18,7 @@ import { resolveAsyncJobTimeoutMs } from './async-job-timeout.js';
 import { ReplyPreferenceStore } from './reply-preference-store.js';
 import { hasPendingAgentClarification } from './pending-clarification.js';
 import { InMemoryAgentSessionManager, type AgentJobRecord, type AgentToolPreflightDecision, type AgentToolPreflightInput } from '../../../packages/agent-runtime/src/index.js';
-import { createBotMessageRuntime, handleCodeRenderRequest, handleFileGenerateCommand, handleFileReadCommand, handleWebScreenshotRequest, type BotRuntimeOptions, type FileReference, type NapcatMessageEvent } from './runtime.js';
+import { createBotMessageRuntime, handleCodeRenderRequest, handleFileGenerateCommand, handleFileReadCommand, handleWebScreenshotRequest, outboundSendBacklogSnapshot, type BotRuntimeOptions, type FileReference, type NapcatMessageEvent } from './runtime.js';
 import { toGroupContextConfig, toModelNodes, toCapabilityOverrides } from './config-bridge.js';
 import { CONTENT_REJECTION_PLACEHOLDER } from './content-rejection.js';
 import { renderTtsPreprocessPrompt, resolveTtsPreprocessTarget, shouldUseTts, synthesizeSpeech, toSpeechText } from './tts.js';
@@ -1754,15 +1757,34 @@ const memoryService = memoryBackend === 'qdrant'
           status: shouldQueue ? 'queued' : 'running',
         });
         const jobTimeoutMs = resolveAsyncJobTimeoutMs(getConfig(), call.name, spec.timeoutMs);
+        // 队列类别（spec.queue：image/video/audio/search/file/default）。
+        // 之前这个字段被映射进 ToolSpec 却没人消费，是死字段；现在它是真正的类级别并发闸。
+        // 默认上限 0 = 不限制，行为与旧版一致；toolRegistry.queueConcurrency.image=2 才会生效。
+        const queueClass = String(spec.queue || 'default');
+        const queueLimit = Math.max(0, Math.trunc(Number(getConfig().toolRegistry?.queueConcurrency?.[queueClass]) || 0));
         const run = (signal: AbortSignal) => Promise.resolve()
-          .then(() => original(call, spec, {
-            ...context,
-            signal,
-            metadata: {
-              ...(context.metadata || {}),
-              reportExternalTask: (taskId: string) => toolJobRuntime.recordExternalTask(job.jobId, taskId),
-            },
-          }))
+          .then(async () => {
+            if (queueLimit <= 0) return () => undefined;
+            // 等类级别名额期间把 job 标成 queued——否则日志/面板会显示 running 却什么都没跑。
+            const release = await runtimeQueues.toolQueues.acquire('tool:' + queueClass, queueLimit, {
+              onQueued: () => {
+                toolJobRuntime.markQueued(job.jobId, '排队等待 ' + queueClass + ' 队列名额');
+                logger.info('异步工具任务等待队列类别名额', { toolName: call.name, jobId: job.jobId, queueClass, queueLimit });
+              },
+            });
+            toolJobRuntime.markRunning(job.jobId);
+            return release;
+          })
+          .then((release) => Promise.resolve()
+            .then(() => original(call, spec, {
+              ...context,
+              signal,
+              metadata: {
+                ...(context.metadata || {}),
+                reportExternalTask: (taskId: string) => toolJobRuntime.recordExternalTask(job.jobId, taskId),
+              },
+            }))
+            .finally(() => release()))
           .then((raw): ToolResult => {
             const value = raw as any;
             if (value && typeof value.callId === 'string' && typeof value.ok === 'boolean') return value as ToolResult;
@@ -2691,6 +2713,43 @@ const memoryService = memoryBackend === 'qdrant'
       logger.warn('persisted agent recovery failed', { error: String((error as Error)?.message || error) });
     }
   })();
+  // 运行期队列快照（2026-11-19）：每 5s 写一次 data/runtime-queues.json，面板读它。
+  // 用 unref 定时器，不阻止进程退出；单次采样失败不影响主链路。
+  {
+    const queuesFile = process.env.MIOBOT_RUNTIME_QUEUES_FILE || path.join(dataDir, 'runtime-queues.json');
+    const flush = () => {
+      try {
+        const snapshot = sampleRuntimeQueues({
+          agentTurns: () => runtimeQueues.turns.snapshot(),
+          toolQueues: () => runtimeQueues.toolQueues.snapshot(),
+          // 出站发送是「每会话串行链」，用真实积压计数而不是闸快照。
+          outbound: () => outboundSendBacklogSnapshot(),
+          agentSessions: () => agentSessions.snapshot().filter((session) => (session.messages?.length || 0) > 0).length,
+          toolJobs: () => {
+            const records = toolJobRuntime.snapshot();
+            return {
+              queued: records.filter((job) => job.status === 'queued').length,
+              running: records.filter((job) => job.status === 'running').length,
+              total: records.length,
+            };
+          },
+          comfyui: () => comfyUiQueueSnapshot().map((item) => ({ key: item.queue, running: item.running, queued: item.queued, limit: item.limit })),
+        });
+        writeRuntimeQueuesSnapshot(queuesFile, snapshot);
+        const warnAt = Math.max(0, Math.trunc(Number(getConfig().napcat?.sendQueueWarnLength ?? 0)));
+        if (warnAt > 0) {
+          const worst = snapshot.outbound.reduce((max, item) => Math.max(max, item.running + item.queued), 0);
+          if (worst >= warnAt) logger.warn('出站发送队列积压', { worst, warnAt, chats: snapshot.outbound.length });
+        }
+      } catch (error) {
+        logger.warn('运行期队列快照写入失败', { error: String((error as Error)?.message || error) });
+      }
+    };
+    flush();
+    const timer = setInterval(flush, Math.max(1000, Math.trunc(Number(process.env.MIOBOT_RUNTIME_QUEUES_INTERVAL_MS) || 5000)));
+    timer.unref?.();
+  }
+
   const resumePersistedJob = async (job: PendingJobRecord): Promise<void> => {
     await waitForAdapterConnected();
     const chat = job.originalRequest?.chat;
