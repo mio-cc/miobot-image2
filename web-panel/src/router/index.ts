@@ -116,6 +116,13 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '模型与节点', group: '配置', icon: 'server' },
     },
     {
+        // 2026-11-19：模型参数契约（从文档抓到的参数面 + 学到过的修正）。
+        path: '/models/contracts',
+        name: 'model-contracts',
+        component: () => import('../pages/ModelContractsPage.vue'),
+        meta: { title: '模型参数', group: '运行', icon: 'sliders' },
+    },
+    {
         // 旧路由重定向到新统一页
         path: '/nodes',
         redirect: '/models',

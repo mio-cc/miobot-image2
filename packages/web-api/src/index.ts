@@ -958,6 +958,40 @@ export class WebApi {
           return ok({ success: true, stale: true, snapshot: null });
         }
       }
+      // 模型参数契约（2026-11-19）：bot 进程写 data/model-contracts.json，
+      // 面板只读展示「这个模型支持什么参数、来源是什么、学过哪些修正」。
+      // 读不到 → 空列表 + 200（不是 500），面板照常渲染并提示"还没抓过"。
+      if (method === 'GET' && path === '/api/models/contracts') {
+        const contractFile = process.env.MIOBOT_MODEL_CONTRACTS_FILE || nodePath.join(miobotDataDir(), 'model-contracts.json');
+        const content = await fs.readFile(contractFile, 'utf8').catch(() => '');
+        if (!content) return ok({ success: true, entries: [], updatedAt: '' });
+        try {
+          const parsed = JSON.parse(content) as { version?: number; entries?: Record<string, any> };
+          const entries = Object.values(parsed?.entries || {}).map((entry) => {
+            const params = entry?.params || {};
+            const sizeSpec = params.image_size || params.size;
+            const qualitySpec = params.quality;
+            return {
+              key: entry?.key || '',
+              model: entry?.model || '',
+              op: entry?.op || '',
+              source: entry?.source || '',
+              fetchedAt: entry?.fetchedAt || '',
+              required: Array.isArray(entry?.required) ? entry.required : [],
+              paramNames: Object.keys(params),
+              sizeEnum: Array.isArray(sizeSpec?.enum) ? sizeSpec.enum : [],
+              sizeLimits: sizeSpec?.size || null,
+              qualityEnum: Array.isArray(qualitySpec?.enum) ? qualitySpec.enum : [],
+              transforms: entry?.transforms || {},
+              notes: Array.isArray(entry?.notes) ? entry.notes : [],
+            };
+          });
+          const mtime = await fs.stat(contractFile).catch(() => undefined);
+          return ok({ success: true, entries, updatedAt: mtime ? mtime.mtime.toISOString() : '' });
+        } catch {
+          return ok({ success: true, entries: [], updatedAt: '' });
+        }
+      }
       if (method === 'GET' && path === '/api/nodes/latency') {
         // 被动采集快照：bot 进程每次真实模型调用记录的按节点延迟/成败。
         const snapshotFile = nodePath.join(miobotDataDir(), 'node-latency.json');
