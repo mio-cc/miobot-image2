@@ -32,6 +32,13 @@ export interface RuntimeInput {
   videos?: string[];
   hasReferencedImage?: boolean;
   hasReferencedVideo?: boolean;
+  /**
+   * 本轮要额外注入 system 段的「系统事实」（2026-11-19）。
+   * 典型用途：用户带了图但系统没能把图送到模型手里时，明确告诉模型
+   * 「不要描述图、不要声称看到了图」，而不是让模型自己猜或反复说"看不到图"。
+   * 与 userText 分开，避免被当成用户原话写进会话历史。
+   */
+  systemNotices?: string[];
   chatType: 'group' | 'private';
   sessionId: string;
   context?: string;

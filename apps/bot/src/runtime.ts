@@ -1628,7 +1628,15 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
         imageRefs: modelImages.slice(0, 3).map(describeImageReference),
       });
     }
-    if (droppedImages > 0) log?.warn('部分图片无法读取，已从模型输入移除', { droppedImages, totalImages: enrichedImages.length });
+    if (droppedImages > 0) log?.warn('部分图片无法读取，已从模型输入移除', {
+      droppedImages,
+      totalImages: enrichedImages.length,
+      // 2026-11-19：拆开来源，否则线上只能看到"丢了 N 张"，不知道丢的是当前图还是引用图。
+      droppedBaseImages: Math.max(0, baseImages.length - modelImages.length),
+      droppedQuotedImages: Math.max(0, quotedImages.length - modelImages.length),
+      hasReferencedImage,
+      imageRefs: enrichedImages.slice(0, 3).map(describeImageReference),
+    });
     if (enrichedImages.length > 0 && modelImages.length === 0) {
       await reportProblem('image-input-failed', '图片读取失败。QQ 图片 URL 可能已过期，Napcat 也没能返回可用的图片内容。', { imageCount: enrichedImages.length });
       // 转发文本仍在时不整条丢弃：图片降级为不可用，继续走文本链路（转发内容优先保住）。
@@ -1659,6 +1667,21 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     const agentText = stripNonTextCqSegments(rawMessage).trim();
     const agentHasConversationContext = Boolean(agentText || referenceText || forwardText);
     const agentHasAttachments = modelImages.length > 0 || enrichedVideos.length > 0 || enrichedAudios.length > 0 || baseFiles.length > 0;
+    // 2026-11-19：用户带了图但系统没能把图送进模型时，必须显式告知模型。
+    // 否则模型会两种翻车：①凭 prompt 猜图里有什么；②反复说"我看不到图"，
+    // 而改图/生图其实由独立模型完成并已把图发出去（线上出现"图发了但文字说看不到图"）。
+    const systemNotices: string[] = [];
+    if (enrichedImages.length > 0 && droppedImages > 0) {
+      systemNotices.push(
+        '【系统事实】本轮用户消息包含 ' + enrichedImages.length + ' 张图片，其中 ' + droppedImages
+        + ' 张系统未能读取、已丢弃。不要再描述这些图片的具体内容，也不要声称你看到了它们；'
+        + '如果用户的请求依赖这些图片，直接说明"这张图我这边没能读取"，并给出可执行的替代做法'
+        + '（例如让用户重发、换一张、或用文字描述需求）。',
+      );
+    }
+    if (enrichedImages.length > 0 && modelImages.length === 0 && !systemNotices.length) {
+      systemNotices.push('【系统事实】本轮图片全部未能读取。不要描述图片内容，直接说明未能读取并请用户重发。');
+    }
     const agentPromptText = agentText;
     const agentPendingClarificationAnswer = (decision as any).source === 'pending_clarification';
     const agentHasInput = Boolean(agentPromptText || agentHasConversationContext || agentHasAttachments || agentPendingClarificationAnswer);
@@ -1725,6 +1748,7 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
           groupContext: agentGroupContext,
           sessionId,
           replyPreferenceSessionKey,
+          ...(systemNotices.length ? { systemNotices } : {}),
           requestId: `agent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         });
         if (agentOutcome.problem) {

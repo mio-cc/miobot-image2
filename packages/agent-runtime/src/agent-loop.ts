@@ -530,7 +530,12 @@ export class AgentRuntime implements AgentLoop {
     const preferenceSection = input.replyPreference
       ? `【当前会话回复呈现偏好】\n${JSON.stringify(input.replyPreference)}\n当前用户消息如果提出不同的呈现方式，必须以当前消息为准，并先调用 reply.presentation 更新偏好。`
       : '';
-    const systemSections = [prompt?.content, preferenceSection].filter((value): value is string => Boolean(String(value || '').trim()));
+    // 2026-11-19：调用方可以带「系统事实」进来（例如"本轮图片未能读取"），
+    // 与用户原话分开注入 system 段，避免污染会话历史，也避免模型靠猜。
+    const noticeSections = Array.isArray(input.metadata?.notices)
+      ? (input.metadata.notices as unknown[]).map((item) => String(item || '').trim()).filter(Boolean)
+      : [];
+    const systemSections = [prompt?.content, preferenceSection, ...noticeSections].filter((value): value is string => Boolean(String(value || '').trim()));
     const context = contextBuilder.build({
       session,
       userText: contextUserText,

@@ -52,6 +52,8 @@ export interface AgentHostInput {
   userRole?: 'guest' | 'user' | 'admin' | 'owner';
   replyPreference?: AgentReplyPreference;
   userReplyPreference?: AgentReplyPreference;
+  /** 本轮注入 system 段的系统事实（例如"图片未能读取"），不进会话历史。 */
+  systemNotices?: string[];
 }
 
 export interface AgentHostOutcome {
@@ -333,6 +335,8 @@ export function createAgentHost(options: AgentHostOptions): (input: AgentHostInp
         ...(input.resumeJobId ? { resumeJobId: input.resumeJobId } : {}),
         ...(input.replyPreferenceSessionKey ? { replyPreferenceSessionKey: input.replyPreferenceSessionKey } : {}),
         attachments,
+        // 系统事实（不是用户原话）：例如"本轮图片未能读取，不要声称看到图"。
+        ...(input.systemNotices?.length ? { notices: input.systemNotices } : {}),
       },
     };
     let turn: AgentTurnResult;
