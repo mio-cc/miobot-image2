@@ -1,3 +1,12 @@
+/**
+ * 负向能力判定的有效期（2026-11-20）。
+ *
+ * 6 小时：足够挡住「对着一个确定不支持的端点反复重试」，又不至于让一次误判永久生效。
+ * 线上真实事故：某次 vision 400 被记成「不支持 vision」→ 主模型此后永远收不到图片
+ * → 用户引用图片让改图，改图走附件通道能成，但模型只能回「我看不到图」。
+ */
+export const NEGATIVE_LEARNING_TTL_MS = 6 * 60 * 60 * 1000;
+
 import type { ModelOperation } from '../ports.js';
 import { CHAT_PROFILE, TEXT_ONLY_PROFILE, inferProfileByName, type ModelProfile } from './profiles.js';
 import {
@@ -64,7 +73,7 @@ export class CapabilityRegistry {
    * 学习结论优先于名字启发：名字启发只是猜，学习是实测（同一个 baseUrl 上的事实），
    * 猜错时必须以实测为准——否则网关把某个名字相近的模型换掉后，会永远按猜的走。
    */
-  resolve(model: string, node?: CapabilityNodeRef): { profile: ModelProfile; operations: ModelOperation[]; source: CapabilitySource; evidence?: string } {
+  resolve(model: string, node?: CapabilityNodeRef): { profile: ModelProfile; operations: ModelOperation[]; source: CapabilitySource; evidence?: string; revokedAt?: string } {
     const override = this.matchOverride(model);
     const learned = node ? this.memory?.get(capabilityKey(node, model)) : undefined;
     const inferred = inferProfileByName(model);
@@ -94,6 +103,7 @@ export class CapabilityRegistry {
       return {
         source,
         operations: learned.operations,
+        ...(learned.revokedAt ? { revokedAt: learned.revokedAt } : {}),
         ...(learned.evidence ? { evidence: learned.evidence } : {}),
         profile: { ...base, operations: learned.operations },
       };
@@ -132,7 +142,14 @@ export class CapabilityRegistry {
   shouldAttempt(model: string, op: ModelOperation, node?: CapabilityNodeRef): boolean {
     const resolved = this.resolve(model, node);
     if (resolved.source === 'unknown') return true;
-    return resolved.operations.includes(op);
+    if (resolved.operations.includes(op)) return true;
+    // 负向判定有 TTL：过期后允许再试一次。
+    // 没有这一步，一次误判会永久关掉这个能力（线上表现为「模型永远说看不到图」）。
+    if (resolved.revokedAt) {
+      const revokedAt = Date.parse(resolved.revokedAt);
+      if (Number.isFinite(revokedAt) && Date.now() - revokedAt >= NEGATIVE_LEARNING_TTL_MS) return true;
+    }
+    return false;
   }
 
   /** 已知能力清单；未知模型返回空数组（不是「全能」）。 */
@@ -168,6 +185,8 @@ export class CapabilityRegistry {
       source: previous?.source === 'learned-llm' ? 'learned-llm' : 'learned-rejected',
       evidence,
       updatedAt: new Date().toISOString(),
+      // 负向判定时间：shouldAttempt 用它做 TTL 重验（见 NEGATIVE_LEARNING_TTL_MS）
+      revokedAt: new Date().toISOString(),
     });
   }
 

@@ -28,6 +28,15 @@ export interface LearnedCapability {
   /** 判定依据，用于排障与面板展示（上游错误摘要 / 判定理由）。 */
   evidence?: string;
   updatedAt: string;
+  /**
+   * 负向判定发生的时间（2026-11-20）。
+   *
+   * 为什么需要：负向学习一旦永久生效，「这个模型不能看图」这类判定会跟着模型一辈子。
+   * 线上真实事故：某次 vision 400 被记成「不支持 vision」→ 之后主模型永远收不到图片
+   * → 引用了图让改图，改图走附件通道能成，但模型只能回「我看不到图」。
+   * 有 revokedAt 之后，负向判定超过 TTL 会重新允许尝试一次，让上游有机会自我纠正。
+   */
+  revokedAt?: string;
 }
 
 export interface CapabilityMemory {

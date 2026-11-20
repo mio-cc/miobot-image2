@@ -137,9 +137,20 @@ export function createModelBackedDeps(options: ModelDepsOptions): RuntimeDeps {
         }
         return { text: res.text };
       }
-      // 模型无 vision 能力:图片被丢弃,记录警告便于排查(不阻塞纯文本回复)。
+      // 模型无 vision 能力：图片不进模型，但**必须告诉模型这件事**。
+      // 否则模型会两种翻车：①声称"没收到图片"（用户明明发了）；
+      // ②凭文本猜图里有什么。线上真实事故：引用图片让改图，改图走附件通道成功并发出，
+      // 但文字回复是"我看不到图片"——就是这里静默丢图造成的。
+      let visionUnavailableNote: { role: 'system'; content: string } | null = null;
       if (images.length > 0) {
         logger?.warn('模型无 vision 能力,图片被丢弃', { model: req.model, imageCount: images.length });
+        visionUnavailableNote = {
+          role: 'system',
+          content: '【系统事实】本轮用户带了 ' + images.length + ' 张图片，已作为工具附件可用（改图/参考/反推工具都能拿到它），'
+            + '但当前对话模型无法直接查看图像内容。不要声称"用户没有发图片"或"没收到图片"；'
+            + '如果用户的请求依赖画面内容，请直接调用 image.interrogate 反推画面，或调用 image.edit 按指令处理，'
+            + '并把"我这边看不到画面细节"作为限制说明写进回复。',
+        };
       }
       if (videos.length) {
         logger?.info('chat 路径收到视频附件,已降级为文字引 ', { model: req.model, videoCount: videos.length });
@@ -147,6 +158,8 @@ export function createModelBackedDeps(options: ModelDepsOptions): RuntimeDeps {
       const history = sessions && req.sessionId ? sessions.get(req.sessionId) : [];
       const messages: Array<{ role: string; content: unknown }> = [];
       if (chatSystemPrompt) messages.push({ role: 'system', content: chatSystemPrompt });
+      // vision 不可用时要显式告知，不能静默丢图（否则模型会说"用户没发图片"）
+      if (visionUnavailableNote) messages.push(visionUnavailableNote);
       if (contextSystem) messages.push(contextSystem);
       if (searchSystem) messages.push(searchSystem);
       for (const m of history) messages.push({ role: m.role, content: m.content });

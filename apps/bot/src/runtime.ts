@@ -1682,6 +1682,15 @@ export function createBotMessageRuntime(options: BotRuntimeOptions) {
     if (enrichedImages.length > 0 && modelImages.length === 0 && !systemNotices.length) {
       systemNotices.push('【系统事实】本轮图片全部未能读取。不要描述图片内容，直接说明未能读取并请用户重发。');
     }
+    // 带图时始终给一条系统事实：模型能看到就拿它当上下文，看不到也不该说"没收到图片"
+    // （改图/反推走的是附件通道，不依赖主模型 vision）。
+    if (modelImages.length > 0) {
+      systemNotices.push(
+        '【系统事实】本轮用户附带了 ' + modelImages.length + ' 张图片，已作为视觉输入与工具附件同时提供。'
+        + '如果这些图片内容无法辨认，不要说"用户没发图片"，说明"我这边读取不到画面细节"，'
+        + '并直接调用 image.interrogate（理解画面）或 image.edit（按指令改图）继续完成任务。',
+      );
+    }
     const agentPromptText = agentText;
     const agentPendingClarificationAnswer = (decision as any).source === 'pending_clarification';
     const agentHasInput = Boolean(agentPromptText || agentHasConversationContext || agentHasAttachments || agentPendingClarificationAnswer);
